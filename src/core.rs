@@ -44,8 +44,10 @@ impl App {
 
     /// Creates a new App with the provided configuration
     pub fn with_config(config: Config) -> Self {
-        let context = AppContext::new();
-        let router = Self::build_router(&config);
+        #[allow(unused_mut)]
+        let mut context = AppContext::new();
+        #[allow(unused_mut)]
+        let mut router = Self::build_router(&config);
 
         #[cfg(feature = "metrics")]
         let metrics_collector = if config.metrics.enabled {
@@ -55,6 +57,23 @@ impl App {
         } else {
             None
         };
+
+        // Store metrics collector in context so handler can access it
+        #[cfg(feature = "metrics")]
+        {
+            context.metrics = metrics_collector.clone();
+        }
+
+        // Add metrics endpoint route (needs to be here so into_test_router() includes it)
+        #[cfg(feature = "metrics")]
+        {
+            if metrics_collector.is_some() {
+                router = router.route(
+                    config.metrics.path.as_str(),
+                    axum::routing::get(metrics_handler),
+                );
+            }
+        }
 
         Self {
             router,
@@ -145,23 +164,8 @@ impl App {
         #[cfg(feature = "metrics")]
         {
             if let Some(ref collector) = self.metrics_collector {
-                // Metrics handler uses State<Arc<MetricsCollector>>, not AppContext
-                // We need to handle this separately - nest it so it can have its own state
-                // But nested routers inherit parent state, so we need a different approach
-                // For now, create metrics router with MetricsCollector state and nest it
-                let _metrics_router: Router = Router::new()
-                    .route(
-                        self.config.metrics.path.as_str(),
-                        axum::routing::get(metrics_handler),
-                    )
-                    .with_state(collector.clone());
-
-                // Nest metrics router - it will inherit AppContext but handler expects MetricsCollector
-                // This won't work - we need to handle metrics differently
-                // TODO: Fix metrics to work with AppContext or handle separately
-                // router = router.nest("/", _metrics_router);
-
-                // Then add metrics middleware layer (outermost)
+                // Add metrics middleware layer (outermost)
+                // Note: metrics route is added in with_config() so it's available in tests
                 router = router.layer(build_metrics_layer(collector.clone()));
             }
         }

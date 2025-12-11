@@ -1,14 +1,16 @@
 use axum::response::Response;
 use axum::body::Body;
 use axum::http::StatusCode;
-use std::sync::Arc;
-use super::collector::MetricsCollector;
+use crate::app::AppContext;
 
 /// Handler for the /metrics endpoint
 pub async fn metrics_handler(
-    axum::extract::State(collector): axum::extract::State<Arc<MetricsCollector>>,
+    axum::extract::State(ctx): axum::extract::State<AppContext>,
 ) -> Result<Response<Body>, StatusCode> {
     use prometheus::Encoder;
+
+    let collector = ctx.metrics_opt()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let encoder = prometheus::TextEncoder::new();
     let metric_families = collector.registry().gather();

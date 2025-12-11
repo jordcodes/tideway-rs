@@ -10,6 +10,8 @@ use crate::traits::session::SessionStore;
 use crate::traits::job::JobQueue;
 #[cfg(feature = "websocket")]
 use crate::websocket::ConnectionManager;
+#[cfg(feature = "metrics")]
+use crate::metrics::MetricsCollector;
 
 /// Application context for dependency injection and shared state
 ///
@@ -33,6 +35,9 @@ pub struct AppContext {
     #[cfg(feature = "websocket")]
     pub websocket_manager: Option<Arc<ConnectionManager>>,
 
+    #[cfg(feature = "metrics")]
+    pub metrics: Option<Arc<MetricsCollector>>,
+
     /// Authentication provider (application-specific)
     ///
     /// Note: Stored as `Arc<dyn Any>` due to AuthProvider's associated types.
@@ -53,6 +58,8 @@ impl AppContext {
             jobs: None,
             #[cfg(feature = "websocket")]
             websocket_manager: None,
+            #[cfg(feature = "metrics")]
+            metrics: None,
             auth_provider: None,
         }
     }
@@ -132,6 +139,20 @@ impl AppContext {
         self.websocket_manager.clone()
     }
 
+    /// Get the metrics collector, returning an error if not configured
+    #[cfg(feature = "metrics")]
+    pub fn metrics(&self) -> crate::error::Result<&Arc<MetricsCollector>> {
+        self.metrics.as_ref().ok_or_else(|| {
+            crate::error::TidewayError::internal("Metrics collector not configured")
+        })
+    }
+
+    /// Get the metrics collector as an Option
+    #[cfg(feature = "metrics")]
+    pub fn metrics_opt(&self) -> Option<&Arc<MetricsCollector>> {
+        self.metrics.as_ref()
+    }
+
     /// Get the auth provider, downcast to the concrete type
     ///
     /// # Example
@@ -192,6 +213,9 @@ pub struct AppContextBuilder {
     #[cfg(feature = "websocket")]
     websocket_manager: Option<Arc<ConnectionManager>>,
 
+    #[cfg(feature = "metrics")]
+    metrics: Option<Arc<MetricsCollector>>,
+
     auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
@@ -208,6 +232,8 @@ impl AppContextBuilder {
             jobs: None,
             #[cfg(feature = "websocket")]
             websocket_manager: None,
+            #[cfg(feature = "metrics")]
+            metrics: None,
             auth_provider: None,
         }
     }
@@ -247,6 +273,13 @@ impl AppContextBuilder {
         self
     }
 
+    /// Set the metrics collector
+    #[cfg(feature = "metrics")]
+    pub fn with_metrics(mut self, collector: Arc<MetricsCollector>) -> Self {
+        self.metrics = Some(collector);
+        self
+    }
+
     /// Set the auth provider
     ///
     /// # Example
@@ -269,11 +302,12 @@ impl AppContextBuilder {
             cache: self.cache,
             #[cfg(feature = "sessions")]
             sessions: self.sessions,
-
             #[cfg(feature = "jobs")]
             jobs: self.jobs,
             #[cfg(feature = "websocket")]
             websocket_manager: self.websocket_manager,
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics,
             auth_provider: self.auth_provider,
         }
     }
