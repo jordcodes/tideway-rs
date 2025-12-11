@@ -124,7 +124,8 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 /// Initialize tracing/logging with sensible defaults
 ///
 /// This should be called early in your application, typically in main()
-/// before creating the App.
+/// before creating the App. Safe to call multiple times - subsequent calls
+/// are ignored if tracing is already initialized.
 ///
 /// # Environment Variables
 ///
@@ -149,32 +150,50 @@ pub fn init_tracing() {
         .map(|v| v.parse::<bool>().unwrap_or(false))
         .unwrap_or(false);
 
-    if json_logs {
+    let result = if json_logs {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer().json())
-            .init();
+            .try_init()
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer())
-            .init();
+            .try_init()
+    };
+
+    // Silently ignore if already initialized (e.g., in tests or called twice)
+    if let Err(e) = result {
+        // Only log if it's not the "already initialized" error
+        if !e.to_string().contains("already") {
+            eprintln!("Warning: Failed to initialize tracing: {}", e);
+        }
     }
 }
 
 /// Initialize tracing with a custom configuration
+///
+/// Safe to call multiple times - subsequent calls are ignored if tracing
+/// is already initialized.
 pub fn init_tracing_with_config(config: &Config) {
     let env_filter = EnvFilter::new(&config.logging.level);
 
-    if config.logging.json {
+    let result = if config.logging.json {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer().json())
-            .init();
+            .try_init()
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer())
-            .init();
+            .try_init()
+    };
+
+    // Silently ignore if already initialized
+    if let Err(e) = result {
+        if !e.to_string().contains("already") {
+            eprintln!("Warning: Failed to initialize tracing: {}", e);
+        }
     }
 }
