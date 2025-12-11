@@ -11,7 +11,6 @@ use crate::{
     timeout::build_timeout_layer,
 };
 use axum::{extract::DefaultBodyLimit, Router};
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
