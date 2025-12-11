@@ -294,7 +294,8 @@ impl Default for App {
 pub struct AppBuilder {
     config: Config,
     context: AppContext,
-    modules: Vec<Router<AppContext>>,
+    /// Modules stored as (router, optional_prefix)
+    modules: Vec<(Router<AppContext>, Option<String>)>,
     #[cfg(feature = "metrics")]
     metrics_collector: Option<Arc<MetricsCollector>>,
 }
@@ -326,7 +327,8 @@ impl AppBuilder {
     }
 
     pub fn register_module<M: RouteModule>(mut self, module: M) -> Self {
-        self.modules.push(module.routes());
+        let prefix = module.prefix().map(|s| s.to_owned());
+        self.modules.push((module.routes(), prefix));
         self
     }
 
@@ -339,8 +341,12 @@ impl AppBuilder {
             app.metrics_collector = self.metrics_collector;
         }
 
-        for module_router in self.modules {
-            app.router = app.router.merge(module_router);
+        for (module_router, prefix) in self.modules {
+            if let Some(prefix) = prefix {
+                app.router = app.router.nest(&prefix, module_router);
+            } else {
+                app.router = app.router.merge(module_router);
+            }
         }
 
         app
