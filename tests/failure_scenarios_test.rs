@@ -249,3 +249,83 @@ async fn test_error_types() {
         TidewayError::RequestTimeout
     ));
 }
+
+// Tests for From implementations
+
+#[tokio::test]
+async fn test_from_serde_json_error() {
+    // Syntax error -> BadRequest
+    let json_err = serde_json::from_str::<serde_json::Value>("{ invalid json }").unwrap_err();
+    let error: TidewayError = json_err.into();
+    assert!(matches!(error, TidewayError::BadRequest(_)));
+    assert!(error.to_string().contains("JSON error"));
+
+    // Missing field (data error) -> BadRequest
+    #[derive(Debug, serde::Deserialize)]
+    struct Test { field: String }
+    let json_err = serde_json::from_str::<Test>("{}").unwrap_err();
+    let error: TidewayError = json_err.into();
+    assert!(matches!(error, TidewayError::BadRequest(_)));
+}
+
+#[tokio::test]
+async fn test_from_serde_json_error_in_handler() {
+    // Simulate using ? operator in a handler
+    fn parse_json(input: &str) -> tideway::Result<serde_json::Value> {
+        let value = serde_json::from_str(input)?;
+        Ok(value)
+    }
+
+    let result = parse_json("invalid json");
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), TidewayError::BadRequest(_)));
+
+    let result = parse_json(r#"{"valid": "json"}"#);
+    assert!(result.is_ok());
+}
+
+#[cfg(feature = "validation")]
+mod validation_tests {
+    use super::*;
+    use tideway::validator::Validate;
+
+    #[derive(tideway::validator::Validate)]
+    struct TestInput {
+        #[validate(email(message = "must be a valid email"))]
+        email: String,
+        #[validate(length(min = 3, message = "must be at least 3 characters"))]
+        name: String,
+    }
+
+    #[tokio::test]
+    async fn test_from_validation_errors() {
+        let input = TestInput {
+            email: "not-an-email".to_string(),
+            name: "ab".to_string(),
+        };
+
+        let validation_result = input.validate();
+        assert!(validation_result.is_err());
+
+        let error: TidewayError = validation_result.unwrap_err().into();
+        assert!(matches!(error, TidewayError::BadRequest(_)));
+        assert!(error.to_string().contains("Validation failed"));
+    }
+
+    #[tokio::test]
+    async fn test_validation_error_in_handler() {
+        fn validate_input(input: TestInput) -> tideway::Result<()> {
+            input.validate()?;
+            Ok(())
+        }
+
+        let input = TestInput {
+            email: "bad".to_string(),
+            name: "x".to_string(),
+        };
+
+        let result = validate_input(input);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TidewayError::BadRequest(_)));
+    }
+}

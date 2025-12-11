@@ -320,6 +320,70 @@ impl IntoResponse for TidewayError {
 /// Result type alias for Tideway handlers
 pub type Result<T> = std::result::Result<T, TidewayError>;
 
+// Common error type conversions
+
+impl From<serde_json::Error> for TidewayError {
+    fn from(err: serde_json::Error) -> Self {
+        // Classify based on error category
+        if err.is_data() || err.is_syntax() || err.is_eof() {
+            TidewayError::BadRequest(format!("JSON error: {}", err))
+        } else {
+            // IO errors are internal
+            TidewayError::Internal(format!("JSON serialization error: {}", err))
+        }
+    }
+}
+
+impl From<reqwest::Error> for TidewayError {
+    fn from(err: reqwest::Error) -> Self {
+        if err.is_timeout() {
+            TidewayError::RequestTimeout
+        } else if err.is_connect() {
+            TidewayError::ServiceUnavailable(format!("Connection error: {}", err))
+        } else if err.is_status() {
+            // Map HTTP status codes from upstream services
+            if let Some(status) = err.status() {
+                match status.as_u16() {
+                    401 => TidewayError::Unauthorized("Upstream authentication failed".to_string()),
+                    403 => TidewayError::Forbidden("Upstream access denied".to_string()),
+                    404 => TidewayError::NotFound("Upstream resource not found".to_string()),
+                    429 => TidewayError::TooManyRequests("Upstream rate limit exceeded".to_string()),
+                    503 => TidewayError::ServiceUnavailable("Upstream service unavailable".to_string()),
+                    _ => TidewayError::Internal(format!("Upstream error: {}", err)),
+                }
+            } else {
+                TidewayError::Internal(format!("HTTP error: {}", err))
+            }
+        } else {
+            TidewayError::Internal(format!("Request error: {}", err))
+        }
+    }
+}
+
+#[cfg(feature = "validation")]
+impl From<validator::ValidationErrors> for TidewayError {
+    fn from(err: validator::ValidationErrors) -> Self {
+        // Build a user-friendly message with field errors
+        let field_errors: Vec<String> = err
+            .field_errors()
+            .iter()
+            .map(|(field, errors)| {
+                let messages: Vec<&str> = errors
+                    .iter()
+                    .filter_map(|e| e.message.as_ref().map(|m| m.as_ref()))
+                    .collect();
+                if messages.is_empty() {
+                    format!("{}: invalid", field)
+                } else {
+                    format!("{}: {}", field, messages.join(", "))
+                }
+            })
+            .collect();
+
+        TidewayError::BadRequest(format!("Validation failed: {}", field_errors.join("; ")))
+    }
+}
+
 #[cfg(feature = "database")]
 impl From<sea_orm::DbErr> for TidewayError {
     fn from(err: sea_orm::DbErr) -> Self {
