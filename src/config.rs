@@ -386,3 +386,426 @@ impl Default for ConfigBuilder {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============ Default config tests ============
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8000);
+        assert_eq!(config.server.max_body_size, 10 * 1024 * 1024);
+        assert_eq!(config.logging.level, "info");
+        assert!(!config.logging.json);
+    }
+
+    #[test]
+    fn test_server_config_default() {
+        let config = ServerConfig::default();
+
+        assert_eq!(config.host, "0.0.0.0");
+        assert_eq!(config.port, 8000);
+        assert_eq!(config.max_body_size, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_logging_config_default() {
+        let config = LoggingConfig::default();
+
+        assert_eq!(config.level, "info");
+        assert!(!config.json);
+    }
+
+    #[test]
+    fn test_server_config_addr() {
+        let config = ServerConfig {
+            host: "127.0.0.1".to_string(),
+            port: 3000,
+            max_body_size: 1024,
+        };
+
+        let addr = config.addr().unwrap();
+        assert_eq!(addr.ip().to_string(), "127.0.0.1");
+        assert_eq!(addr.port(), 3000);
+    }
+
+    #[test]
+    fn test_server_config_addr_invalid() {
+        let config = ServerConfig {
+            host: "not-a-valid-host".to_string(),
+            port: 3000,
+            max_body_size: 1024,
+        };
+
+        assert!(config.addr().is_err());
+    }
+
+    // ============ ConfigBuilder tests ============
+
+    #[test]
+    fn test_config_builder_new() {
+        let builder = ConfigBuilder::new();
+        let config = builder.build().unwrap();
+
+        // Should have default values
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8000);
+    }
+
+    #[test]
+    fn test_config_builder_default() {
+        let builder = ConfigBuilder::default();
+        let config = builder.build().unwrap();
+
+        assert_eq!(config.server.host, "0.0.0.0");
+        assert_eq!(config.server.port, 8000);
+    }
+
+    #[test]
+    fn test_config_builder_with_host() {
+        let config = ConfigBuilder::new()
+            .with_host("127.0.0.1")
+            .build()
+            .unwrap();
+
+        assert_eq!(config.server.host, "127.0.0.1");
+    }
+
+    #[test]
+    fn test_config_builder_with_port() {
+        let config = ConfigBuilder::new()
+            .with_port(3000)
+            .build()
+            .unwrap();
+
+        assert_eq!(config.server.port, 3000);
+    }
+
+    #[test]
+    fn test_config_builder_with_max_body_size() {
+        let config = ConfigBuilder::new()
+            .with_max_body_size(50 * 1024 * 1024)
+            .build()
+            .unwrap();
+
+        assert_eq!(config.server.max_body_size, 50 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_config_builder_with_log_level() {
+        let config = ConfigBuilder::new()
+            .with_log_level("debug")
+            .build()
+            .unwrap();
+
+        assert_eq!(config.logging.level, "debug");
+    }
+
+    #[test]
+    fn test_config_builder_with_json_logging() {
+        let config = ConfigBuilder::new()
+            .with_json_logging(true)
+            .build()
+            .unwrap();
+
+        assert!(config.logging.json);
+    }
+
+    #[test]
+    fn test_config_builder_with_cors_enabled() {
+        let config = ConfigBuilder::new()
+            .with_cors_enabled(true)
+            .build()
+            .unwrap();
+
+        assert!(config.cors.enabled);
+    }
+
+    #[test]
+    fn test_config_builder_with_dev_mode() {
+        let config = ConfigBuilder::new()
+            .with_dev_mode(true)
+            .build()
+            .unwrap();
+
+        assert!(config.dev.enabled);
+    }
+
+    #[test]
+    fn test_config_builder_chaining() {
+        let config = ConfigBuilder::new()
+            .with_host("127.0.0.1")
+            .with_port(4000)
+            .with_max_body_size(1024)
+            .with_log_level("warn")
+            .with_json_logging(true)
+            .with_cors_enabled(true)
+            .with_dev_mode(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(config.server.host, "127.0.0.1");
+        assert_eq!(config.server.port, 4000);
+        assert_eq!(config.server.max_body_size, 1024);
+        assert_eq!(config.logging.level, "warn");
+        assert!(config.logging.json);
+        assert!(config.cors.enabled);
+        assert!(config.dev.enabled);
+    }
+
+    // ============ Validation tests ============
+
+    #[test]
+    fn test_config_builder_invalid_host() {
+        let result = ConfigBuilder::new()
+            .with_host("not-valid-ip-address")
+            .build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Invalid server address"));
+    }
+
+    #[test]
+    fn test_config_builder_invalid_log_level() {
+        let result = ConfigBuilder::new()
+            .with_log_level("invalid_level")
+            .build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("Invalid log level"));
+    }
+
+    #[test]
+    fn test_config_builder_valid_log_levels() {
+        for level in &["trace", "debug", "info", "warn", "error"] {
+            let result = ConfigBuilder::new()
+                .with_log_level(*level)
+                .build();
+            assert!(result.is_ok(), "Log level '{}' should be valid", level);
+        }
+    }
+
+    #[test]
+    fn test_config_builder_log_level_case_insensitive() {
+        for level in &["TRACE", "Debug", "INFO", "Warn", "ERROR"] {
+            let result = ConfigBuilder::new()
+                .with_log_level(*level)
+                .build();
+            assert!(result.is_ok(), "Log level '{}' should be valid (case insensitive)", level);
+        }
+    }
+
+    #[test]
+    fn test_config_builder_port_zero_invalid() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.server.port = 0;
+        let result = builder.build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("port must be greater than 0"));
+    }
+
+    #[test]
+    fn test_config_builder_max_body_size_zero_invalid() {
+        let result = ConfigBuilder::new()
+            .with_max_body_size(0)
+            .build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("body size must be greater than 0"));
+    }
+
+    #[test]
+    fn test_config_builder_timeout_zero_when_enabled() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.timeout.enabled = true;
+        builder.config.timeout.timeout_seconds = 0;
+        let result = builder.build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("timeout must be greater than 0"));
+    }
+
+    #[test]
+    fn test_config_builder_timeout_zero_when_disabled_ok() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.timeout.enabled = false;
+        builder.config.timeout.timeout_seconds = 0;
+        let result = builder.build();
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_config_builder_rate_limit_max_requests_zero() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.rate_limit.enabled = true;
+        builder.config.rate_limit.max_requests = 0;
+        builder.config.rate_limit.window_seconds = 60;
+        let result = builder.build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("max_requests must be greater than 0"));
+    }
+
+    #[test]
+    fn test_config_builder_rate_limit_window_zero() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.rate_limit.enabled = true;
+        builder.config.rate_limit.max_requests = 100;
+        builder.config.rate_limit.window_seconds = 0;
+        let result = builder.build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("window_seconds must be greater than 0"));
+    }
+
+    #[test]
+    fn test_config_builder_rate_limit_invalid_strategy() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.rate_limit.enabled = true;
+        builder.config.rate_limit.max_requests = 100;
+        builder.config.rate_limit.window_seconds = 60;
+        builder.config.rate_limit.strategy = "invalid".to_string();
+        let result = builder.build();
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("strategy must be 'global' or 'per_ip'"));
+    }
+
+    #[test]
+    fn test_config_builder_rate_limit_valid_strategies() {
+        for strategy in &["global", "per_ip"] {
+            let mut builder = ConfigBuilder::new();
+            builder.config.rate_limit.enabled = true;
+            builder.config.rate_limit.max_requests = 100;
+            builder.config.rate_limit.window_seconds = 60;
+            builder.config.rate_limit.strategy = strategy.to_string();
+            let result = builder.build();
+            assert!(result.is_ok(), "Strategy '{}' should be valid", strategy);
+        }
+    }
+
+    #[test]
+    fn test_config_builder_rate_limit_disabled_ignores_validation() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.rate_limit.enabled = false;
+        builder.config.rate_limit.max_requests = 0;
+        builder.config.rate_limit.window_seconds = 0;
+        builder.config.rate_limit.strategy = "invalid".to_string();
+        let result = builder.build();
+
+        // Should be ok because rate limit is disabled
+        assert!(result.is_ok());
+    }
+
+    // ============ Serialization tests ============
+
+    #[test]
+    fn test_config_serialization() {
+        let config = Config::default();
+        let json = serde_json::to_string(&config).unwrap();
+
+        assert!(json.contains("\"host\":\"0.0.0.0\""));
+        assert!(json.contains("\"port\":8000"));
+        assert!(json.contains("\"level\":\"info\""));
+    }
+
+    #[test]
+    fn test_config_deserialization() {
+        let json = r#"{
+            "server": {"host": "localhost", "port": 3000, "max_body_size": 1024},
+            "logging": {"level": "debug", "json": true},
+            "compression": {"enabled": true, "gzip": true, "brotli": false, "level": 6, "brotli_quality": 4},
+            "security": {"enabled": true, "hsts": true, "hsts_max_age": 31536000, "content_type_nosniff": true, "frame_options": "DENY"},
+            "timeout": {"enabled": false, "timeout_seconds": 30},
+            "request_logging": {"enabled": true, "level": "info", "include_headers": false, "include_body": false, "sensitive_headers": []},
+            "cors": {"enabled": false, "allow_origins": [], "allow_methods": [], "allow_headers": [], "allow_credentials": false, "max_age": 0},
+            "rate_limit": {"enabled": false, "max_requests": 100, "window_seconds": 60, "strategy": "global"},
+            "dev": {"enabled": false}
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(config.server.host, "localhost");
+        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.server.max_body_size, 1024);
+        assert_eq!(config.logging.level, "debug");
+        assert!(config.logging.json);
+    }
+
+    // ============ Environment variable tests ============
+    // Note: These tests run sequentially with #[serial] would be ideal,
+    // but for now we test the env helper directly to avoid race conditions
+
+    #[test]
+    fn test_get_env_with_prefix_tideway_first() {
+        unsafe {
+            std::env::set_var("TIDEWAY_TEST_ENV_1", "prefixed");
+            std::env::set_var("TEST_ENV_1", "unprefixed");
+        }
+
+        let value = get_env_with_prefix("TEST_ENV_1");
+        assert_eq!(value, Some("prefixed".to_string()));
+
+        unsafe {
+            std::env::remove_var("TIDEWAY_TEST_ENV_1");
+            std::env::remove_var("TEST_ENV_1");
+        }
+    }
+
+    #[test]
+    fn test_get_env_with_prefix_fallback() {
+        unsafe {
+            std::env::set_var("TEST_ENV_2", "fallback_value");
+        }
+
+        let value = get_env_with_prefix("TEST_ENV_2");
+        assert_eq!(value, Some("fallback_value".to_string()));
+
+        unsafe {
+            std::env::remove_var("TEST_ENV_2");
+        }
+    }
+
+    #[test]
+    fn test_get_env_with_prefix_not_found() {
+        let value = get_env_with_prefix("NONEXISTENT_TEST_VAR_12345");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn test_config_builder_from_env_integration() {
+        // Use unique env var names to avoid conflicts with parallel tests
+        unsafe {
+            std::env::set_var("TIDEWAY_HOST", "10.0.0.1");
+            std::env::set_var("TIDEWAY_LOG_LEVEL", "trace");
+        }
+
+        let config = ConfigBuilder::new()
+            .from_env()
+            .build()
+            .unwrap();
+
+        assert_eq!(config.server.host, "10.0.0.1");
+        assert_eq!(config.logging.level, "trace");
+
+        unsafe {
+            std::env::remove_var("TIDEWAY_HOST");
+            std::env::remove_var("TIDEWAY_LOG_LEVEL");
+        }
+    }
+}

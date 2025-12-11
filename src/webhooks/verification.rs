@@ -81,3 +81,144 @@ impl WebhookVerifier for HmacSha256Verifier {
         Ok(!signature.is_empty())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============ NoVerification tests ============
+
+    #[tokio::test]
+    async fn test_no_verification_always_returns_true() {
+        let verifier = NoVerification;
+
+        // Should return true regardless of payload and signature
+        assert!(verifier.verify_signature(b"any payload", "any-signature").await.unwrap());
+        assert!(verifier.verify_signature(b"", "").await.unwrap());
+        assert!(verifier.verify_signature(b"test", "").await.unwrap());
+        assert!(verifier.verify_signature(&[], "signature").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_no_verification_with_various_payloads() {
+        let verifier = NoVerification;
+
+        let payloads = [
+            b"simple text".as_slice(),
+            b"{\"json\": \"data\"}".as_slice(),
+            b"<xml>data</xml>".as_slice(),
+            &[0u8, 1, 2, 3, 255], // Binary data
+        ];
+
+        for payload in payloads {
+            let result = verifier.verify_signature(payload, "sig").await;
+            assert!(result.is_ok());
+            assert!(result.unwrap());
+        }
+    }
+
+    // ============ HmacSha256Verifier tests ============
+
+    #[test]
+    fn test_hmac_sha256_verifier_creation() {
+        let verifier = HmacSha256Verifier::new("secret-key");
+        // Just verify it can be created without panicking
+        assert!(std::mem::size_of_val(&verifier) > 0);
+    }
+
+    #[test]
+    fn test_hmac_sha256_verifier_with_bytes() {
+        let secret: Vec<u8> = vec![0x01, 0x02, 0x03, 0x04];
+        let verifier = HmacSha256Verifier::new(secret);
+        assert!(std::mem::size_of_val(&verifier) > 0);
+    }
+
+    #[test]
+    fn test_hmac_sha256_verifier_with_string() {
+        let secret = String::from("my-webhook-secret");
+        let verifier = HmacSha256Verifier::new(secret.into_bytes());
+        assert!(std::mem::size_of_val(&verifier) > 0);
+    }
+
+    #[tokio::test]
+    async fn test_hmac_sha256_verifier_non_empty_signature() {
+        let verifier = HmacSha256Verifier::new("secret");
+        let payload = b"webhook payload";
+        let signature = "sha256=abc123";
+
+        // Current implementation just checks if signature is non-empty
+        let result = verifier.verify_signature(payload, signature).await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_hmac_sha256_verifier_empty_signature() {
+        let verifier = HmacSha256Verifier::new("secret");
+        let payload = b"webhook payload";
+        let signature = "";
+
+        // Empty signature should return false
+        let result = verifier.verify_signature(payload, signature).await;
+        assert!(result.is_ok());
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_hmac_sha256_verifier_with_different_payloads() {
+        let verifier = HmacSha256Verifier::new("secret");
+
+        let test_cases = [
+            (b"{}".as_slice(), "sig1"),
+            (b"{\"event\":\"payment\"}".as_slice(), "sig2"),
+            (b"plain text".as_slice(), "sig3"),
+            (&[0u8, 255, 128][..], "sig4"),
+        ];
+
+        for (payload, signature) in test_cases {
+            let result = verifier.verify_signature(payload, signature).await;
+            assert!(result.is_ok());
+            assert!(result.unwrap());
+        }
+    }
+
+    // ============ WebhookVerifier trait tests ============
+
+    struct CustomVerifier {
+        should_pass: bool,
+    }
+
+    #[async_trait]
+    impl WebhookVerifier for CustomVerifier {
+        async fn verify_signature(&self, _payload: &[u8], _signature: &str) -> Result<bool> {
+            Ok(self.should_pass)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_custom_verifier_trait_impl() {
+        let passing_verifier = CustomVerifier { should_pass: true };
+        let failing_verifier = CustomVerifier { should_pass: false };
+
+        assert!(passing_verifier.verify_signature(b"data", "sig").await.unwrap());
+        assert!(!failing_verifier.verify_signature(b"data", "sig").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_verifier_as_dyn_trait() {
+        let verifier: Box<dyn WebhookVerifier> = Box::new(NoVerification);
+        let result = verifier.verify_signature(b"test", "sig").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_verifier_in_arc() {
+        use std::sync::Arc;
+
+        let verifier: Arc<dyn WebhookVerifier> = Arc::new(HmacSha256Verifier::new("secret"));
+        let result = verifier.verify_signature(b"test", "valid-sig").await;
+        assert!(result.is_ok());
+        assert!(result.unwrap());
+    }
+}

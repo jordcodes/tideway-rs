@@ -408,3 +408,465 @@ impl From<sea_orm::DbErr> for TidewayError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============ TidewayError variant creation tests ============
+
+    #[test]
+    fn test_not_found_error() {
+        let err = TidewayError::not_found("User not found");
+        assert!(matches!(err, TidewayError::NotFound(_)));
+        assert_eq!(err.to_string(), "Not found: User not found");
+        assert_eq!(err.status_code(), StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn test_bad_request_error() {
+        let err = TidewayError::bad_request("Invalid input");
+        assert!(matches!(err, TidewayError::BadRequest(_)));
+        assert_eq!(err.to_string(), "Bad request: Invalid input");
+        assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_unauthorized_error() {
+        let err = TidewayError::unauthorized("Invalid token");
+        assert!(matches!(err, TidewayError::Unauthorized(_)));
+        assert_eq!(err.to_string(), "Unauthorized: Invalid token");
+        assert_eq!(err.status_code(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_forbidden_error() {
+        let err = TidewayError::forbidden("Access denied");
+        assert!(matches!(err, TidewayError::Forbidden(_)));
+        assert_eq!(err.to_string(), "Forbidden: Access denied");
+        assert_eq!(err.status_code(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_internal_error() {
+        let err = TidewayError::internal("Something went wrong");
+        assert!(matches!(err, TidewayError::Internal(_)));
+        assert_eq!(err.to_string(), "Internal server error: Something went wrong");
+        assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_service_unavailable_error() {
+        let err = TidewayError::service_unavailable("Database is down");
+        assert!(matches!(err, TidewayError::ServiceUnavailable(_)));
+        assert_eq!(err.to_string(), "Service unavailable: Database is down");
+        assert_eq!(err.status_code(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_request_timeout_error() {
+        let err = TidewayError::request_timeout();
+        assert!(matches!(err, TidewayError::RequestTimeout));
+        assert_eq!(err.to_string(), "Request timeout");
+        assert_eq!(err.status_code(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[test]
+    fn test_too_many_requests_error() {
+        let err = TidewayError::too_many_requests("Rate limit exceeded");
+        assert!(matches!(err, TidewayError::TooManyRequests(_)));
+        assert_eq!(err.to_string(), "Too many requests: Rate limit exceeded");
+        assert_eq!(err.status_code(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_anyhow_error() {
+        let anyhow_err = anyhow::anyhow!("Something unexpected");
+        let err: TidewayError = anyhow_err.into();
+        assert!(matches!(err, TidewayError::Anyhow(_)));
+        assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[cfg(feature = "database")]
+    #[test]
+    fn test_database_error_status_code() {
+        let err = TidewayError::Database("Connection failed".to_string());
+        assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ============ ErrorContext tests ============
+
+    #[test]
+    fn test_error_context_new() {
+        let ctx = ErrorContext::new();
+        assert!(ctx.error_id.is_none());
+        assert!(ctx.details.is_none());
+        assert!(ctx.context.is_empty());
+        assert!(ctx.field_errors.is_empty());
+    }
+
+    #[test]
+    fn test_error_context_with_error_id() {
+        let ctx = ErrorContext::new().with_error_id("err-123");
+        assert_eq!(ctx.error_id, Some("err-123".to_string()));
+    }
+
+    #[test]
+    fn test_error_context_with_detail() {
+        let ctx = ErrorContext::new().with_detail("Additional info");
+        assert_eq!(ctx.details, Some("Additional info".to_string()));
+    }
+
+    #[test]
+    fn test_error_context_with_context() {
+        let ctx = ErrorContext::new()
+            .with_context("user_id", "42")
+            .with_context("action", "create");
+        assert_eq!(ctx.context.get("user_id"), Some(&"42".to_string()));
+        assert_eq!(ctx.context.get("action"), Some(&"create".to_string()));
+    }
+
+    #[test]
+    fn test_error_context_with_field_error() {
+        let ctx = ErrorContext::new()
+            .with_field_error("email", "Invalid email format")
+            .with_field_error("email", "Email already taken")
+            .with_field_error("password", "Too short");
+
+        let email_errors = ctx.field_errors.get("email").unwrap();
+        assert_eq!(email_errors.len(), 2);
+        assert!(email_errors.contains(&"Invalid email format".to_string()));
+        assert!(email_errors.contains(&"Email already taken".to_string()));
+
+        let password_errors = ctx.field_errors.get("password").unwrap();
+        assert_eq!(password_errors.len(), 1);
+    }
+
+    #[test]
+    fn test_error_context_builder_chain() {
+        let ctx = ErrorContext::new()
+            .with_error_id("err-456")
+            .with_detail("User creation failed")
+            .with_context("attempt", "3")
+            .with_field_error("username", "Already exists");
+
+        assert_eq!(ctx.error_id, Some("err-456".to_string()));
+        assert_eq!(ctx.details, Some("User creation failed".to_string()));
+        assert_eq!(ctx.context.get("attempt"), Some(&"3".to_string()));
+        assert!(ctx.field_errors.contains_key("username"));
+    }
+
+    // ============ ErrorInfo tests ============
+
+    #[test]
+    fn test_error_info_new() {
+        let info = ErrorInfo::new();
+        assert!(info.context.error_id.is_none());
+        assert!(info.stack_trace.is_none());
+    }
+
+    #[test]
+    fn test_error_info_with_context() {
+        let ctx = ErrorContext::new().with_error_id("test-id");
+        let info = ErrorInfo::new().with_context(ctx);
+        assert_eq!(info.context.error_id, Some("test-id".to_string()));
+    }
+
+    #[test]
+    fn test_error_info_with_stack_trace() {
+        let info = ErrorInfo::new().with_stack_trace("at line 42\nat line 100");
+        assert_eq!(info.stack_trace, Some("at line 42\nat line 100".to_string()));
+    }
+
+    // ============ ErrorWithContext tests ============
+
+    #[test]
+    fn test_error_with_context_creation() {
+        let err = TidewayError::not_found("Resource");
+        let ctx = ErrorContext::new().with_detail("ID: 123");
+        let with_ctx = ErrorWithContext::new(err, ctx);
+
+        assert!(matches!(with_ctx.error(), TidewayError::NotFound(_)));
+        assert_eq!(with_ctx.context().details, Some("ID: 123".to_string()));
+    }
+
+    #[test]
+    fn test_error_with_context_display() {
+        let err = TidewayError::not_found("User");
+        let ctx = ErrorContext::new().with_detail("ID 42 not found");
+        let with_ctx = ErrorWithContext::new(err, ctx);
+
+        assert_eq!(with_ctx.to_string(), "Not found: User (ID 42 not found)");
+    }
+
+    #[test]
+    fn test_error_with_context_display_no_detail() {
+        let err = TidewayError::not_found("User");
+        let ctx = ErrorContext::new();
+        let with_ctx = ErrorWithContext::new(err, ctx);
+
+        assert_eq!(with_ctx.to_string(), "Not found: User");
+    }
+
+    #[test]
+    fn test_error_with_context_into_tideway_error() {
+        let err = TidewayError::bad_request("Invalid");
+        let ctx = ErrorContext::new().with_detail("test");
+        let with_ctx = ErrorWithContext::new(err, ctx);
+
+        let converted: TidewayError = with_ctx.into();
+        assert!(matches!(converted, TidewayError::BadRequest(_)));
+    }
+
+    #[test]
+    fn test_error_with_context_into_error_info() {
+        let err = TidewayError::internal("fail");
+        let ctx = ErrorContext::new()
+            .with_error_id("err-999")
+            .with_detail("details here");
+        let with_ctx = ErrorWithContext::new(err, ctx);
+
+        let info = with_ctx.into_error_info();
+        assert_eq!(info.context.error_id, Some("err-999".to_string()));
+        assert_eq!(info.context.details, Some("details here".to_string()));
+    }
+
+    #[test]
+    fn test_tideway_error_with_context_method() {
+        let with_ctx = TidewayError::not_found("Item")
+            .with_context(ErrorContext::new()
+                .with_error_id("ctx-001")
+                .with_detail("Item ID 5"));
+
+        assert!(matches!(with_ctx.error(), TidewayError::NotFound(_)));
+        assert_eq!(with_ctx.context().error_id, Some("ctx-001".to_string()));
+    }
+
+    // ============ Error response serialization tests ============
+
+    #[test]
+    fn test_error_response_serialization_minimal() {
+        let response = ErrorResponse {
+            error: "Test error".to_string(),
+            error_id: Some("id-123".to_string()),
+            details: None,
+            context: None,
+            field_errors: None,
+            stack_trace: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"error\":\"Test error\""));
+        assert!(json.contains("\"error_id\":\"id-123\""));
+        assert!(!json.contains("details"));
+        assert!(!json.contains("context"));
+        assert!(!json.contains("field_errors"));
+        assert!(!json.contains("stack_trace"));
+    }
+
+    #[test]
+    fn test_error_response_serialization_full() {
+        let mut context = HashMap::new();
+        context.insert("key".to_string(), "value".to_string());
+
+        let mut field_errors = HashMap::new();
+        field_errors.insert("email".to_string(), vec!["invalid".to_string()]);
+
+        let response = ErrorResponse {
+            error: "Validation failed".to_string(),
+            error_id: Some("id-456".to_string()),
+            details: Some("Check your input".to_string()),
+            context: Some(context),
+            field_errors: Some(field_errors),
+            stack_trace: Some("trace here".to_string()),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"details\":\"Check your input\""));
+        assert!(json.contains("\"context\""));
+        assert!(json.contains("\"field_errors\""));
+        assert!(json.contains("\"stack_trace\":\"trace here\""));
+    }
+
+    // ============ From trait implementation tests ============
+
+    #[test]
+    fn test_from_serde_json_syntax_error() {
+        let result: std::result::Result<serde_json::Value, _> = serde_json::from_str("{ invalid json }");
+        let json_err = result.unwrap_err();
+        let err: TidewayError = json_err.into();
+
+        assert!(matches!(err, TidewayError::BadRequest(_)));
+        assert!(err.to_string().contains("JSON error"));
+    }
+
+    #[test]
+    fn test_from_serde_json_data_error() {
+        #[derive(serde::Deserialize, Debug)]
+        struct Test { _value: i32 }
+
+        let result: std::result::Result<Test, _> = serde_json::from_str(r#"{"_value": "not a number"}"#);
+        let json_err = result.unwrap_err();
+        let err: TidewayError = json_err.into();
+
+        assert!(matches!(err, TidewayError::BadRequest(_)));
+    }
+
+    #[test]
+    fn test_from_serde_json_eof_error() {
+        let result: std::result::Result<serde_json::Value, _> = serde_json::from_str("{");
+        let json_err = result.unwrap_err();
+        let err: TidewayError = json_err.into();
+
+        assert!(matches!(err, TidewayError::BadRequest(_)));
+    }
+
+    // ============ IntoResponse tests ============
+
+    #[tokio::test]
+    async fn test_into_response_not_found() {
+        let err = TidewayError::not_found("Resource");
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_into_response_bad_request() {
+        let err = TidewayError::bad_request("Invalid");
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_into_response_unauthorized() {
+        let err = TidewayError::unauthorized("No token");
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_into_response_forbidden() {
+        let err = TidewayError::forbidden("Not allowed");
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_into_response_internal() {
+        let err = TidewayError::internal("Oops");
+        let response = err.into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn test_error_with_context_into_response() {
+        let with_ctx = TidewayError::not_found("Item")
+            .with_context(ErrorContext::new().with_detail("test"));
+        let response = with_ctx.into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ============ into_response_with_info tests ============
+
+    #[tokio::test]
+    async fn test_into_response_with_info_includes_context() {
+        let err = TidewayError::bad_request("Invalid input");
+        let info = ErrorInfo::new().with_context(
+            ErrorContext::new()
+                .with_error_id("custom-id")
+                .with_detail("More info")
+                .with_context("user", "123")
+        );
+
+        let response = err.into_response_with_info(Some(info), false);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["error_id"], "custom-id");
+        assert_eq!(json["details"], "More info");
+        assert_eq!(json["context"]["user"], "123");
+    }
+
+    #[tokio::test]
+    async fn test_into_response_with_info_dev_mode_includes_stack_trace() {
+        let err = TidewayError::internal("Error");
+        let info = ErrorInfo::new()
+            .with_context(ErrorContext::new())
+            .with_stack_trace("stack trace here");
+
+        let response = err.into_response_with_info(Some(info), true);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["stack_trace"], "stack trace here");
+    }
+
+    #[tokio::test]
+    async fn test_into_response_with_info_prod_mode_excludes_stack_trace() {
+        let err = TidewayError::internal("Error");
+        let info = ErrorInfo::new()
+            .with_context(ErrorContext::new())
+            .with_stack_trace("stack trace here");
+
+        let response = err.into_response_with_info(Some(info), false);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert!(json.get("stack_trace").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_into_response_with_info_generates_error_id_if_missing() {
+        let err = TidewayError::internal("Error");
+        let info = ErrorInfo::new().with_context(ErrorContext::new());
+
+        let response = err.into_response_with_info(Some(info), false);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Should have a UUID-like error_id
+        let error_id = json["error_id"].as_str().unwrap();
+        assert!(!error_id.is_empty());
+        assert!(uuid::Uuid::parse_str(error_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_into_response_with_info_field_errors() {
+        let err = TidewayError::bad_request("Validation failed");
+        let info = ErrorInfo::new().with_context(
+            ErrorContext::new()
+                .with_field_error("email", "Invalid format")
+                .with_field_error("password", "Too short")
+        );
+
+        let response = err.into_response_with_info(Some(info), false);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert!(json["field_errors"]["email"].as_array().unwrap().contains(&serde_json::json!("Invalid format")));
+        assert!(json["field_errors"]["password"].as_array().unwrap().contains(&serde_json::json!("Too short")));
+    }
+
+    #[tokio::test]
+    async fn test_into_response_without_info() {
+        let err = TidewayError::not_found("Item");
+        let response = err.into_response_with_info(None, false);
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["error"], "Not found: Item");
+        // Should still generate an error_id
+        assert!(json["error_id"].as_str().is_some());
+    }
+}
