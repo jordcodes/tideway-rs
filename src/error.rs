@@ -141,6 +141,22 @@ impl ErrorWithContext {
     }
 }
 
+impl std::fmt::Display for ErrorWithContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.error)?;
+        if let Some(ref details) = self.context.details {
+            write!(f, " ({})", details)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ErrorWithContext {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 impl From<ErrorWithContext> for TidewayError {
     fn from(err: ErrorWithContext) -> Self {
         err.error

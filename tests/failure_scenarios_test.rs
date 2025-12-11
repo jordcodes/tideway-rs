@@ -21,6 +21,39 @@ async fn test_error_with_context() {
 }
 
 #[tokio::test]
+async fn test_error_with_context_display() {
+    // Without details
+    let error = TidewayError::not_found("User not found")
+        .with_context(ErrorContext::new().with_error_id("err-123"));
+
+    let display = format!("{}", error);
+    assert_eq!(display, "Not found: User not found");
+
+    // With details
+    let error = TidewayError::bad_request("Validation failed")
+        .with_context(
+            ErrorContext::new()
+                .with_detail("Email format is invalid")
+        );
+
+    let display = format!("{}", error);
+    assert_eq!(display, "Bad request: Validation failed (Email format is invalid)");
+}
+
+#[tokio::test]
+async fn test_error_with_context_error_trait() {
+    let error = TidewayError::internal("Database connection failed")
+        .with_context(ErrorContext::new().with_detail("Connection pool exhausted"));
+
+    // Verify it implements std::error::Error
+    let error_ref: &dyn std::error::Error = &error;
+
+    // Verify source() returns the underlying TidewayError
+    let source = error_ref.source().expect("should have source");
+    assert!(source.to_string().contains("Database connection failed"));
+}
+
+#[tokio::test]
 async fn test_error_with_field_errors() {
     let context = ErrorContext::new()
         .with_error_id("validation-error")
