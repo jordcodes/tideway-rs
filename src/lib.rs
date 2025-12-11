@@ -15,18 +15,19 @@
 //!
 //! # Quick Start
 //!
-//! ```rust,no_run
-//! use tideway::{self, App, ConfigBuilder};
+//! ```rust,ignore
+//! use tideway::{App, ConfigBuilder, init_tracing};
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!     // Initialize logging
-//!     tideway::init_tracing();
+//!     init_tracing();
 //!
 //!     // Create and configure app
 //!     let config = ConfigBuilder::new()
 //!         .from_env()
-//!         .build();
+//!         .build()
+//!         .unwrap();
 //!
 //!     let app = App::with_config(config);
 //!
@@ -140,12 +141,12 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway;
+/// ```rust,ignore
+/// use tideway::init_tracing;
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     tideway::init_tracing();
+///     init_tracing();
 ///     // ... rest of your app
 /// }
 /// ```

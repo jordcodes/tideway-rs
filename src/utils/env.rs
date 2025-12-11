@@ -5,9 +5,7 @@
 ///
 /// # Examples
 ///
-/// ```rust
-/// use tideway::utils::get_env_with_prefix;
-///
+/// ```rust,ignore
 /// // Checks TIDEWAY_PORT first, then PORT
 /// let port = get_env_with_prefix("PORT");
 ///

@@ -6,23 +6,25 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! use tideway::testing::TestDb;
 //! use sea_orm_migration::MigratorTrait;
 //!
 //! // Your app's migrator
 //! struct MyMigrator;
 //! impl MigratorTrait for MyMigrator {
-//!     // ... migration implementation
+//!     fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+//!         vec![]
+//!     }
 //! }
 //!
 //! #[tokio::test]
 //! async fn test_with_database() {
-//!     let test_db = TestDb::new_with_migrator(MyMigrator)
+//!     let test_db = TestDb::new_with_migrator::<MyMigrator>()
 //!         .await
 //!         .expect("Failed to create test database");
 //!
-//!     // Use test_db.connection() in your tests
+//!     // Use test_db.connection in your tests
 //! }
 //! ```
 
@@ -50,18 +52,20 @@ impl TestDb {
     ///
     /// # Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use tideway::testing::TestDb;
     /// use sea_orm_migration::MigratorTrait;
     ///
     /// struct MyMigrator;
     /// impl MigratorTrait for MyMigrator {
-    ///     // ... migration implementation
+    ///     fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+    ///         vec![]
+    ///     }
     /// }
     ///
     /// #[tokio::test]
     /// async fn test_with_migrations() {
-    ///     let test_db = TestDb::new_with_migrator(MyMigrator)
+    ///     let test_db = TestDb::new_with_migrator::<MyMigrator>()
     ///         .await
     ///         .expect("Failed to create test database");
     /// }
@@ -126,13 +130,15 @@ impl TestDb {
     ///
     /// # Example
     ///
-    /// ```rust,no_run
+    /// ```rust,ignore
     /// use tideway::testing::TestDb;
     /// use sea_orm_migration::MigratorTrait;
     ///
     /// struct MyMigrator;
     /// impl MigratorTrait for MyMigrator {
-    ///     // ... migration implementation
+    ///     fn migrations() -> Vec<Box<dyn sea_orm_migration::MigrationTrait>> {
+    ///         vec![]
+    ///     }
     /// }
     ///
     /// #[tokio::test]

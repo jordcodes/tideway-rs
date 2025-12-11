@@ -156,11 +156,12 @@ impl ConfigBuilder {
     /// # Example
     ///
     /// ```rust
-    /// use tideway::config::ConfigBuilder;
+    /// use tideway::ConfigBuilder;
     ///
     /// let config = ConfigBuilder::new()
     ///     .with_max_body_size(50 * 1024 * 1024) // 50MB
-    ///     .build()?;
+    ///     .build()
+    ///     .unwrap();
     /// ```
     pub fn with_max_body_size(mut self, max_body_size: usize) -> Self {
         self.config.server.max_body_size = max_body_size;

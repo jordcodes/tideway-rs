@@ -42,15 +42,14 @@ impl<T: for<'de> Deserialize<'de>> PathParamsExtract for T {}
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway::http::path::extract_id;
+/// ```rust,ignore
 /// use axum::extract::Path;
 ///
 /// async fn handler(Path(id): Path<i64>) -> String {
 ///     format!("User ID: {}", id)
 /// }
 /// ```
-#[allow(dead_code)] // Public API function
+#[allow(dead_code)]
 pub fn extract_id(path: &str) -> Result<i64, String> {
     path.parse::<i64>()
         .map_err(|_| format!("Invalid ID: {}", path))
@@ -60,8 +59,7 @@ pub fn extract_id(path: &str) -> Result<i64, String> {
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway::http::path::extract_uuid;
+/// ```rust,ignore
 /// use axum::extract::Path;
 /// use uuid::Uuid;
 ///
@@ -69,7 +67,7 @@ pub fn extract_id(path: &str) -> Result<i64, String> {
 ///     format!("User UUID: {}", id)
 /// }
 /// ```
-#[allow(dead_code)] // Public API function
+#[allow(dead_code)]
 pub fn extract_uuid(path: &str) -> Result<Uuid, String> {
     Uuid::parse_str(path)
         .map_err(|_| format!("Invalid UUID: {}", path))

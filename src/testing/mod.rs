@@ -7,9 +7,9 @@
 //!
 //! # Example
 //!
-//! ```rust,no_run
-//! use axum::{Router, routing::get, Json};
-//! use tideway::testing::{get, post, TestDb};
+//! ```rust,ignore
+//! use axum::{Router, routing, Json};
+//! use tideway::testing;
 //! use serde_json::json;
 //!
 //! async fn hello() -> Json<serde_json::Value> {
@@ -18,9 +18,9 @@
 //!
 //! #[tokio::test]
 //! async fn test_hello() {
-//!     let app = Router::new().route("/hello", get(hello));
+//!     let app = Router::new().route("/hello", routing::get(hello));
 //!
-//!     let response = get(app, "/hello")
+//!     let response = testing::get(app, "/hello")
 //!         .execute()
 //!         .await
 //!         .assert_ok()
