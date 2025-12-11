@@ -81,6 +81,9 @@ hex = { version = "0.4", optional = true }
 # WebSocket (optional)
 dashmap = { version = "6.1", optional = true }
 
+# Email (optional)
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"], optional = true }
+
 # Jobs (optional - chrono already added for database)
 
 [features]
@@ -109,6 +112,8 @@ jobs = ["chrono"]
 jobs-redis = ["redis", "jobs"]
 # WebSocket support
 websocket = ["dashmap"]
+# Email sending
+email = ["lettre"]
 # Testing helper to bypass auth (for tests only)
 test-auth-bypass = []
 

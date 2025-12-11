@@ -8,6 +8,8 @@ use crate::traits::cache::Cache;
 use crate::traits::session::SessionStore;
 #[cfg(feature = "jobs")]
 use crate::traits::job::JobQueue;
+#[cfg(feature = "email")]
+use crate::traits::mailer::Mailer;
 #[cfg(feature = "websocket")]
 use crate::websocket::ConnectionManager;
 #[cfg(feature = "metrics")]
@@ -38,6 +40,9 @@ pub struct AppContext {
     #[cfg(feature = "metrics")]
     pub metrics: Option<Arc<MetricsCollector>>,
 
+    #[cfg(feature = "email")]
+    pub mailer: Option<Arc<dyn Mailer>>,
+
     /// Authentication provider (application-specific)
     ///
     /// Note: Stored as `Arc<dyn Any>` due to AuthProvider's associated types.
@@ -60,6 +65,8 @@ impl AppContext {
             websocket_manager: None,
             #[cfg(feature = "metrics")]
             metrics: None,
+            #[cfg(feature = "email")]
+            mailer: None,
             auth_provider: None,
         }
     }
@@ -153,6 +160,20 @@ impl AppContext {
         self.metrics.as_ref()
     }
 
+    /// Get the mailer, returning an error if not configured
+    #[cfg(feature = "email")]
+    pub fn mailer(&self) -> crate::error::Result<&Arc<dyn Mailer>> {
+        self.mailer.as_ref().ok_or_else(|| {
+            crate::error::TidewayError::internal("Mailer not configured")
+        })
+    }
+
+    /// Get the mailer as an Option
+    #[cfg(feature = "email")]
+    pub fn mailer_opt(&self) -> Option<&Arc<dyn Mailer>> {
+        self.mailer.as_ref()
+    }
+
     /// Get the auth provider, downcast to the concrete type
     ///
     /// # Example
@@ -216,6 +237,9 @@ pub struct AppContextBuilder {
     #[cfg(feature = "metrics")]
     metrics: Option<Arc<MetricsCollector>>,
 
+    #[cfg(feature = "email")]
+    mailer: Option<Arc<dyn Mailer>>,
+
     auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
@@ -234,6 +258,8 @@ impl AppContextBuilder {
             websocket_manager: None,
             #[cfg(feature = "metrics")]
             metrics: None,
+            #[cfg(feature = "email")]
+            mailer: None,
             auth_provider: None,
         }
     }
@@ -280,6 +306,28 @@ impl AppContextBuilder {
         self
     }
 
+    /// Set the mailer
+    ///
+    /// # Example
+    /// ```ignore
+    /// use tideway::{ConsoleMailer, SmtpMailer, SmtpConfig};
+    ///
+    /// // For development
+    /// let mailer = Arc::new(ConsoleMailer::new());
+    ///
+    /// // For production
+    /// let mailer = Arc::new(SmtpMailer::new(SmtpConfig::from_env()?)?);
+    ///
+    /// let context = AppContext::builder()
+    ///     .with_mailer(mailer)
+    ///     .build();
+    /// ```
+    #[cfg(feature = "email")]
+    pub fn with_mailer(mut self, mailer: Arc<dyn Mailer>) -> Self {
+        self.mailer = Some(mailer);
+        self
+    }
+
     /// Set the auth provider
     ///
     /// # Example
@@ -308,6 +356,8 @@ impl AppContextBuilder {
             websocket_manager: self.websocket_manager,
             #[cfg(feature = "metrics")]
             metrics: self.metrics,
+            #[cfg(feature = "email")]
+            mailer: self.mailer,
             auth_provider: self.auth_provider,
         }
     }

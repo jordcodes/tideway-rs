@@ -62,9 +62,11 @@ pub mod security;
 pub mod session;
 #[cfg(feature = "jobs")]
 pub mod jobs;
+#[cfg(feature = "email")]
+pub mod email;
 pub mod testing;
 pub mod timeout;
-#[cfg(any(feature = "database", feature = "cache", feature = "sessions"))]
+#[cfg(any(feature = "database", feature = "cache", feature = "sessions", feature = "jobs", feature = "email"))]
 pub mod traits;
 pub use testing::{TestFactory, TestUser, fake};
 pub mod dev;
@@ -108,6 +110,10 @@ pub use traits::job::{Job, JobData, JobQueue};
 pub use jobs::{JobBackend, JobRegistry, JobWorker, WorkerPool, InMemoryJobQueue};
 #[cfg(all(feature = "jobs", feature = "jobs-redis"))]
 pub use jobs::RedisJobQueue;
+#[cfg(feature = "email")]
+pub use traits::mailer::{Email, Mailer};
+#[cfg(feature = "email")]
+pub use email::{ConsoleMailer, SmtpMailer, SmtpConfig};
 #[cfg(feature = "validation")]
 pub use validation::{
     ValidatedForm, ValidatedJson, ValidatedQuery, validate_form, validate_json, validator,
