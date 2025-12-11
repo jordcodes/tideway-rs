@@ -82,7 +82,7 @@ pub use config::{Config, ConfigBuilder, LoggingConfig, ServerConfig};
 pub use core::{App, AppBuilder};
 pub use cors::{CorsConfig, CorsConfigBuilder};
 pub use dev::{DevConfig, DevConfigBuilder};
-pub use error::{ErrorContext, ErrorInfo, ErrorWithContext, Result, TidewayError};
+pub use error::{ErrorContext, ErrorInfo, ErrorResponse, ErrorWithContext, Result, TidewayError};
 pub use health::{ComponentHealth, HealthCheck, HealthChecker, HealthStatus};
 pub use http::{
     ApiResponse, CreatedResponse, FileConfig, Form, JsonResponse, Multipart, NoContentResponse,
@@ -114,6 +114,10 @@ pub use validation::{
 };
 #[cfg(feature = "websocket")]
 pub use websocket::{Connection, ConnectionManager, ConnectionMetrics, Message, Room, WebSocketHandler, ws};
+
+// Macro re-exports
+#[cfg(feature = "macros")]
+pub use tideway_macros::api;
 
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 

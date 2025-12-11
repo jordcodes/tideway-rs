@@ -155,9 +155,12 @@ impl IntoResponse for ErrorWithContext {
     }
 }
 
+/// Standard error response format for API errors.
+///
+/// This is used in OpenAPI documentation for error responses.
 #[derive(Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-struct ErrorResponse {
+pub struct ErrorResponse {
     error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_id: Option<String>,

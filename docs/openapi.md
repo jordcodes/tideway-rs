@@ -124,6 +124,43 @@ pub struct PaginationParams {
 
 ### 2. Annotate Your Handler Functions
 
+**Recommended: Using the `#[api]` macro** (requires `macros` feature):
+
+```rust
+use tideway::api;
+
+/// Create a new customer
+#[api(post, "/api/customers", tag = "customers")]
+async fn create_customer(
+    AuthUser(user): AuthUser<MyAuthProvider>,
+    Json(req): Json<CreateCustomerRequest>,
+) -> Result<Json<ApiResponse<CustomerResponse>>> {
+    // Implementation
+}
+
+/// Get a customer by ID
+#[api(get, "/api/customers/:id", tag = "customers")]
+async fn get_customer(
+    AuthUser(user): AuthUser<MyAuthProvider>,
+    Path(id): Path<i64>,
+) -> Result<Json<ApiResponse<CustomerResponse>>> {
+    // Implementation
+}
+```
+
+The `#[api]` macro automatically infers:
+- Path parameters from `:param` syntax (converted to `{param}` for OpenAPI)
+- Request body from `Json<T>` extractors
+- Query parameters from `Query<T>` extractors (if T implements `IntoParams`)
+- Security requirement from `AuthUser<T>` extractors
+- Response type from return type
+
+**Override options:**
+- `security = "none"` - disable authentication requirement for public endpoints
+- `tag = "custom_tag"` - override the default tag
+
+**Alternative: Manual utoipa annotations** (for edge cases):
+
 ```rust
 /// Create a new customer
 #[cfg_attr(feature = "openapi", utoipa::path(
@@ -144,6 +181,11 @@ async fn create_customer(
     // Implementation
 }
 ```
+
+Use manual annotations for:
+- Handlers returning `()` or `impl IntoResponse`
+- Handlers returning `StatusCode` or `Response` directly
+- Query types that don't implement `IntoParams`
 
 ### 3. Register Paths in main.rs
 

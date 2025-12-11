@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "tideway-macros"]
+
 [package]
 name = "tideway"
 version = "0.1.0"
@@ -13,6 +16,9 @@ categories = ["web-programming::http-server"]
 rust-version = "1.85"
 
 [dependencies]
+# Macros (optional)
+tideway-macros = { path = "tideway-macros", optional = true }
+
 # Core HTTP
 axum = { version = "0.8.6", features = ["multipart", "ws"] }
 tokio = { version = "1.48.0", features = ["full"] }
@@ -58,7 +64,7 @@ chrono = { version = "0.4", optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite"], optional = true }
 
 # OpenAPI (optional)
-utoipa = { version = "5.3", features = ["axum_extras", "chrono"], optional = true }
+utoipa = { version = "5.3", features = ["axum_extras", "chrono", "uuid"], optional = true }
 utoipa-axum = { version = "0.2", optional = true }
 utoipa-swagger-ui = { version = "9.0", features = ["axum"], optional = true }
 
@@ -78,7 +84,9 @@ dashmap = { version = "6.1", optional = true }
 # Jobs (optional - chrono already added for database)
 
 [features]
-default = ["database", "openapi"]
+default = ["database", "openapi", "macros"]
+# Proc macros for handler definitions with OpenAPI integration
+macros = ["tideway-macros", "openapi"]
 # Database support with SeaORM
 database = ["sea-orm", "sea-orm-migration", "chrono"]
 # SQLx database support (WIP - not yet implemented)
