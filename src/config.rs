@@ -57,6 +57,7 @@ pub struct LoggingConfig {
     pub json: bool,
 }
 
+#[allow(clippy::derivable_impls)] // Cannot derive due to conditional #[cfg] fields
 impl Default for Config {
     fn default() -> Self {
         Self {

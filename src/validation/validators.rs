@@ -88,7 +88,7 @@ pub fn validate_phone(phone: &str) -> Result<(), ValidationError> {
     // E.164 format: + followed by 1-15 digits
     if cleaned.starts_with('+') {
         let digits: String = cleaned.chars().skip(1).collect();
-        if digits.len() >= 1 && digits.len() <= 15 && digits.chars().all(|c| c.is_ascii_digit()) {
+        if !digits.is_empty() && digits.len() <= 15 && digits.chars().all(|c| c.is_ascii_digit()) {
             return Ok(());
         }
     }

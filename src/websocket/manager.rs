@@ -88,7 +88,7 @@ impl ConnectionManager {
             if let Some(user_id) = conn_guard.user_id() {
                 self.users
                     .entry(user_id.to_string())
-                    .or_insert_with(HashSet::new)
+                    .or_default()
                     .insert(id.clone());
             }
             id
@@ -309,7 +309,7 @@ impl ConnectionManager {
     pub fn add_to_room(&self, conn_id: &str, room: &str) {
         self.rooms
             .entry(room.to_string())
-            .or_insert_with(HashSet::new)
+            .or_default()
             .insert(conn_id.to_string());
 
         // Also update the connection's local state
@@ -393,7 +393,7 @@ impl ConnectionManager {
                 if let Some(user_id) = conn_guard.user_id() {
                     self.users
                         .entry(user_id.to_string())
-                        .or_insert_with(HashSet::new)
+                        .or_default()
                         .insert(conn_id.to_string());
                 }
             }

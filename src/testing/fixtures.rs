@@ -29,12 +29,12 @@ pub mod fake {
 
     /// Generate a fake name
     pub fn name() -> String {
-        format!("Test User {}", Uuid::new_v4().simple().to_string()[..8].to_string())
+        format!("Test User {}", &Uuid::new_v4().simple().to_string()[..8])
     }
 
     /// Generate a fake username
     pub fn username() -> String {
-        format!("user_{}", Uuid::new_v4().simple().to_string()[..8].to_string())
+        format!("user_{}", &Uuid::new_v4().simple().to_string()[..8])
     }
 
     /// Generate a fake phone number (US format)
@@ -70,8 +70,8 @@ impl TestUser {
         TestUserBuilder::default()
     }
 
-    /// Create a TestUser with default values
-    pub fn default() -> Self {
+    /// Create a TestUser with generated values
+    pub fn generate() -> Self {
         Self::builder().build()
     }
 }
@@ -86,6 +86,13 @@ pub struct TestUserBuilder {
 
 impl Default for TestUserBuilder {
     fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TestUserBuilder {
+    /// Create a new TestUserBuilder
+    pub fn new() -> Self {
         Self {
             id: None,
             email: None,
@@ -93,9 +100,7 @@ impl Default for TestUserBuilder {
             username: None,
         }
     }
-}
 
-impl TestUserBuilder {
     /// Set the user ID
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
@@ -123,10 +128,10 @@ impl TestUserBuilder {
     /// Build the TestUser
     pub fn build(self) -> TestUser {
         TestUser {
-            id: self.id.unwrap_or_else(|| fake::uuid()),
-            email: self.email.unwrap_or_else(|| fake::email()),
-            name: self.name.unwrap_or_else(|| fake::name()),
-            username: self.username.unwrap_or_else(|| fake::username()),
+            id: self.id.unwrap_or_else(fake::uuid),
+            email: self.email.unwrap_or_else(fake::email),
+            name: self.name.unwrap_or_else(fake::name),
+            username: self.username.unwrap_or_else(fake::username),
         }
     }
 }
@@ -164,8 +169,8 @@ mod tests {
     }
 
     #[test]
-    fn test_test_user_default() {
-        let user = TestUser::default();
+    fn test_test_user_generate() {
+        let user = TestUser::generate();
         assert!(!user.id.is_empty());
         assert!(!user.email.is_empty());
         assert!(!user.name.is_empty());

@@ -48,7 +48,7 @@ impl DatabaseConnection {
     }
 
     /// Get the inner SeaORM connection
-    pub fn as_ref(&self) -> &SeaOrmConnection {
+    pub fn inner(&self) -> &SeaOrmConnection {
         &self.conn
     }
 }

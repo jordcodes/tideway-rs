@@ -30,7 +30,7 @@ impl Message {
             axum::extract::ws::Message::Pong(data) => Message::Pong(data.to_vec()),
             axum::extract::ws::Message::Close(close_frame) => {
                 Message::Close(close_frame.map(|f| CloseFrame {
-                    code: f.code.into(),
+                    code: f.code,
                     reason: f.reason.to_string(),
                 }))
             }

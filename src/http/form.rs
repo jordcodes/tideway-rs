@@ -79,7 +79,7 @@ impl FileConfig {
     /// Validate file extension
     pub fn validate_extension(&self, filename: &str) -> Result<(), String> {
         if !self.allowed_extensions.is_empty() {
-            if let Some(ext) = filename.split('.').last() {
+            if let Some(ext) = filename.split('.').next_back() {
                 if !self.allowed_extensions.contains(&ext.to_lowercase()) {
                     return Err(format!("File extension .{} not allowed", ext));
                 }

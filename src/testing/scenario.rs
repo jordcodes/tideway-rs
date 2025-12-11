@@ -192,7 +192,7 @@ impl ScenarioAssert {
             .response
             .headers()
             .get(key)
-            .expect(&format!("Header '{}' not found", key))
+            .unwrap_or_else(|| panic!("Header '{}' not found", key))
             .to_str()
             .unwrap();
         assert_eq!(value, expected, "Header '{}' value mismatch", key);
@@ -243,7 +243,7 @@ impl ScenarioAssert {
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         let actual =
-            json_path_get(&json, path).expect(&format!("Path '{}' not found in JSON", path));
+            json_path_get(&json, path).unwrap_or_else(|| panic!("Path '{}' not found in JSON", path));
 
         assert_eq!(actual, &expected, "JSON path '{}' value mismatch", path);
 

@@ -57,7 +57,7 @@ impl RateLimitState {
         if self.config.strategy == "per_ip" {
             if let Some(ip) = key {
                 let mut per_ip = self.per_ip.lock().unwrap_or_else(|e| e.into_inner());
-                let requests = per_ip.entry(ip.to_string()).or_insert_with(Vec::new);
+                let requests = per_ip.entry(ip.to_string()).or_default();
 
                 // Remove expired requests
                 requests.retain(|&req_time| now.duration_since(req_time) < window);

@@ -133,6 +133,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_request_response(
     _config: &RequestLoggingConfig,
     level: LogLevel,

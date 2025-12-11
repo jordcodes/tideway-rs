@@ -7,27 +7,20 @@ use serde::{Deserialize, Serialize};
 ///
 /// Controls development-specific features like enhanced error responses
 /// and request/response dumping.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DevConfig {
     /// Enable development mode (enhanced errors, request dumper, etc.)
+    #[serde(default)]
     pub enabled: bool,
     /// Include stack traces in error responses
+    #[serde(default)]
     pub include_stack_traces: bool,
     /// Enable request/response dumper middleware
+    #[serde(default)]
     pub enable_request_dumper: bool,
     /// Only dump requests matching this path pattern (empty = all)
+    #[serde(default)]
     pub dump_path_pattern: Option<String>,
-}
-
-impl Default for DevConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            include_stack_traces: false,
-            enable_request_dumper: false,
-            dump_path_pattern: None,
-        }
-    }
 }
 
 impl DevConfig {

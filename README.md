@@ -11,10 +11,12 @@
 - **Fast & Reliable**: Built on Axum and Tokio for maximum performance
 - **Batteries Included**: Pre-configured logging, tracing, error handling, and health checks
 - **Modular Architecture**: Organize your application into reusable route modules
-- **Trait-Based Extensibility**: Swap database, cache, and session implementations easily
+- **Trait-Based Extensibility**: Swap database, cache, session, and email implementations easily
 - **Production Middleware**: Compression, security headers, timeouts, and Prometheus metrics
 - **Request Validation**: Type-safe validation with custom validators and extractors
 - **Enhanced Error Handling**: Rich error responses with context, IDs, and stack traces
+- **Background Jobs**: In-memory and Redis-backed job queues with retry logic
+- **Email**: SMTP and console mailers with support for Resend, SendGrid, and more
 - **Developer Experience**: Alba-style testing, test fixtures, dev mode debugging tools
 - **WebSocket Support**: Real-time communication with connection management and broadcasting
 - **Type-Safe**: Full Rust type safety with excellent error messages
@@ -29,7 +31,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.1.0"
+tideway = "0.3"
 tokio = { version = "1.48", features = ["full"] }
 ```
 

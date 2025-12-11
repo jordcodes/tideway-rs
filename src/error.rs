@@ -77,14 +77,14 @@ impl ErrorContext {
     pub fn with_field_error(mut self, field: impl Into<String>, error: impl Into<String>) -> Self {
         self.field_errors
             .entry(field.into())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(error.into());
         self
     }
 }
 
 /// Extended error information for enhanced error responses
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ErrorInfo {
     pub context: ErrorContext,
     pub stack_trace: Option<String>,
@@ -92,10 +92,7 @@ pub struct ErrorInfo {
 
 impl ErrorInfo {
     pub fn new() -> Self {
-        Self {
-            context: ErrorContext::new(),
-            stack_trace: None,
-        }
+        Self::default()
     }
 
     pub fn with_context(mut self, context: ErrorContext) -> Self {

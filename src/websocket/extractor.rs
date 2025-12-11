@@ -94,7 +94,7 @@ async fn handle_socket<H: WebSocketHandler>(
     // Call on_connect handler
     {
         let mut conn = conn_handle.write().await;
-        if let Err(e) = handler.on_connect(&mut *conn, &ctx).await {
+        if let Err(e) = handler.on_connect(&mut conn, &ctx).await {
             tracing::error!(conn_id = %conn_id, error = %e, "Error in on_connect");
             let _ = manager.unregister(&conn_id).await;
             return;
@@ -203,7 +203,7 @@ async fn handle_socket<H: WebSocketHandler>(
                         // Call on_message handler
                         {
                             let mut conn = conn_handle.write().await;
-                            if let Err(e) = handler.on_message(&mut *conn, msg, &ctx).await {
+                            if let Err(e) = handler.on_message(&mut conn, msg, &ctx).await {
                                 tracing::error!(conn_id = %conn_id, error = %e, "Error in on_message");
                             }
                         }
@@ -218,7 +218,7 @@ async fn handle_socket<H: WebSocketHandler>(
             // Call on_disconnect handler
             {
                 let mut conn = conn_handle.write().await;
-                handler.on_disconnect(&mut *conn, &ctx).await;
+                handler.on_disconnect(&mut conn, &ctx).await;
             }
 
             // Signal cleanup and unregister (only if not already done)

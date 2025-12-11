@@ -208,7 +208,7 @@ impl AppContext {
             .as_any()
             .downcast_ref::<SeaOrmPool>()
             .ok_or_else(|| crate::error::TidewayError::internal("Database pool is not SeaOrmPool"))?;
-        Ok(sea_orm_pool.as_ref().clone())
+        Ok(sea_orm_pool.inner().clone())
     }
 }
 
