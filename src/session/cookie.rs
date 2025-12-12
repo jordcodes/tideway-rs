@@ -22,6 +22,18 @@ pub struct CookieSessionStore {
 
 impl CookieSessionStore {
     /// Create a new cookie session store
+    ///
+    /// # Panics
+    ///
+    /// Panics if no `encryption_key` is provided and `allow_insecure_key` is `false`.
+    /// This is a security measure to prevent accidental deployment without proper session security.
+    ///
+    /// # Security
+    ///
+    /// Always provide a stable encryption key in production. Generate one with:
+    /// ```bash
+    /// openssl rand -hex 32
+    /// ```
     pub fn new(config: &crate::session::SessionConfig) -> Result<Self> {
         let key = if let Some(ref key_str) = config.encryption_key {
             // Parse hex-encoded key (64 hex chars = 32 bytes)
@@ -33,10 +45,64 @@ impl CookieSessionStore {
             }
 
             Key::from(&key_bytes)
-        } else {
-            // Generate a random key (NOT SECURE - users should provide their own)
-            tracing::warn!("Using randomly generated encryption key - NOT SECURE FOR PRODUCTION");
+        } else if config.allow_insecure_key {
+            // Development mode: generate a random key with loud warning
+            tracing::error!(
+                "┌──────────────────────────────────────────────────────────────────────────────┐"
+            );
+            tracing::error!(
+                "│ SECURITY WARNING: Using randomly generated session encryption key!          │"
+            );
+            tracing::error!(
+                "│                                                                              │"
+            );
+            tracing::error!(
+                "│ This is INSECURE and should NEVER be used in production:                    │"
+            );
+            tracing::error!(
+                "│   • Sessions will be invalidated on every server restart                    │"
+            );
+            tracing::error!(
+                "│   • Sessions won't work across multiple server instances                    │"
+            );
+            tracing::error!(
+                "│   • Session cookies may be vulnerable to forgery                            │"
+            );
+            tracing::error!(
+                "│                                                                              │"
+            );
+            tracing::error!(
+                "│ To fix: Set SESSION_ENCRYPTION_KEY or config.session.encryption_key         │"
+            );
+            tracing::error!(
+                "│ Generate a key with: openssl rand -hex 32                                   │"
+            );
+            tracing::error!(
+                "└──────────────────────────────────────────────────────────────────────────────┘"
+            );
             Key::generate()
+        } else {
+            // Production mode: refuse to start without encryption key
+            panic!(
+                "\n\n\
+                ══════════════════════════════════════════════════════════════════════════════\n\
+                FATAL: Cookie sessions require an encryption key!\n\
+                \n\
+                You must provide a 32-byte hex-encoded encryption key for secure sessions.\n\
+                \n\
+                To fix, set one of:\n\
+                  • Environment variable: SESSION_ENCRYPTION_KEY=<your-64-char-hex-key>\n\
+                  • Config file: session.encryption_key = \"<your-64-char-hex-key>\"\n\
+                \n\
+                Generate a secure key with:\n\
+                  openssl rand -hex 32\n\
+                \n\
+                For development/testing only, you can set:\n\
+                  SESSION_ALLOW_INSECURE_KEY=true\n\
+                \n\
+                DO NOT use allow_insecure_key in production!\n\
+                ══════════════════════════════════════════════════════════════════════════════\n\n"
+            );
         };
 
         Ok(Self {

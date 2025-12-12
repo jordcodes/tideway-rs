@@ -51,9 +51,23 @@ pub struct SessionConfig {
     pub cookie_http_only: bool,
 
     /// Encryption key for cookie sessions (32 bytes hex-encoded)
-    /// If not provided, a default key is used (NOT SECURE FOR PRODUCTION)
+    ///
+    /// **REQUIRED** for cookie-based sessions in production.
+    /// Generate a secure key with: `openssl rand -hex 32`
     #[serde(default)]
     pub encryption_key: Option<String>,
+
+    /// Allow insecure random session keys (FOR DEVELOPMENT ONLY)
+    ///
+    /// When `true`, allows cookie sessions without a configured encryption key.
+    /// This is **INSECURE** and should NEVER be enabled in production:
+    /// - Sessions will break across server restarts
+    /// - Sessions won't work in multi-instance deployments
+    /// - Attackers may be able to forge session cookies
+    ///
+    /// Default: `false`
+    #[serde(default)]
+    pub allow_insecure_key: bool,
 }
 
 impl Default for SessionConfig {
@@ -67,6 +81,7 @@ impl Default for SessionConfig {
             cookie_secure: default_secure(),
             cookie_http_only: default_http_only(),
             encryption_key: None,
+            allow_insecure_key: false,
         }
     }
 }
@@ -121,6 +136,10 @@ impl SessionConfig {
 
         if let Some(key) = get_env_with_prefix("SESSION_ENCRYPTION_KEY") {
             config.encryption_key = Some(key);
+        }
+
+        if let Some(allow) = get_env_with_prefix("SESSION_ALLOW_INSECURE_KEY") {
+            config.allow_insecure_key = allow.parse().unwrap_or(false);
         }
 
         config
