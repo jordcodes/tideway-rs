@@ -157,17 +157,36 @@ where
         }
 
         // Extract IP address from request
-        let ip: Option<String> = req
-            .headers()
-            .get("x-forwarded-for")
-            .or_else(|| req.headers().get("x-real-ip"))
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string())
-            .or_else(|| {
-                req.extensions()
-                    .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                    .map(|addr| addr.ip().to_string())
-            });
+        //
+        // SECURITY: Only trust proxy headers if explicitly configured.
+        // Trusting X-Forwarded-For without proper proxy configuration allows
+        // attackers to spoof their IP and bypass per-IP rate limiting.
+        let ip: Option<String> = if self.state.config.trust_proxy {
+            // Trust mode: Check proxy headers first, fall back to connection IP
+            req.headers()
+                .get("x-forwarded-for")
+                .and_then(|v| v.to_str().ok())
+                // X-Forwarded-For may contain multiple IPs: "client, proxy1, proxy2"
+                // The leftmost is the original client (if proxy is trusted to set it)
+                .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+                .or_else(|| {
+                    req.headers()
+                        .get("x-real-ip")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string())
+                })
+                .or_else(|| {
+                    req.extensions()
+                        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                        .map(|addr| addr.ip().to_string())
+                })
+        } else {
+            // Safe mode (default): Only use direct connection IP
+            // This prevents IP spoofing but requires trust_proxy=true behind a proxy
+            req.extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|addr| addr.ip().to_string())
+        };
 
         let key = ip.as_deref();
 

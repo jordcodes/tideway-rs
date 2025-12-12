@@ -19,6 +19,22 @@ pub struct RateLimitConfig {
     /// Rate limiting strategy: "global" or "per_ip"
     #[serde(default = "default_strategy")]
     pub strategy: String,
+
+    /// Trust X-Forwarded-For header for client IP detection
+    ///
+    /// **SECURITY WARNING**: Only enable this if your application is behind
+    /// a trusted reverse proxy (nginx, cloudflare, AWS ALB, etc.).
+    ///
+    /// When `false` (default): Only uses the direct connection IP, ignoring
+    /// proxy headers. This is safe but won't work correctly behind a proxy.
+    ///
+    /// When `true`: Trusts X-Forwarded-For and X-Real-IP headers. Only enable
+    /// if your proxy is properly configured to overwrite (not append to) these
+    /// headers, otherwise attackers can spoof their IP to bypass rate limiting.
+    ///
+    /// Default: `false`
+    #[serde(default)]
+    pub trust_proxy: bool,
 }
 
 impl Default for RateLimitConfig {
@@ -28,6 +44,7 @@ impl Default for RateLimitConfig {
             max_requests: default_max_requests(),
             window_seconds: default_window_seconds(),
             strategy: default_strategy(),
+            trust_proxy: false,
         }
     }
 }
@@ -46,6 +63,7 @@ impl RateLimitConfig {
             max_requests: 1000,
             window_seconds: 60,
             strategy: "global".to_string(),
+            trust_proxy: false,
         }
     }
 
@@ -57,6 +75,7 @@ impl RateLimitConfig {
             max_requests: 100,
             window_seconds: 60,
             strategy: "per_ip".to_string(),
+            trust_proxy: false,
         }
     }
 
@@ -82,6 +101,10 @@ impl RateLimitConfig {
 
         if let Some(strategy) = get_env_with_prefix("RATE_LIMIT_STRATEGY") {
             config.strategy = strategy;
+        }
+
+        if let Some(trust_proxy) = get_env_with_prefix("RATE_LIMIT_TRUST_PROXY") {
+            config.trust_proxy = trust_proxy.parse().unwrap_or(false);
         }
 
         config
@@ -131,6 +154,15 @@ impl RateLimitConfigBuilder {
         self
     }
 
+    /// Trust proxy headers (X-Forwarded-For, X-Real-IP) for client IP detection.
+    ///
+    /// **SECURITY WARNING**: Only enable this if behind a trusted reverse proxy.
+    /// See [`RateLimitConfig::trust_proxy`] for details.
+    pub fn trust_proxy(mut self, trust: bool) -> Self {
+        self.config.trust_proxy = trust;
+        self
+    }
+
     pub fn build(self) -> RateLimitConfig {
         self.config
     }
@@ -169,6 +201,8 @@ mod tests {
         assert_eq!(config.max_requests, 100);
         assert_eq!(config.window_seconds, 60);
         assert_eq!(config.strategy, "per_ip");
+        // Security: trust_proxy defaults to false
+        assert!(!config.trust_proxy);
     }
 
     #[test]
@@ -177,6 +211,7 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.max_requests, 1000);
         assert_eq!(config.strategy, "global");
+        assert!(!config.trust_proxy);
     }
 
     #[test]
@@ -185,6 +220,7 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.max_requests, 100);
         assert_eq!(config.strategy, "per_ip");
+        assert!(!config.trust_proxy);
     }
 
     #[test]
@@ -200,5 +236,34 @@ mod tests {
         assert_eq!(config.max_requests, 200);
         assert_eq!(config.window_seconds, 120);
         assert_eq!(config.strategy, "per_ip");
+        assert!(!config.trust_proxy);
+    }
+
+    #[test]
+    fn test_builder_trust_proxy() {
+        let config = RateLimitConfig::builder()
+            .enabled(true)
+            .per_ip()
+            .trust_proxy(true)
+            .build();
+
+        assert!(config.trust_proxy);
+    }
+
+    #[test]
+    fn test_trust_proxy_defaults_false_for_security() {
+        // This is a critical security test: trust_proxy MUST default to false
+        // to prevent IP spoofing attacks via X-Forwarded-For header manipulation
+        let config = RateLimitConfig::default();
+        assert!(
+            !config.trust_proxy,
+            "SECURITY: trust_proxy must default to false to prevent IP spoofing"
+        );
+
+        let config = RateLimitConfig::builder().build();
+        assert!(
+            !config.trust_proxy,
+            "SECURITY: trust_proxy must default to false in builder"
+        );
     }
 }
