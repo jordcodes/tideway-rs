@@ -78,6 +78,10 @@ redis = { version = "0.27", features = ["tokio-comp"], optional = true }
 cookie = { version = "0.18", features = ["private"], optional = true }
 hex = { version = "0.4", optional = true }
 
+# Cryptography (for webhook verification)
+hmac = "0.12"
+sha2 = "0.10"
+
 # WebSocket (optional)
 dashmap = { version = "6.1", optional = true }
 
