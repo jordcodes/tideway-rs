@@ -60,17 +60,32 @@ impl JwkSet {
 }
 
 /// Generic JWT verifier that can work with any claims type
+///
+/// # Security Note
+///
+/// For production use, always configure both issuer and audience validation
+/// using [`set_issuer`] and [`set_audience`]. Without these checks, tokens
+/// from any issuer could be accepted if they have a valid signature.
 #[derive(Clone)]
 pub struct JwtVerifier<C> {
     jwks: Arc<RwLock<JwkSet>>,
     jwks_url: Option<String>,
     decoding_key: Option<DecodingKey>,
     validation: Validation,
+    /// Track whether issuer validation is configured
+    issuer_configured: bool,
+    /// Track whether audience validation is configured
+    audience_configured: bool,
     _claims: std::marker::PhantomData<C>,
 }
 
 impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     /// Create a verifier using JWKS (fetches keys from URL)
+    ///
+    /// # Security Warning
+    ///
+    /// After creating a verifier, you should configure issuer and audience
+    /// validation using [`set_issuer`] and [`set_audience`] before use in production.
     pub async fn from_jwks_url(url: impl Into<String>, algorithm: Algorithm) -> Result<Self> {
         let url = url.into();
         let jwks = JwkSet::fetch(&url).await?;
@@ -83,11 +98,18 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             jwks_url: Some(url),
             decoding_key: None,
             validation,
+            issuer_configured: false,
+            audience_configured: false,
             _claims: std::marker::PhantomData,
         })
     }
 
     /// Create a verifier using a static secret (for HS256)
+    ///
+    /// # Security Warning
+    ///
+    /// After creating a verifier, you should configure issuer and audience
+    /// validation using [`set_issuer`] and [`set_audience`] before use in production.
     pub fn from_secret(secret: &[u8]) -> Self {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
@@ -97,11 +119,18 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             jwks_url: None,
             decoding_key: Some(DecodingKey::from_secret(secret)),
             validation,
+            issuer_configured: false,
+            audience_configured: false,
             _claims: std::marker::PhantomData,
         }
     }
 
     /// Create a verifier using a static RSA public key (PEM format)
+    ///
+    /// # Security Warning
+    ///
+    /// After creating a verifier, you should configure issuer and audience
+    /// validation using [`set_issuer`] and [`set_audience`] before use in production.
     pub fn from_rsa_pem(pem: &[u8]) -> Result<Self> {
         let decoding_key = DecodingKey::from_rsa_pem(pem)
             .map_err(|e| TidewayError::internal(format!("Invalid RSA PEM: {}", e)))?;
@@ -114,18 +143,28 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             jwks_url: None,
             decoding_key: Some(decoding_key),
             validation,
+            issuer_configured: false,
+            audience_configured: false,
             _claims: std::marker::PhantomData,
         })
     }
 
     /// Set the expected issuer claim
+    ///
+    /// **Strongly recommended for production use.** Without issuer validation,
+    /// tokens from any issuer with a valid signature would be accepted.
     pub fn set_issuer(&mut self, issuer: impl Into<String>) {
         self.validation.set_issuer(&[issuer.into()]);
+        self.issuer_configured = true;
     }
 
     /// Set the expected audience claim
+    ///
+    /// **Strongly recommended for production use.** Without audience validation,
+    /// tokens intended for other applications could be accepted.
     pub fn set_audience(&mut self, audience: impl Into<String>) {
         self.validation.set_audience(&[audience.into()]);
+        self.audience_configured = true;
     }
 
     /// Refresh the JWKS (useful for key rotation)
@@ -139,7 +178,37 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     }
 
     /// Verify and decode a JWT token
+    ///
+    /// # Security Warning
+    ///
+    /// If issuer or audience validation is not configured, a warning will be logged.
+    /// For production use, always configure both using [`set_issuer`] and [`set_audience`].
     pub async fn verify(&self, token: &str) -> Result<TokenData<C>> {
+        // Warn if issuer/audience validation is not configured
+        // This helps developers notice missing security configuration
+        if !self.issuer_configured || !self.audience_configured {
+            // Use warn_once pattern by checking a static flag would be ideal,
+            // but for simplicity we log on each call. In high-traffic scenarios,
+            // this encourages fixing the configuration quickly.
+            if !self.issuer_configured && !self.audience_configured {
+                tracing::warn!(
+                    "JWT verifier has no issuer or audience validation configured. \
+                    This is insecure for production use. Call set_issuer() and set_audience() \
+                    to validate these claims."
+                );
+            } else if !self.issuer_configured {
+                tracing::warn!(
+                    "JWT verifier has no issuer validation configured. \
+                    Call set_issuer() to validate the token issuer."
+                );
+            } else {
+                tracing::warn!(
+                    "JWT verifier has no audience validation configured. \
+                    Call set_audience() to validate the token audience."
+                );
+            }
+        }
+
         // If we have a static decoding key, use it
         if let Some(key) = &self.decoding_key {
             return decode::<C>(token, key, &self.validation)
