@@ -72,6 +72,7 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum"], optional = true }
 prometheus = { version = "0.13", optional = true }
 
 # Cache (optional)
+moka = { version = "0.12", features = ["future"], optional = true }
 redis = { version = "0.27", features = ["tokio-comp"], optional = true }
 
 # Sessions (optional)
@@ -91,6 +92,9 @@ lettre = { version = "0.11", default-features = false, features = ["tokio1-rustl
 
 # Jobs (optional - chrono already added for database)
 
+# Rate limiting
+governor = "0.10"
+
 [features]
 default = ["database", "openapi", "macros"]
 # Proc macros for handler definitions with OpenAPI integration
@@ -105,8 +109,8 @@ openapi = ["utoipa", "utoipa-axum", "utoipa-swagger-ui"]
 validation = ["validator"]
 # Prometheus metrics collection
 metrics = ["prometheus"]
-# Base cache abstraction (enables in-memory cache)
-cache = []
+# Base cache abstraction (enables moka-backed in-memory cache)
+cache = ["moka"]
 # Redis-backed caching
 cache-redis = ["redis", "cache"]
 # Session management

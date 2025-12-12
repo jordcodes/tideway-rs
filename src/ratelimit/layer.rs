@@ -1,24 +1,35 @@
+//! Rate limiting layer backed by governor
+//!
+//! Uses the governor crate for a production-grade rate limiter with:
+//! - Lock-free atomic operations (GCRA algorithm)
+//! - Per-IP rate limiting with keyed rate limiters
+//! - Automatic cleanup of stale entries via periodic shrinking
+//! - High performance under concurrent load
+
 use super::config::RateLimitConfig;
 use axum::{
     extract::Request,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use governor::{
+    clock::DefaultClock,
+    middleware::NoOpMiddleware,
+    state::{InMemoryState, NotKeyed},
+    Quota, RateLimiter,
+};
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    num::NonZeroU32,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 use tower::{Layer, Service};
 
-/// Maximum number of unique IPs to track for per-IP rate limiting.
-/// When this limit is reached, oldest entries are evicted to prevent
-/// memory exhaustion from attackers using many different IPs.
-const MAX_TRACKED_IPS: usize = 10_000;
-
-/// Maximum requests to track per IP, regardless of config.
-/// This prevents memory issues if someone misconfigures max_requests to a huge value.
-const MAX_REQUESTS_PER_IP: usize = 10_000;
+/// Shrink the keyed state store every N requests to prevent unbounded memory growth.
+/// This is a balance between memory efficiency and performance overhead.
+const SHRINK_INTERVAL: u64 = 1000;
 
 /// Custom error response for rate limit exceeded
 #[derive(serde::Serialize)]
@@ -39,119 +50,82 @@ impl IntoResponse for RateLimitError {
     }
 }
 
-/// Entry tracking requests from a single IP
-struct IpEntry {
-    /// Timestamps of recent requests
-    requests: Vec<Instant>,
-    /// When this IP was last seen (for LRU eviction)
-    last_seen: Instant,
+/// Type alias for a global (non-keyed) rate limiter
+type GlobalLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
+
+/// Type alias for a per-IP (keyed) rate limiter
+type KeyedLimiter = RateLimiter<String, governor::state::keyed::DashMapStateStore<String>, DefaultClock, NoOpMiddleware>;
+
+/// Rate limiter state that can be either global or per-IP
+#[derive(Clone)]
+enum LimiterState {
+    Global(Arc<GlobalLimiter>),
+    PerIp(Arc<KeyedLimiter>),
 }
 
-impl IpEntry {
-    fn new() -> Self {
-        Self {
-            requests: Vec::new(),
-            last_seen: Instant::now(),
-        }
-    }
-}
-
-/// In-memory rate limiter state
+/// Rate limiter state and configuration
 #[derive(Clone)]
 struct RateLimitState {
-    // For per-IP rate limiting: map IP -> entry with timestamps and last_seen
-    per_ip: Arc<Mutex<HashMap<String, IpEntry>>>,
-    // For global rate limiting: list of request timestamps
-    global: Arc<Mutex<Vec<Instant>>>,
+    limiter: LimiterState,
     config: RateLimitConfig,
+    /// Counter for periodic shrinking of keyed state store
+    request_count: Arc<AtomicU64>,
 }
 
 impl RateLimitState {
     fn new(config: RateLimitConfig) -> Self {
+        let max_requests = NonZeroU32::new(config.max_requests.max(1))
+            .expect("max_requests should be positive");
+
+        // Create quota: max_requests per window_seconds
+        let quota = Quota::with_period(std::time::Duration::from_secs(config.window_seconds))
+            .expect("window_seconds should be positive")
+            .allow_burst(max_requests);
+
+        let limiter = if config.strategy == "per_ip" {
+            LimiterState::PerIp(Arc::new(RateLimiter::keyed(quota)))
+        } else {
+            LimiterState::Global(Arc::new(RateLimiter::direct(quota)))
+        };
+
         Self {
-            per_ip: Arc::new(Mutex::new(HashMap::new())),
-            global: Arc::new(Mutex::new(Vec::new())),
+            limiter,
             config,
+            request_count: Arc::new(AtomicU64::new(0)),
         }
     }
 
     fn check_rate_limit(&self, key: Option<&str>) -> Result<(), u64> {
-        let now = Instant::now();
-        let window = Duration::from_secs(self.config.window_seconds);
-        // Cap max_requests to prevent memory exhaustion from misconfiguration
-        let max_requests = std::cmp::min(self.config.max_requests as usize, MAX_REQUESTS_PER_IP);
-
-        if self.config.strategy == "per_ip" {
-            if let Some(ip) = key {
-                let mut per_ip = self.per_ip.lock().unwrap_or_else(|e| e.into_inner());
-
-                // Evict stale entries if we're at capacity
-                // This prevents unbounded memory growth from attackers using many IPs
-                if per_ip.len() >= MAX_TRACKED_IPS {
-                    Self::evict_stale_entries(&mut per_ip, window, now);
+        match &self.limiter {
+            LimiterState::PerIp(limiter) => {
+                // Periodically shrink the state store to remove stale entries
+                // This prevents unbounded memory growth from many unique IPs
+                let count = self.request_count.fetch_add(1, Ordering::Relaxed);
+                if count % SHRINK_INTERVAL == 0 && count > 0 {
+                    limiter.retain_recent();
                 }
 
-                let entry = per_ip.entry(ip.to_string()).or_insert_with(IpEntry::new);
-                entry.last_seen = now;
-
-                // Remove expired requests from this IP
-                entry.requests.retain(|&req_time| now.duration_since(req_time) < window);
-
-                // Check if limit exceeded
-                if entry.requests.len() >= max_requests {
-                    let oldest = entry.requests.first().copied().unwrap_or(now);
-                    let wait_time = window.saturating_sub(now.duration_since(oldest));
-                    return Err(wait_time.as_secs());
+                if let Some(ip) = key {
+                    match limiter.check_key(&ip.to_string()) {
+                        Ok(_) => Ok(()),
+                        Err(not_until) => {
+                            let wait = not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+                            Err(wait.as_secs().max(1))
+                        }
+                    }
+                } else {
+                    // No IP available, allow the request
+                    Ok(())
                 }
-
-                // Record this request
-                entry.requests.push(now);
             }
-        } else {
-            // Global rate limiting
-            let mut global = self.global.lock().unwrap_or_else(|e| e.into_inner());
-
-            // Remove expired requests
-            global.retain(|&req_time| now.duration_since(req_time) < window);
-
-            // Check if limit exceeded (use same cap for global)
-            if global.len() >= max_requests {
-                let oldest = global.first().copied().unwrap_or(now);
-                let wait_time = window.saturating_sub(now.duration_since(oldest));
-                return Err(wait_time.as_secs());
-            }
-
-            // Record this request
-            global.push(now);
-        }
-
-        Ok(())
-    }
-
-    /// Evict entries that have no active requests and haven't been seen recently.
-    /// This is called when we hit MAX_TRACKED_IPS to prevent memory exhaustion.
-    fn evict_stale_entries(
-        per_ip: &mut HashMap<String, IpEntry>,
-        window: Duration,
-        now: Instant,
-    ) {
-        // First pass: remove entries with no active requests (expired window)
-        per_ip.retain(|_, entry| {
-            // Keep if there are any requests still within the window
-            entry.requests.iter().any(|&t| now.duration_since(t) < window)
-        });
-
-        // If still at capacity, evict oldest by last_seen (LRU)
-        if per_ip.len() >= MAX_TRACKED_IPS {
-            // Find and remove the 10% oldest entries
-            let to_remove = MAX_TRACKED_IPS / 10;
-            let mut entries: Vec<_> = per_ip.iter()
-                .map(|(k, v)| (k.clone(), v.last_seen))
-                .collect();
-            entries.sort_by_key(|(_, last_seen)| *last_seen);
-
-            for (key, _) in entries.into_iter().take(to_remove) {
-                per_ip.remove(&key);
+            LimiterState::Global(limiter) => {
+                match limiter.check() {
+                    Ok(_) => Ok(()),
+                    Err(not_until) => {
+                        let wait = not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+                        Err(wait.as_secs().max(1))
+                    }
+                }
             }
         }
     }
@@ -280,8 +254,8 @@ where
 /// Build a rate limit layer from RateLimitConfig
 ///
 /// Returns None if rate limiting is disabled.
-/// Uses an in-memory rate limiter suitable for single-instance deployments.
-/// For distributed deployments, consider using Redis or another distributed store.
+/// Uses governor's GCRA algorithm for efficient, lock-free rate limiting.
+/// For per-IP rate limiting, uses a DashMap-backed keyed rate limiter.
 pub fn build_rate_limit_layer(config: &RateLimitConfig) -> Option<RateLimitLayer> {
     if !config.enabled {
         return None;
@@ -309,7 +283,7 @@ mod tests {
         let config = test_config();
         let state = RateLimitState::new(config);
 
-        // Should allow 5 requests
+        // Should allow 5 requests (burst size)
         for i in 0..5 {
             let result = state.check_rate_limit(Some("192.168.1.1"));
             assert!(result.is_ok(), "Request {} should be allowed", i + 1);
@@ -321,7 +295,7 @@ mod tests {
         let config = test_config();
         let state = RateLimitState::new(config);
 
-        // Use up the quota
+        // Use up the quota (burst)
         for _ in 0..5 {
             state.check_rate_limit(Some("192.168.1.1")).unwrap();
         }
@@ -347,28 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn test_rate_limit_bounded_ips() {
-        let config = test_config();
-        let state = RateLimitState::new(config);
-
-        // Simulate many unique IPs (more than MAX_TRACKED_IPS)
-        // This should not cause unbounded memory growth
-        for i in 0..(MAX_TRACKED_IPS + 1000) {
-            let ip = format!("10.0.{}.{}", i / 256, i % 256);
-            let _ = state.check_rate_limit(Some(&ip));
-        }
-
-        // Check that the HashMap size is bounded
-        let per_ip = state.per_ip.lock().unwrap();
-        assert!(
-            per_ip.len() <= MAX_TRACKED_IPS,
-            "IP tracking should be bounded to {} but got {}",
-            MAX_TRACKED_IPS,
-            per_ip.len()
-        );
-    }
-
-    #[test]
     fn test_global_rate_limiting() {
         let mut config = test_config();
         config.strategy = "global".to_string();
@@ -385,41 +337,60 @@ mod tests {
     }
 
     #[test]
-    fn test_eviction_removes_stale_entries() {
+    fn test_rate_limit_returns_retry_after() {
         let config = RateLimitConfig {
             enabled: true,
-            max_requests: 5,
-            window_seconds: 1, // 1 second window for testing
+            max_requests: 1,
+            window_seconds: 60,
             strategy: "per_ip".to_string(),
             trust_proxy: false,
         };
         let state = RateLimitState::new(config);
 
-        // Make requests from an IP
+        // Use up the single allowed request
         state.check_rate_limit(Some("192.168.1.1")).unwrap();
 
-        // Verify entry exists
-        {
-            let per_ip = state.per_ip.lock().unwrap();
-            assert!(per_ip.contains_key("192.168.1.1"));
+        // Second request should be blocked with retry_after
+        let result = state.check_rate_limit(Some("192.168.1.1"));
+        assert!(result.is_err());
+        if let Err(retry_after) = result {
+            assert!(retry_after > 0, "Should return positive retry_after");
+            assert!(retry_after <= 60, "retry_after should be within window");
+        }
+    }
+
+    #[test]
+    fn test_concurrent_access() {
+        use std::thread;
+
+        let config = RateLimitConfig {
+            enabled: true,
+            max_requests: 100,
+            window_seconds: 60,
+            strategy: "per_ip".to_string(),
+            trust_proxy: false,
+        };
+        let state = RateLimitState::new(config);
+
+        // Spawn multiple threads to access the rate limiter concurrently
+        let mut handles = vec![];
+        for i in 0..10 {
+            let state = state.clone();
+            handles.push(thread::spawn(move || {
+                for j in 0..50 {
+                    let ip = format!("192.168.{}.{}", i, j % 256);
+                    let _ = state.check_rate_limit(Some(&ip));
+                }
+            }));
         }
 
-        // Wait for the window to expire
-        std::thread::sleep(Duration::from_secs(2));
-
-        // Fill up to MAX_TRACKED_IPS to trigger eviction
-        // The stale entry should be evicted
-        for i in 0..MAX_TRACKED_IPS {
-            let ip = format!("10.0.{}.{}", i / 256, i % 256);
-            let _ = state.check_rate_limit(Some(&ip));
+        // Wait for all threads to complete
+        for handle in handles {
+            handle.join().unwrap();
         }
 
-        // The original stale entry should have been evicted
-        let per_ip = state.per_ip.lock().unwrap();
-        // It may or may not be evicted depending on timing, but size should be bounded
-        assert!(
-            per_ip.len() <= MAX_TRACKED_IPS,
-            "Should be bounded after eviction"
-        );
+        // Rate limiter should still be functional
+        let result = state.check_rate_limit(Some("10.0.0.1"));
+        assert!(result.is_ok(), "Should still work after concurrent access");
     }
 }
