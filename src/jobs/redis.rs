@@ -8,6 +8,8 @@ use crate::traits::job::{Job, JobData, JobQueue};
 use async_trait::async_trait;
 #[cfg(feature = "jobs")]
 use chrono::{DateTime, Duration, Utc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Redis-backed job queue implementation
@@ -18,35 +20,126 @@ use uuid::Uuid;
 /// - `jobs:scheduled` - Sorted set of scheduled jobs (score = timestamp)
 /// - `jobs:failed` - List of permanently failed jobs
 /// - `jobs:completed` - List of completed jobs (optional, for history)
+///
+/// # Shutdown Behavior
+///
+/// The scheduler task runs in the background and will automatically stop when
+/// `shutdown()` is called. Always call `shutdown()` before dropping the queue
+/// to ensure clean resource cleanup.
 #[derive(Clone)]
 pub struct RedisJobQueue {
     client: redis::Client,
     worker_id: String,
     max_retries: u32,
     retry_backoff_seconds: u64,
-    health: std::sync::Arc<std::sync::Mutex<bool>>,
+    /// Cached health status (updated by ping operations)
+    health_status: Arc<AtomicBool>,
+    /// Shutdown flag for background scheduler task
+    shutdown: Arc<AtomicBool>,
+    /// Handle to the scheduler task for cleanup
+    scheduler_handle: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl RedisJobQueue {
     /// Create a new Redis job queue
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - Redis connection URL (e.g., "redis://127.0.0.1:6379")
+    /// * `worker_id` - Optional worker identifier (auto-generated if None)
+    /// * `max_retries` - Maximum retry attempts for failed jobs
+    /// * `retry_backoff_seconds` - Base backoff duration (exponentially increased)
+    ///
+    /// # Important
+    ///
+    /// Call `shutdown()` when done to cleanly stop background tasks.
     pub fn new(url: &str, worker_id: Option<String>, max_retries: u32, retry_backoff_seconds: u64) -> Result<Self> {
         let client = redis::Client::open(url)
             .map_err(|e| TidewayError::internal(format!("Failed to create Redis client: {}", e)))?;
 
         let worker_id = worker_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let shutdown = Arc::new(AtomicBool::new(false));
 
         let queue = Self {
             client,
             worker_id,
             max_retries,
             retry_backoff_seconds,
-            health: std::sync::Arc::new(std::sync::Mutex::new(true)),
+            health_status: Arc::new(AtomicBool::new(true)),
+            shutdown,
+            scheduler_handle: Arc::new(tokio::sync::Mutex::new(None)),
         };
 
         // Start background task to move scheduled jobs to pending
         queue.start_scheduler_task();
 
         Ok(queue)
+    }
+
+    /// Gracefully shutdown the job queue
+    ///
+    /// Signals the background scheduler task to stop and waits for it to finish.
+    /// This should be called before dropping the queue to ensure clean cleanup.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let queue = RedisJobQueue::new("redis://localhost", None, 3, 5)?;
+    /// // ... use the queue ...
+    /// queue.shutdown().await;
+    /// ```
+    pub async fn shutdown(&self) {
+        // Signal shutdown
+        self.shutdown.store(true, Ordering::Release);
+
+        // Wait for scheduler task to finish
+        let mut handle_guard = self.scheduler_handle.lock().await;
+        if let Some(handle) = handle_guard.take() {
+            // Give the task a reasonable time to finish, then abort if needed
+            match tokio::time::timeout(
+                tokio::time::Duration::from_secs(5),
+                handle
+            ).await {
+                Ok(_) => tracing::debug!("Redis job queue scheduler stopped cleanly"),
+                Err(_) => tracing::warn!("Redis job queue scheduler did not stop within timeout"),
+            }
+        }
+    }
+
+    /// Ping Redis and update health status
+    ///
+    /// Call this periodically (e.g., every 30 seconds) to keep health status accurate.
+    /// The synchronous `is_healthy()` trait method returns the cached status from the
+    /// last ping.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Background health check task
+    /// tokio::spawn(async move {
+    ///     let mut interval = tokio::time::interval(Duration::from_secs(30));
+    ///     loop {
+    ///         interval.tick().await;
+    ///         queue.ping().await;
+    ///     }
+    /// });
+    /// ```
+    pub async fn ping(&self) -> bool {
+        match self.get_connection().await {
+            Ok(mut conn) => {
+                let result: redis::RedisResult<String> = redis::cmd("PING")
+                    .query_async(&mut conn)
+                    .await;
+                let healthy = result.is_ok();
+                self.health_status.store(healthy, Ordering::Release);
+                healthy
+            }
+            Err(e) => {
+                tracing::warn!("Redis job queue ping failed: {}", e);
+                self.health_status.store(false, Ordering::Release);
+                false
+            }
+        }
     }
 
     /// Get a Redis connection
@@ -58,13 +151,30 @@ impl RedisJobQueue {
     }
 
     /// Start background task to move scheduled jobs to pending
+    ///
+    /// This task polls the scheduled jobs set and moves due jobs to the pending list.
+    /// It respects the shutdown flag and will exit cleanly when signaled.
     fn start_scheduler_task(&self) {
         let client = self.client.clone();
+        let shutdown = self.shutdown.clone();
+        let scheduler_handle = self.scheduler_handle.clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
+
             loop {
+                // Check shutdown flag before waiting
+                if shutdown.load(Ordering::Acquire) {
+                    tracing::debug!("Redis job queue scheduler shutting down");
+                    break;
+                }
+
                 interval.tick().await;
+
+                // Check again after waking up
+                if shutdown.load(Ordering::Acquire) {
+                    break;
+                }
 
                 if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
                     let now = Utc::now().timestamp();
@@ -81,6 +191,11 @@ impl RedisJobQueue {
 
                     if let Ok(jobs) = results {
                         for (job_json, _score) in jobs {
+                            // Check shutdown before processing each job
+                            if shutdown.load(Ordering::Acquire) {
+                                break;
+                            }
+
                             // Remove from scheduled set
                             let _: redis::RedisResult<()> = redis::cmd("ZREM")
                                 .arg(scheduled_key)
@@ -99,6 +214,18 @@ impl RedisJobQueue {
                 }
             }
         });
+
+        // Store the handle for later cleanup
+        // Note: We use try_lock here since start_scheduler_task is called from new()
+        // which is not async. In practice, this will always succeed since we just created
+        // the mutex.
+        if let Ok(mut guard) = scheduler_handle.try_lock() {
+            *guard = Some(handle);
+        } else {
+            // If we can't store the handle, abort it to prevent orphaned tasks
+            handle.abort();
+            tracing::error!("Failed to store scheduler handle - this should not happen");
+        }
     }
 }
 
@@ -333,6 +460,8 @@ impl JobQueue for RedisJobQueue {
     }
 
     fn is_healthy(&self) -> bool {
-        *self.health.lock().unwrap_or_else(|e| e.into_inner())
+        // Return cached health status from last ping() call
+        // Call ping() periodically via a background task for accurate status
+        self.health_status.load(Ordering::Acquire)
     }
 }

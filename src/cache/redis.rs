@@ -1,6 +1,8 @@
 use crate::error::{Result, TidewayError};
 use crate::traits::cache::Cache;
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Redis cache implementation
@@ -8,6 +10,8 @@ use std::time::Duration;
 pub struct RedisCache {
     client: redis::Client,
     default_ttl: Duration,
+    /// Cached health status (updated by ping operations)
+    health_status: Arc<AtomicBool>,
 }
 
 impl RedisCache {
@@ -19,6 +23,7 @@ impl RedisCache {
         Ok(Self {
             client,
             default_ttl,
+            health_status: Arc::new(AtomicBool::new(true)),
         })
     }
 
@@ -28,6 +33,28 @@ impl RedisCache {
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| TidewayError::internal(format!("Failed to get Redis connection: {}", e)))
+    }
+
+    /// Ping Redis and update health status
+    ///
+    /// Call this periodically to keep health status accurate.
+    /// The synchronous `is_healthy()` returns the cached status.
+    pub async fn ping(&self) -> bool {
+        match self.get_connection().await {
+            Ok(mut conn) => {
+                let result: redis::RedisResult<String> = redis::cmd("PING")
+                    .query_async(&mut conn)
+                    .await;
+                let healthy = result.is_ok();
+                self.health_status.store(healthy, Ordering::Release);
+                healthy
+            }
+            Err(e) => {
+                tracing::warn!("Redis ping failed: {}", e);
+                self.health_status.store(false, Ordering::Release);
+                false
+            }
+        }
     }
 }
 
@@ -96,9 +123,9 @@ impl Cache for RedisCache {
     }
 
     fn is_healthy(&self) -> bool {
-        // Try to get a connection synchronously (best effort)
-        // In practice, you might want to ping Redis periodically
-        self.client.get_connection().is_ok()
+        // Return cached health status from last ping() call
+        // Call ping() periodically via a background task for accurate status
+        self.health_status.load(Ordering::Acquire)
     }
 }
 
