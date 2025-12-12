@@ -5,10 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2025-12-12
+
+### Security
+
+This release contains important security fixes. Users are strongly encouraged to upgrade.
+
+- **Webhook HMAC verification**: Implemented proper HMAC-SHA256 signature verification with timing-safe comparison using the `subtle` crate. Previously, the webhook verifier accepted any non-empty signature.
+
+- **Session encryption key requirement**: Cookie sessions now require an explicit encryption key. Without it, `CookieSessionStore::new()` returns an error. Use `allow_insecure_key: true` for development only.
+
+- **Error information disclosure (CWE-209)**: Server errors (5xx) now hide internal details in production, preventing leakage of database credentials, internal hostnames, SQL queries, and stack traces.
+
+- **Rate limiter IP spoofing**: Added `trust_proxy` configuration (default: `false`). X-Forwarded-For headers are now ignored by default to prevent IP spoofing attacks.
+
+- **CORS disabled by default**: CORS is now disabled by default and must be explicitly enabled.
+
+### Added
+- `HmacSha256Verifier` for webhook signature verification with support for hex, base64, and prefixed signatures
+- `trust_proxy` configuration for rate limiting
+- `allow_insecure_key` configuration for session development mode
+- `safe_message()` method on `TidewayError` for production-safe error messages
+- Comprehensive test suite (200+ tests)
+- Webhook documentation (`docs/webhooks.md`)
+
+### Changed
+- **BREAKING**: CORS `enabled` now defaults to `false` (was `true`)
+- **BREAKING**: Rate limiter `trust_proxy` defaults to `false` - X-Forwarded-For is no longer trusted by default
+- **BREAKING**: Cookie sessions require `encryption_key` or `allow_insecure_key: true`
+- Session encryption key error now returns `Result` instead of panicking
+- Updated `sessions.md`, `rate_limiting.md`, and `error_handling.md` documentation
+
+### Dependencies
+- Added `subtle` crate for timing-safe cryptographic operations
+- `hmac` and `sha2` crates (already present) now used for webhook verification
+
+### Migration Guide
+
+#### CORS Configuration
+
+CORS is now disabled by default. To enable:
+
+```rust
+// Option 1: Use permissive() for development
+let cors = CorsConfig::permissive();
+
+// Option 2: Explicitly enable with origins
+let cors = CorsConfig::builder()
+    .enabled(true)
+    .allow_origin("https://example.com")
+    .build();
+```
+
+#### Session Configuration
+
+Cookie sessions now require an encryption key:
+
+```bash
+# Generate a key
+openssl rand -hex 32
+
+# Set environment variable
+export SESSION_ENCRYPTION_KEY=your-64-char-hex-key
+```
+
+Or for development only:
+```rust
+let config = SessionConfig {
+    allow_insecure_key: true,  // WARNING: Never use in production!
+    ..Default::default()
+};
+```
+
+#### Rate Limiting Behind a Proxy
+
+If your application is behind nginx, AWS ALB, or Cloudflare:
+
+```rust
+let rate_limit = RateLimitConfig::builder()
+    .enabled(true)
+    .per_ip()
+    .trust_proxy(true)  // Enable this if behind a trusted proxy
+    .build();
+```
+
+Or via environment:
+```bash
+export RATE_LIMIT_TRUST_PROXY=true
+```
+
 ## [0.4.0] - 2025-12-11
 
 ### Added
-- Nothing new in this release
+- Comprehensive test coverage for core modules
 
 ### Changed
 - **BREAKING**: `SeaOrmPool::as_ref()` renamed to `SeaOrmPool::inner()` to avoid confusion with `std::convert::AsRef` trait

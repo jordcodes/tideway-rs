@@ -97,10 +97,11 @@ fn validate_user(user: &User) -> Result<()> {
 
 ## Error Responses
 
-### Standard Error Response
+### Production Mode (Default)
 
-All errors automatically return JSON responses:
+In production mode, server errors (5xx) hide internal details to prevent information disclosure (CWE-209):
 
+**Client errors (4xx)** - Details shown to help the user:
 ```json
 {
   "error": "Not found: User not found",
@@ -108,9 +109,28 @@ All errors automatically return JSON responses:
 }
 ```
 
+**Server errors (5xx)** - Generic message to protect internal details:
+```json
+{
+  "error": "Internal server error",
+  "error_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+The full error details are logged server-side with the `error_id` for debugging.
+
+### What's Hidden in Production
+
+Server errors hide:
+- Database connection strings and credentials
+- Internal hostnames and ports
+- SQL queries and database schema
+- Stack traces and internal paths
+- Third-party API details
+
 ### Enhanced Error Response
 
-With context and field errors:
+With context and field errors (client errors only):
 
 ```json
 {
@@ -130,16 +150,18 @@ With context and field errors:
 
 ### Development Mode Response
 
-With stack traces (dev mode only):
+With full error details and stack traces:
 
 ```json
 {
-  "error": "Internal server error: Database connection failed",
+  "error": "Internal server error: Database connection to db-prod:5432 failed",
   "error_id": "550e8400-e29b-41d4-a716-446655440000",
   "details": "Failed to connect to database",
   "stack_trace": "Error: Database connection failed\n  at ..."
 }
 ```
+
+**WARNING**: Never enable dev mode in production - it exposes sensitive information!
 
 ## Error Info
 
