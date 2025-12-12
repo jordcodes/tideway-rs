@@ -221,7 +221,10 @@ impl Default for CorsConfigBuilder {
 }
 
 fn default_enabled() -> bool {
-    true
+    // SECURITY: CORS is disabled by default.
+    // Users must explicitly enable CORS and configure allowed origins.
+    // This prevents accidental exposure of APIs to cross-origin requests.
+    false
 }
 
 fn default_allowed_methods() -> Vec<String> {
@@ -253,10 +256,28 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = CorsConfig::default();
-        assert!(config.enabled);
+        // SECURITY: CORS disabled by default
+        assert!(!config.enabled);
         assert_eq!(config.allowed_origins.len(), 0);
         assert_eq!(config.allowed_methods.len(), 5);
         assert!(!config.allow_credentials);
+    }
+
+    #[test]
+    fn test_cors_disabled_by_default_for_security() {
+        // This is a critical security test: CORS must be disabled by default
+        // to prevent accidental cross-origin API exposure
+        let config = CorsConfig::default();
+        assert!(
+            !config.enabled,
+            "SECURITY: CORS must be disabled by default"
+        );
+
+        let config = CorsConfig::builder().build();
+        assert!(
+            !config.enabled,
+            "SECURITY: CORS must be disabled by default in builder"
+        );
     }
 
     #[test]
@@ -297,5 +318,16 @@ mod tests {
     fn test_builder_any_origin() {
         let config = CorsConfig::builder().allow_any_origin().build();
         assert_eq!(config.allowed_origins, vec!["*"]);
+    }
+
+    #[test]
+    fn test_builder_explicit_enable() {
+        let config = CorsConfig::builder()
+            .enabled(true)
+            .allow_origin("https://example.com")
+            .build();
+
+        assert!(config.enabled);
+        assert_eq!(config.allowed_origins, vec!["https://example.com"]);
     }
 }

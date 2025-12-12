@@ -91,6 +91,14 @@ mod tests {
     }
 
     #[test]
+    fn test_default_config_disabled() {
+        // SECURITY: Default config has CORS disabled
+        let config = CorsConfig::default();
+        let layer = build_cors_layer(&config);
+        assert!(layer.is_none(), "CORS should be disabled by default");
+    }
+
+    #[test]
     fn test_permissive_cors() {
         let config = CorsConfig::permissive();
         let layer = build_cors_layer(&config);
@@ -100,6 +108,7 @@ mod tests {
     #[test]
     fn test_specific_origins() {
         let config = CorsConfig::builder()
+            .enabled(true)
             .allow_origin("https://example.com")
             .build();
         let layer = build_cors_layer(&config);
@@ -107,8 +116,11 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_origins() {
-        let config = CorsConfig::default();
+    fn test_empty_origins_enabled() {
+        // If explicitly enabled but no origins, still creates a layer
+        let config = CorsConfig::builder()
+            .enabled(true)
+            .build();
         let layer = build_cors_layer(&config);
         assert!(layer.is_some());
     }
