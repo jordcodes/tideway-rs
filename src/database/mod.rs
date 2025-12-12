@@ -15,7 +15,7 @@ pub mod sea_orm_pool;
 pub mod sqlx_pool;
 
 #[cfg(feature = "database")]
-pub use config::DatabaseConfig;
+pub use config::{DatabaseConfig, redact_database_url};
 #[cfg(feature = "database")]
 pub use connection::DatabaseConnection;
 #[cfg(feature = "database")]

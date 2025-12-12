@@ -1,3 +1,4 @@
+use crate::database::config::redact_database_url;
 use crate::error::{Result, TidewayError};
 use crate::traits::database::{DatabaseConnection, DatabasePool};
 use async_trait::async_trait;
@@ -26,17 +27,25 @@ impl std::ops::Deref for SeaOrmConnectionWrapper {
 }
 
 /// SeaORM database pool implementation
+///
+/// # Security Note
+///
+/// The stored URL is automatically redacted (password replaced with `[REDACTED]`)
+/// to prevent accidental credential leakage in logs or error messages.
 pub struct SeaOrmPool {
     conn: Arc<SeaOrmConnection>,
-    url: String,
+    /// Redacted URL (safe for logging)
+    redacted_url: String,
 }
 
 impl SeaOrmPool {
     /// Create a new SeaORM pool from a connection
+    ///
+    /// The URL is automatically redacted for safety.
     pub fn new(conn: SeaOrmConnection, url: String) -> Self {
         Self {
             conn: Arc::new(conn),
-            url,
+            redacted_url: redact_database_url(&url),
         }
     }
 
@@ -93,7 +102,7 @@ impl DatabasePool for SeaOrmPool {
     }
 
     fn connection_url(&self) -> Option<&str> {
-        Some(&self.url)
+        Some(&self.redacted_url)
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
