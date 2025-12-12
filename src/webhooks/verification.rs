@@ -2,6 +2,7 @@ use crate::error::Result;
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
+use subtle::ConstantTimeEq;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -159,20 +160,20 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 
 /// Constant-time comparison to prevent timing attacks
 ///
-/// This function compares two byte slices in constant time,
-/// preventing attackers from using timing information to
-/// guess valid signatures byte-by-byte.
+/// Uses the `subtle` crate which provides compiler-optimization-resistant
+/// constant-time operations. This prevents attackers from using timing
+/// information to guess valid signatures byte-by-byte.
+///
+/// Unlike a naive XOR-and-fold implementation, the `subtle` crate uses
+/// optimization barriers to prevent LLVM from converting bitwise operations
+/// back into timing-leaking branches.
 fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
 
-    // XOR all bytes and accumulate - if any differ, result will be non-zero
-    let result = a.iter()
-        .zip(b.iter())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y));
-
-    result == 0
+    // Use subtle's ConstantTimeEq which is resistant to compiler optimizations
+    a.ct_eq(b).into()
 }
 
 #[async_trait]

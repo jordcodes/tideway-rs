@@ -23,16 +23,32 @@ pub struct CookieSessionStore {
 impl CookieSessionStore {
     /// Create a new cookie session store
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if no `encryption_key` is provided and `allow_insecure_key` is `false`.
-    /// This is a security measure to prevent accidental deployment without proper session security.
+    /// Returns an error if:
+    /// - No `encryption_key` is provided and `allow_insecure_key` is `false`
+    /// - The `encryption_key` is not valid hex or not exactly 32 bytes
     ///
     /// # Security
     ///
     /// Always provide a stable encryption key in production. Generate one with:
     /// ```bash
     /// openssl rand -hex 32
+    /// ```
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use tideway::session::{SessionConfig, CookieSessionStore};
+    ///
+    /// let config = SessionConfig {
+    ///     encryption_key: Some("your-64-char-hex-key-here".to_string()),
+    ///     ..Default::default()
+    /// };
+    ///
+    /// // This will fail fast if no key is provided
+    /// let store = CookieSessionStore::new(&config)
+    ///     .expect("Session encryption key is required");
     /// ```
     pub fn new(config: &crate::session::SessionConfig) -> Result<Self> {
         let key = if let Some(ref key_str) = config.encryption_key {
@@ -82,27 +98,13 @@ impl CookieSessionStore {
             );
             Key::generate()
         } else {
-            // Production mode: refuse to start without encryption key
-            panic!(
-                "\n\n\
-                ══════════════════════════════════════════════════════════════════════════════\n\
-                FATAL: Cookie sessions require an encryption key!\n\
-                \n\
-                You must provide a 32-byte hex-encoded encryption key for secure sessions.\n\
-                \n\
-                To fix, set one of:\n\
-                  • Environment variable: SESSION_ENCRYPTION_KEY=<your-64-char-hex-key>\n\
-                  • Config file: session.encryption_key = \"<your-64-char-hex-key>\"\n\
-                \n\
-                Generate a secure key with:\n\
-                  openssl rand -hex 32\n\
-                \n\
-                For development/testing only, you can set:\n\
-                  SESSION_ALLOW_INSECURE_KEY=true\n\
-                \n\
-                DO NOT use allow_insecure_key in production!\n\
-                ══════════════════════════════════════════════════════════════════════════════\n\n"
-            );
+            // Production mode: return error - caller should fail fast
+            return Err(TidewayError::internal(
+                "Cookie sessions require an encryption key. \
+                Set SESSION_ENCRYPTION_KEY environment variable or config.session.encryption_key. \
+                Generate a key with: openssl rand -hex 32. \
+                For development only, set SESSION_ALLOW_INSECURE_KEY=true."
+            ));
         };
 
         Ok(Self {
