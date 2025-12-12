@@ -171,6 +171,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jsonwebtoken::{encode, EncodingKey, Header};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestClaims {
@@ -182,5 +183,75 @@ mod tests {
     fn test_create_verifier_from_secret() {
         let verifier = JwtVerifier::<TestClaims>::from_secret(b"my_secret");
         assert!(verifier.decoding_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_algorithm_confusion_attack_rejected() {
+        // Create a verifier expecting HS256
+        let secret = b"my_secret_key_for_testing_12345";
+        let verifier = JwtVerifier::<TestClaims>::from_secret(secret);
+
+        // Create a valid HS256 token
+        let claims = TestClaims {
+            sub: "user123".to_string(),
+            exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+        };
+
+        let valid_token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
+
+        // Valid token should work
+        let result = verifier.verify(&valid_token).await;
+        assert!(result.is_ok(), "Valid HS256 token should be accepted");
+
+        // Now create a token with a DIFFERENT algorithm (HS384)
+        // This simulates an algorithm confusion attack
+        let wrong_algo_token = encode(
+            &Header::new(Algorithm::HS384),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap();
+
+        // Token with wrong algorithm should be REJECTED
+        let result = verifier.verify(&wrong_algo_token).await;
+        assert!(
+            result.is_err(),
+            "Token with wrong algorithm should be rejected (algorithm confusion protection)"
+        );
+
+        // Verify the error message mentions the algorithm issue
+        if let Err(e) = result {
+            let error_msg = e.to_string();
+            assert!(
+                error_msg.contains("Invalid token"),
+                "Error should indicate invalid token: {}",
+                error_msg
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_none_algorithm_rejected() {
+        // Create a verifier expecting HS256
+        let verifier = JwtVerifier::<TestClaims>::from_secret(b"secret");
+
+        // Manually craft a token with "alg": "none" - a classic JWT attack
+        // Header: {"alg":"none","typ":"JWT"}
+        // This is base64url encoded
+        let none_header = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0";
+        let payload = "eyJzdWIiOiJ1c2VyMTIzIiwiZXhwIjo5OTk5OTk5OTk5fQ";
+        let none_token = format!("{}{}.", none_header, payload);
+
+        // "none" algorithm token should be REJECTED
+        let result = verifier.verify(&none_token).await;
+        assert!(
+            result.is_err(),
+            "Token with 'none' algorithm should be rejected"
+        );
     }
 }
