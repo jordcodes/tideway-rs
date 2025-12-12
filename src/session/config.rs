@@ -109,8 +109,13 @@ impl SessionConfig {
         }
 
         if let Some(ttl) = get_env_with_prefix("SESSION_TTL_SECONDS") {
-            if let Ok(seconds) = ttl.parse() {
-                config.default_ttl_seconds = seconds;
+            match ttl.parse() {
+                Ok(seconds) => config.default_ttl_seconds = seconds,
+                Err(_) => tracing::warn!(
+                    value = %ttl,
+                    "Invalid SESSION_TTL_SECONDS, using default ({})",
+                    default_ttl_seconds()
+                ),
             }
         }
 
@@ -127,11 +132,29 @@ impl SessionConfig {
         }
 
         if let Some(secure) = get_env_with_prefix("SESSION_COOKIE_SECURE") {
-            config.cookie_secure = secure.parse().unwrap_or(true);
+            match secure.parse() {
+                Ok(value) => config.cookie_secure = value,
+                Err(_) => {
+                    tracing::warn!(
+                        value = %secure,
+                        "Invalid SESSION_COOKIE_SECURE (expected true/false), defaulting to true for security"
+                    );
+                    config.cookie_secure = true;
+                }
+            }
         }
 
         if let Some(http_only) = get_env_with_prefix("SESSION_COOKIE_HTTP_ONLY") {
-            config.cookie_http_only = http_only.parse().unwrap_or(true);
+            match http_only.parse() {
+                Ok(value) => config.cookie_http_only = value,
+                Err(_) => {
+                    tracing::warn!(
+                        value = %http_only,
+                        "Invalid SESSION_COOKIE_HTTP_ONLY (expected true/false), defaulting to true for security"
+                    );
+                    config.cookie_http_only = true;
+                }
+            }
         }
 
         if let Some(key) = get_env_with_prefix("SESSION_ENCRYPTION_KEY") {
@@ -139,7 +162,16 @@ impl SessionConfig {
         }
 
         if let Some(allow) = get_env_with_prefix("SESSION_ALLOW_INSECURE_KEY") {
-            config.allow_insecure_key = allow.parse().unwrap_or(false);
+            match allow.parse() {
+                Ok(value) => config.allow_insecure_key = value,
+                Err(_) => {
+                    tracing::warn!(
+                        value = %allow,
+                        "Invalid SESSION_ALLOW_INSECURE_KEY (expected true/false), defaulting to false for security"
+                    );
+                    config.allow_insecure_key = false;
+                }
+            }
         }
 
         config

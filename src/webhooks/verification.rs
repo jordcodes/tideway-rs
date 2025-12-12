@@ -130,10 +130,26 @@ impl HmacSha256Verifier {
     }
 
     /// Decode the provided signature from hex or base64
+    ///
+    /// # Returns
+    ///
+    /// * `Some(bytes)` - Successfully decoded signature
+    /// * `None` - Decoding failed or required prefix was missing
     fn decode_signature(&self, signature: &str) -> Option<Vec<u8>> {
-        // Strip prefix if configured
+        // Strip prefix if configured - if prefix is required but missing, fail
         let sig = if let Some(ref prefix) = self.signature_prefix {
-            signature.strip_prefix(prefix.as_str()).unwrap_or(signature)
+            match signature.strip_prefix(prefix.as_str()) {
+                Some(stripped) => stripped,
+                None => {
+                    // Prefix was configured but not present in signature
+                    // This is a validation failure - don't fall back to unprefixed
+                    tracing::debug!(
+                        expected_prefix = prefix,
+                        "Webhook signature missing required prefix"
+                    );
+                    return None;
+                }
+            }
         } else {
             signature
         };
@@ -426,12 +442,14 @@ mod tests {
         let payload = b"{\"action\": \"push\"}";
         let verifier = HmacSha256Verifier::new_with_prefix(secret.to_vec(), "sha256=");
 
-        // Signature WITHOUT prefix - should still work because we strip prefix if present
+        // Signature WITHOUT required prefix - should FAIL for security
+        // When a prefix is configured, it's required - prevents accepting
+        // signatures in wrong format
         let signature = compute_test_signature(secret, payload);
 
         let result = verifier.verify_signature(payload, &signature).await;
         assert!(result.is_ok());
-        assert!(result.unwrap(), "Signature without prefix should also work");
+        assert!(!result.unwrap(), "Signature missing required prefix should fail");
     }
 
     #[tokio::test]
