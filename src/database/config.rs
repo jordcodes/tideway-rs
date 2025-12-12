@@ -1,14 +1,17 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::SerializeStruct};
 use std::fmt;
 
 /// Database configuration
 ///
 /// # Security Note
 ///
-/// The `Debug` implementation for this struct redacts the database URL
+/// Both `Debug` and `Serialize` implementations for this struct redact the database URL
 /// to prevent accidental logging of credentials. Use [`redacted_url()`]
 /// to get a safe-to-log version of the URL.
-#[derive(Clone, Deserialize, Serialize)]
+///
+/// **Important**: The raw URL is only accessible via the `url` field directly.
+/// All formatted output (Debug, JSON serialization) will show redacted credentials.
+#[derive(Clone, Deserialize)]
 pub struct DatabaseConfig {
     /// Database connection URL
     /// Format: postgres://user:password@host:port/database
@@ -173,6 +176,26 @@ impl fmt::Debug for DatabaseConfig {
     }
 }
 
+/// Custom Serialize implementation that redacts the database URL
+///
+/// This prevents credential leakage through JSON logging, structured logging,
+/// monitoring tools, or any other serialization-based output.
+impl Serialize for DatabaseConfig {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("DatabaseConfig", 6)?;
+        state.serialize_field("url", &self.redacted_url())?;
+        state.serialize_field("max_connections", &self.max_connections)?;
+        state.serialize_field("min_connections", &self.min_connections)?;
+        state.serialize_field("connect_timeout", &self.connect_timeout)?;
+        state.serialize_field("idle_timeout", &self.idle_timeout)?;
+        state.serialize_field("auto_migrate", &self.auto_migrate)?;
+        state.end()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,5 +255,37 @@ mod tests {
         assert!(!redacted.contains("pass123"));
         // URL library may encode brackets as %5B and %5D
         assert!(redacted.contains("REDACTED"), "Missing redaction marker: {}", redacted);
+    }
+
+    #[test]
+    fn test_serialize_does_not_leak_password() {
+        let config = DatabaseConfig {
+            url: "postgres://admin:hunter2@db.example.com:5432/production".to_string(),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("hunter2"), "Password leaked in JSON serialization: {}", json);
+        assert!(json.contains("REDACTED"), "Missing redaction marker in JSON: {}", json);
+        assert!(json.contains("admin"), "Username should be preserved");
+        assert!(json.contains("db.example.com"), "Host should be preserved");
+    }
+
+    #[test]
+    fn test_serialize_deserialize_roundtrip_note() {
+        // Note: Due to security redaction, serialize -> deserialize will NOT
+        // preserve the original password. This is intentional.
+        // Users should store raw URLs separately if needed for reconnection.
+        let config = DatabaseConfig {
+            url: "postgres://user:secret@host/db".to_string(),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: DatabaseConfig = serde_json::from_str(&json).unwrap();
+
+        // The deserialized URL will have [REDACTED] instead of the password
+        assert!(deserialized.url.contains("REDACTED"));
+        assert!(!deserialized.url.contains("secret"));
     }
 }

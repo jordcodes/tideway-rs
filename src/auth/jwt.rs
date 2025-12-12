@@ -2,7 +2,7 @@ use crate::error::{Result, TidewayError};
 use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, decode_header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
 /// JSON Web Key (JWK) as returned by auth providers
@@ -76,6 +76,9 @@ pub struct JwtVerifier<C> {
     issuer_configured: bool,
     /// Track whether audience validation is configured
     audience_configured: bool,
+    /// Ensure security warning is only logged once per verifier instance
+    /// This prevents log spam in high-traffic applications
+    warning_logged: Arc<OnceLock<()>>,
     _claims: std::marker::PhantomData<C>,
 }
 
@@ -100,6 +103,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             validation,
             issuer_configured: false,
             audience_configured: false,
+            warning_logged: Arc::new(OnceLock::new()),
             _claims: std::marker::PhantomData,
         })
     }
@@ -121,6 +125,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             validation,
             issuer_configured: false,
             audience_configured: false,
+            warning_logged: Arc::new(OnceLock::new()),
             _claims: std::marker::PhantomData,
         }
     }
@@ -145,6 +150,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             validation,
             issuer_configured: false,
             audience_configured: false,
+            warning_logged: Arc::new(OnceLock::new()),
             _claims: std::marker::PhantomData,
         })
     }
@@ -181,32 +187,31 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     ///
     /// # Security Warning
     ///
-    /// If issuer or audience validation is not configured, a warning will be logged.
+    /// If issuer or audience validation is not configured, a warning will be logged once.
     /// For production use, always configure both using [`set_issuer`] and [`set_audience`].
     pub async fn verify(&self, token: &str) -> Result<TokenData<C>> {
-        // Warn if issuer/audience validation is not configured
-        // This helps developers notice missing security configuration
+        // Warn ONCE if issuer/audience validation is not configured
+        // Uses OnceLock to prevent log spam in high-traffic applications
         if !self.issuer_configured || !self.audience_configured {
-            // Use warn_once pattern by checking a static flag would be ideal,
-            // but for simplicity we log on each call. In high-traffic scenarios,
-            // this encourages fixing the configuration quickly.
-            if !self.issuer_configured && !self.audience_configured {
-                tracing::warn!(
-                    "JWT verifier has no issuer or audience validation configured. \
-                    This is insecure for production use. Call set_issuer() and set_audience() \
-                    to validate these claims."
-                );
-            } else if !self.issuer_configured {
-                tracing::warn!(
-                    "JWT verifier has no issuer validation configured. \
-                    Call set_issuer() to validate the token issuer."
-                );
-            } else {
-                tracing::warn!(
-                    "JWT verifier has no audience validation configured. \
-                    Call set_audience() to validate the token audience."
-                );
-            }
+            self.warning_logged.get_or_init(|| {
+                if !self.issuer_configured && !self.audience_configured {
+                    tracing::warn!(
+                        "JWT verifier has no issuer or audience validation configured. \
+                        This is insecure for production use. Call set_issuer() and set_audience() \
+                        to validate these claims."
+                    );
+                } else if !self.issuer_configured {
+                    tracing::warn!(
+                        "JWT verifier has no issuer validation configured. \
+                        Call set_issuer() to validate the token issuer."
+                    );
+                } else {
+                    tracing::warn!(
+                        "JWT verifier has no audience validation configured. \
+                        Call set_audience() to validate the token audience."
+                    );
+                }
+            });
         }
 
         // If we have a static decoding key, use it

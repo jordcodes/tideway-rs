@@ -444,6 +444,49 @@ impl ConnectionManager {
             }
         }
     }
+
+    /// Reconcile the atomic connection counter with the actual map size
+    ///
+    /// In rare cases (panics during cleanup, abnormal termination), the atomic
+    /// counter may drift from the actual number of connections. Call this method
+    /// periodically (e.g., every 5 minutes) to detect and correct drift.
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some((atomic_count, actual_count))` if drift was detected and corrected,
+    /// or `None` if no drift was found.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Run reconciliation periodically
+    /// tokio::spawn(async move {
+    ///     let mut interval = tokio::time::interval(Duration::from_secs(300));
+    ///     loop {
+    ///         interval.tick().await;
+    ///         if let Some((old, new)) = manager.reconcile_counter() {
+    ///             tracing::warn!(old, new, "Connection counter drift corrected");
+    ///         }
+    ///     }
+    /// });
+    /// ```
+    pub fn reconcile_counter(&self) -> Option<(u64, u64)> {
+        let actual_count = self.connections.len() as u64;
+        let atomic_count = self.active_count.load(Ordering::Acquire);
+
+        if actual_count != atomic_count {
+            tracing::warn!(
+                actual = actual_count,
+                atomic = atomic_count,
+                drift = (atomic_count as i64 - actual_count as i64),
+                "Connection counter drift detected, correcting"
+            );
+            self.active_count.store(actual_count, Ordering::Release);
+            Some((atomic_count, actual_count))
+        } else {
+            None
+        }
+    }
 }
 
 /// Connection metrics for monitoring
