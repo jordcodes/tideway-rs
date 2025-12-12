@@ -39,12 +39,26 @@ impl TimeoutConfig {
         let mut config = Self::default();
 
         if let Some(enabled) = get_env_with_prefix("TIMEOUT_ENABLED") {
-            config.enabled = enabled.parse().unwrap_or(true);
+            match enabled.parse() {
+                Ok(value) => config.enabled = value,
+                Err(_) => {
+                    tracing::warn!(
+                        value = %enabled,
+                        "Invalid TIMEOUT_ENABLED (expected true/false), using default ({})",
+                        default_enabled()
+                    );
+                }
+            }
         }
 
         if let Some(seconds) = get_env_with_prefix("TIMEOUT_SECONDS") {
-            if let Ok(s) = seconds.parse() {
-                config.timeout_seconds = s;
+            match seconds.parse() {
+                Ok(s) => config.timeout_seconds = s,
+                Err(_) => tracing::warn!(
+                    value = %seconds,
+                    "Invalid TIMEOUT_SECONDS (expected integer), using default ({})",
+                    default_timeout_seconds()
+                ),
             }
         }
 

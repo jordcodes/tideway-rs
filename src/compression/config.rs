@@ -63,7 +63,16 @@ impl CompressionConfig {
         let mut config = Self::default();
 
         if let Some(enabled) = get_env_with_prefix("COMPRESSION_ENABLED") {
-            config.enabled = enabled.parse().unwrap_or(true);
+            match enabled.parse() {
+                Ok(value) => config.enabled = value,
+                Err(_) => {
+                    tracing::warn!(
+                        value = %enabled,
+                        "Invalid COMPRESSION_ENABLED (expected true/false), using default ({})",
+                        default_enabled()
+                    );
+                }
+            }
         }
 
         if let Some(algorithm) = get_env_with_prefix("COMPRESSION_ALGORITHM") {
@@ -71,19 +80,35 @@ impl CompressionConfig {
                 "gzip" => CompressionAlgorithm::Gzip,
                 "brotli" => CompressionAlgorithm::Brotli,
                 "both" => CompressionAlgorithm::Both,
-                _ => CompressionAlgorithm::default(),
+                other => {
+                    tracing::warn!(
+                        value = %other,
+                        "Invalid COMPRESSION_ALGORITHM (expected gzip/brotli/both), using default"
+                    );
+                    CompressionAlgorithm::default()
+                }
             };
         }
 
         if let Some(level) = get_env_with_prefix("COMPRESSION_LEVEL") {
-            if let Ok(l) = level.parse::<u8>() {
-                config.level = l.clamp(1, 9);
+            match level.parse::<u8>() {
+                Ok(l) => config.level = l.clamp(1, 9),
+                Err(_) => tracing::warn!(
+                    value = %level,
+                    "Invalid COMPRESSION_LEVEL (expected 1-9), using default ({})",
+                    default_compression_level()
+                ),
             }
         }
 
         if let Some(quality) = get_env_with_prefix("COMPRESSION_BROTLI_QUALITY") {
-            if let Ok(q) = quality.parse::<u8>() {
-                config.brotli_quality = q.clamp(1, 11);
+            match quality.parse::<u8>() {
+                Ok(q) => config.brotli_quality = q.clamp(1, 11),
+                Err(_) => tracing::warn!(
+                    value = %quality,
+                    "Invalid COMPRESSION_BROTLI_QUALITY (expected 1-11), using default ({})",
+                    default_brotli_quality()
+                ),
             }
         }
 
