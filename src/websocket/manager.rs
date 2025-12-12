@@ -42,6 +42,8 @@ pub struct ConnectionManager {
     users: Arc<DashMap<String, HashSet<String>>>,
     /// Maximum number of connections allowed (0 = unlimited)
     max_connections: usize,
+    /// Current active connection count (atomic for race-free limit checking)
+    active_count: Arc<AtomicU64>,
     /// Total connections ever created (for metrics)
     total_connections: Arc<AtomicU64>,
     /// Total messages broadcast (for metrics)
@@ -64,6 +66,7 @@ impl ConnectionManager {
             rooms: Arc::new(DashMap::new()),
             users: Arc::new(DashMap::new()),
             max_connections,
+            active_count: Arc::new(AtomicU64::new(0)),
             total_connections: Arc::new(AtomicU64::new(0)),
             total_broadcasts: Arc::new(AtomicU64::new(0)),
         }
@@ -74,35 +77,74 @@ impl ConnectionManager {
     /// # Returns
     /// * `Ok(())` - Connection registered successfully
     /// * `Err(TidewayError)` - Connection limit reached or other error
+    ///
+    /// # Thread Safety
+    ///
+    /// This method uses a compare-and-swap loop on an atomic counter to prevent
+    /// race conditions when enforcing the connection limit. Multiple concurrent
+    /// registration attempts are handled safely without exceeding the limit.
     pub async fn register(&self, conn: ConnectionHandle) -> Result<()> {
-        // Check connection limit
-        if self.max_connections > 0 && self.connections.len() >= self.max_connections {
-            return Err(TidewayError::service_unavailable(format!(
-                "Maximum connection limit ({}) reached",
-                self.max_connections
-            )));
-        }
-        let conn_id = {
+        // Get connection info first (before checking limit)
+        let (conn_id, user_id) = {
             let conn_guard = conn.read().await;
-            let id = conn_guard.id().to_string();
-            if let Some(user_id) = conn_guard.user_id() {
-                self.users
-                    .entry(user_id.to_string())
-                    .or_default()
-                    .insert(id.clone());
-            }
-            id
+            (conn_guard.id().to_string(), conn_guard.user_id().map(String::from))
         };
 
+        // Use atomic compare-and-swap to safely reserve a slot
+        // This prevents TOCTOU race conditions where multiple threads could
+        // exceed the connection limit.
+        if self.max_connections > 0 {
+            let max = self.max_connections as u64;
+            loop {
+                let current = self.active_count.load(Ordering::Acquire);
+                if current >= max {
+                    return Err(TidewayError::service_unavailable(format!(
+                        "Maximum connection limit ({}) reached",
+                        self.max_connections
+                    )));
+                }
+
+                // Try to atomically increment the counter
+                // If another thread changed it, retry
+                match self.active_count.compare_exchange_weak(
+                    current,
+                    current + 1,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break, // Successfully reserved a slot
+                    Err(_) => continue, // Another thread modified it, retry
+                }
+            }
+        } else {
+            // No limit, just increment
+            self.active_count.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Now insert the connection (we've already reserved the slot)
         self.connections.insert(conn_id.clone(), conn);
+
+        // Update user mapping if user is authenticated
+        if let Some(uid) = user_id {
+            self.users
+                .entry(uid)
+                .or_default()
+                .insert(conn_id.clone());
+        }
+
         self.total_connections.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
     /// Unregister a connection
+    ///
+    /// Safely removes a connection and decrements the active connection count.
     pub async fn unregister(&self, conn_id: &str) {
         // Remove from connections
         if let Some((_, conn)) = self.connections.remove(conn_id) {
+            // Decrement active count (matches the increment in register)
+            self.active_count.fetch_sub(1, Ordering::Relaxed);
+
             let conn_guard = conn.read().await;
 
             // Remove from user mapping
@@ -352,8 +394,11 @@ impl ConnectionManager {
     }
 
     /// Get the number of active connections
+    ///
+    /// Uses the atomic counter for accurate counting that matches
+    /// the limit enforcement.
     pub fn connection_count(&self) -> usize {
-        self.connections.len()
+        self.active_count.load(Ordering::Relaxed) as usize
     }
 
     /// Get the maximum number of connections allowed (0 = unlimited)
