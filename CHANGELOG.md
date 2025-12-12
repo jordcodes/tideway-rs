@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2025-12-12
+
+### Fixed
+
+- **Compilation fix**: Updated `tower-http` minimum version to 0.6.7 to ensure `TimeoutLayer::with_status_code()` method is available. Version 0.7.0 would fail to compile with older tower-http versions.
+
 ## [0.7.0] - 2025-12-12
 
 ### Security
