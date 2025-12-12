@@ -35,6 +35,7 @@ pub struct Config {
     #[serde(skip)]
     pub metrics: crate::metrics::MetricsConfig,
     #[cfg(feature = "jobs")]
+    #[serde(default)]
     pub jobs: JobsConfig,
 }
 

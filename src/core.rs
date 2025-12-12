@@ -16,6 +16,9 @@ use tokio::signal;
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
+#[cfg(any(feature = "metrics", feature = "jobs"))]
+use std::sync::Arc;
+
 #[cfg(feature = "metrics")]
 use crate::metrics::{build_metrics_layer, metrics_handler, MetricsCollector};
 
