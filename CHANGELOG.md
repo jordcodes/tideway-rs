@@ -5,6 +5,119 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2025-12-12
+
+### Security
+
+This release contains important security hardening for enterprise deployments.
+
+- **ConsoleMailer now redacts email content by default.** Email body content is no longer printed to stdout to prevent sensitive data (tokens, PII, verification links) from being captured in container logs.
+
+- **Webhook signature prefix is now strictly enforced.** When using `HmacSha256Verifier::new_with_prefix()`, signatures missing the required prefix are now rejected instead of silently accepting unprefixed signatures.
+
+- **Database credentials protected in all output.** Both `Debug` and `Serialize` implementations for `DatabaseConfig` now redact the password, preventing credential leakage in logs, JSON serialization, and error messages.
+
+- **JWT warning spam eliminated.** Security warnings for missing issuer/audience validation now fire only once per verifier instance using `OnceLock`.
+
+### Added
+
+- `RedisJobQueue::shutdown()` - Gracefully stop the background scheduler task
+- `RedisJobQueue::ping()` - Async health check that updates cached status
+- `InMemoryJobQueue::shutdown()` - Gracefully stop the background scheduler task
+- `InMemoryJobQueue::with_history_limit()` - Create queue with custom completed/failed history size
+- `RedisCache::ping()` - Async health check that updates cached status
+- `SeaOrmPool::ping()` - Async health check that updates cached status
+- `ConnectionManager::reconcile_counter()` - Detect and correct connection counter drift
+- `ConsoleMailer::with_full_output()` - Opt-in to see full email content (development only)
+- Configuration validation warnings for invalid environment variables (compression, timeout, session configs)
+
+### Changed
+
+- **BREAKING**: `ConsoleMailer` now redacts email body content by default. Use `.with_full_output(true)` to see full content.
+- **BREAKING**: `HmacSha256Verifier::new_with_prefix()` now rejects signatures missing the required prefix (was silently accepting).
+- `InMemoryJobQueue` completed/failed lists are now bounded (default 10,000) to prevent unbounded memory growth.
+- `is_healthy()` methods on `RedisCache`, `RedisJobQueue`, `InMemoryJobQueue`, and `SeaOrmPool` now return cached status from `ping()` instead of blocking.
+- Database pool configuration now validates limits: `max_connections` (1-1000), `connect_timeout` (1-300 seconds).
+- Signal handlers in `App::serve()` use fallback instead of panicking on failure.
+- Shutdown grace period increased from 2 to 5 seconds.
+
+### Fixed
+
+- **Blocking I/O in async context**: `InMemoryJobQueue::is_healthy()` used `blocking_lock()` which could deadlock the async runtime. Now uses `AtomicBool`.
+- **Resource leak**: Background scheduler tasks in `RedisJobQueue` and `InMemoryJobQueue` now have proper shutdown mechanisms.
+- **Unbounded memory growth**: `InMemoryJobQueue` completed/failed job lists now have configurable size limits.
+- **Panic in production**: Removed `expect()` calls in `App::serve()` that could panic on invalid config or signal handler failures.
+- **WebSocket connection counter drift**: Added `reconcile_counter()` to detect and correct atomic counter drift.
+
+### Migration Guide
+
+#### ConsoleMailer (Breaking Change)
+
+If you use `ConsoleMailer` for development and need to see full email content:
+
+```rust
+// Before (0.6.x) - full content shown by default
+let mailer = ConsoleMailer::new();
+
+// After (0.7.0) - content redacted by default
+let mailer = ConsoleMailer::new();  // Shows: "[TEXT] 42 bytes [REDACTED]"
+
+// To see full content (development only):
+let mailer = ConsoleMailer::new().with_full_output(true);
+```
+
+#### Webhook Signature Verification (Breaking Change)
+
+If you use `HmacSha256Verifier::new_with_prefix()`, signatures **must** now include the prefix:
+
+```rust
+// Verifier configured with prefix
+let verifier = HmacSha256Verifier::new_with_prefix(secret, "sha256=");
+
+// Before (0.6.x) - both would pass:
+verifier.verify_signature(payload, "sha256=abc123...").await  // OK
+verifier.verify_signature(payload, "abc123...").await         // Also OK (wrong!)
+
+// After (0.7.0) - prefix is required:
+verifier.verify_signature(payload, "sha256=abc123...").await  // OK
+verifier.verify_signature(payload, "abc123...").await         // FAILS (correct!)
+```
+
+#### Job Queue Shutdown (Recommended)
+
+For clean resource cleanup, call `shutdown()` before dropping job queues:
+
+```rust
+// Redis job queue
+let queue = RedisJobQueue::new("redis://localhost", None, 3, 5)?;
+// ... use queue ...
+queue.shutdown().await;  // NEW: Clean shutdown
+
+// In-memory job queue
+let queue = InMemoryJobQueue::new(3, 60);
+// ... use queue ...
+queue.shutdown().await;  // NEW: Clean shutdown
+```
+
+#### Health Check Pattern (Recommended)
+
+For accurate health status, run periodic `ping()` calls:
+
+```rust
+// Database pool
+let pool = SeaOrmPool::from_config(&config).await?;
+tokio::spawn(async move {
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+        pool.ping().await;  // Updates cached health status
+    }
+});
+
+// is_healthy() now returns cached status (non-blocking)
+if pool.is_healthy() { /* ... */ }
+```
+
 ## [0.6.0] - 2025-12-12
 
 ### Security
