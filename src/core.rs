@@ -53,9 +53,13 @@ impl App {
 
         #[cfg(feature = "metrics")]
         let metrics_collector = if config.metrics.enabled {
-            Some(Arc::new(
-                MetricsCollector::new().expect("Failed to create metrics collector"),
-            ))
+            match MetricsCollector::new() {
+                Ok(collector) => Some(Arc::new(collector)),
+                Err(e) => {
+                    tracing::error!("Failed to create metrics collector: {}. Metrics disabled.", e);
+                    None
+                }
+            }
         } else {
             None
         };
@@ -244,7 +248,10 @@ impl App {
             .config
             .server
             .addr()
-            .expect("Invalid server address in config");
+            .map_err(|e| std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid server address in config: {}", e)
+            ))?;
 
         #[allow(unused_mut)] // Needed for worker_pool.take() when jobs feature is enabled
         let mut app = self.with_middleware();
@@ -368,17 +375,27 @@ impl Default for AppBuilder {
 /// Graceful shutdown signal handler
 async fn shutdown_signal() {
     let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
+        match signal::ctrl_c().await {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::error!("Failed to install Ctrl+C handler: {}. Using fallback.", e);
+                // Fallback: wait forever (other signals or manual shutdown still work)
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(unix)]
     let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut stream) => {
+                stream.recv().await;
+            }
+            Err(e) => {
+                tracing::error!("Failed to install SIGTERM handler: {}. Using fallback.", e);
+                std::future::pending::<()>().await;
+            }
+        }
     };
 
     #[cfg(not(unix))]
@@ -394,6 +411,7 @@ async fn shutdown_signal() {
     }
 
     // Give connections a grace period to close
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // TODO: Make this configurable via ServerConfig
+    tokio::time::sleep(Duration::from_secs(5)).await;
     tracing::info!("Shutdown complete");
 }
