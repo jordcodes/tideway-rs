@@ -249,9 +249,22 @@ impl TidewayError {
     }
 
     /// Convert error to response with enhanced information
+    ///
+    /// # Security
+    ///
+    /// Internal error details are only exposed when `dev_mode` is `true`.
+    /// In production (dev_mode=false), internal errors show a generic message
+    /// to prevent information disclosure to attackers.
     pub fn into_response_with_info(self, info: Option<ErrorInfo>, dev_mode: bool) -> Response {
         let status = self.status_code();
-        let error_msg = self.to_string();
+
+        // In production, hide internal error details from clients
+        // to prevent information disclosure (CWE-209)
+        let error_msg = if dev_mode {
+            self.to_string()
+        } else {
+            self.safe_message()
+        };
 
         let mut response = ErrorResponse {
             error: error_msg,
@@ -282,10 +295,11 @@ impl TidewayError {
 
         let body = Json(response);
 
+        // Log full error details server-side (not exposed to clients in production)
         tracing::error!(
             status = status.as_u16(),
             error_id = %error_id,
-            error = ?self,
+            error = %self, // Full error message for server logs
             "Request failed"
         );
 
@@ -304,6 +318,34 @@ impl TidewayError {
             Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+        }
+    }
+
+    /// Returns a safe error message suitable for client responses in production.
+    ///
+    /// For client errors (4xx), returns the actual error message since these
+    /// are typically safe and useful for the client.
+    ///
+    /// For server errors (5xx), returns a generic message to prevent
+    /// information disclosure (CWE-209). The actual error details are
+    /// logged server-side but not exposed to clients.
+    fn safe_message(&self) -> String {
+        match self {
+            // Client errors - safe to expose (user needs to know what went wrong)
+            Self::NotFound(msg) => format!("Not found: {}", msg),
+            Self::BadRequest(msg) => format!("Bad request: {}", msg),
+            Self::Unauthorized(msg) => format!("Unauthorized: {}", msg),
+            Self::Forbidden(msg) => format!("Forbidden: {}", msg),
+            Self::TooManyRequests(msg) => format!("Too many requests: {}", msg),
+            Self::RequestTimeout => "Request timeout".to_string(),
+
+            // Server errors - hide details in production
+            Self::Internal(_) => "Internal server error".to_string(),
+            Self::Anyhow(_) => "Internal server error".to_string(),
+            Self::ServiceUnavailable(_) => "Service unavailable".to_string(),
+
+            #[cfg(feature = "database")]
+            Self::Database(_) => "Database error".to_string(),
         }
     }
 }
@@ -868,5 +910,89 @@ mod tests {
         assert_eq!(json["error"], "Not found: Item");
         // Should still generate an error_id
         assert!(json["error_id"].as_str().is_some());
+    }
+
+    // ============ safe_message tests (information disclosure prevention) ============
+
+    #[test]
+    fn test_safe_message_client_errors_exposed() {
+        // Client errors should expose their message (user needs to know what's wrong)
+        assert_eq!(
+            TidewayError::not_found("User").safe_message(),
+            "Not found: User"
+        );
+        assert_eq!(
+            TidewayError::bad_request("Invalid email").safe_message(),
+            "Bad request: Invalid email"
+        );
+        assert_eq!(
+            TidewayError::unauthorized("Token expired").safe_message(),
+            "Unauthorized: Token expired"
+        );
+        assert_eq!(
+            TidewayError::forbidden("Admin only").safe_message(),
+            "Forbidden: Admin only"
+        );
+        assert_eq!(
+            TidewayError::too_many_requests("Rate limit").safe_message(),
+            "Too many requests: Rate limit"
+        );
+        assert_eq!(
+            TidewayError::request_timeout().safe_message(),
+            "Request timeout"
+        );
+    }
+
+    #[test]
+    fn test_safe_message_server_errors_hidden() {
+        // Server errors should hide details in production
+        assert_eq!(
+            TidewayError::internal("SQL injection detected: SELECT * FROM users").safe_message(),
+            "Internal server error"
+        );
+        assert_eq!(
+            TidewayError::internal("Connection to db-prod-01:5432 failed").safe_message(),
+            "Internal server error"
+        );
+        assert_eq!(
+            TidewayError::service_unavailable("Redis at cache.internal:6379 unreachable").safe_message(),
+            "Service unavailable"
+        );
+
+        let anyhow_err = anyhow::anyhow!("Sensitive stack trace info");
+        let err: TidewayError = anyhow_err.into();
+        assert_eq!(err.safe_message(), "Internal server error");
+    }
+
+    #[cfg(feature = "database")]
+    #[test]
+    fn test_safe_message_database_errors_hidden() {
+        let err = TidewayError::Database("Query error: relation \"users\" does not exist".to_string());
+        assert_eq!(err.safe_message(), "Database error");
+    }
+
+    #[tokio::test]
+    async fn test_production_mode_hides_internal_details() {
+        let err = TidewayError::internal("Sensitive: db password is 'secret123'");
+        let response = err.into_response_with_info(None, false); // dev_mode = false
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Should NOT contain the sensitive details
+        assert_eq!(json["error"], "Internal server error");
+        assert!(!json["error"].as_str().unwrap().contains("secret123"));
+    }
+
+    #[tokio::test]
+    async fn test_dev_mode_shows_internal_details() {
+        let err = TidewayError::internal("Debug info: connection pool exhausted");
+        let response = err.into_response_with_info(None, true); // dev_mode = true
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Should contain the full error in dev mode
+        assert!(json["error"].as_str().unwrap().contains("connection pool exhausted"));
     }
 }
