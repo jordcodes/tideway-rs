@@ -32,7 +32,7 @@ Cookie sessions store encrypted session data in HTTP cookies. This is stateless 
 
 Generate a secure key:
 ```bash
-openssl rand -hex 32
+openssl rand -hex 64
 ```
 
 ### Configuration
@@ -41,8 +41,8 @@ openssl rand -hex 32
 use tideway::session::{CookieSessionStore, SessionConfig};
 
 let config = SessionConfig {
-    // REQUIRED: 32-byte hex-encoded encryption key
-    encryption_key: Some("your-64-character-hex-key-here".to_string()),
+    // REQUIRED: 64-byte hex-encoded encryption key (128 hex characters)
+    encryption_key: Some("your-128-character-hex-key-here".to_string()),
 
     // Optional settings
     cookie_name: "my_session".to_string(),
@@ -156,7 +156,7 @@ session.extend(Duration::from_secs(7200));
 | `TIDEWAY_SESSION_COOKIE_PATH` | Cookie path | `/` |
 | `TIDEWAY_SESSION_COOKIE_SECURE` | HTTPS only | `true` |
 | `TIDEWAY_SESSION_COOKIE_HTTP_ONLY` | HTTP only flag | `true` |
-| `TIDEWAY_SESSION_ENCRYPTION_KEY` | **Required for cookie sessions**: 32-byte hex key | - |
+| `TIDEWAY_SESSION_ENCRYPTION_KEY` | **Required for cookie sessions**: 64-byte hex key (128 chars) | - |
 | `TIDEWAY_SESSION_ALLOW_INSECURE_KEY` | Allow random key (dev only) | `false` |
 
 ## Custom Implementation
@@ -203,7 +203,7 @@ impl SessionStore for RedisSessionStore {
 ## Security Best Practices
 
 1. **Always use HTTPS** in production (`cookie_secure: true`)
-2. **Generate a strong encryption key** using `openssl rand -hex 32`
+2. **Generate a strong encryption key** using `openssl rand -hex 64`
 3. **Store the key securely** (environment variable, secrets manager)
 4. **Rotate keys periodically** (will invalidate existing sessions)
 5. **Set appropriate TTL** based on your security requirements

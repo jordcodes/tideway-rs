@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2025-12-12
+
+### Security
+
+**Cookie sessions are now properly encrypted.** Previously, session data was stored as plaintext JSON despite having an encryption key configured. This version implements authenticated encryption using XChaCha20-Poly1305 via the `cookie` crate's private cookies.
+
+### Changed
+- **BREAKING**: Cookie session encryption key must now be 64 bytes (128 hex characters), not 32 bytes. Generate with: `openssl rand -hex 64`
+- Session cookies are now encrypted and authenticated - tampered cookies are rejected
+- Added `encrypt()` and `decrypt()` public methods to `CookieSessionStore` for direct use
+- Updated session documentation with correct key size requirements
+
+### Migration Guide
+
+If you were using cookie sessions, regenerate your encryption key:
+
+```bash
+# Old (no longer works):
+# openssl rand -hex 32
+
+# New (required):
+openssl rand -hex 64
+export SESSION_ENCRYPTION_KEY=your-128-char-hex-key
+```
+
+**Important:** Existing sessions will be invalidated when you upgrade, as the encryption format has changed.
+
 ## [0.5.0] - 2025-12-12
 
 ### Security
@@ -59,14 +86,14 @@ let cors = CorsConfig::builder()
 
 #### Session Configuration
 
-Cookie sessions now require an encryption key:
+Cookie sessions now require a 64-byte encryption key (128 hex characters):
 
 ```bash
 # Generate a key
-openssl rand -hex 32
+openssl rand -hex 64
 
 # Set environment variable
-export SESSION_ENCRYPTION_KEY=your-64-char-hex-key
+export SESSION_ENCRYPTION_KEY=your-128-char-hex-key
 ```
 
 Or for development only:
