@@ -147,3 +147,7 @@ harness = false
 [[example]]
 name = "email_example"
 required-features = ["email"]
+
+[[example]]
+name = "seaorm_auth"
+required-features = ["database", "auth", "auth-mfa"]
