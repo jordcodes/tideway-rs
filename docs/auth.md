@@ -489,6 +489,95 @@ tracing_subscriber::fmt()
     .init();
 ```
 
+## Login Rate Limiting
+
+Protect against brute force attacks with IP-based rate limiting on login attempts.
+
+### Basic Setup
+
+```rust
+use tideway::auth::flows::{LoginFlow, LoginRateLimiter, LoginRateLimitConfig};
+
+// Create rate limiter with default config (5 attempts per 15 minutes)
+let rate_limiter = LoginRateLimiter::new(LoginRateLimitConfig::default());
+
+// Add to login flow
+let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config)
+    .with_rate_limiter(rate_limiter);
+```
+
+### Configuration Presets
+
+```rust
+use tideway::auth::flows::LoginRateLimitConfig;
+
+// Default: 5 attempts per 15 minutes
+let config = LoginRateLimitConfig::default();
+
+// Strict: 3 attempts per 30 minutes (high-security apps)
+let config = LoginRateLimitConfig::strict();
+
+// Lenient: 10 attempts per 15 minutes (user-facing apps)
+let config = LoginRateLimitConfig::lenient();
+
+// Custom
+let config = LoginRateLimitConfig::new(
+    7,    // max_attempts
+    600,  // window_seconds (10 minutes)
+);
+```
+
+### Using with IP Address
+
+```rust
+use axum::extract::ConnectInfo;
+use std::net::SocketAddr;
+
+async fn login_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(flow): State<LoginFlow<...>>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>> {
+    // Pass client IP for rate limiting
+    let response = flow.login_with_ip(req, Some(addr.ip().to_string())).await?;
+    Ok(Json(response))
+}
+```
+
+### Behind a Proxy
+
+When behind a reverse proxy, extract the real client IP from headers:
+
+```rust
+async fn login_handler(
+    headers: HeaderMap,
+    State(flow): State<LoginFlow<...>>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>> {
+    // Extract from X-Forwarded-For (trust your proxy!)
+    let client_ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+
+    let response = flow.login_with_ip(req, client_ip).await?;
+    Ok(Json(response))
+}
+```
+
+### Rate Limit Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.login.rate_limited` | WARN | Login blocked due to rate limiting |
+
+### How It Works
+
+1. **IP-based tracking**: Each IP address has its own rate limit bucket
+2. **GCRA algorithm**: Uses governor crate's Generic Cell Rate Algorithm for accurate limiting
+3. **Automatic cleanup**: Stale entries are periodically removed to prevent memory growth
+4. **Complements user lockout**: Works alongside `record_failed_attempt()` for defense in depth
+
 ## Security Best Practices
 
 ### Password Storage
@@ -510,6 +599,7 @@ tracing_subscriber::fmt()
 2. **Require email verification** - set `require_verification(true)`
 3. **Enable MFA** - encourage TOTP setup
 4. **Monitor security events** - alert on `auth.token.reuse_detected`
+5. **Enable login rate limiting** - use `with_rate_limiter()` to protect against brute force
 
 ### Email Enumeration Prevention
 

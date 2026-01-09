@@ -6,6 +6,7 @@
 //! - `auth.login.unverified` - Login blocked due to unverified email
 //! - `auth.login.success` - Successful login
 //! - `auth.login.mfa_required` - MFA challenge issued
+//! - `auth.login.rate_limited` - Login blocked due to IP rate limiting
 //! - `auth.mfa.failed` - Failed MFA verification
 //! - `auth.mfa.backup_used` - Backup code consumed
 //! - `auth.password.rehashed` - Password hash upgraded
@@ -17,6 +18,7 @@ use crate::error::{Result, TidewayError};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use std::time::{Duration, SystemTime};
 
+use super::rate_limit::{LoginRateLimiter, OptionalRateLimiter, WithRateLimiter};
 use super::types::{LoginRequest, LoginResponse, MfaVerifyRequest};
 
 #[cfg(feature = "auth-mfa")]
@@ -99,17 +101,19 @@ pub trait TokenIssuer: Send + Sync {
 }
 
 /// Handles the login flow including MFA.
-pub struct LoginFlow<U, M, T, R = ()>
+pub struct LoginFlow<U, M, T, R = (), L = ()>
 where
     U: UserStore,
     M: MfaTokenStore,
     T: TokenIssuer<User = U::User>,
     R: OptionalRefreshTokenStore,
+    L: OptionalRateLimiter,
 {
     user_store: U,
     mfa_store: M,
     token_issuer: T,
     refresh_store: R,
+    rate_limiter: L,
     password_hasher: PasswordHasher,
     #[cfg(feature = "auth-mfa")]
     totp_manager: TotpManager,
@@ -142,13 +146,13 @@ impl<S: RefreshTokenStore> OptionalRefreshTokenStore for WithRefreshStore<S> {
     }
 }
 
-impl<U, M, T> LoginFlow<U, M, T, ()>
+impl<U, M, T> LoginFlow<U, M, T, (), ()>
 where
     U: UserStore,
     M: MfaTokenStore,
     T: TokenIssuer<User = U::User>,
 {
-    /// Create a new login flow without refresh token store.
+    /// Create a new login flow without refresh token store or rate limiter.
     /// Token families will not be stored (refresh token rotation tracking disabled).
     pub fn new(user_store: U, mfa_store: M, token_issuer: T, config: LoginFlowConfig) -> Self {
         Self {
@@ -159,21 +163,31 @@ where
             mfa_store,
             token_issuer,
             refresh_store: (),
+            rate_limiter: (),
             config,
         }
     }
+}
 
+impl<U, M, T, L> LoginFlow<U, M, T, (), L>
+where
+    U: UserStore,
+    M: MfaTokenStore,
+    T: TokenIssuer<User = U::User>,
+    L: OptionalRateLimiter,
+{
     /// Add a refresh token store for token family tracking.
     /// This enables refresh token rotation and revocation.
     pub fn with_refresh_store<R: RefreshTokenStore>(
         self,
         refresh_store: R,
-    ) -> LoginFlow<U, M, T, WithRefreshStore<R>> {
+    ) -> LoginFlow<U, M, T, WithRefreshStore<R>, L> {
         LoginFlow {
             user_store: self.user_store,
             mfa_store: self.mfa_store,
             token_issuer: self.token_issuer,
             refresh_store: WithRefreshStore(refresh_store),
+            rate_limiter: self.rate_limiter,
             password_hasher: self.password_hasher,
             #[cfg(feature = "auth-mfa")]
             totp_manager: self.totp_manager,
@@ -182,17 +196,91 @@ where
     }
 }
 
-impl<U, M, T, R> LoginFlow<U, M, T, R>
+impl<U, M, T, R> LoginFlow<U, M, T, R, ()>
 where
     U: UserStore,
     M: MfaTokenStore,
     T: TokenIssuer<User = U::User>,
     R: OptionalRefreshTokenStore,
 {
+    /// Add an IP-based rate limiter for brute force protection.
+    ///
+    /// The rate limiter is checked before any authentication logic runs,
+    /// preventing brute force attacks at the IP level.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use tideway::auth::flows::{LoginFlow, LoginRateLimiter, LoginRateLimitConfig};
+    ///
+    /// let rate_limiter = LoginRateLimiter::new(LoginRateLimitConfig::default());
+    ///
+    /// let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config)
+    ///     .with_rate_limiter(rate_limiter);
+    /// ```
+    pub fn with_rate_limiter(
+        self,
+        rate_limiter: LoginRateLimiter,
+    ) -> LoginFlow<U, M, T, R, WithRateLimiter> {
+        LoginFlow {
+            user_store: self.user_store,
+            mfa_store: self.mfa_store,
+            token_issuer: self.token_issuer,
+            refresh_store: self.refresh_store,
+            rate_limiter: WithRateLimiter(rate_limiter),
+            password_hasher: self.password_hasher,
+            #[cfg(feature = "auth-mfa")]
+            totp_manager: self.totp_manager,
+            config: self.config,
+        }
+    }
+}
 
+impl<U, M, T, R, L> LoginFlow<U, M, T, R, L>
+where
+    U: UserStore,
+    M: MfaTokenStore,
+    T: TokenIssuer<User = U::User>,
+    R: OptionalRefreshTokenStore,
+    L: OptionalRateLimiter,
+{
     /// Primary login endpoint - handles email/password and optional MFA.
+    ///
+    /// This method does not perform IP-based rate limiting. Use [`login_with_ip`]
+    /// if you have configured a rate limiter.
     #[cfg(feature = "auth")]
     pub async fn login(&self, req: LoginRequest) -> Result<LoginResponse> {
+        self.login_with_ip(req, None).await
+    }
+
+    /// Primary login endpoint with IP-based rate limiting.
+    ///
+    /// Pass the client's IP address to enable rate limiting protection
+    /// against brute force attacks.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use axum::extract::ConnectInfo;
+    /// use std::net::SocketAddr;
+    ///
+    /// async fn login_handler(
+    ///     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ///     State(flow): State<LoginFlow<...>>,
+    ///     Json(req): Json<LoginRequest>,
+    /// ) -> Result<Json<LoginResponse>> {
+    ///     let response = flow.login_with_ip(req, Some(addr.ip().to_string())).await?;
+    ///     Ok(Json(response))
+    /// }
+    /// ```
+    #[cfg(feature = "auth")]
+    pub async fn login_with_ip(
+        &self,
+        req: LoginRequest,
+        client_ip: Option<String>,
+    ) -> Result<LoginResponse> {
+        // Check rate limit first (before any auth logic)
+        self.rate_limiter.check_rate_limit(client_ip.as_deref())?;
         // Normalize email
         let email = req.email.trim().to_lowercase();
 

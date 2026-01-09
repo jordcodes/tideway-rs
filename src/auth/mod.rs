@@ -68,10 +68,11 @@ pub use storage::{RefreshTokenStore, UserStore};
 // Flow re-exports (when auth feature enabled)
 #[cfg(feature = "auth")]
 pub use flows::{
-    EmailVerificationFlow, EmailVerifyRequest, LoginFlow, LoginFlowConfig, LoginRequest,
-    LoginResponse, LogoutRequest, MfaType, MfaVerifyRequest, PasswordResetComplete,
-    PasswordResetFlow, PasswordResetRequest, RefreshRequest, RegisterRequest, RegistrationFlow,
-    ResendVerificationRequest, TokenIssuer, TokenIssuance, WithRefreshStore,
+    EmailVerificationFlow, EmailVerifyRequest, LoginFlow, LoginFlowConfig, LoginRateLimitConfig,
+    LoginRateLimiter, LoginRequest, LoginResponse, LogoutRequest, MfaType, MfaVerifyRequest,
+    PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, RefreshRequest,
+    RegisterRequest, RegistrationFlow, ResendVerificationRequest, TokenIssuer, TokenIssuance,
+    WithRateLimiter, WithRefreshStore,
 };
 
 // MFA re-exports (when auth-mfa feature enabled)
