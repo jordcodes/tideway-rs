@@ -1685,3 +1685,18 @@ See `examples/seaorm_auth.rs` for a complete working example with:
 - All storage trait implementations
 - HTTP endpoints for register, login, refresh
 - Token rotation and MFA support
+
+## Future Enhancements
+
+The following features are not currently implemented but may be added in future versions:
+
+| Feature | Description | Use Case |
+|---------|-------------|----------|
+| **Password History** | Prevent reuse of last N passwords | Enterprise compliance (SOC2, HIPAA) |
+| **Magic Links** | Passwordless login via email link | Improved UX, reduced friction |
+| **OAuth/Social Login** | Google, GitHub, Apple sign-in | Consumer apps, reduced registration friction |
+| **API Keys** | Long-lived tokens with scopes for service-to-service auth | Developer APIs, integrations |
+| **Login Notifications** | Email alerts on new device/location login | Security-conscious users |
+| **Remember Me Tokens** | Persistent login across browser sessions | Long-lived user sessions |
+
+Note: Password expiry (forced rotation) is intentionally not planned, as [NIST guidelines](https://pages.nist.gov/800-63-3/sp800-63b.html) now recommend against mandatory periodic password changes.
