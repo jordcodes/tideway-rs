@@ -10,6 +10,7 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **Auth Flows**: Login, registration, password reset, email verification
 - **Breach Checking**: HaveIBeenPwned integration (opt-in)
 - **Session Management**: List and revoke active sessions
+- **Trusted Devices**: Remember devices to skip MFA on subsequent logins
 - **Security Events**: Comprehensive tracing for monitoring
 
 ## Quick Start
@@ -637,6 +638,204 @@ pub struct SessionInfo {
 | `auth.session.revoke_others` | INFO | Other sessions revoked |
 | `auth.session.limit_exceeded` | WARN | Session limit exceeded (reject mode) |
 | `auth.session.evicted` | INFO | Session evicted due to limit |
+
+## Trusted Devices
+
+Allow users to mark devices as "trusted" after MFA to skip MFA on subsequent logins.
+
+### TrustedDeviceStore Trait
+
+```rust
+use tideway::auth::trusted_device::{TrustedDeviceStore, TrustedDevice, DeviceFingerprint};
+use async_trait::async_trait;
+
+#[async_trait]
+impl TrustedDeviceStore for MyTrustedDeviceStore {
+    // Store a new trusted device
+    async fn store_trusted_device(&self, device: &TrustedDevice) -> Result<()>;
+
+    // Find by user and token hash
+    async fn find_by_token_hash(
+        &self,
+        user_id: &str,
+        token_hash: &str,
+    ) -> Result<Option<TrustedDevice>>;
+
+    // List all trusted devices for a user
+    async fn list_trusted_devices(&self, user_id: &str) -> Result<Vec<TrustedDevice>>;
+
+    // Update last_used_at timestamp
+    async fn touch_trusted_device(&self, device_id: &str) -> Result<()>;
+
+    // Revoke specific device
+    async fn revoke_trusted_device(&self, device_id: &str) -> Result<bool>;
+
+    // Revoke all trusted devices for user
+    async fn revoke_all_trusted_devices(&self, user_id: &str) -> Result<usize>;
+
+    // Remove expired trusted devices
+    async fn cleanup_expired(&self) -> Result<usize>;
+}
+```
+
+### TrustedDeviceManager
+
+High-level trusted device operations with tracing:
+
+```rust
+use tideway::auth::trusted_device::{
+    TrustedDeviceManager, TrustedDeviceConfig, DeviceFingerprint
+};
+
+// Configure
+let config = TrustedDeviceConfig::new()
+    .trust_duration(Duration::from_secs(30 * 24 * 60 * 60)) // 30 days
+    .max_devices_per_user(10)
+    .validate_fingerprint(false); // Don't require exact IP match
+
+let manager = TrustedDeviceManager::new(trusted_device_store, config);
+
+// After MFA success, trust the device
+let fingerprint = DeviceFingerprint::new()
+    .with_ip("192.168.1.1")
+    .with_user_agent("Mozilla/5.0 (Macintosh) Chrome/120.0.0.0");
+
+let trust_token = manager.trust_device("user-123", fingerprint).await?;
+// Return trust_token to client (set as secure cookie)
+
+// On next login, check if device is trusted
+let is_trusted = manager.is_trusted("user-123", &trust_token, None).await?;
+if is_trusted {
+    // Skip MFA, proceed directly to token issuance
+}
+```
+
+### Integration with Login Flow
+
+```rust
+async fn login_handler(req: LoginRequest) -> Result<LoginResponse> {
+    // Check credentials...
+
+    if user_has_mfa_enabled {
+        // Check if device is trusted first
+        if let Some(trust_token) = req.trust_token {
+            let fingerprint = DeviceFingerprint::new()
+                .with_ip(client_ip)
+                .with_user_agent(user_agent);
+
+            if manager.is_trusted(&user_id, &trust_token, Some(fingerprint)).await? {
+                // Skip MFA, issue tokens directly
+                return Ok(issue_tokens(user_id));
+            }
+        }
+
+        // Device not trusted, require MFA
+        return Ok(LoginResponse::MfaRequired { .. });
+    }
+
+    Ok(issue_tokens(user_id))
+}
+
+async fn verify_mfa_handler(req: MfaVerifyRequest) -> Result<LoginResponse> {
+    // Verify MFA code...
+
+    // Optionally trust this device
+    if req.trust_this_device {
+        let fingerprint = DeviceFingerprint::new()
+            .with_ip(client_ip)
+            .with_user_agent(user_agent);
+
+        let trust_token = manager.trust_device(&user_id, fingerprint).await?;
+        // Include trust_token in response for client to store
+    }
+
+    Ok(issue_tokens(user_id))
+}
+```
+
+### Managing Trusted Devices
+
+```rust
+// List user's trusted devices
+let devices = manager.list_devices("user-123").await?;
+
+for device in devices {
+    println!(
+        "{}: {} - Last used: {:?}",
+        device.device_name.unwrap_or_default(), // "Chrome on macOS"
+        device.ip_address.unwrap_or_default(),
+        device.last_used_at,
+    );
+}
+
+// Revoke specific device
+manager.revoke_device("user-123", "device-id").await?;
+
+// Revoke all trusted devices (security event, password change)
+manager.revoke_all_devices("user-123").await?;
+```
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `trust_duration` | 30 days | How long a device stays trusted |
+| `max_devices_per_user` | 10 | Maximum trusted devices (oldest evicted) |
+| `validate_fingerprint` | `false` | Require IP/UA to match when verifying |
+
+### Fingerprint Validation
+
+When `validate_fingerprint` is enabled:
+
+```rust
+let config = TrustedDeviceConfig::new()
+    .validate_fingerprint(true);
+
+// Trust token will only work from same IP/user agent
+// Useful for high-security applications, but may cause issues
+// with dynamic IPs or browser updates
+```
+
+### Security Notes
+
+- **Token hashing**: Trust tokens are hashed with SHA-256 before storage
+- **Token entropy**: Tokens are 256-bit random values
+- **Ownership verification**: Can only revoke devices belonging to the user
+- **Automatic eviction**: Oldest device evicted when limit reached
+- **Input validation**: IP and user agent are truncated to prevent DoS
+
+### Trusted Device Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.trusted_device.created` | INFO | Device marked as trusted |
+| `auth.trusted_device.verified` | DEBUG | Trust token verified |
+| `auth.trusted_device.expired` | DEBUG | Trust token expired |
+| `auth.trusted_device.fingerprint_mismatch` | WARN | IP/UA mismatch (when validating) |
+| `auth.trusted_device.revoked` | INFO | Specific device revoked |
+| `auth.trusted_device.revoke_all` | WARN | All devices revoked |
+| `auth.trusted_device.evicted` | INFO | Device evicted due to limit |
+| `auth.trusted_device.cleanup` | INFO | Expired devices cleaned up |
+
+### Database Schema
+
+```sql
+CREATE TABLE trusted_devices (
+    id VARCHAR(255) PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES users(id),
+    token_hash VARCHAR(64) NOT NULL,     -- SHA-256 hex
+    device_name VARCHAR(255),            -- Parsed: "Chrome on macOS"
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    trusted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    last_used_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_trusted_devices_user ON trusted_devices(user_id);
+CREATE INDEX idx_trusted_devices_lookup ON trusted_devices(user_id, token_hash);
+CREATE INDEX idx_trusted_devices_expiry ON trusted_devices(expires_at);
+```
 
 ### Reuse Detection
 

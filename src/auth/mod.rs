@@ -45,6 +45,7 @@ pub mod password;
 pub mod refresh;
 pub mod sessions;
 pub mod storage;
+pub mod trusted_device;
 
 // Existing re-exports
 pub use extractors::{AuthUser, OptionalAuth};
@@ -97,3 +98,11 @@ pub use sessions::{
 };
 #[cfg(any(test, feature = "test-auth-bypass"))]
 pub use sessions::test::InMemorySessionStore;
+
+// Trusted device re-exports
+pub use trusted_device::{
+    DeviceFingerprint, TrustedDevice, TrustedDeviceConfig, TrustedDeviceManager,
+    TrustedDeviceStore,
+};
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use trusted_device::test::InMemoryTrustedDeviceStore;
