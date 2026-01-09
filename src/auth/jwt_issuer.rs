@@ -266,7 +266,7 @@ impl JwtIssuer {
             SecretKey::Symmetric(secret) => EncodingKey::from_secret(secret),
             SecretKey::Rsa { private_pem } => {
                 EncodingKey::from_rsa_pem(private_pem).map_err(|e| {
-                    TidewayError::Internal(format!("Invalid RSA private key: {}", e).into())
+                    TidewayError::Internal(format!("Invalid RSA private key: {}", e))
                 })?
             }
         };
@@ -339,10 +339,10 @@ impl JwtIssuer {
         let header = self.build_header();
 
         let access_token = encode(&header, &access_claims, &self.encoding_key)
-            .map_err(|e| TidewayError::Internal(format!("Failed to encode access token: {}", e).into()))?;
+            .map_err(|e| TidewayError::Internal(format!("Failed to encode access token: {}", e)))?;
 
         let refresh_token = encode(&header, &refresh_claims, &self.encoding_key)
-            .map_err(|e| TidewayError::Internal(format!("Failed to encode refresh token: {}", e).into()))?;
+            .map_err(|e| TidewayError::Internal(format!("Failed to encode refresh token: {}", e)))?;
 
         Ok(TokenPair {
             access_token,
@@ -379,7 +379,7 @@ impl JwtIssuer {
         let header = self.build_header();
 
         let token = encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| TidewayError::Internal(format!("Failed to encode access token: {}", e).into()))?;
+            .map_err(|e| TidewayError::Internal(format!("Failed to encode access token: {}", e)))?;
 
         Ok((token, self.config.access_token_ttl.as_secs()))
     }
@@ -411,7 +411,7 @@ impl JwtIssuer {
         let header = self.build_header();
 
         encode(&header, &claims, &self.encoding_key)
-            .map_err(|e| TidewayError::Internal(format!("Failed to encode refresh token: {}", e).into()))
+            .map_err(|e| TidewayError::Internal(format!("Failed to encode refresh token: {}", e)))
     }
 
     /// Get the issuer string.

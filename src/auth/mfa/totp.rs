@@ -83,7 +83,7 @@ impl TotpManager {
 
         let qr_code = totp
             .get_qr_base64()
-            .map_err(|e| TidewayError::Internal(format!("Failed to generate QR code: {}", e).into()))?;
+            .map_err(|e| TidewayError::Internal(format!("Failed to generate QR code: {}", e)))?;
 
         Ok(TotpSetup {
             secret: secret_base32,
@@ -142,11 +142,11 @@ impl TotpManager {
             self.config.step,
             Secret::Encoded(secret.to_string())
                 .to_bytes()
-                .map_err(|e| TidewayError::Internal(format!("Invalid TOTP secret: {}", e).into()))?,
+                .map_err(|e| TidewayError::Internal(format!("Invalid TOTP secret: {}", e)))?,
             Some(self.config.issuer.clone()),
             account_name.to_string(),
         )
-        .map_err(|e| TidewayError::Internal(format!("Failed to create TOTP: {}", e).into()))
+        .map_err(|e| TidewayError::Internal(format!("Failed to create TOTP: {}", e)))
     }
 }
 

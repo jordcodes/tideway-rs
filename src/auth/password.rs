@@ -99,7 +99,7 @@ impl PasswordHasher {
         argon2
             .hash_password(password.as_bytes(), &salt)
             .map(|hash| hash.to_string())
-            .map_err(|e| TidewayError::Internal(format!("Password hashing failed: {}", e).into()))
+            .map_err(|e| TidewayError::Internal(format!("Password hashing failed: {}", e)))
     }
 
     /// Verify a password against a stored hash.
@@ -108,7 +108,7 @@ impl PasswordHasher {
     #[cfg(feature = "auth")]
     pub fn verify(&self, password: &str, hash: &str) -> Result<bool> {
         let parsed_hash = PasswordHash::new(hash)
-            .map_err(|e| TidewayError::Internal(format!("Invalid password hash format: {}", e).into()))?;
+            .map_err(|e| TidewayError::Internal(format!("Invalid password hash format: {}", e)))?;
 
         // Argon2 verify is already constant-time
         Ok(Argon2::default()
@@ -122,7 +122,7 @@ impl PasswordHasher {
     #[cfg(feature = "auth")]
     pub fn needs_rehash(&self, hash: &str) -> Result<bool> {
         let parsed = PasswordHash::new(hash)
-            .map_err(|e| TidewayError::Internal(format!("Invalid hash format: {}", e).into()))?;
+            .map_err(|e| TidewayError::Internal(format!("Invalid hash format: {}", e)))?;
 
         // Check if algorithm is Argon2id
         if parsed.algorithm != argon2::ARGON2ID_IDENT {
@@ -155,7 +155,7 @@ impl PasswordHasher {
             self.config.parallelism,
             None, // Default output length (32 bytes)
         )
-        .map_err(|e| TidewayError::Internal(format!("Invalid Argon2 params: {}", e).into()))?;
+        .map_err(|e| TidewayError::Internal(format!("Invalid Argon2 params: {}", e)))?;
 
         Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
     }
@@ -328,7 +328,7 @@ impl PasswordPolicy {
                     .map(|e| e.message())
                     .collect::<Vec<_>>()
                     .join(", ")
-            ).into()))
+            )))
         }
     }
 }

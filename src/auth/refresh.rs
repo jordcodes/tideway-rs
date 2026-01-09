@@ -102,7 +102,7 @@ where
         }
 
         let decoding_key = DecodingKey::from_rsa_pem(public_key_pem)
-            .map_err(|e| TidewayError::Internal(format!("Invalid RSA public key: {}", e).into()))?;
+            .map_err(|e| TidewayError::Internal(format!("Invalid RSA public key: {}", e)))?;
 
         Ok(Self {
             issuer,
@@ -119,7 +119,7 @@ where
     pub async fn refresh(&self, refresh_token: &str) -> Result<TokenPair> {
         // Decode refresh token
         let claims = decode::<RefreshTokenClaims>(refresh_token, &self.decoding_key, &self.validation)
-            .map_err(|e| TidewayError::Unauthorized(format!("Invalid refresh token: {}", e).into()))?
+            .map_err(|e| TidewayError::Unauthorized(format!("Invalid refresh token: {}", e)))?
             .claims;
 
         // Verify it's a refresh token
@@ -187,7 +187,7 @@ where
     /// Revoke a specific refresh token (logout).
     pub async fn revoke(&self, refresh_token: &str) -> Result<()> {
         let claims = decode::<RefreshTokenClaims>(refresh_token, &self.decoding_key, &self.validation)
-            .map_err(|e| TidewayError::Unauthorized(format!("Invalid refresh token: {}", e).into()))?
+            .map_err(|e| TidewayError::Unauthorized(format!("Invalid refresh token: {}", e)))?
             .claims;
 
         self.store.revoke_family(&claims.family).await

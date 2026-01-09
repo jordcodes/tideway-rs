@@ -4,20 +4,17 @@ use crate::utils::get_env_with_prefix;
 /// Compression algorithm selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum CompressionAlgorithm {
     /// Gzip compression
     Gzip,
     /// Brotli compression (better compression ratio, slower)
     Brotli,
     /// Both gzip and brotli (client chooses via Accept-Encoding)
+    #[default]
     Both,
 }
 
-impl Default for CompressionAlgorithm {
-    fn default() -> Self {
-        Self::Both
-    }
-}
 
 /// Compression configuration for Tideway applications
 #[derive(Debug, Clone, Deserialize, Serialize)]

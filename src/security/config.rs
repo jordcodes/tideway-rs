@@ -4,28 +4,27 @@ use crate::utils::get_env_with_prefix;
 /// X-Frame-Options header value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[derive(Default)]
 pub enum XFrameOptions {
     /// DENY - Don't allow framing at all
+    #[default]
     Deny,
     /// SAMEORIGIN - Allow framing from same origin
     SameOrigin,
 }
 
-impl Default for XFrameOptions {
-    fn default() -> Self {
-        Self::Deny
-    }
-}
 
 /// Referrer-Policy header value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum ReferrerPolicy {
     /// No referrer information is sent
     NoReferrer,
     /// Only send referrer for same-origin requests
     SameOrigin,
     /// Send full referrer for same-origin, only origin for cross-origin
+    #[default]
     StrictOriginWhenCrossOrigin,
     /// Send origin only
     StrictOrigin,
@@ -33,11 +32,6 @@ pub enum ReferrerPolicy {
     UnsafeUrl,
 }
 
-impl Default for ReferrerPolicy {
-    fn default() -> Self {
-        Self::StrictOriginWhenCrossOrigin
-    }
-}
 
 /// Security headers configuration for Tideway applications
 #[derive(Debug, Clone, Deserialize, Serialize)]
