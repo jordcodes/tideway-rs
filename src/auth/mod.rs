@@ -74,6 +74,7 @@ pub use storage::{RefreshTokenStore, UserStore};
 pub use flows::{
     EmailVerificationFlow, EmailVerifyRequest, LoginFlow, LoginFlowConfig, LoginRateLimitConfig,
     LoginRateLimiter, LoginRequest, LoginResponse, LogoutRequest, MfaType, MfaVerifyRequest,
+    PasswordChangeConfig, PasswordChangeFlow, PasswordChangeRequest, PasswordChangeStore,
     PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, RefreshRequest,
     RegisterRequest, RegistrationFlow, ResendVerificationRequest, TokenIssuer, TokenIssuance,
     WithRateLimiter, WithRefreshStore,

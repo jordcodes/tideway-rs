@@ -156,3 +156,12 @@ pub struct LogoutRequest {
     /// The refresh token to revoke.
     pub refresh_token: String,
 }
+
+/// Password change request (for authenticated users).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PasswordChangeRequest {
+    /// The user's current password (for verification).
+    pub current_password: String,
+    /// The new password to set.
+    pub new_password: String,
+}

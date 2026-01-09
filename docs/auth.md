@@ -329,6 +329,77 @@ let policy = PasswordPolicy::new()
 policy.check("MyPassword123!")?;
 ```
 
+## Password Change
+
+For authenticated users who want to change their password (not forgot password).
+
+### PasswordChangeStore Trait
+
+```rust
+use tideway::auth::flows::{PasswordChangeStore};
+use async_trait::async_trait;
+
+#[async_trait]
+impl PasswordChangeStore for MyStore {
+    // Get current password hash by user ID
+    async fn get_password_hash(&self, user_id: &str) -> Result<Option<String>>;
+
+    // Update password hash
+    async fn update_password(&self, user_id: &str, hash: &str) -> Result<()>;
+
+    // Invalidate other sessions (keep current session active)
+    async fn invalidate_other_sessions(
+        &self,
+        user_id: &str,
+        except_session_id: Option<&str>,
+    ) -> Result<usize>;
+}
+```
+
+### PasswordChangeFlow
+
+```rust
+use tideway::auth::flows::{PasswordChangeFlow, PasswordChangeRequest};
+
+let flow = PasswordChangeFlow::new(store);
+
+// User is authenticated - we have user_id from JWT
+// current_session_id from token family keeps this session active
+flow.change_password(
+    "user-123",
+    PasswordChangeRequest {
+        current_password: "old-password".to_string(),
+        new_password: "new-secure-password".to_string(),
+    },
+    Some("current-session-id"),
+).await?;
+```
+
+### Configuration
+
+```rust
+use tideway::auth::flows::{PasswordChangeFlow, PasswordChangeConfig, PasswordPolicy};
+
+let flow = PasswordChangeFlow::new(store)
+    .with_policy(PasswordPolicy::strict())  // Require strong password
+    .without_session_invalidation();        // Don't log out other devices
+```
+
+### Security Features
+
+- **Current password verification**: Must know current password to change it
+- **Password policy enforcement**: New password must meet requirements
+- **Same password prevention**: Cannot set new password same as current
+- **Session invalidation**: Logs out all other devices by default
+
+### Password Change Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.password.change_failed` | WARN | Wrong current password |
+| `auth.password.change_failed` | INFO | Weak new password or same password |
+| `auth.password.changed` | INFO | Password changed successfully |
+
 ## Password Breach Checking
 
 Check passwords against the HaveIBeenPwned database to prevent use of compromised passwords.
