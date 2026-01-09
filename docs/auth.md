@@ -7,10 +7,11 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **Password Hashing**: Argon2id with automatic rehashing
 - **JWT Tokens**: Access and refresh tokens with rotation
 - **MFA**: TOTP (Google Authenticator) and backup codes
-- **Auth Flows**: Login, registration, password reset, email verification
+- **Auth Flows**: Login, registration, password reset/change, email verification
 - **Breach Checking**: HaveIBeenPwned integration (opt-in)
 - **Session Management**: List and revoke active sessions
 - **Trusted Devices**: Remember devices to skip MFA on subsequent logins
+- **Account Lockout**: Progressive delays, notifications, admin unlock
 - **Security Events**: Comprehensive tracing for monitoring
 
 ## Quick Start
@@ -1073,6 +1074,201 @@ async fn login_handler(
 2. **GCRA algorithm**: Uses governor crate's Generic Cell Rate Algorithm for accurate limiting
 3. **Automatic cleanup**: Stale entries are periodically removed to prevent memory growth
 4. **Complements user lockout**: Works alongside `record_failed_attempt()` for defense in depth
+
+## Account Lockout
+
+Comprehensive account lockout with progressive delays, notifications, and admin unlock.
+
+### LockoutPolicy
+
+```rust
+use tideway::auth::lockout::{LockoutPolicy, LockoutManager};
+use std::time::Duration;
+
+// Default: 5 attempts, 15 min lockout
+let policy = LockoutPolicy::new();
+
+// Strict: 3 attempts, 30 min lockout, notifications, IP tracking
+let policy = LockoutPolicy::strict();
+
+// Lenient: 10 attempts, 5 min lockout
+let policy = LockoutPolicy::lenient();
+
+// Custom
+let policy = LockoutPolicy::new()
+    .max_attempts(5)
+    .lockout_duration(Duration::from_secs(900))
+    .progressive_delays(vec![0, 0, 0, 60, 300])  // Delays per attempt
+    .with_notifications()
+    .track_by_ip(true);
+```
+
+### Progressive Delays
+
+Instead of immediate lockout, add delays before full lockout:
+
+```rust
+// vec![0, 0, 0, 60, 300] means:
+// Attempt 1: No delay
+// Attempt 2: No delay
+// Attempt 3: No delay
+// Attempt 4: 60 second delay before retry
+// Attempt 5: 300 second delay before retry
+// Attempt 6+: Full lockout
+
+let policy = LockoutPolicy::new()
+    .max_attempts(6)
+    .progressive_delays(vec![0, 0, 0, 60, 300]);
+```
+
+### LockoutStore Trait
+
+```rust
+use tideway::auth::lockout::{LockoutStore, LockoutStatus};
+use async_trait::async_trait;
+
+#[async_trait]
+impl LockoutStore for MyStore {
+    // Get failed attempt count
+    async fn get_failed_attempts(&self, user_id: &str) -> Result<u32>;
+
+    // Get current lockout status
+    async fn get_lockout_status(&self, user_id: &str) -> Result<Option<LockoutStatus>>;
+
+    // Increment failed attempts
+    async fn increment_failed_attempts(&self, user_id: &str) -> Result<u32>;
+
+    // Lock the account
+    async fn set_lockout(&self, user_id: &str, until: SystemTime) -> Result<()>;
+
+    // Set delay before next attempt
+    async fn set_delay(&self, user_id: &str, until: SystemTime) -> Result<()>;
+
+    // Clear all lockout state
+    async fn clear_lockout(&self, user_id: &str) -> Result<()>;
+
+    // Optional: Get email for notifications
+    async fn get_user_email(&self, user_id: &str) -> Result<Option<String>>;
+
+    // Optional: Send lockout notification
+    async fn send_lockout_notification(
+        &self,
+        user_id: &str,
+        email: &str,
+        locked_until: SystemTime,
+    ) -> Result<()>;
+
+    // Optional: Send unlock notification
+    async fn send_unlock_notification(&self, user_id: &str, email: &str) -> Result<()>;
+
+    // IP tracking methods (optional, for track_by_ip)
+    async fn increment_failed_attempts_by_ip(&self, ip: &str) -> Result<u32>;
+    async fn set_lockout_by_ip(&self, ip: &str, until: SystemTime) -> Result<()>;
+    async fn is_ip_locked(&self, ip: &str) -> Result<Option<SystemTime>>;
+}
+```
+
+### LockoutManager Usage
+
+```rust
+use tideway::auth::lockout::{LockoutManager, LockoutPolicy};
+
+let manager = LockoutManager::new(store, LockoutPolicy::strict());
+
+// Check if user can attempt login
+if let Some(status) = manager.check_can_attempt("user-123", Some("1.2.3.4")).await? {
+    if status.is_locked {
+        return Err(format!("Account locked for {} seconds", status.remaining_wait_seconds()));
+    }
+    if let Some(delay) = status.delay_seconds {
+        return Err(format!("Please wait {} seconds", delay));
+    }
+}
+
+// Record failed attempt
+let result = manager.record_failed_attempt("user-123", Some("1.2.3.4")).await?;
+if result.just_locked {
+    // Account was just locked
+}
+if !result.can_retry_now() {
+    println!("Wait {} seconds", result.wait_seconds());
+}
+
+// Clear on successful login
+manager.record_successful_login("user-123", Some("1.2.3.4")).await?;
+
+// Admin unlock
+manager.admin_unlock("user-123", "admin-456").await?;
+```
+
+### Integration with LoginFlow
+
+```rust
+async fn login_handler(
+    State(lockout): State<LockoutManager<...>>,
+    State(login): State<LoginFlow<...>>,
+    client_ip: Option<String>,
+    Json(req): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>> {
+    let user_id = get_user_id_by_email(&req.email).await?;
+
+    // Check lockout before attempting login
+    if let Some(status) = lockout.check_can_attempt(&user_id, client_ip.as_deref()).await? {
+        return Ok(Json(LoginResponse::error(format!(
+            "Too many failed attempts. Try again in {} seconds.",
+            status.remaining_wait_seconds()
+        ))));
+    }
+
+    // Attempt login
+    match login.login(req).await {
+        Ok(response) => {
+            lockout.record_successful_login(&user_id, client_ip.as_deref()).await?;
+            Ok(Json(response))
+        }
+        Err(e) if is_auth_error(&e) => {
+            let result = lockout.record_failed_attempt(&user_id, client_ip.as_deref()).await?;
+            if result.just_locked {
+                Ok(Json(LoginResponse::error("Account locked due to too many failed attempts")))
+            } else if !result.can_retry_now() {
+                Ok(Json(LoginResponse::error(format!(
+                    "Please wait {} seconds before retrying",
+                    result.wait_seconds()
+                ))))
+            } else {
+                Ok(Json(LoginResponse::error("Invalid credentials")))
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+```
+
+### Lockout Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.lockout.blocked` | DEBUG | Login blocked by existing lockout |
+| `auth.lockout.ip_blocked` | DEBUG | Login blocked by IP lockout |
+| `auth.lockout.account_locked` | WARN | Account locked (max attempts reached) |
+| `auth.lockout.ip_locked` | WARN | IP address locked |
+| `auth.lockout.delay_applied` | INFO | Progressive delay applied |
+| `auth.lockout.cleared` | DEBUG | Lockout cleared on success |
+| `auth.lockout.admin_unlock` | WARN | Account unlocked by admin |
+| `auth.lockout.notification_sent` | INFO | Lockout email notification sent |
+
+### Rate Limiting vs Lockout
+
+| Feature | Rate Limiting | Account Lockout |
+|---------|--------------|-----------------|
+| Tracks by | IP address | User account (+ optional IP) |
+| Purpose | Prevent brute force | Protect specific accounts |
+| State | In-memory | Persistent (database) |
+| Reset | Automatic (time window) | On successful login |
+| Progressive | No | Yes (configurable delays) |
+| Notifications | No | Yes (email) |
+
+**Best practice**: Use both together for defense in depth.
 
 ## Security Best Practices
 

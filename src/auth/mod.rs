@@ -39,6 +39,7 @@ pub mod breach;
 #[cfg(feature = "auth")]
 pub mod flows;
 pub mod jwt_issuer;
+pub mod lockout;
 #[cfg(feature = "auth-mfa")]
 pub mod mfa;
 pub mod password;
@@ -107,3 +108,10 @@ pub use trusted_device::{
 };
 #[cfg(any(test, feature = "test-auth-bypass"))]
 pub use trusted_device::test::InMemoryTrustedDeviceStore;
+
+// Lockout re-exports
+pub use lockout::{
+    FailedAttemptResult, LockoutManager, LockoutPolicy, LockoutStatus, LockoutStore,
+};
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use lockout::test::InMemoryLockoutStore;
