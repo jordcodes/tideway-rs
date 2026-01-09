@@ -34,6 +34,8 @@ pub mod provider;
 pub mod token;
 
 // New auth modules
+#[cfg(feature = "auth-breach")]
+pub mod breach;
 #[cfg(feature = "auth")]
 pub mod flows;
 pub mod jwt_issuer;
@@ -79,6 +81,10 @@ pub use flows::{
 // MFA re-exports (when auth-mfa feature enabled)
 #[cfg(feature = "auth-mfa")]
 pub use mfa::{BackupCodeGenerator, BackupCodes, MfaStore, TotpConfig, TotpManager, TotpSetup};
+
+// Breach checking re-exports (when auth-breach feature enabled)
+#[cfg(feature = "auth-breach")]
+pub use breach::{BreachCheckConfig, BreachChecker};
 
 // Additional storage trait re-exports
 pub use storage::token::MfaTokenStore;

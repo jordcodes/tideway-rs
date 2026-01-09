@@ -8,6 +8,8 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **JWT Tokens**: Access and refresh tokens with rotation
 - **MFA**: TOTP (Google Authenticator) and backup codes
 - **Auth Flows**: Login, registration, password reset, email verification
+- **Breach Checking**: HaveIBeenPwned integration (opt-in)
+- **Session Management**: List and revoke active sessions
 - **Security Events**: Comprehensive tracing for monitoring
 
 ## Quick Start
@@ -325,6 +327,82 @@ let policy = PasswordPolicy::new()
 // Validate password
 policy.check("MyPassword123!")?;
 ```
+
+## Password Breach Checking
+
+Check passwords against the HaveIBeenPwned database to prevent use of compromised passwords.
+
+Requires `auth-breach` feature:
+
+```toml
+[dependencies]
+tideway = { version = "0.7", features = ["auth", "auth-breach"] }
+```
+
+### Basic Usage
+
+```rust
+use tideway::auth::BreachChecker;
+
+let checker = BreachChecker::hibp();
+
+// Check if password has been breached
+let result = checker.check("password123").await?;
+match result {
+    Some(count) => println!("Found in {} breaches!", count),
+    None => println!("Password not found in breaches"),
+}
+
+// Validate (returns error if breached)
+checker.validate("my-password").await?;
+```
+
+### Configuration
+
+```rust
+use tideway::auth::BreachChecker;
+use std::time::Duration;
+
+let checker = BreachChecker::hibp()
+    .with_timeout(Duration::from_secs(5))  // API timeout
+    .with_min_breach_count(10)             // Only block if seen 10+ times
+    .with_fail_open(true);                 // Don't block on API errors
+```
+
+### Configuration Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `timeout` | 3 seconds | API request timeout |
+| `min_breach_count` | 1 | Minimum breaches to block |
+| `fail_open` | `true` | Allow password if API fails |
+
+### Privacy
+
+Uses k-anonymity: only the first 5 characters of the SHA-1 hash are sent to the API. The full password hash never leaves your server.
+
+### Integration with Registration
+
+```rust
+async fn register(req: RegisterRequest) -> Result<()> {
+    // Check policy first (fast, no network)
+    let policy = PasswordPolicy::modern();
+    policy.check(&req.password)?;
+
+    // Then check breaches (requires network)
+    let checker = BreachChecker::hibp();
+    checker.validate(&req.password).await?;
+
+    // Continue with registration...
+}
+```
+
+### Tracing Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.breach.api_error` | WARN | API request failed |
+| `auth.breach.password_blocked` | INFO | Password rejected (breached) |
 
 ## JWT Configuration
 
