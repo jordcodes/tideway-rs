@@ -39,6 +39,128 @@ const MAX_USER_AGENT_LENGTH: usize = 512;
 /// Maximum length for location strings.
 const MAX_LOCATION_LENGTH: usize = 256;
 
+/// Default maximum sessions per user (when limit is enabled).
+const DEFAULT_MAX_SESSIONS: usize = 5;
+
+/// Behavior when session limit is exceeded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SessionOverflowBehavior {
+    /// Revoke the oldest session to make room (default).
+    ///
+    /// This provides the best UX - users can always log in from new devices.
+    #[default]
+    RevokeOldest,
+
+    /// Reject the new session.
+    ///
+    /// Users must manually revoke an existing session before logging in.
+    RejectNew,
+}
+
+/// Configuration for session limits.
+///
+/// # Note
+///
+/// Setting `max_sessions` to 0 will reject all new sessions.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionLimitConfig {
+    /// Maximum number of concurrent sessions per user.
+    pub max_sessions: usize,
+    /// What to do when the limit is exceeded.
+    pub overflow_behavior: SessionOverflowBehavior,
+}
+
+impl Default for SessionLimitConfig {
+    fn default() -> Self {
+        Self {
+            max_sessions: DEFAULT_MAX_SESSIONS,
+            overflow_behavior: SessionOverflowBehavior::default(),
+        }
+    }
+}
+
+impl SessionLimitConfig {
+    /// Create a new session limit config.
+    #[must_use]
+    pub fn new(max_sessions: usize) -> Self {
+        Self {
+            max_sessions,
+            overflow_behavior: SessionOverflowBehavior::default(),
+        }
+    }
+
+    /// Set the overflow behavior.
+    #[must_use]
+    pub fn overflow_behavior(mut self, behavior: SessionOverflowBehavior) -> Self {
+        self.overflow_behavior = behavior;
+        self
+    }
+
+    /// Use reject-new behavior (stricter).
+    #[must_use]
+    pub fn reject_new(mut self) -> Self {
+        self.overflow_behavior = SessionOverflowBehavior::RejectNew;
+        self
+    }
+
+    /// Use revoke-oldest behavior (default, better UX).
+    #[must_use]
+    pub fn revoke_oldest(mut self) -> Self {
+        self.overflow_behavior = SessionOverflowBehavior::RevokeOldest;
+        self
+    }
+}
+
+/// Result of creating a session with limits enforced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionCreateResult {
+    /// Whether the session was created successfully.
+    pub created: bool,
+    /// Sessions that were revoked to make room (if any).
+    pub evicted_sessions: Vec<String>,
+}
+
+impl SessionCreateResult {
+    /// Create a successful result with no evictions.
+    #[must_use]
+    fn success() -> Self {
+        Self {
+            created: true,
+            evicted_sessions: Vec::new(),
+        }
+    }
+
+    /// Create a successful result with evicted sessions.
+    #[must_use]
+    fn success_with_evictions(evicted: Vec<String>) -> Self {
+        Self {
+            created: true,
+            evicted_sessions: evicted,
+        }
+    }
+
+    /// Create a rejected result (limit exceeded, reject-new behavior).
+    #[must_use]
+    fn rejected() -> Self {
+        Self {
+            created: false,
+            evicted_sessions: Vec::new(),
+        }
+    }
+
+    /// Check if the session was created successfully.
+    #[must_use]
+    pub fn is_created(&self) -> bool {
+        self.created
+    }
+
+    /// Check if any sessions were evicted.
+    #[must_use]
+    pub fn has_evictions(&self) -> bool {
+        !self.evicted_sessions.is_empty()
+    }
+}
+
 /// Information about an active session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionInfo {
@@ -315,25 +437,94 @@ pub trait SessionStore: Send + Sync {
 /// Manager for session operations with tracing.
 ///
 /// Wraps a `SessionStore` and adds tracing events for security monitoring.
+/// Optionally enforces session limits per user.
+///
+/// # Session Limits
+///
+/// ```rust,ignore
+/// use tideway::auth::sessions::{SessionManager, SessionLimitConfig};
+///
+/// // Limit to 5 sessions, revoke oldest when exceeded (default behavior)
+/// let manager = SessionManager::new(store)
+///     .with_session_limit(SessionLimitConfig::new(5));
+///
+/// // Limit to 3 sessions, reject new logins when exceeded
+/// let manager = SessionManager::new(store)
+///     .with_session_limit(SessionLimitConfig::new(3).reject_new());
+/// ```
 pub struct SessionManager<S: SessionStore> {
     store: S,
+    session_limit: Option<SessionLimitConfig>,
 }
 
 impl<S: SessionStore> SessionManager<S> {
-    /// Create a new session manager.
+    /// Create a new session manager without session limits.
     #[must_use]
     pub fn new(store: S) -> Self {
-        Self { store }
+        Self {
+            store,
+            session_limit: None,
+        }
+    }
+
+    /// Enable session limits.
+    ///
+    /// When enabled, `create_session` will enforce the limit by either
+    /// revoking the oldest session or rejecting the new one.
+    #[must_use]
+    pub fn with_session_limit(mut self, config: SessionLimitConfig) -> Self {
+        self.session_limit = Some(config);
+        self
     }
 
     /// Create a new session with metadata.
+    ///
+    /// If session limits are configured, this will enforce them by either:
+    /// - Revoking the oldest session(s) to make room (default)
+    /// - Returning an error if the limit is exceeded (reject-new mode)
+    ///
+    /// Returns `SessionCreateResult` with information about any evicted sessions.
+    ///
+    /// # Note
+    ///
+    /// Session limits are enforced as a soft limit. Concurrent logins may briefly
+    /// exceed the limit due to the check-then-create pattern. For strict enforcement,
+    /// implement database-level constraints in your `SessionStore`.
     pub async fn create_session(
         &self,
         session_id: &str,
         user_id: &str,
         metadata: SessionMetadata,
-    ) -> Result<()> {
+    ) -> Result<SessionCreateResult> {
         let ip_for_logging = metadata.ip_address.clone();
+        let mut evicted = Vec::new();
+
+        // Enforce session limit if configured
+        if let Some(ref limit_config) = self.session_limit {
+            let current_count = self.store.session_count(user_id).await?;
+
+            if current_count >= limit_config.max_sessions {
+                match limit_config.overflow_behavior {
+                    SessionOverflowBehavior::RejectNew => {
+                        tracing::warn!(
+                            target: "auth.session.limit_exceeded",
+                            user_id = %user_id,
+                            current_count = current_count,
+                            max_sessions = limit_config.max_sessions,
+                            "Session limit exceeded, rejecting new session"
+                        );
+                        return Ok(SessionCreateResult::rejected());
+                    }
+                    SessionOverflowBehavior::RevokeOldest => {
+                        // Calculate how many to evict
+                        let to_evict = current_count - limit_config.max_sessions + 1;
+                        evicted = self.evict_oldest_sessions(user_id, to_evict).await?;
+                    }
+                }
+            }
+        }
+
+        // Create the new session
         self.store.create_session(session_id, user_id, metadata).await?;
 
         tracing::info!(
@@ -341,10 +532,43 @@ impl<S: SessionStore> SessionManager<S> {
             session_id = %session_id,
             user_id = %user_id,
             ip_address = ip_for_logging.as_deref().unwrap_or("unknown"),
+            evicted_count = evicted.len(),
             "New session created"
         );
 
-        Ok(())
+        if evicted.is_empty() {
+            Ok(SessionCreateResult::success())
+        } else {
+            Ok(SessionCreateResult::success_with_evictions(evicted))
+        }
+    }
+
+    /// Evict the oldest sessions for a user.
+    ///
+    /// Returns the IDs of evicted sessions.
+    async fn evict_oldest_sessions(&self, user_id: &str, count: usize) -> Result<Vec<String>> {
+        let sessions = self.store.list_sessions(user_id).await?;
+
+        // Sessions are returned newest-first, so take from the end
+        let to_evict: Vec<_> = sessions
+            .iter()
+            .rev()
+            .take(count)
+            .map(|s| s.id.clone())
+            .collect();
+
+        for session_id in &to_evict {
+            self.store.revoke_session(session_id).await?;
+
+            tracing::info!(
+                target: "auth.session.evicted",
+                session_id = %session_id,
+                user_id = %user_id,
+                "Session evicted due to session limit"
+            );
+        }
+
+        Ok(to_evict)
     }
 
     /// Update the last_used_at timestamp.
@@ -837,5 +1061,171 @@ mod tests {
         // Truncate to 3 chars
         let truncated = truncate_string(unicode.to_string(), 3);
         assert_eq!(truncated, "🔐🔐🔐");
+    }
+
+    // Session limit tests
+
+    #[tokio::test]
+    async fn test_session_limit_revoke_oldest() {
+        let store = InMemorySessionStore::new();
+        let manager = SessionManager::new(store)
+            .with_session_limit(SessionLimitConfig::new(3));
+
+        // Create 3 sessions (at limit)
+        for i in 1..=3 {
+            let result = manager
+                .create_session(&format!("session-{}", i), "user-1", SessionMetadata::new())
+                .await
+                .unwrap();
+            assert!(result.created);
+            assert!(result.evicted_sessions.is_empty());
+            // Small delay to ensure different timestamps
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        // Create 4th session - should evict session-1 (oldest)
+        let result = manager
+            .create_session("session-4", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+
+        assert!(result.created);
+        assert_eq!(result.evicted_sessions.len(), 1);
+        assert_eq!(result.evicted_sessions[0], "session-1");
+
+        // Verify session-1 is gone
+        let sessions = manager.list_sessions("user-1", None).await.unwrap();
+        assert_eq!(sessions.len(), 3);
+        assert!(!sessions.iter().any(|s| s.id == "session-1"));
+    }
+
+    #[tokio::test]
+    async fn test_session_limit_reject_new() {
+        let store = InMemorySessionStore::new();
+        let manager = SessionManager::new(store)
+            .with_session_limit(SessionLimitConfig::new(2).reject_new());
+
+        // Create 2 sessions (at limit)
+        for i in 1..=2 {
+            let result = manager
+                .create_session(&format!("session-{}", i), "user-1", SessionMetadata::new())
+                .await
+                .unwrap();
+            assert!(result.created);
+        }
+
+        // Create 3rd session - should be rejected
+        let result = manager
+            .create_session("session-3", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+
+        assert!(!result.created);
+        assert!(result.evicted_sessions.is_empty());
+
+        // Verify only 2 sessions exist
+        let sessions = manager.list_sessions("user-1", None).await.unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_limit_per_user() {
+        let store = InMemorySessionStore::new();
+        let manager = SessionManager::new(store)
+            .with_session_limit(SessionLimitConfig::new(2));
+
+        // Create 2 sessions for user-1
+        manager.create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
+        manager.create_session("session-2", "user-1", SessionMetadata::new()).await.unwrap();
+
+        // Create 2 sessions for user-2 (separate limit)
+        manager.create_session("session-3", "user-2", SessionMetadata::new()).await.unwrap();
+        manager.create_session("session-4", "user-2", SessionMetadata::new()).await.unwrap();
+
+        // Each user has their own limit
+        let sessions_1 = manager.list_sessions("user-1", None).await.unwrap();
+        let sessions_2 = manager.list_sessions("user-2", None).await.unwrap();
+        assert_eq!(sessions_1.len(), 2);
+        assert_eq!(sessions_2.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_limit_evict_multiple() {
+        let store = InMemorySessionStore::new();
+        let manager = SessionManager::new(store)
+            .with_session_limit(SessionLimitConfig::new(2));
+
+        // Create 4 sessions directly via store (bypassing limit)
+        manager.store().create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        manager.store().create_session("session-2", "user-1", SessionMetadata::new()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        manager.store().create_session("session-3", "user-1", SessionMetadata::new()).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        manager.store().create_session("session-4", "user-1", SessionMetadata::new()).await.unwrap();
+
+        // Now create via manager - should evict 3 oldest to get down to limit
+        let result = manager
+            .create_session("session-5", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+
+        assert!(result.created);
+        assert_eq!(result.evicted_sessions.len(), 3);
+
+        // Verify only 2 sessions remain
+        let sessions = manager.list_sessions("user-1", None).await.unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_limit_no_limit_configured() {
+        let store = InMemorySessionStore::new();
+        let manager = SessionManager::new(store); // No limit configured
+
+        // Create many sessions - should all succeed
+        for i in 1..=10 {
+            let result = manager
+                .create_session(&format!("session-{}", i), "user-1", SessionMetadata::new())
+                .await
+                .unwrap();
+            assert!(result.created);
+            assert!(result.evicted_sessions.is_empty());
+        }
+
+        let sessions = manager.list_sessions("user-1", None).await.unwrap();
+        assert_eq!(sessions.len(), 10);
+    }
+
+    #[test]
+    fn test_session_limit_config_builder() {
+        let config = SessionLimitConfig::new(5)
+            .reject_new();
+        assert_eq!(config.max_sessions, 5);
+        assert_eq!(config.overflow_behavior, SessionOverflowBehavior::RejectNew);
+
+        let config = SessionLimitConfig::new(10)
+            .revoke_oldest();
+        assert_eq!(config.max_sessions, 10);
+        assert_eq!(config.overflow_behavior, SessionOverflowBehavior::RevokeOldest);
+
+        let config = SessionLimitConfig::default();
+        assert_eq!(config.max_sessions, 5); // DEFAULT_MAX_SESSIONS
+        assert_eq!(config.overflow_behavior, SessionOverflowBehavior::RevokeOldest);
+    }
+
+    #[test]
+    fn test_session_create_result() {
+        let success = SessionCreateResult::success();
+        assert!(success.created);
+        assert!(success.evicted_sessions.is_empty());
+
+        let evicted = SessionCreateResult::success_with_evictions(vec!["s1".into(), "s2".into()]);
+        assert!(evicted.created);
+        assert_eq!(evicted.evicted_sessions, vec!["s1", "s2"]);
+
+        let rejected = SessionCreateResult::rejected();
+        assert!(!rejected.created);
+        assert!(rejected.evicted_sessions.is_empty());
     }
 }

@@ -91,6 +91,9 @@ pub use storage::token::MfaTokenStore;
 pub use storage::user::{PasswordResetStore, UserCreator, VerificationStore};
 
 // Session re-exports
-pub use sessions::{SessionInfo, SessionManager, SessionMetadata, SessionStore};
+pub use sessions::{
+    SessionCreateResult, SessionInfo, SessionLimitConfig, SessionManager, SessionMetadata,
+    SessionOverflowBehavior, SessionStore,
+};
 #[cfg(any(test, feature = "test-auth-bypass"))]
 pub use sessions::test::InMemorySessionStore;

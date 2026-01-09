@@ -570,6 +570,45 @@ manager.revoke_session("user-456", "family-789").await?;
 manager.revoke_other_sessions("user-456", "family-123").await?;
 ```
 
+### Session Limits
+
+Limit concurrent sessions per user (e.g., max 5 devices):
+
+```rust
+use tideway::auth::sessions::{SessionManager, SessionLimitConfig};
+
+// Limit to 5 sessions, revoke oldest when exceeded (default)
+let manager = SessionManager::new(session_store)
+    .with_session_limit(SessionLimitConfig::new(5));
+
+// Or reject new logins when at limit
+let manager = SessionManager::new(session_store)
+    .with_session_limit(SessionLimitConfig::new(3).reject_new());
+```
+
+When a session is created and the limit is exceeded:
+
+```rust
+let result = manager.create_session("session-id", "user-id", metadata).await?;
+
+if result.created {
+    // Session was created
+    if !result.evicted_sessions.is_empty() {
+        println!("Evicted {} old sessions", result.evicted_sessions.len());
+    }
+} else {
+    // Session was rejected (reject_new mode)
+    return Err("Too many active sessions".into());
+}
+```
+
+### Overflow Behaviors
+
+| Behavior | Description |
+|----------|-------------|
+| `RevokeOldest` (default) | Automatically revokes oldest session(s) to make room |
+| `RejectNew` | Rejects the new login, user must manually revoke a session |
+
 ### SessionInfo
 
 Information returned for each session:
@@ -596,6 +635,8 @@ pub struct SessionInfo {
 | `auth.session.revoked` | INFO | Session explicitly revoked |
 | `auth.session.revoke_all` | WARN | All sessions revoked for user |
 | `auth.session.revoke_others` | INFO | Other sessions revoked |
+| `auth.session.limit_exceeded` | WARN | Session limit exceeded (reject mode) |
+| `auth.session.evicted` | INFO | Session evicted due to limit |
 
 ### Reuse Detection
 
