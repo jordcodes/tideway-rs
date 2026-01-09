@@ -36,6 +36,7 @@ pub mod token;
 // New auth modules
 #[cfg(feature = "auth-breach")]
 pub mod breach;
+pub mod deletion;
 #[cfg(feature = "auth")]
 pub mod flows;
 pub mod jwt_issuer;
@@ -115,3 +116,11 @@ pub use lockout::{
 };
 #[cfg(any(test, feature = "test-auth-bypass"))]
 pub use lockout::test::InMemoryLockoutStore;
+
+// Deletion re-exports
+pub use deletion::{
+    AccountDeletionFlow, AccountDeletionStore, CleanupStats, DeletionConfig, DeletionRequest,
+    DeletionResult, PendingDeletion,
+};
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use deletion::test::InMemoryDeletionStore;

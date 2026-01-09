@@ -12,6 +12,7 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **Session Management**: List and revoke active sessions
 - **Trusted Devices**: Remember devices to skip MFA on subsequent logins
 - **Account Lockout**: Progressive delays, notifications, admin unlock
+- **Account Deletion**: GDPR-compliant deletion with grace period
 - **Security Events**: Comprehensive tracing for monitoring
 
 ## Quick Start
@@ -1269,6 +1270,170 @@ async fn login_handler(
 | Notifications | No | Yes (email) |
 
 **Best practice**: Use both together for defense in depth.
+
+## Account Deletion
+
+GDPR-compliant account deletion with cascading cleanup and optional grace period.
+
+### DeletionConfig
+
+```rust
+use tideway::auth::deletion::{AccountDeletionFlow, DeletionConfig};
+use std::time::Duration;
+
+// Default: 7-day grace period, soft delete, requires password
+let config = DeletionConfig::new();
+
+// Immediate hard deletion
+let config = DeletionConfig::immediate();
+
+// Custom configuration
+let config = DeletionConfig::new()
+    .grace_period(Some(Duration::from_secs(14 * 24 * 60 * 60))) // 14 days
+    .require_password(true)
+    .send_confirmation_email(true)
+    .send_deletion_email(true)
+    .hard_delete(false);  // Soft delete (anonymize)
+```
+
+### AccountDeletionStore Trait
+
+```rust
+use tideway::auth::deletion::{AccountDeletionStore, PendingDeletion};
+use async_trait::async_trait;
+
+#[async_trait]
+impl AccountDeletionStore for MyStore {
+    // Required: Password verification
+    async fn get_password_hash(&self, user_id: &str) -> Result<Option<String>>;
+    async fn get_user_email(&self, user_id: &str) -> Result<Option<String>>;
+    async fn user_exists(&self, user_id: &str) -> Result<bool>;
+
+    // Required: Scheduling
+    async fn schedule_deletion(&self, user_id: &str, scheduled_for: SystemTime, reason: Option<&str>) -> Result<()>;
+    async fn cancel_deletion(&self, user_id: &str) -> Result<bool>;
+    async fn get_pending_deletion(&self, user_id: &str) -> Result<Option<PendingDeletion>>;
+    async fn get_due_deletions(&self) -> Result<Vec<PendingDeletion>>;
+
+    // Required: Deletion
+    async fn soft_delete_user(&self, user_id: &str) -> Result<()>;
+    async fn hard_delete_user(&self, user_id: &str) -> Result<()>;
+
+    // Optional: Cleanup (have default no-op implementations)
+    async fn revoke_all_sessions(&self, user_id: &str) -> Result<usize>;
+    async fn revoke_all_refresh_tokens(&self, user_id: &str) -> Result<usize>;
+    async fn remove_all_trusted_devices(&self, user_id: &str) -> Result<usize>;
+    async fn clear_mfa(&self, user_id: &str) -> Result<bool>;
+    async fn clear_lockout(&self, user_id: &str) -> Result<bool>;
+
+    // Optional: Notifications
+    async fn send_confirmation_email(&self, user_id: &str, email: &str, scheduled_for: SystemTime) -> Result<()>;
+    async fn send_deletion_notification(&self, email: &str) -> Result<()>;
+}
+```
+
+### Usage
+
+```rust
+use tideway::auth::deletion::{AccountDeletionFlow, DeletionConfig, DeletionRequest};
+
+let flow = AccountDeletionFlow::new(store, DeletionConfig::default());
+
+// Request deletion (user-initiated)
+let result = flow.request_deletion(DeletionRequest {
+    user_id: "user-123".to_string(),
+    password: Some("current-password".to_string()),
+    reason: Some("No longer using the service".to_string()),
+}).await?;
+
+match result {
+    DeletionResult::Scheduled { scheduled_for, .. } => {
+        // Account will be deleted at scheduled_for timestamp
+        // User received confirmation email with cancellation link
+    }
+    DeletionResult::Deleted { .. } => {
+        // Account deleted immediately (no grace period)
+    }
+    _ => {}
+}
+
+// Cancel scheduled deletion
+flow.cancel_deletion("user-123").await?;
+
+// Check pending deletion status
+if let Some(pending) = flow.get_pending_deletion("user-123").await? {
+    println!("Deletion scheduled for {:?}", pending.scheduled_for);
+}
+```
+
+### Processing Scheduled Deletions
+
+Run from a scheduled job (e.g., cron, background worker):
+
+```rust
+// Process all due deletions
+let processed = flow.process_due_deletions().await?;
+println!("Processed {} deletions", processed);
+```
+
+### Soft Delete vs Hard Delete
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| **Soft Delete** | Anonymizes user data, keeps record | GDPR compliance, audit trails |
+| **Hard Delete** | Completely removes user from database | When no audit trail needed |
+
+Soft delete typically:
+- Replaces email with `deleted-{user_id}@deleted.local`
+- Clears personal data fields
+- Keeps record for referential integrity
+
+### Cascading Cleanup
+
+Account deletion automatically cleans up:
+- All active sessions
+- All refresh tokens
+- All trusted devices
+- MFA settings (TOTP secret, backup codes)
+- Lockout state
+
+### Deletion Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.deletion.scheduled` | INFO | Deletion scheduled (grace period) |
+| `auth.deletion.cancelled` | INFO | Scheduled deletion cancelled |
+| `auth.deletion.completed` | WARN | Account deleted |
+| `auth.deletion.user_not_found` | WARN | Deletion requested for non-existent user |
+| `auth.deletion.password_invalid` | WARN | Deletion rejected: wrong password |
+| `auth.deletion.process_failed` | ERROR | Failed to process scheduled deletion |
+| `auth.deletion.batch_processed` | INFO | Batch of scheduled deletions processed |
+
+### Database Schema
+
+```sql
+-- Pending deletions table
+CREATE TABLE pending_deletions (
+    user_id UUID PRIMARY KEY REFERENCES users(id),
+    requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    scheduled_for TIMESTAMPTZ NOT NULL,
+    reason TEXT
+);
+
+CREATE INDEX idx_pending_deletions_scheduled ON pending_deletions(scheduled_for);
+
+-- For soft delete, add to users table:
+ALTER TABLE users ADD COLUMN deleted_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN deletion_reason TEXT;
+```
+
+### GDPR Compliance Notes
+
+1. **Right to erasure**: Use `AccountDeletionFlow` for user-initiated deletion
+2. **Grace period**: Recommended 7-14 days for accidental deletion recovery
+3. **Data portability**: Export user data before deletion (implement separately)
+4. **Audit log**: Keep deletion records for compliance (use soft delete)
+5. **Third-party data**: Ensure cascading cleanup reaches all user data
 
 ## Security Best Practices
 
