@@ -39,6 +39,7 @@ pub mod breach;
 pub mod deletion;
 #[cfg(feature = "auth")]
 pub mod flows;
+pub mod impersonation;
 pub mod jwt_issuer;
 pub mod lockout;
 #[cfg(feature = "auth-mfa")]
@@ -124,3 +125,12 @@ pub use deletion::{
 };
 #[cfg(any(test, feature = "test-auth-bypass"))]
 pub use deletion::test::InMemoryDeletionStore;
+
+// Impersonation re-exports
+pub use impersonation::{
+    BlockedAction, ImpersonationAuditEntry, ImpersonationClaims, ImpersonationConfig,
+    ImpersonationEvent, ImpersonationManager, ImpersonationRequest, ImpersonationSession,
+    ImpersonationStore,
+};
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use impersonation::test::InMemoryImpersonationStore;

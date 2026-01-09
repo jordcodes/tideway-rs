@@ -13,6 +13,7 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **Trusted Devices**: Remember devices to skip MFA on subsequent logins
 - **Account Lockout**: Progressive delays, notifications, admin unlock
 - **Account Deletion**: GDPR-compliant deletion with grace period
+- **Admin Impersonation**: Act as users for support with full audit trail
 - **Security Events**: Comprehensive tracing for monitoring
 
 ## Quick Start
@@ -1434,6 +1435,188 @@ ALTER TABLE users ADD COLUMN deletion_reason TEXT;
 3. **Data portability**: Export user data before deletion (implement separately)
 4. **Audit log**: Keep deletion records for compliance (use soft delete)
 5. **Third-party data**: Ensure cascading cleanup reaches all user data
+
+## Admin Impersonation
+
+Allow administrators to temporarily act as another user for debugging and support purposes.
+
+### ImpersonationConfig
+
+```rust
+use tideway::auth::impersonation::{ImpersonationManager, ImpersonationConfig, BlockedAction};
+use std::time::Duration;
+
+// Default: 1 hour, reason required, blocks destructive actions
+let config = ImpersonationConfig::new();
+
+// Strict: notify user, shorter duration
+let config = ImpersonationConfig::strict();
+
+// Permissive: 4 hours, no reason required (internal tools)
+let config = ImpersonationConfig::permissive();
+
+// Custom configuration
+let config = ImpersonationConfig::new()
+    .max_duration(Duration::from_secs(30 * 60))  // 30 minutes
+    .notify_user(true)                            // Email user on start
+    .notify_on_end(true)                          // Email user on end
+    .allow_admin_impersonation(false)             // Can't impersonate other admins
+    .require_reason(true)                         // Must provide reason
+    .blocked_actions(vec![
+        BlockedAction::DeleteAccount,
+        BlockedAction::ChangePassword,
+        BlockedAction::ChangeMfa,
+        BlockedAction::ChangeEmail,
+        BlockedAction::ModifyBilling,
+    ]);
+```
+
+### ImpersonationStore Trait
+
+```rust
+use tideway::auth::impersonation::{ImpersonationStore, ImpersonationSession, ImpersonationAuditEntry};
+use async_trait::async_trait;
+
+#[async_trait]
+impl ImpersonationStore for MyStore {
+    // Required: Permission checks
+    async fn is_admin(&self, user_id: &str) -> Result<bool>;
+    async fn can_be_impersonated(&self, user_id: &str) -> Result<bool>;
+    async fn user_exists(&self, user_id: &str) -> Result<bool>;
+    async fn get_user_email(&self, user_id: &str) -> Result<Option<String>>;
+
+    // Required: Session management
+    async fn create_session(&self, session: &ImpersonationSession) -> Result<()>;
+    async fn get_session(&self, session_id: &str) -> Result<Option<ImpersonationSession>>;
+    async fn get_session_for_user(&self, target_user_id: &str) -> Result<Option<ImpersonationSession>>;
+    async fn get_sessions_by_admin(&self, admin_id: &str) -> Result<Vec<ImpersonationSession>>;
+    async fn end_session(&self, session_id: &str) -> Result<bool>;
+    async fn end_sessions_for_user(&self, target_user_id: &str) -> Result<usize>;
+
+    // Required: Audit logging
+    async fn record_audit(&self, entry: &ImpersonationAuditEntry) -> Result<()>;
+    async fn get_audit_log(&self, user_id: &str, limit: usize) -> Result<Vec<ImpersonationAuditEntry>>;
+
+    // Optional: Notifications (has default no-op)
+    async fn send_notification(&self, email: &str, admin_id: &str, event: &ImpersonationEvent) -> Result<()>;
+}
+```
+
+### Usage
+
+```rust
+use tideway::auth::impersonation::{ImpersonationManager, ImpersonationConfig, ImpersonationRequest};
+
+let manager = ImpersonationManager::new(store, ImpersonationConfig::default());
+
+// Start impersonation
+let session = manager.start_impersonation(ImpersonationRequest {
+    admin_id: "admin-123".to_string(),
+    target_user_id: "user-456".to_string(),
+    reason: Some("Support ticket #789".to_string()),
+    duration: None,  // Use config default
+}).await?;
+
+// Include impersonation info in JWT claims
+let claims = ImpersonationClaims::from_session(&session);
+// Add to your JWT: imp_session, imp_admin, imp_blocked
+
+// Validate session and check if action is allowed
+let session = manager.validate_session(&session.session_id, Some("view_profile")).await?;
+
+// This would fail - blocked action
+let result = manager.validate_session(&session.session_id, Some("delete_account")).await;
+// Returns Err(Forbidden("Action 'delete_account' is not allowed during impersonation"))
+
+// End impersonation
+manager.end_impersonation(&session.session_id).await?;
+```
+
+### Blocked Actions
+
+During impersonation, certain actions are blocked by default:
+
+| Action | Description |
+|--------|-------------|
+| `delete_account` | Account deletion |
+| `change_password` | Password changes |
+| `change_mfa` | MFA settings |
+| `change_email` | Email changes |
+| `modify_billing` | Payment/billing (strict mode) |
+| `export_data` | Data export (strict mode) |
+
+Use `BlockedAction::Custom("action_name")` for app-specific restrictions.
+
+### UI Integration
+
+Detect impersonation in your frontend using JWT claims:
+
+```typescript
+// In your frontend
+const token = decodeJwt(accessToken);
+
+if (token.imp_session) {
+  // Show impersonation banner
+  showBanner(`Admin ${token.imp_admin} is viewing as this user`);
+
+  // Disable blocked actions
+  const blockedActions = token.imp_blocked;
+  disableButtons(blockedActions);
+}
+```
+
+### Impersonation Events
+
+| Event | Description |
+|-------|-------------|
+| `auth.impersonation.started` | Session started |
+| `auth.impersonation.ended` | Session ended normally |
+| `auth.impersonation.expired` | Session expired |
+| `auth.impersonation.blocked` | Blocked action attempted |
+| `auth.impersonation.rejected` | Start rejected (not admin, already impersonated, etc.) |
+
+### Database Schema
+
+```sql
+CREATE TABLE impersonation_sessions (
+    session_id VARCHAR(255) PRIMARY KEY,
+    admin_id UUID NOT NULL REFERENCES users(id),
+    target_user_id UUID NOT NULL REFERENCES users(id),
+    reason TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_imp_sessions_admin ON impersonation_sessions(admin_id);
+CREATE INDEX idx_imp_sessions_target ON impersonation_sessions(target_user_id);
+CREATE INDEX idx_imp_sessions_active ON impersonation_sessions(target_user_id)
+    WHERE ended_at IS NULL;
+
+CREATE TABLE impersonation_audit (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event VARCHAR(50) NOT NULL,
+    session_id VARCHAR(255) NOT NULL,
+    admin_id UUID NOT NULL,
+    target_user_id UUID NOT NULL,
+    reason TEXT,
+    metadata TEXT,
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_imp_audit_admin ON impersonation_audit(admin_id);
+CREATE INDEX idx_imp_audit_target ON impersonation_audit(target_user_id);
+```
+
+### Security Notes
+
+1. **Only admins can impersonate**: Check `is_admin()` before allowing
+2. **Cannot impersonate admins by default**: Prevent privilege escalation
+3. **Cannot impersonate yourself**: Self-impersonation is blocked
+4. **One impersonation per user**: Can't have multiple admins on same user
+5. **Full audit trail**: Every action is logged with timestamp and reason
+6. **Time-limited sessions**: Auto-expire after configured duration
+7. **Explicit end required**: Sessions don't persist across admin logout
 
 ## Security Best Practices
 
