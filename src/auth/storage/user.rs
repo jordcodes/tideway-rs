@@ -106,6 +106,9 @@ pub trait UserCreator: Send + Sync {
     /// The user type created by this store.
     type User: Send + Sync;
 
+    /// Get the user's ID as a string.
+    fn user_id(&self, user: &Self::User) -> String;
+
     /// Check if an email address is already registered.
     async fn email_exists(&self, email: &str) -> Result<bool>;
 

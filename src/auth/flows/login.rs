@@ -1,4 +1,14 @@
 //! Login flow with MFA support.
+//!
+//! This module emits tracing events for security monitoring. Events include:
+//! - `auth.login.failed` - Failed login attempts (user not found, wrong password)
+//! - `auth.login.locked` - Login blocked due to account lockout
+//! - `auth.login.unverified` - Login blocked due to unverified email
+//! - `auth.login.success` - Successful login
+//! - `auth.login.mfa_required` - MFA challenge issued
+//! - `auth.mfa.failed` - Failed MFA verification
+//! - `auth.mfa.backup_used` - Backup code consumed
+//! - `auth.password.rehashed` - Password hash upgraded
 
 use crate::auth::password::{PasswordConfig, PasswordHasher};
 use crate::auth::storage::token::{MfaTokenStore, RefreshTokenStore};
@@ -192,13 +202,28 @@ where
             None => {
                 // Timing-safe: hash anyway to prevent enumeration
                 let _ = self.password_hasher.hash("dummy");
+                tracing::warn!(
+                    target: "auth.login.failed",
+                    email = %email,
+                    reason = "user_not_found",
+                    "Login failed: user not found"
+                );
                 return Ok(LoginResponse::error("Invalid credentials"));
             }
         };
 
+        let user_id = self.user_store.user_id(&user);
+
         // Check if locked
         if let Some(until) = self.user_store.is_locked(&user).await? {
             if until > SystemTime::now() {
+                tracing::warn!(
+                    target: "auth.login.locked",
+                    user_id = %user_id,
+                    email = %email,
+                    locked_until = ?until,
+                    "Login blocked: account locked"
+                );
                 return Ok(LoginResponse::error(
                     "Account temporarily locked. Try again later.",
                 ));
@@ -207,6 +232,12 @@ where
 
         // Check if verified (if required)
         if self.config.require_verification && !self.user_store.is_verified(&user).await? {
+            tracing::info!(
+                target: "auth.login.unverified",
+                user_id = %user_id,
+                email = %email,
+                "Login blocked: email not verified"
+            );
             return Ok(LoginResponse::error(
                 "Please verify your email before logging in.",
             ));
@@ -216,6 +247,13 @@ where
         let hash = self.user_store.get_password_hash(&user).await?;
         if !self.password_hasher.verify(&req.password, &hash)? {
             self.user_store.record_failed_attempt(&user).await?;
+            tracing::warn!(
+                target: "auth.login.failed",
+                user_id = %user_id,
+                email = %email,
+                reason = "invalid_password",
+                "Login failed: invalid password"
+            );
             return Ok(LoginResponse::error("Invalid credentials"));
         }
 
@@ -223,6 +261,11 @@ where
         if self.password_hasher.needs_rehash(&hash)? {
             let new_hash = self.password_hasher.hash(&req.password)?;
             self.user_store.update_password_hash(&user, &new_hash).await?;
+            tracing::info!(
+                target: "auth.password.rehashed",
+                user_id = %user_id,
+                "Password hash upgraded to current algorithm"
+            );
         }
 
         // Check MFA
@@ -241,6 +284,14 @@ where
                 // Otherwise, return MFA challenge
                 let backup_remaining = self.user_store.get_backup_codes(&user).await?.len();
                 let mfa_token = self.generate_mfa_token(&user).await?;
+
+                tracing::info!(
+                    target: "auth.login.mfa_required",
+                    user_id = %user_id,
+                    email = %email,
+                    backup_codes_remaining = backup_remaining,
+                    "MFA challenge issued"
+                );
 
                 return Ok(LoginResponse::mfa_required(mfa_token, Some(backup_remaining)));
             }
@@ -297,12 +348,19 @@ where
         remember_me: bool,
     ) -> Result<LoginResponse> {
         let code = code.trim();
+        let user_id = self.user_store.user_id(user);
         let email = self.user_store.user_email(user);
 
         // Try TOTP first (6 digits)
         if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
             if let Some(secret) = self.user_store.get_totp_secret(user).await? {
                 if self.totp_manager.verify(&secret, code, &email)? {
+                    tracing::info!(
+                        target: "auth.mfa.success",
+                        user_id = %user_id,
+                        method = "totp",
+                        "MFA verification successful"
+                    );
                     return self.complete_login(user, remember_me).await;
                 }
             }
@@ -312,11 +370,31 @@ where
         let backup_codes = self.user_store.get_backup_codes(user).await?;
         if let Some(index) = BackupCodeGenerator::verify(code, &backup_codes) {
             self.user_store.remove_backup_code(user, index).await?;
+            let remaining = backup_codes.len() - 1;
+            tracing::info!(
+                target: "auth.mfa.backup_used",
+                user_id = %user_id,
+                backup_codes_remaining = remaining,
+                "Backup code consumed"
+            );
+            if remaining <= 2 {
+                tracing::warn!(
+                    target: "auth.mfa.backup_low",
+                    user_id = %user_id,
+                    backup_codes_remaining = remaining,
+                    "Low backup codes remaining"
+                );
+            }
             return self.complete_login(user, remember_me).await;
         }
 
         // Invalid code - use MFA-specific rate limiting
         self.user_store.record_failed_mfa_attempt(user).await?;
+        tracing::warn!(
+            target: "auth.mfa.failed",
+            user_id = %user_id,
+            "MFA verification failed: invalid code"
+        );
         Ok(LoginResponse::error("Invalid MFA code"))
     }
 
@@ -329,9 +407,19 @@ where
 
         // Store token family for refresh token rotation tracking
         let user_id = self.user_store.user_id(user);
+        let email = self.user_store.user_email(user);
         self.refresh_store
             .associate_family_with_user(&issuance.family, &user_id)
             .await?;
+
+        tracing::info!(
+            target: "auth.login.success",
+            user_id = %user_id,
+            email = %email,
+            remember_me = remember_me,
+            token_family = %issuance.family,
+            "Login successful"
+        );
 
         Ok(LoginResponse::success(
             issuance.access_token,
@@ -358,4 +446,624 @@ fn generate_secure_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use crate::auth::password::PasswordHasher;
+    use crate::auth::storage::token::test::{InMemoryMfaTokenStore, InMemoryRefreshTokenStore};
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    #[derive(Clone)]
+    struct TestUser {
+        id: String,
+        email: String,
+        password_hash: String,
+        verified: bool,
+        locked_until: Option<SystemTime>,
+        failed_attempts: u32,
+        mfa_enabled: bool,
+        #[cfg(feature = "auth-mfa")]
+        totp_secret: Option<String>,
+        #[cfg(feature = "auth-mfa")]
+        backup_codes: Vec<String>,
+    }
+
+    struct TestUserStore {
+        users: RwLock<HashMap<String, TestUser>>,
+    }
+
+    impl TestUserStore {
+        fn new() -> Self {
+            Self {
+                users: RwLock::new(HashMap::new()),
+            }
+        }
+
+        fn add_user(&self, user: TestUser) {
+            let mut users = self.users.write().unwrap();
+            users.insert(user.email.clone(), user);
+        }
+    }
+
+    #[async_trait]
+    impl UserStore for TestUserStore {
+        type User = TestUser;
+
+        async fn find_by_email(&self, email: &str) -> Result<Option<Self::User>> {
+            let users = self.users.read().unwrap();
+            Ok(users.get(email).cloned())
+        }
+
+        async fn find_by_id(&self, id: &str) -> Result<Option<Self::User>> {
+            let users = self.users.read().unwrap();
+            Ok(users.values().find(|u| u.id == id).cloned())
+        }
+
+        fn user_id(&self, user: &Self::User) -> String {
+            user.id.clone()
+        }
+
+        fn user_email(&self, user: &Self::User) -> String {
+            user.email.clone()
+        }
+
+        async fn get_password_hash(&self, user: &Self::User) -> Result<String> {
+            Ok(user.password_hash.clone())
+        }
+
+        async fn update_password_hash(&self, user: &Self::User, hash: &str) -> Result<()> {
+            let mut users = self.users.write().unwrap();
+            if let Some(u) = users.get_mut(&user.email) {
+                u.password_hash = hash.to_string();
+            }
+            Ok(())
+        }
+
+        async fn is_verified(&self, user: &Self::User) -> Result<bool> {
+            Ok(user.verified)
+        }
+
+        async fn mark_verified(&self, user: &Self::User) -> Result<()> {
+            let mut users = self.users.write().unwrap();
+            if let Some(u) = users.get_mut(&user.email) {
+                u.verified = true;
+            }
+            Ok(())
+        }
+
+        async fn is_locked(&self, user: &Self::User) -> Result<Option<SystemTime>> {
+            Ok(user.locked_until)
+        }
+
+        async fn record_failed_attempt(&self, user: &Self::User) -> Result<()> {
+            let mut users = self.users.write().unwrap();
+            if let Some(u) = users.get_mut(&user.email) {
+                u.failed_attempts += 1;
+            }
+            Ok(())
+        }
+
+        async fn clear_failed_attempts(&self, user: &Self::User) -> Result<()> {
+            let mut users = self.users.write().unwrap();
+            if let Some(u) = users.get_mut(&user.email) {
+                u.failed_attempts = 0;
+            }
+            Ok(())
+        }
+
+        async fn has_mfa_enabled(&self, user: &Self::User) -> Result<bool> {
+            Ok(user.mfa_enabled)
+        }
+
+        #[cfg(feature = "auth-mfa")]
+        async fn get_totp_secret(&self, user: &Self::User) -> Result<Option<String>> {
+            Ok(user.totp_secret.clone())
+        }
+
+        #[cfg(feature = "auth-mfa")]
+        async fn get_backup_codes(&self, user: &Self::User) -> Result<Vec<String>> {
+            Ok(user.backup_codes.clone())
+        }
+
+        #[cfg(feature = "auth-mfa")]
+        async fn remove_backup_code(&self, user: &Self::User, index: usize) -> Result<()> {
+            let mut users = self.users.write().unwrap();
+            if let Some(u) = users.get_mut(&user.email) {
+                if index < u.backup_codes.len() {
+                    u.backup_codes.remove(index);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct TestTokenIssuer;
+
+    impl TokenIssuer for TestTokenIssuer {
+        type User = TestUser;
+
+        fn issue(&self, user: &Self::User, _remember_me: bool) -> Result<TokenIssuance> {
+            Ok(TokenIssuance {
+                access_token: format!("access-{}", user.id),
+                refresh_token: format!("refresh-{}", user.id),
+                expires_in: 3600,
+                family: format!("family-{}", user.id),
+            })
+        }
+    }
+
+    fn create_test_user(email: &str, password: &str, verified: bool) -> TestUser {
+        let hasher = PasswordHasher::default();
+        let hash = hasher.hash(password).unwrap();
+        TestUser {
+            id: format!("user-{}", email.split('@').next().unwrap()),
+            email: email.to_string(),
+            password_hash: hash,
+            verified,
+            locked_until: None,
+            failed_attempts: 0,
+            mfa_enabled: false,
+            #[cfg(feature = "auth-mfa")]
+            totp_secret: None,
+            #[cfg(feature = "auth-mfa")]
+            backup_codes: vec![],
+        }
+    }
+
+    fn is_success(response: &LoginResponse) -> bool {
+        matches!(response, LoginResponse::Success { .. })
+    }
+
+    fn is_error(response: &LoginResponse) -> bool {
+        matches!(response, LoginResponse::Error { .. })
+    }
+
+    fn is_mfa_required(response: &LoginResponse) -> bool {
+        matches!(response, LoginResponse::MfaRequired { .. })
+    }
+
+    fn get_error_message(response: &LoginResponse) -> Option<String> {
+        match response {
+            LoginResponse::Error { message } => Some(message.clone()),
+            _ => None,
+        }
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    fn get_mfa_token(response: &LoginResponse) -> Option<String> {
+        match response {
+            LoginResponse::MfaRequired { mfa_token, .. } => Some(mfa_token.clone()),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_successful_login() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp").require_verification(true);
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+    }
+
+    #[tokio::test]
+    async fn test_login_wrong_password() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp").require_verification(true);
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "wrongpassword".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_error(&response));
+        assert!(get_error_message(&response).unwrap().contains("Invalid credentials"));
+    }
+
+    #[tokio::test]
+    async fn test_login_user_not_found() {
+        let user_store = TestUserStore::new();
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "nonexistent@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_error(&response));
+        assert!(get_error_message(&response).unwrap().contains("Invalid credentials"));
+    }
+
+    #[tokio::test]
+    async fn test_login_unverified_email() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", false));
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp").require_verification(true);
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_error(&response));
+        assert!(get_error_message(&response).unwrap().contains("verify your email"));
+    }
+
+    #[tokio::test]
+    async fn test_login_verification_not_required() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", false));
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp").require_verification(false);
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+    }
+
+    #[tokio::test]
+    async fn test_login_locked_account() {
+        let user_store = TestUserStore::new();
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.locked_until = Some(SystemTime::now() + Duration::from_secs(3600));
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_error(&response));
+        assert!(get_error_message(&response).unwrap().contains("locked"));
+    }
+
+    #[tokio::test]
+    async fn test_login_email_case_insensitive() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp").require_verification(true);
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "TEST@EXAMPLE.COM".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+    }
+
+    #[tokio::test]
+    async fn test_login_with_refresh_store() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let refresh_store = InMemoryRefreshTokenStore::new();
+        let config = LoginFlowConfig::new("TestApp").require_verification(true);
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config)
+            .with_refresh_store(refresh_store);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_login_mfa_required() {
+        use crate::auth::mfa::{TotpManager, TotpConfig};
+
+        let user_store = TestUserStore::new();
+        let totp = TotpManager::new(TotpConfig::default());
+        let setup = totp.generate_setup("test@example.com").unwrap();
+
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.mfa_enabled = true;
+        user.totp_secret = Some(setup.secret.clone());
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_mfa_required(&response));
+        assert!(get_mfa_token(&response).is_some());
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_login_with_mfa_code() {
+        use crate::auth::mfa::{TotpManager, TotpConfig};
+
+        let user_store = TestUserStore::new();
+        let totp = TotpManager::new(TotpConfig::default());
+        let setup = totp.generate_setup("test@example.com").unwrap();
+        let code = totp.generate_current(&setup.secret, "test@example.com").unwrap();
+
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.mfa_enabled = true;
+        user.totp_secret = Some(setup.secret.clone());
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: Some(code),
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_login_with_backup_code() {
+        use crate::auth::mfa::BackupCodeGenerator;
+
+        let user_store = TestUserStore::new();
+        let backup_gen = BackupCodeGenerator::default();
+        let codes = backup_gen.generate();
+
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.mfa_enabled = true;
+        user.totp_secret = Some("JBSWY3DPEHPK3PXP".to_string());
+        user.backup_codes = codes.codes.clone();
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: Some(codes.codes[0].clone()),
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_verify_mfa_with_token() {
+        use crate::auth::mfa::{TotpManager, TotpConfig};
+
+        let user_store = TestUserStore::new();
+        let totp = TotpManager::new(TotpConfig::default());
+        let setup = totp.generate_setup("test@example.com").unwrap();
+
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.mfa_enabled = true;
+        user.totp_secret = Some(setup.secret.clone());
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        // First login to get MFA token
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        let mfa_token = get_mfa_token(&response).unwrap();
+        let code = totp.generate_current(&setup.secret, "test@example.com").unwrap();
+
+        // Verify MFA with the token
+        let response = flow
+            .verify_mfa(MfaVerifyRequest {
+                mfa_token,
+                code,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_verify_mfa_invalid_token() {
+        let user_store = TestUserStore::new();
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let result = flow
+            .verify_mfa(MfaVerifyRequest {
+                mfa_token: "invalid-token".to_string(),
+                code: "123456".to_string(),
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_failed_attempts_recorded() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        // Try wrong password
+        let _ = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "wrongpassword".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        // Check that failed attempts was incremented
+        let users = flow.user_store.users.read().unwrap();
+        let user = users.get("test@example.com").unwrap();
+        assert_eq!(user.failed_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn test_failed_attempts_cleared_on_success() {
+        let user_store = TestUserStore::new();
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.failed_attempts = 3;
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        // Successful login
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(is_success(&response));
+
+        // Check that failed attempts was cleared
+        let users = flow.user_store.users.read().unwrap();
+        let user = users.get("test@example.com").unwrap();
+        assert_eq!(user.failed_attempts, 0);
+    }
 }

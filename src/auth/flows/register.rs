@@ -1,4 +1,9 @@
 //! Registration flow.
+//!
+//! This module emits tracing events for security monitoring:
+//! - `auth.register.success` - User registered successfully
+//! - `auth.register.failed` - Registration failed (validation, duplicate)
+//! - `auth.register.verification_email_failed` - Failed to send verification email
 
 use crate::auth::password::{PasswordHasher, PasswordPolicy};
 use crate::auth::storage::UserCreator;
@@ -42,15 +47,37 @@ impl<C: UserCreator> RegistrationFlow<C> {
 
         // Validate email format
         if !is_valid_email(&email) {
+            tracing::info!(
+                target: "auth.register.failed",
+                email = %email,
+                reason = "invalid_email_format",
+                "Registration failed: invalid email format"
+            );
             return Err(TidewayError::BadRequest("Invalid email format".into()));
         }
 
         // Validate password
-        self.password_policy.check(&req.password)?;
+        if let Err(e) = self.password_policy.check(&req.password) {
+            tracing::info!(
+                target: "auth.register.failed",
+                email = %email,
+                reason = "weak_password",
+                "Registration failed: password policy violation"
+            );
+            return Err(e);
+        }
 
         // Check if already registered
+        // Note: Returns generic error to prevent email enumeration attacks
         if self.user_creator.email_exists(&email).await? {
-            return Err(TidewayError::BadRequest("Email already registered".into()));
+            tracing::info!(
+                target: "auth.register.failed",
+                email = %email,
+                reason = "email_exists",
+                "Registration failed: email already registered"
+            );
+            // Generic message prevents email enumeration
+            return Err(TidewayError::BadRequest("Registration failed".into()));
         }
 
         // Hash password
@@ -62,9 +89,24 @@ impl<C: UserCreator> RegistrationFlow<C> {
             .create_user(&email, &hash, req.name.as_deref())
             .await?;
 
+        let user_id = self.user_creator.user_id(&user);
+
+        tracing::info!(
+            target: "auth.register.success",
+            user_id = %user_id,
+            email = %email,
+            "User registered successfully"
+        );
+
         // Send verification email (fire and forget, don't fail registration)
         if let Err(e) = self.user_creator.send_verification_email(&user).await {
-            tracing::warn!("Failed to send verification email: {}", e);
+            tracing::warn!(
+                target: "auth.register.verification_email_failed",
+                user_id = %user_id,
+                email = %email,
+                error = %e,
+                "Failed to send verification email"
+            );
         }
 
         Ok(user)
