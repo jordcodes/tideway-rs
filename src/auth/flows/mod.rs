@@ -9,7 +9,7 @@ mod reset;
 mod types;
 mod verify;
 
-pub use login::{LoginFlow, LoginFlowConfig};
+pub use login::{LoginFlow, LoginFlowConfig, TokenIssuer, TokenIssuance, WithRefreshStore};
 pub use register::RegistrationFlow;
 pub use reset::PasswordResetFlow;
 pub use types::*;

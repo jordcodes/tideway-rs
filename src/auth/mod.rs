@@ -71,7 +71,7 @@ pub use flows::{
     EmailVerificationFlow, EmailVerifyRequest, LoginFlow, LoginFlowConfig, LoginRequest,
     LoginResponse, LogoutRequest, MfaType, MfaVerifyRequest, PasswordResetComplete,
     PasswordResetFlow, PasswordResetRequest, RefreshRequest, RegisterRequest, RegistrationFlow,
-    ResendVerificationRequest,
+    ResendVerificationRequest, TokenIssuer, TokenIssuance, WithRefreshStore,
 };
 
 // MFA re-exports (when auth-mfa feature enabled)

@@ -199,6 +199,9 @@ pub struct TokenPair {
     pub expires_in: u64,
     /// Token type (always "Bearer")
     pub token_type: &'static str,
+    /// Token family ID (for refresh token rotation tracking)
+    #[serde(skip)]
+    pub family: String,
 }
 
 /// User info needed for token issuance.
@@ -332,7 +335,7 @@ impl JwtIssuer {
                 jti: jti_refresh,
             },
             token_type: TokenType::Refresh,
-            family,
+            family: family.clone(),
             generation: 0,
         };
 
@@ -349,6 +352,7 @@ impl JwtIssuer {
             refresh_token,
             expires_in: self.config.access_token_ttl.as_secs(),
             token_type: "Bearer",
+            family,
         })
     }
 

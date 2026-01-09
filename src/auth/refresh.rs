@@ -173,7 +173,8 @@ where
 
         let (access_token, expires_in) = self.issuer.issue_access_token(subject)?;
 
-        // Rotate refresh token
+        // Rotate refresh token (keeps same family)
+        let family = claims.family.clone();
         let new_refresh_token = self.issuer.rotate_refresh_token(&claims)?;
 
         Ok(TokenPair {
@@ -181,6 +182,7 @@ where
             refresh_token: new_refresh_token,
             expires_in,
             token_type: "Bearer",
+            family,
         })
     }
 

@@ -1,7 +1,7 @@
 //! Login flow with MFA support.
 
 use crate::auth::password::{PasswordConfig, PasswordHasher};
-use crate::auth::storage::token::MfaTokenStore;
+use crate::auth::storage::token::{MfaTokenStore, RefreshTokenStore};
 use crate::auth::storage::UserStore;
 use crate::error::{Result, TidewayError};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -66,44 +66,80 @@ impl LoginFlowConfig {
     }
 }
 
+/// Result of token issuance.
+#[derive(Debug, Clone)]
+pub struct TokenIssuance {
+    /// Access token (short-lived)
+    pub access_token: String,
+    /// Refresh token (long-lived)
+    pub refresh_token: String,
+    /// Access token expiry in seconds
+    pub expires_in: u64,
+    /// Token family ID (for refresh token rotation tracking)
+    pub family: String,
+}
+
 /// Trait for issuing tokens after successful authentication.
 pub trait TokenIssuer: Send + Sync {
     /// The user type.
     type User;
 
     /// Issue tokens for a user.
-    ///
-    /// Returns (access_token, refresh_token, expires_in).
-    fn issue(
-        &self,
-        user: &Self::User,
-        remember_me: bool,
-    ) -> Result<(String, String, u64)>;
+    fn issue(&self, user: &Self::User, remember_me: bool) -> Result<TokenIssuance>;
 }
 
 /// Handles the login flow including MFA.
-pub struct LoginFlow<U, M, T>
+pub struct LoginFlow<U, M, T, R = ()>
 where
     U: UserStore,
     M: MfaTokenStore,
     T: TokenIssuer<User = U::User>,
+    R: OptionalRefreshTokenStore,
 {
     user_store: U,
     mfa_store: M,
     token_issuer: T,
+    refresh_store: R,
     password_hasher: PasswordHasher,
     #[cfg(feature = "auth-mfa")]
     totp_manager: TotpManager,
     config: LoginFlowConfig,
 }
 
-impl<U, M, T> LoginFlow<U, M, T>
+/// Helper trait to make RefreshTokenStore optional.
+pub trait OptionalRefreshTokenStore: Send + Sync {
+    /// Store the token family association (no-op if not configured).
+    fn associate_family_with_user(
+        &self,
+        family: &str,
+        user_id: &str,
+    ) -> impl std::future::Future<Output = Result<()>> + Send;
+}
+
+/// No-op implementation for when no refresh token store is configured.
+impl OptionalRefreshTokenStore for () {
+    async fn associate_family_with_user(&self, _family: &str, _user_id: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Wrapper to use a real RefreshTokenStore.
+pub struct WithRefreshStore<S: RefreshTokenStore>(pub S);
+
+impl<S: RefreshTokenStore> OptionalRefreshTokenStore for WithRefreshStore<S> {
+    async fn associate_family_with_user(&self, family: &str, user_id: &str) -> Result<()> {
+        self.0.associate_family_with_user(family, user_id).await
+    }
+}
+
+impl<U, M, T> LoginFlow<U, M, T, ()>
 where
     U: UserStore,
     M: MfaTokenStore,
     T: TokenIssuer<User = U::User>,
 {
-    /// Create a new login flow.
+    /// Create a new login flow without refresh token store.
+    /// Token families will not be stored (refresh token rotation tracking disabled).
     pub fn new(user_store: U, mfa_store: M, token_issuer: T, config: LoginFlowConfig) -> Self {
         Self {
             user_store,
@@ -112,9 +148,37 @@ where
             totp_manager: TotpManager::new(config.totp_config.clone()),
             mfa_store,
             token_issuer,
+            refresh_store: (),
             config,
         }
     }
+
+    /// Add a refresh token store for token family tracking.
+    /// This enables refresh token rotation and revocation.
+    pub fn with_refresh_store<R: RefreshTokenStore>(
+        self,
+        refresh_store: R,
+    ) -> LoginFlow<U, M, T, WithRefreshStore<R>> {
+        LoginFlow {
+            user_store: self.user_store,
+            mfa_store: self.mfa_store,
+            token_issuer: self.token_issuer,
+            refresh_store: WithRefreshStore(refresh_store),
+            password_hasher: self.password_hasher,
+            #[cfg(feature = "auth-mfa")]
+            totp_manager: self.totp_manager,
+            config: self.config,
+        }
+    }
+}
+
+impl<U, M, T, R> LoginFlow<U, M, T, R>
+where
+    U: UserStore,
+    M: MfaTokenStore,
+    T: TokenIssuer<User = U::User>,
+    R: OptionalRefreshTokenStore,
+{
 
     /// Primary login endpoint - handles email/password and optional MFA.
     #[cfg(feature = "auth")]
@@ -261,10 +325,19 @@ where
         self.user_store.clear_failed_attempts(user).await?;
 
         // Issue tokens
-        let (access_token, refresh_token, expires_in) =
-            self.token_issuer.issue(user, remember_me)?;
+        let issuance = self.token_issuer.issue(user, remember_me)?;
 
-        Ok(LoginResponse::success(access_token, refresh_token, expires_in))
+        // Store token family for refresh token rotation tracking
+        let user_id = self.user_store.user_id(user);
+        self.refresh_store
+            .associate_family_with_user(&issuance.family, &user_id)
+            .await?;
+
+        Ok(LoginResponse::success(
+            issuance.access_token,
+            issuance.refresh_token,
+            issuance.expires_in,
+        ))
     }
 
     async fn generate_mfa_token(&self, user: &U::User) -> Result<String> {
