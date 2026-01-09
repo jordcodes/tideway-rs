@@ -41,6 +41,7 @@ pub mod jwt_issuer;
 pub mod mfa;
 pub mod password;
 pub mod refresh;
+pub mod sessions;
 pub mod storage;
 
 // Existing re-exports
@@ -82,3 +83,8 @@ pub use mfa::{BackupCodeGenerator, BackupCodes, MfaStore, TotpConfig, TotpManage
 // Additional storage trait re-exports
 pub use storage::token::MfaTokenStore;
 pub use storage::user::{PasswordResetStore, UserCreator, VerificationStore};
+
+// Session re-exports
+pub use sessions::{SessionInfo, SessionManager, SessionMetadata, SessionStore};
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use sessions::test::InMemorySessionStore;

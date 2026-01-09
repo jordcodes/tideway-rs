@@ -412,6 +412,113 @@ flow.revoke(&refresh_token).await?;
 flow.revoke_all("user-123").await?;
 ```
 
+## Session Management
+
+Track active sessions and allow users to view/revoke their logins across devices.
+
+### SessionStore Trait
+
+```rust
+use tideway::auth::sessions::{SessionStore, SessionInfo, SessionMetadata};
+use async_trait::async_trait;
+
+#[async_trait]
+impl SessionStore for MySessionStore {
+    // Create session on login
+    async fn create_session(
+        &self,
+        session_id: &str,  // Same as token family ID
+        user_id: &str,
+        metadata: SessionMetadata,
+    ) -> Result<()>;
+
+    // Update last_used_at on token refresh
+    async fn touch_session(&self, session_id: &str) -> Result<()>;
+
+    // Get single session
+    async fn get_session(&self, session_id: &str) -> Result<Option<SessionInfo>>;
+
+    // List all active sessions for user (newest first)
+    async fn list_sessions(&self, user_id: &str) -> Result<Vec<SessionInfo>>;
+
+    // Revoke specific session (logout device)
+    async fn revoke_session(&self, session_id: &str) -> Result<bool>;
+
+    // Revoke all sessions (logout everywhere)
+    async fn revoke_all_sessions(&self, user_id: &str) -> Result<usize>;
+
+    // Revoke all except current (logout other devices)
+    async fn revoke_other_sessions(
+        &self,
+        user_id: &str,
+        except_session_id: &str,
+    ) -> Result<usize>;
+}
+```
+
+### SessionManager
+
+High-level session operations with tracing:
+
+```rust
+use tideway::auth::sessions::{SessionManager, SessionMetadata};
+
+let manager = SessionManager::new(session_store);
+
+// Create session on login
+let metadata = SessionMetadata::new()
+    .with_ip("192.168.1.1")
+    .with_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X) Chrome/120.0.0.0");
+
+manager.create_session("family-123", "user-456", metadata).await?;
+
+// List sessions (marks current session)
+let sessions = manager.list_sessions("user-456", Some("family-123")).await?;
+
+for session in sessions {
+    println!(
+        "{}: {} - {} {}",
+        session.device_info.unwrap_or_default(),  // "Chrome on macOS"
+        session.ip_address.unwrap_or_default(),
+        if session.is_current { "(current)" } else { "" },
+        humanize_time(session.last_used_at),
+    );
+}
+
+// Logout specific device
+manager.revoke_session("user-456", "family-789").await?;
+
+// Logout all other devices
+manager.revoke_other_sessions("user-456", "family-123").await?;
+```
+
+### SessionInfo
+
+Information returned for each session:
+
+```rust
+pub struct SessionInfo {
+    pub id: String,              // Session/family ID
+    pub user_id: String,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub device_info: Option<String>,  // Parsed: "Chrome on macOS"
+    pub location: Option<String>,     // From geolocation service
+    pub created_at: SystemTime,
+    pub last_used_at: SystemTime,
+    pub is_current: bool,             // Set by SessionManager
+}
+```
+
+### Session Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.session.created` | INFO | New session created on login |
+| `auth.session.revoked` | INFO | Session explicitly revoked |
+| `auth.session.revoke_all` | WARN | All sessions revoked for user |
+| `auth.session.revoke_others` | INFO | Other sessions revoked |
+
 ### Reuse Detection
 
 The refresh flow automatically detects token reuse attacks:
@@ -618,6 +725,26 @@ See `examples/auth_migrations/` for SeaORM migration examples:
 - `m002_create_refresh_tokens.rs` - Token families
 - `m003_create_mfa.rs` - MFA configuration
 - `m004_create_verification_tokens.rs` - Email/reset tokens
+- `m005_create_sessions.rs` - Active sessions (for session management)
+
+### Sessions Table Schema
+
+```sql
+CREATE TABLE sessions (
+    id VARCHAR(255) PRIMARY KEY,      -- Same as token family ID
+    user_id UUID NOT NULL REFERENCES users(id),
+    ip_address VARCHAR(45),           -- IPv4 or IPv6
+    user_agent TEXT,
+    device_info VARCHAR(255),         -- Parsed: "Chrome on macOS"
+    location VARCHAR(255),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    revoked_at TIMESTAMPTZ            -- NULL if active
+);
+
+CREATE INDEX idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX idx_sessions_user_active ON sessions(user_id) WHERE revoked_at IS NULL;
+```
 
 ## Complete Example
 

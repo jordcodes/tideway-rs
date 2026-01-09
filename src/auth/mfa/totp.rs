@@ -131,7 +131,7 @@ impl TotpManager {
     pub fn generate_current(&self, secret: &str, account_name: &str) -> Result<String> {
         let totp = self.build_totp(secret, account_name)?;
         totp.generate_current()
-            .map_err(|e| TidewayError::Internal(format!("Failed to generate TOTP: {}", e).into()))
+            .map_err(|e| TidewayError::Internal(format!("Failed to generate TOTP: {}", e)))
     }
 
     fn build_totp(&self, secret: &str, account_name: &str) -> Result<TOTP> {
