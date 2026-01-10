@@ -1,0 +1,499 @@
+//! Seat management for subscriptions.
+//!
+//! Handles adding and removing seats from subscriptions with prorated billing.
+
+use crate::error::Result;
+use super::plans::Plans;
+use super::storage::BillingStore;
+use super::subscription::{StripeSubscriptionClient, UpdateSubscriptionRequest, ProrationBehavior};
+
+/// Seat management operations.
+///
+/// Handles adding/removing seats with Stripe proration.
+pub struct SeatManager<S: BillingStore, C: StripeSubscriptionClient> {
+    store: S,
+    client: C,
+    plans: Plans,
+}
+
+impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
+    /// Create a new seat manager.
+    #[must_use]
+    pub fn new(store: S, client: C, plans: Plans) -> Self {
+        Self { store, client, plans }
+    }
+
+    /// Get seat information for a subscription.
+    pub async fn get_seat_info(&self, billable_id: &str) -> Result<SeatInfo> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "No subscription found".to_string()
+            ))?;
+
+        let plan = self.plans.get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "Plan not found".to_string()
+            ))?;
+
+        Ok(SeatInfo {
+            included_seats: plan.included_seats,
+            extra_seats: sub.extra_seats,
+            total_seats: plan.included_seats + sub.extra_seats,
+            can_add_seats: plan.extra_seat_price_id.is_some(),
+        })
+    }
+
+    /// Check if there is a seat available.
+    ///
+    /// Returns true if `current_member_count < total_seats`.
+    pub async fn has_seat_available(
+        &self,
+        billable_id: &str,
+        current_member_count: u32,
+    ) -> Result<bool> {
+        let seat_info = self.get_seat_info(billable_id).await?;
+        Ok(current_member_count < seat_info.total_seats)
+    }
+
+    /// Add seats to a subscription.
+    ///
+    /// This will update the subscription in Stripe and prorate the charge.
+    pub async fn add_seats(
+        &self,
+        billable_id: &str,
+        count: u32,
+    ) -> Result<SeatChangeResult> {
+        if count == 0 {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Must add at least 1 seat".to_string()
+            ));
+        }
+
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "No subscription found".to_string()
+            ))?;
+
+        let plan = self.plans.get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "Plan not found".to_string()
+            ))?;
+
+        if plan.extra_seat_price_id.is_none() {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Plan does not support extra seats".to_string()
+            ));
+        }
+
+        let new_seat_count = sub.extra_seats + count;
+
+        // Update in Stripe
+        let updated = self.client.update_subscription(
+            &sub.stripe_subscription_id,
+            UpdateSubscriptionRequest {
+                seat_quantity: Some(new_seat_count),
+                proration_behavior: Some(ProrationBehavior::CreateProrations),
+                ..Default::default()
+            },
+        ).await?;
+
+        // Update local state
+        let mut updated_sub = sub.clone();
+        updated_sub.extra_seats = updated.extra_seats;
+        self.store.save_subscription(billable_id, &updated_sub).await?;
+
+        Ok(SeatChangeResult {
+            previous_seats: sub.extra_seats,
+            new_seats: updated.extra_seats,
+            total_seats: plan.included_seats + updated.extra_seats,
+        })
+    }
+
+    /// Remove seats from a subscription.
+    ///
+    /// Cannot reduce below 0 extra seats. This will credit the account via proration.
+    pub async fn remove_seats(
+        &self,
+        billable_id: &str,
+        count: u32,
+    ) -> Result<SeatChangeResult> {
+        if count == 0 {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Must remove at least 1 seat".to_string()
+            ));
+        }
+
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "No subscription found".to_string()
+            ))?;
+
+        let plan = self.plans.get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "Plan not found".to_string()
+            ))?;
+
+        if count > sub.extra_seats {
+            return Err(crate::error::TidewayError::BadRequest(
+                format!("Cannot remove {} seats, only {} extra seats on subscription", count, sub.extra_seats)
+            ));
+        }
+
+        let new_seat_count = sub.extra_seats - count;
+
+        // Update in Stripe
+        let updated = self.client.update_subscription(
+            &sub.stripe_subscription_id,
+            UpdateSubscriptionRequest {
+                seat_quantity: Some(new_seat_count),
+                proration_behavior: Some(ProrationBehavior::CreateProrations),
+                ..Default::default()
+            },
+        ).await?;
+
+        // Update local state
+        let mut updated_sub = sub.clone();
+        updated_sub.extra_seats = updated.extra_seats;
+        self.store.save_subscription(billable_id, &updated_sub).await?;
+
+        Ok(SeatChangeResult {
+            previous_seats: sub.extra_seats,
+            new_seats: updated.extra_seats,
+            total_seats: plan.included_seats + updated.extra_seats,
+        })
+    }
+
+    /// Set seats to a specific count.
+    ///
+    /// More convenient than add/remove for absolute seat management.
+    pub async fn set_seats(
+        &self,
+        billable_id: &str,
+        count: u32,
+    ) -> Result<SeatChangeResult> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "No subscription found".to_string()
+            ))?;
+
+        let plan = self.plans.get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "Plan not found".to_string()
+            ))?;
+
+        if plan.extra_seat_price_id.is_none() {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Plan does not support extra seats".to_string()
+            ));
+        }
+
+        if count == sub.extra_seats {
+            return Ok(SeatChangeResult {
+                previous_seats: sub.extra_seats,
+                new_seats: count,
+                total_seats: plan.included_seats + count,
+            });
+        }
+
+        // Update in Stripe
+        let updated = self.client.update_subscription(
+            &sub.stripe_subscription_id,
+            UpdateSubscriptionRequest {
+                seat_quantity: Some(count),
+                proration_behavior: Some(ProrationBehavior::CreateProrations),
+                ..Default::default()
+            },
+        ).await?;
+
+        // Update local state
+        let mut updated_sub = sub.clone();
+        updated_sub.extra_seats = updated.extra_seats;
+        self.store.save_subscription(billable_id, &updated_sub).await?;
+
+        Ok(SeatChangeResult {
+            previous_seats: sub.extra_seats,
+            new_seats: updated.extra_seats,
+            total_seats: plan.included_seats + updated.extra_seats,
+        })
+    }
+}
+
+/// Information about seats on a subscription.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatInfo {
+    /// Seats included in the base plan.
+    pub included_seats: u32,
+    /// Extra seats purchased.
+    pub extra_seats: u32,
+    /// Total seats available.
+    pub total_seats: u32,
+    /// Whether more seats can be added.
+    pub can_add_seats: bool,
+}
+
+/// Result of a seat change operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeatChangeResult {
+    /// Previous number of extra seats.
+    pub previous_seats: u32,
+    /// New number of extra seats.
+    pub new_seats: u32,
+    /// Total seats now available.
+    pub total_seats: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::billing::storage::test::InMemoryBillingStore;
+    use crate::billing::storage::{StoredSubscription, SubscriptionStatus};
+    use crate::billing::subscription::test::MockStripeSubscriptionClient;
+    use crate::billing::subscription::StripeSubscriptionData;
+    use crate::billing::subscription::SubscriptionMetadata;
+
+    fn create_test_plans() -> Plans {
+        Plans::builder()
+            .plan("starter")
+                .stripe_price("price_starter")
+                .extra_seat_price("price_seat")
+                .included_seats(3)
+                .done()
+            .plan("basic")
+                .stripe_price("price_basic")
+                .included_seats(1)
+                .done()
+            .build()
+    }
+
+    fn create_test_subscription(billable_id: &str, plan_id: &str, extra_seats: u32) -> StoredSubscription {
+        StoredSubscription {
+            stripe_subscription_id: format!("sub_{}", billable_id),
+            stripe_customer_id: format!("cus_{}", billable_id),
+            plan_id: plan_id.to_string(),
+            status: SubscriptionStatus::Active,
+            current_period_start: 1700000000,
+            current_period_end: 1702592000,
+            extra_seats,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: Some("si_base".to_string()),
+            seat_item_id: Some("si_seat".to_string()),
+            updated_at: 1700000000,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_seat_info() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Add subscription
+        let sub = create_test_subscription("org_123", "starter", 2);
+        store.save_subscription("org_123", &sub).await.unwrap();
+
+        let manager = SeatManager::new(store, client, plans);
+
+        let info = manager.get_seat_info("org_123").await.unwrap();
+        assert_eq!(info.included_seats, 3);
+        assert_eq!(info.extra_seats, 2);
+        assert_eq!(info.total_seats, 5);
+        assert!(info.can_add_seats);
+    }
+
+    #[tokio::test]
+    async fn test_get_seat_info_no_extra_seats_support() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Add subscription on basic plan (no extra seats)
+        let sub = create_test_subscription("org_456", "basic", 0);
+        store.save_subscription("org_456", &sub).await.unwrap();
+
+        let manager = SeatManager::new(store, client, plans);
+
+        let info = manager.get_seat_info("org_456").await.unwrap();
+        assert_eq!(info.included_seats, 1);
+        assert_eq!(info.extra_seats, 0);
+        assert_eq!(info.total_seats, 1);
+        assert!(!info.can_add_seats);
+    }
+
+    #[tokio::test]
+    async fn test_has_seat_available() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_789", "starter", 2);
+        store.save_subscription("org_789", &sub).await.unwrap();
+
+        let manager = SeatManager::new(store, client, plans);
+
+        // Total seats = 5 (3 included + 2 extra)
+        assert!(manager.has_seat_available("org_789", 4).await.unwrap());
+        assert!(!manager.has_seat_available("org_789", 5).await.unwrap());
+        assert!(!manager.has_seat_available("org_789", 6).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_add_seats() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_add", "starter", 2);
+        store.save_subscription("org_add", &sub).await.unwrap();
+
+        // Set up mock client to return updated subscription
+        client.add_subscription(StripeSubscriptionData {
+            id: "sub_org_add".to_string(),
+            customer_id: "cus_org_add".to_string(),
+            plan_id: "starter".to_string(),
+            status: "active".to_string(),
+            current_period_start: 1700000000,
+            current_period_end: 1702592000,
+            extra_seats: 5, // Will be updated by mock
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: Some("si_base".to_string()),
+            seat_item_id: Some("si_seat".to_string()),
+            metadata: SubscriptionMetadata::default(),
+        });
+
+        let manager = SeatManager::new(store.clone(), client, plans);
+
+        let result = manager.add_seats("org_add", 3).await.unwrap();
+        assert_eq!(result.previous_seats, 2);
+        assert_eq!(result.new_seats, 5);
+        assert_eq!(result.total_seats, 8); // 3 included + 5 extra
+    }
+
+    #[tokio::test]
+    async fn test_add_seats_zero() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_zero", "starter", 2);
+        store.save_subscription("org_zero", &sub).await.unwrap();
+
+        let manager = SeatManager::new(store, client, plans);
+
+        let result = manager.add_seats("org_zero", 0).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_add_seats_no_support() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_basic", "basic", 0);
+        store.save_subscription("org_basic", &sub).await.unwrap();
+
+        let manager = SeatManager::new(store, client, plans);
+
+        let result = manager.add_seats("org_basic", 1).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_remove_seats() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_remove", "starter", 5);
+        store.save_subscription("org_remove", &sub).await.unwrap();
+
+        client.add_subscription(StripeSubscriptionData {
+            id: "sub_org_remove".to_string(),
+            customer_id: "cus_org_remove".to_string(),
+            plan_id: "starter".to_string(),
+            status: "active".to_string(),
+            current_period_start: 1700000000,
+            current_period_end: 1702592000,
+            extra_seats: 2, // Will be updated
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: Some("si_base".to_string()),
+            seat_item_id: Some("si_seat".to_string()),
+            metadata: SubscriptionMetadata::default(),
+        });
+
+        let manager = SeatManager::new(store, client, plans);
+
+        let result = manager.remove_seats("org_remove", 3).await.unwrap();
+        assert_eq!(result.previous_seats, 5);
+        assert_eq!(result.new_seats, 2);
+        assert_eq!(result.total_seats, 5); // 3 included + 2 extra
+    }
+
+    #[tokio::test]
+    async fn test_remove_seats_too_many() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_too_many", "starter", 2);
+        store.save_subscription("org_too_many", &sub).await.unwrap();
+
+        let manager = SeatManager::new(store, client, plans);
+
+        let result = manager.remove_seats("org_too_many", 5).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_seats() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_set", "starter", 2);
+        store.save_subscription("org_set", &sub).await.unwrap();
+
+        client.add_subscription(StripeSubscriptionData {
+            id: "sub_org_set".to_string(),
+            customer_id: "cus_org_set".to_string(),
+            plan_id: "starter".to_string(),
+            status: "active".to_string(),
+            current_period_start: 1700000000,
+            current_period_end: 1702592000,
+            extra_seats: 10,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: Some("si_base".to_string()),
+            seat_item_id: Some("si_seat".to_string()),
+            metadata: SubscriptionMetadata::default(),
+        });
+
+        let manager = SeatManager::new(store, client, plans);
+
+        let result = manager.set_seats("org_set", 10).await.unwrap();
+        assert_eq!(result.previous_seats, 2);
+        assert_eq!(result.new_seats, 10);
+        assert_eq!(result.total_seats, 13);
+    }
+
+    #[tokio::test]
+    async fn test_set_seats_no_change() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("org_same", "starter", 5);
+        store.save_subscription("org_same", &sub).await.unwrap();
+
+        let manager = SeatManager::new(store, client, plans);
+
+        // Setting to same value should return immediately without calling Stripe
+        let result = manager.set_seats("org_same", 5).await.unwrap();
+        assert_eq!(result.previous_seats, 5);
+        assert_eq!(result.new_seats, 5);
+        assert_eq!(result.total_seats, 8);
+    }
+}
