@@ -58,6 +58,8 @@ pub mod error;
 pub mod live_client;
 pub mod plans;
 pub mod portal;
+#[cfg(feature = "billing-seaorm")]
+pub mod sea_orm_store;
 pub mod seats;
 pub mod storage;
 pub mod subscription;
@@ -121,6 +123,10 @@ pub use live_client::{
     CircuitBreaker, CircuitBreakerConfig, CircuitState, InvalidApiKeyError, LiveStripeClient,
     LiveStripeClientConfig,
 };
+
+// SeaORM storage exports
+#[cfg(feature = "billing-seaorm")]
+pub use sea_orm_store::SeaOrmBillingStore;
 
 // Validation exports
 pub use validation::{validate_billable_id, validate_plan_id};

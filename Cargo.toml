@@ -151,6 +151,8 @@ auth-mfa = ["auth", "totp-rs"]
 auth-breach = ["sha1"]
 # Stripe-based billing
 billing = ["hex", "secrecy", "async-stripe"]
+# SeaORM-backed billing storage
+billing-seaorm = ["billing", "database"]
 # Testing helper for billing (in-memory store)
 test-billing = []
 
