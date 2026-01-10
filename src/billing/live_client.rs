@@ -20,6 +20,9 @@ use super::checkout::{
 };
 use super::customer::{CreateCustomerRequest, StripeClient, UpdateCustomerRequest};
 use super::error::BillingError;
+use super::invoice::{
+    Invoice, InvoiceLineItem, InvoiceList, InvoiceStatus, StripeInvoiceClient,
+};
 use super::portal::{
     CreatePortalSessionRequest, PortalFlow, PortalSession, StripePortalClient,
 };
@@ -398,6 +401,14 @@ fn parse_customer_id(id: &str) -> Result<stripe::CustomerId> {
 fn parse_subscription_id(id: &str) -> Result<stripe::SubscriptionId> {
     id.parse().map_err(|_| {
         crate::error::TidewayError::BadRequest(format!("Invalid subscription ID: {}", id))
+    })
+}
+
+/// Parse an invoice ID string into a Stripe InvoiceId.
+#[inline]
+fn parse_invoice_id(id: &str) -> Result<stripe::InvoiceId> {
+    id.parse().map_err(|_| {
+        crate::error::TidewayError::BadRequest(format!("Invalid invoice ID: {}", id))
     })
 }
 
@@ -1240,6 +1251,205 @@ impl StripePortalClient for LiveStripeClient {
             id: session.id.to_string(),
             url: session.url,
         })
+    }
+}
+
+// ============================================================================
+// StripeInvoiceClient Implementation
+// ============================================================================
+
+#[async_trait::async_trait]
+impl StripeInvoiceClient for LiveStripeClient {
+    async fn list_invoices(
+        &self,
+        customer_id: &str,
+        limit: u8,
+        starting_after: Option<&str>,
+        status: Option<InvoiceStatus>,
+    ) -> Result<InvoiceList> {
+        let customer_id = parse_customer_id(customer_id)?;
+
+        let mut params = stripe::ListInvoices::new();
+        params.customer = Some(customer_id);
+        params.limit = Some(u64::from(limit));
+
+        if let Some(after) = starting_after {
+            let invoice_id = parse_invoice_id(after)?;
+            params.starting_after = Some(invoice_id);
+        }
+
+        // Map our status to Stripe's status enum
+        if let Some(status) = status {
+            params.status = Some(match status {
+                InvoiceStatus::Draft => stripe::InvoiceStatus::Draft,
+                InvoiceStatus::Open => stripe::InvoiceStatus::Open,
+                InvoiceStatus::Paid => stripe::InvoiceStatus::Paid,
+                InvoiceStatus::Uncollectible => stripe::InvoiceStatus::Uncollectible,
+                InvoiceStatus::Void => stripe::InvoiceStatus::Void,
+            });
+        }
+
+        let response = with_retry_cb(&self.config, &self.circuit_breaker, "list_invoices", || {
+            let client = self.client.clone();
+            let params = params.clone();
+            async move { stripe::Invoice::list(&client, &params).await }
+        })
+        .await?;
+
+        let invoices: Vec<Invoice> = response
+            .data
+            .into_iter()
+            .filter_map(|inv| map_stripe_invoice(inv).ok())
+            .collect();
+
+        let next_cursor = invoices.last().map(|inv| inv.id.clone());
+
+        Ok(InvoiceList {
+            invoices,
+            has_more: response.has_more,
+            next_cursor,
+        })
+    }
+
+    async fn get_invoice(&self, invoice_id: &str) -> Result<Invoice> {
+        let invoice_id = parse_invoice_id(invoice_id)?;
+
+        let invoice = with_retry_cb(&self.config, &self.circuit_breaker, "get_invoice", || {
+            let client = self.client.clone();
+            let invoice_id = invoice_id.clone();
+            async move { stripe::Invoice::retrieve(&client, &invoice_id, &[]).await }
+        })
+        .await?;
+
+        map_stripe_invoice(invoice)
+    }
+
+    async fn get_upcoming_invoice(&self, _customer_id: &str) -> Result<Option<Invoice>> {
+        // Note: The async-stripe crate doesn't have full support for upcoming invoices.
+        // This would require a raw API call. For now, return None.
+        // Users can implement this via the Stripe Portal or raw HTTP calls if needed.
+        Ok(None)
+    }
+
+    async fn list_invoice_line_items(
+        &self,
+        invoice_id: &str,
+        limit: u8,
+    ) -> Result<Vec<InvoiceLineItem>> {
+        // Fetch the invoice and extract line items from it
+        let invoice_id = parse_invoice_id(invoice_id)?;
+
+        let invoice = with_retry_cb(&self.config, &self.circuit_breaker, "get_invoice_for_lines", || {
+            let client = self.client.clone();
+            let invoice_id = invoice_id.clone();
+            async move { stripe::Invoice::retrieve(&client, &invoice_id, &[]).await }
+        })
+        .await?;
+
+        let items = invoice
+            .lines
+            .map(|lines| {
+                lines
+                    .data
+                    .into_iter()
+                    .take(limit as usize)
+                    .map(map_stripe_line_item)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        Ok(items)
+    }
+}
+
+// ============================================================================
+// Invoice Data Mapping
+// ============================================================================
+
+/// Map Stripe Invoice to internal Invoice type.
+fn map_stripe_invoice(inv: stripe::Invoice) -> Result<Invoice> {
+    let status = match inv.status {
+        Some(stripe::InvoiceStatus::Draft) => InvoiceStatus::Draft,
+        Some(stripe::InvoiceStatus::Open) => InvoiceStatus::Open,
+        Some(stripe::InvoiceStatus::Paid) => InvoiceStatus::Paid,
+        Some(stripe::InvoiceStatus::Uncollectible) => InvoiceStatus::Uncollectible,
+        Some(stripe::InvoiceStatus::Void) => InvoiceStatus::Void,
+        None => InvoiceStatus::Draft, // Default for upcoming invoices
+    };
+
+    let customer_id = match &inv.customer {
+        Some(stripe::Expandable::Id(id)) => id.to_string(),
+        Some(stripe::Expandable::Object(c)) => c.id.to_string(),
+        None => String::new(),
+    };
+
+    let subscription_id = inv.subscription.as_ref().map(|s| match s {
+        stripe::Expandable::Id(id) => id.to_string(),
+        stripe::Expandable::Object(sub) => sub.id.to_string(),
+    });
+
+    // Extract period from first line item if available
+    let (period_start, period_end) = inv
+        .lines
+        .as_ref()
+        .and_then(|lines| lines.data.first())
+        .and_then(|item| item.period.as_ref())
+        .map(|p| {
+            let start = p.start.unwrap_or(0) as u64;
+            let end = p.end.unwrap_or(0) as u64;
+            (start, end)
+        })
+        .unwrap_or_else(|| {
+            let start = inv.period_start.unwrap_or(0) as u64;
+            let end = inv.period_end.unwrap_or(0) as u64;
+            (start, end)
+        });
+
+    Ok(Invoice {
+        id: inv.id.to_string(),
+        customer_id,
+        subscription_id,
+        status,
+        amount_due: inv.amount_due.unwrap_or(0),
+        amount_paid: inv.amount_paid.unwrap_or(0),
+        amount_remaining: inv.amount_remaining.unwrap_or(0),
+        currency: inv.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
+        created: inv.created.map(|t| t as u64).unwrap_or(0),
+        due_date: inv.due_date.map(|t| t as u64),
+        period_start,
+        period_end,
+        invoice_pdf: inv.invoice_pdf,
+        hosted_invoice_url: inv.hosted_invoice_url,
+        number: inv.number,
+        paid: inv.paid.unwrap_or(false),
+        line_items: None, // Populated separately if needed
+    })
+}
+
+/// Map Stripe InvoiceLineItem to internal InvoiceLineItem type.
+fn map_stripe_line_item(item: stripe::InvoiceLineItem) -> InvoiceLineItem {
+    let (period_start, period_end) = item
+        .period
+        .as_ref()
+        .map(|p| {
+            let start = p.start.unwrap_or(0) as u64;
+            let end = p.end.unwrap_or(0) as u64;
+            (start, end)
+        })
+        .unwrap_or((0, 0));
+
+    let price_id = item.price.as_ref().map(|p| p.id.to_string());
+    let quantity = item.quantity.map(|q| q as u32);
+
+    InvoiceLineItem {
+        id: item.id.to_string(),
+        description: item.description,
+        amount: item.amount,
+        currency: item.currency.to_string(),
+        quantity,
+        price_id,
+        period_start,
+        period_end,
     }
 }
 

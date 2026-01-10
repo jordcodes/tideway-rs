@@ -63,6 +63,7 @@ pub mod sea_orm_store;
 pub mod seats;
 pub mod storage;
 pub mod subscription;
+pub mod invoice;
 pub mod validation;
 pub mod webhook;
 
@@ -99,6 +100,12 @@ pub use portal::{
 
 // Webhook exports
 pub use webhook::{WebhookEvent, WebhookEventData, WebhookHandler, WebhookOutcome};
+
+// Invoice exports
+pub use invoice::{
+    CachedInvoiceManager, Invoice, InvoiceConfig, InvoiceLineItem, InvoiceList, InvoiceListParams,
+    InvoiceManager, InvoiceStatus, InvoiceStatusParseError, StripeInvoiceClient,
+};
 
 // Seats exports
 pub use seats::{SeatChangeResult, SeatInfo, SeatManager};
@@ -146,6 +153,9 @@ pub use checkout::test::{MockStripeCheckoutClient, MockFullStripeClient};
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use portal::test::MockStripePortalClient;
+
+#[cfg(any(test, feature = "test-billing"))]
+pub use invoice::test::MockStripeInvoiceClient;
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use client::test::{ComprehensiveMockStripeClient, FullMockStripeClient};

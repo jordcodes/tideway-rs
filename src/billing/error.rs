@@ -39,6 +39,10 @@ pub enum BillingError {
     /// No Stripe customer found for the billable entity.
     NoCustomer { billable_id: String },
 
+    // Invoice errors
+    /// Invoice not found or doesn't belong to the customer.
+    InvoiceNotFound { invoice_id: String },
+
     // Seat errors
     /// Cannot remove more seats than are currently extra.
     InsufficientSeats { requested: u32, available: u32 },
@@ -110,6 +114,9 @@ impl fmt::Display for BillingError {
             Self::NoCustomer { billable_id } => {
                 write!(f, "No Stripe customer found for '{}'", billable_id)
             }
+            Self::InvoiceNotFound { invoice_id } => {
+                write!(f, "Invoice not found: {}", invoice_id)
+            }
             Self::InsufficientSeats { requested, available } => {
                 write!(f, "Cannot remove {} seats, only {} extra seats available", requested, available)
             }
@@ -163,7 +170,8 @@ impl From<BillingError> for crate::error::TidewayError {
             BillingError::PlanNotFound { .. }
             | BillingError::NoSubscription { .. }
             | BillingError::NoCustomer { .. }
-            | BillingError::StripeSubscriptionNotFound { .. } => {
+            | BillingError::StripeSubscriptionNotFound { .. }
+            | BillingError::InvoiceNotFound { .. } => {
                 crate::error::TidewayError::NotFound(err.to_string())
             }
 
@@ -217,6 +225,7 @@ impl BillingError {
             | Self::NoSubscription { .. }
             | Self::NoCustomer { .. }
             | Self::StripeSubscriptionNotFound { .. }
+            | Self::InvoiceNotFound { .. }
             | Self::SubscriptionInactive { .. }
             | Self::SubscriptionCancelling { .. }
             | Self::FeatureNotIncluded { .. }

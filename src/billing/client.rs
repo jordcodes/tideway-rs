@@ -4,12 +4,11 @@
 //! Individual traits remain separate for flexibility, but this module provides
 //! unified types for when you need multiple capabilities.
 
-use crate::error::Result;
-
-use super::customer::{CreateCustomerRequest, StripeClient, UpdateCustomerRequest};
-use super::checkout::{CheckoutSession, CreateCheckoutSessionRequest, StripeCheckoutClient};
-use super::subscription::{StripeSubscriptionClient, StripeSubscriptionData, UpdateSubscriptionRequest};
-use super::portal::{CreatePortalSessionRequest, PortalFlow, PortalSession, StripePortalClient};
+use super::checkout::StripeCheckoutClient;
+use super::customer::StripeClient;
+use super::invoice::StripeInvoiceClient;
+use super::portal::StripePortalClient;
+use super::subscription::StripeSubscriptionClient;
 
 /// A type that implements all Stripe client traits.
 ///
@@ -24,19 +23,24 @@ use super::portal::{CreatePortalSessionRequest, PortalFlow, PortalSession, Strip
 ///     // Can use client for any Stripe operation
 /// }
 /// ```
-pub trait FullStripeClient: StripeClient + StripeCheckoutClient + StripeSubscriptionClient + StripePortalClient {}
+pub trait FullStripeClient: StripeClient + StripeCheckoutClient + StripeSubscriptionClient + StripePortalClient + StripeInvoiceClient {}
 
 /// Blanket implementation for any type that implements all traits.
 impl<T> FullStripeClient for T
 where
-    T: StripeClient + StripeCheckoutClient + StripeSubscriptionClient + StripePortalClient,
+    T: StripeClient + StripeCheckoutClient + StripeSubscriptionClient + StripePortalClient + StripeInvoiceClient,
 {}
 
 /// Mock Stripe client for testing that implements all client traits.
 #[cfg(any(test, feature = "test-billing"))]
 pub mod test {
     use super::*;
-    use super::super::subscription::SubscriptionMetadata;
+    use super::super::checkout::{CheckoutSession, CreateCheckoutSessionRequest};
+    use super::super::customer::{CreateCustomerRequest, UpdateCustomerRequest};
+    use super::super::invoice::{Invoice, InvoiceLineItem, InvoiceList, InvoiceStatus};
+    use super::super::portal::{CreatePortalSessionRequest, PortalFlow, PortalSession};
+    use super::super::subscription::{StripeSubscriptionData, SubscriptionMetadata, UpdateSubscriptionRequest};
+    use crate::error::Result;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A comprehensive mock Stripe client that implements all client traits.
@@ -157,6 +161,78 @@ pub mod test {
         }
     }
 
+    #[async_trait::async_trait]
+    impl StripeInvoiceClient for ComprehensiveMockStripeClient {
+        async fn list_invoices(
+            &self,
+            _customer_id: &str,
+            _limit: u8,
+            _starting_after: Option<&str>,
+            _status: Option<InvoiceStatus>,
+        ) -> Result<InvoiceList> {
+            Ok(InvoiceList {
+                invoices: vec![],
+                has_more: false,
+                next_cursor: None,
+            })
+        }
+
+        async fn get_invoice(&self, invoice_id: &str) -> Result<Invoice> {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            Ok(Invoice {
+                id: invoice_id.to_string(),
+                customer_id: "cus_mock_0".to_string(),
+                subscription_id: Some("sub_mock".to_string()),
+                status: InvoiceStatus::Paid,
+                amount_due: 2999,
+                amount_paid: 2999,
+                amount_remaining: 0,
+                currency: "usd".to_string(),
+                created: now,
+                due_date: Some(now + 30 * 24 * 60 * 60),
+                period_start: now,
+                period_end: now + 30 * 24 * 60 * 60,
+                invoice_pdf: Some(format!("https://pay.stripe.com/invoice/{}/pdf", invoice_id)),
+                hosted_invoice_url: Some(format!("https://invoice.stripe.com/{}", invoice_id)),
+                number: Some(format!("INV-{}", invoice_id)),
+                paid: true,
+                line_items: None,
+            })
+        }
+
+        async fn get_upcoming_invoice(&self, _customer_id: &str) -> Result<Option<Invoice>> {
+            Ok(None)
+        }
+
+        async fn list_invoice_line_items(
+            &self,
+            invoice_id: &str,
+            _limit: u8,
+        ) -> Result<Vec<InvoiceLineItem>> {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            Ok(vec![
+                InvoiceLineItem {
+                    id: format!("il_{}_1", invoice_id),
+                    description: Some("Pro Plan".to_string()),
+                    amount: 2999,
+                    currency: "usd".to_string(),
+                    quantity: Some(1),
+                    price_id: Some("price_pro".to_string()),
+                    period_start: now,
+                    period_end: now + 30 * 24 * 60 * 60,
+                },
+            ])
+        }
+    }
+
     // Implement Clone manually since AtomicU64 doesn't implement Clone
     impl Clone for ComprehensiveMockStripeClient {
         fn clone(&self) -> Self {
@@ -173,7 +249,9 @@ pub mod test {
 mod tests {
     use super::*;
     use super::test::ComprehensiveMockStripeClient;
-    use super::super::checkout::{CheckoutMetadata, CheckoutMode};
+    use super::super::checkout::{CheckoutMetadata, CheckoutMode, CreateCheckoutSessionRequest};
+    use super::super::customer::CreateCustomerRequest;
+    use super::super::portal::CreatePortalSessionRequest;
 
     #[tokio::test]
     async fn test_mock_client_implements_all_traits() {
