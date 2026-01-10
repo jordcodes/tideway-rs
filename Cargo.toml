@@ -155,6 +155,12 @@ billing = ["hex", "secrecy", "async-stripe"]
 billing-seaorm = ["billing", "database"]
 # Testing helper for billing (in-memory store)
 test-billing = []
+# Organizations module
+organizations = []
+# Organizations with billing integration
+organizations-billing = ["organizations", "billing"]
+# Testing helper for organizations (in-memory store)
+test-organizations = ["organizations"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
