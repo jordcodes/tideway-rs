@@ -88,6 +88,9 @@ pub struct PortalConfig {
     /// Allowed domains for return URLs.
     /// If empty, any HTTPS URL is allowed.
     pub allowed_return_domains: Vec<String>,
+    /// Allow HTTP for localhost URLs (development only).
+    /// This should NEVER be enabled in production.
+    pub allow_localhost_http: bool,
 }
 
 impl PortalConfig {
@@ -118,6 +121,22 @@ impl PortalConfig {
         self
     }
 
+    /// Allow HTTP for localhost URLs (development only).
+    ///
+    /// # Warning
+    /// This should NEVER be enabled in production. It allows insecure HTTP
+    /// connections for localhost, 127.0.0.1, and [::1] addresses only.
+    #[must_use]
+    pub fn allow_localhost_http(mut self, allow: bool) -> Self {
+        self.allow_localhost_http = allow;
+        self
+    }
+
+    /// Check if a host is a localhost address.
+    fn is_localhost(host: &str) -> bool {
+        matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+    }
+
     /// Validate a return URL.
     ///
     /// Checks that the URL is valid HTTPS and the domain is allowed.
@@ -129,8 +148,13 @@ impl PortalConfig {
             }
         })?;
 
-        // Must be HTTPS
-        if parsed.scheme() != "https" {
+        // Check scheme - must be HTTPS, unless localhost HTTP is allowed
+        let is_https = parsed.scheme() == "https";
+        let is_localhost_http = self.allow_localhost_http
+            && parsed.scheme() == "http"
+            && parsed.host_str().map(Self::is_localhost).unwrap_or(false);
+
+        if !is_https && !is_localhost_http {
             return Err(BillingError::InvalidRedirectUrl {
                 url: url.to_string(),
                 reason: "return URL must use HTTPS".to_string(),
@@ -391,5 +415,25 @@ mod tests {
         // Invalid domain should fail
         let result = manager.create_portal_session("org_url", "https://evil.com/billing").await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_portal_url_validation_localhost_http() {
+        // Without flag, HTTP localhost should fail
+        let config = PortalConfig::new();
+        assert!(config.validate_return_url("http://localhost:5173/billing").is_err());
+        assert!(config.validate_return_url("http://127.0.0.1:3000/billing").is_err());
+
+        // With flag enabled, HTTP localhost should pass
+        let config = PortalConfig::new().allow_localhost_http(true);
+        assert!(config.validate_return_url("http://localhost:5173/billing").is_ok());
+        assert!(config.validate_return_url("http://127.0.0.1:3000/billing").is_ok());
+        assert!(config.validate_return_url("http://[::1]:8080/billing").is_ok());
+
+        // HTTP on non-localhost should still fail
+        assert!(config.validate_return_url("http://example.com/billing").is_err());
+
+        // HTTPS should always work
+        assert!(config.validate_return_url("https://example.com/billing").is_ok());
     }
 }
