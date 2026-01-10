@@ -96,6 +96,11 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
     /// Set the default payment method for a billable entity.
     ///
     /// The payment method must already be attached to the customer.
+    ///
+    /// # Security
+    ///
+    /// This method verifies that the payment method belongs to the customer
+    /// before setting it as default, preventing unauthorized modifications.
     pub async fn set_default(
         &self,
         billable_id: &str,
@@ -106,22 +111,43 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
                 billable_id: billable_id.to_string(),
             })?;
 
+        // Verify the payment method belongs to this customer
+        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, 100).await?;
+        if !methods.methods.iter().any(|m| m.id == payment_method_id) {
+            return Err(super::error::BillingError::PaymentMethodNotFound {
+                payment_method_id: payment_method_id.to_string(),
+            }.into());
+        }
+
         self.client.set_default_payment_method(&sub.stripe_customer_id, payment_method_id).await
     }
 
     /// Remove a payment method from a billable entity.
     ///
     /// Detaches the payment method from the customer.
+    ///
+    /// # Security
+    ///
+    /// This method verifies that the payment method belongs to the customer
+    /// before detaching, preventing unauthorized removal of other customers'
+    /// payment methods.
     pub async fn remove(
         &self,
         billable_id: &str,
         payment_method_id: &str,
     ) -> Result<()> {
-        // Verify the billable entity has a subscription (and thus a customer)
-        let _sub = self.store.get_subscription(billable_id).await?
+        let sub = self.store.get_subscription(billable_id).await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
+
+        // Verify the payment method belongs to this customer before detaching
+        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, 100).await?;
+        if !methods.methods.iter().any(|m| m.id == payment_method_id) {
+            return Err(super::error::BillingError::PaymentMethodNotFound {
+                payment_method_id: payment_method_id.to_string(),
+            }.into());
+        }
 
         self.client.detach_payment_method(payment_method_id).await
     }

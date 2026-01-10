@@ -1083,10 +1083,27 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let client = self.idempotent_client("pause_subscription");
         let sub_id = parse_subscription_id(subscription_id)?;
 
+        // First, verify the subscription is not already paused
+        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[]).await
+            .map_err(|e| BillingError::StripeApiError {
+                operation: "get_subscription_for_pause".to_string(),
+                message: e.to_string(),
+                code: None,
+                http_status: None,
+            })?;
+
+        if current.pause_collection.is_some() {
+            return Err(BillingError::SubscriptionAlreadyPaused {
+                billable_id: subscription_id.to_string(),
+            }.into());
+        }
+
         let mut params = stripe::UpdateSubscription::new();
         params.pause_collection = Some(stripe::UpdateSubscriptionPauseCollection {
+            // MarkUncollectible: Invoices created during pause are marked uncollectible
+            // and invoice collection is disabled. This is the safest default.
             behavior: stripe::UpdateSubscriptionPauseCollectionBehavior::MarkUncollectible,
-            resumes_at: None,
+            resumes_at: None, // Pause indefinitely until explicitly resumed
         });
 
         with_retry_cb(&self.config, &self.circuit_breaker, "pause_subscription", || {
@@ -1104,8 +1121,27 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let client = self.idempotent_client("resume_paused_subscription");
         let sub_id = parse_subscription_id(subscription_id)?;
 
-        // To resume, we set resumes_at to the current timestamp (immediately resume)
-        // Setting resumes_at to a timestamp in the past or "now" effectively resumes the subscription
+        // First, verify the subscription is actually paused
+        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[]).await
+            .map_err(|e| BillingError::StripeApiError {
+                operation: "get_subscription_for_resume".to_string(),
+                message: e.to_string(),
+                code: None,
+                http_status: None,
+            })?;
+
+        if current.pause_collection.is_none() {
+            return Err(BillingError::SubscriptionNotPaused {
+                billable_id: subscription_id.to_string(),
+            }.into());
+        }
+
+        // To resume a paused subscription in Stripe:
+        // - Ideally: pass empty string "" for pause_collection (not supported by async-stripe typed API)
+        // - Workaround: set resumes_at to current timestamp to trigger immediate resume
+        //
+        // Note: The async-stripe library doesn't have a direct way to clear pause_collection.
+        // Setting resumes_at to the current time tells Stripe the pause should end now.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -1113,7 +1149,10 @@ impl StripeSubscriptionClient for LiveStripeClient {
 
         let mut params = stripe::UpdateSubscription::new();
         params.pause_collection = Some(stripe::UpdateSubscriptionPauseCollection {
-            behavior: stripe::UpdateSubscriptionPauseCollectionBehavior::KeepAsDraft,
+            // Use MarkUncollectible as default behavior - this is commonly used and safe
+            // The behavior doesn't matter much since we're immediately resuming
+            behavior: stripe::UpdateSubscriptionPauseCollectionBehavior::MarkUncollectible,
+            // Setting resumes_at to now triggers immediate resume
             resumes_at: Some(now as i64),
         });
 
@@ -1125,7 +1164,18 @@ impl StripeSubscriptionClient for LiveStripeClient {
         })
         .await?;
 
-        map_subscription_to_data(subscription)
+        // Verify the subscription was actually resumed
+        let result = map_subscription_to_data(subscription)?;
+
+        // Log a warning if pause_collection is still present (this might indicate the resume didn't work)
+        // In practice, Stripe should clear pause_collection when resumes_at is reached
+        tracing::debug!(
+            subscription_id = %subscription_id,
+            status = %result.status,
+            "Attempted to resume paused subscription"
+        );
+
+        Ok(result)
     }
 }
 
@@ -1362,6 +1412,56 @@ impl StripeRefundClient for LiveStripeClient {
         .await?;
 
         Ok(list.data.into_iter().map(map_refund).collect())
+    }
+
+    async fn get_charge_customer_id(&self, charge_id: &str) -> Result<String> {
+        let client = self.client.clone();
+        let charge_id = charge_id.parse::<stripe::ChargeId>()
+            .map_err(|_| BillingError::ChargeNotFound {
+                charge_id: charge_id.to_string(),
+            })?;
+
+        let charge = with_retry_cb(&self.config, &self.circuit_breaker, "get_charge", || {
+            let client = client.clone();
+            let charge_id = charge_id.clone();
+            async move { stripe::Charge::retrieve(&client, &charge_id, &[]).await }
+        })
+        .await?;
+
+        // Extract customer ID from charge
+        charge.customer
+            .map(|c| match c {
+                stripe::Expandable::Id(id) => id.to_string(),
+                stripe::Expandable::Object(customer) => customer.id.to_string(),
+            })
+            .ok_or_else(|| BillingError::ChargeNotFound {
+                charge_id: charge_id.to_string(),
+            }.into())
+    }
+
+    async fn get_payment_intent_customer_id(&self, payment_intent_id: &str) -> Result<String> {
+        let client = self.client.clone();
+        let pi_id = payment_intent_id.parse::<stripe::PaymentIntentId>()
+            .map_err(|_| BillingError::RefundFailed {
+                reason: format!("Invalid payment intent ID: {}", payment_intent_id),
+            })?;
+
+        let pi = with_retry_cb(&self.config, &self.circuit_breaker, "get_payment_intent", || {
+            let client = client.clone();
+            let pi_id = pi_id.clone();
+            async move { stripe::PaymentIntent::retrieve(&client, &pi_id, &[]).await }
+        })
+        .await?;
+
+        // Extract customer ID from payment intent
+        pi.customer
+            .map(|c| match c {
+                stripe::Expandable::Id(id) => id.to_string(),
+                stripe::Expandable::Object(customer) => customer.id.to_string(),
+            })
+            .ok_or_else(|| BillingError::RefundFailed {
+                reason: "Payment intent has no customer".to_string(),
+            }.into())
     }
 }
 

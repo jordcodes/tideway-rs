@@ -1,8 +1,17 @@
 //! Refund management for Stripe billing.
 //!
 //! Handles creating, retrieving, and listing refunds for charges and payment intents.
+//!
+//! # Security
+//!
+//! This module provides two managers:
+//! - `RefundManager` - Low-level refund operations without authorization checks.
+//!   Use this only for admin operations or when authorization is handled externally.
+//! - `SecureRefundManager` - Verifies charge ownership before processing refunds.
+//!   **Use this for customer-facing operations.**
 
 use crate::error::Result;
+use super::storage::BillingStore;
 
 /// A Stripe refund.
 #[derive(Debug, Clone)]
@@ -155,23 +164,49 @@ pub trait StripeRefundClient: Send + Sync {
 
     /// List refunds for a charge.
     async fn list_refunds(&self, charge_id: &str, limit: u8) -> Result<Vec<Refund>>;
+
+    /// Get the customer ID associated with a charge.
+    ///
+    /// Used for authorization checks to verify charge ownership.
+    async fn get_charge_customer_id(&self, charge_id: &str) -> Result<String>;
+
+    /// Get the customer ID associated with a payment intent.
+    ///
+    /// Used for authorization checks to verify payment intent ownership.
+    async fn get_payment_intent_customer_id(&self, payment_intent_id: &str) -> Result<String>;
 }
 
-/// Refund management operations.
+/// Low-level refund management operations.
 ///
-/// Provides a high-level interface for refunding charges and payment intents.
+/// Provides a low-level interface for refunding charges and payment intents.
+///
+/// # Security Warning
+///
+/// This manager does **not** verify that the charge belongs to the caller.
+/// Use [`SecureRefundManager`] for customer-facing operations, or ensure
+/// authorization is handled at a higher layer (e.g., admin-only endpoints).
 pub struct RefundManager<C: StripeRefundClient> {
     client: C,
 }
 
 impl<C: StripeRefundClient> RefundManager<C> {
     /// Create a new refund manager.
+    ///
+    /// # Security
+    ///
+    /// This manager does not perform authorization checks.
+    /// For customer-facing operations, use [`SecureRefundManager`] instead.
     #[must_use]
     pub fn new(client: C) -> Self {
         Self { client }
     }
 
     /// Refund a charge.
+    ///
+    /// # Security Warning
+    ///
+    /// This method does not verify charge ownership. Ensure the caller
+    /// is authorized before invoking this method.
     ///
     /// # Arguments
     ///
@@ -201,6 +236,11 @@ impl<C: StripeRefundClient> RefundManager<C> {
 
     /// Refund a payment intent.
     ///
+    /// # Security Warning
+    ///
+    /// This method does not verify payment intent ownership. Ensure the caller
+    /// is authorized before invoking this method.
+    ///
     /// # Arguments
     ///
     /// * `payment_intent_id` - The Stripe payment intent ID
@@ -220,6 +260,10 @@ impl<C: StripeRefundClient> RefundManager<C> {
     /// Refund with a specific reason.
     ///
     /// Useful for fraud-related refunds or duplicate charges.
+    ///
+    /// # Security Warning
+    ///
+    /// This method does not verify charge ownership.
     pub async fn refund_with_reason(
         &self,
         charge_id: &str,
@@ -245,6 +289,178 @@ impl<C: StripeRefundClient> RefundManager<C> {
     }
 }
 
+/// Secure refund manager with authorization checks.
+///
+/// Verifies that charges and payment intents belong to the billable entity
+/// before processing refunds. **Use this for all customer-facing operations.**
+///
+/// # Example
+///
+/// ```ignore
+/// let manager = SecureRefundManager::new(store, client);
+///
+/// // This will verify the charge belongs to org_123 before refunding
+/// let refund = manager.refund_charge("org_123", "ch_xxx", None).await?;
+/// ```
+pub struct SecureRefundManager<S: BillingStore, C: StripeRefundClient> {
+    store: S,
+    client: C,
+}
+
+impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
+    /// Create a new secure refund manager.
+    #[must_use]
+    pub fn new(store: S, client: C) -> Self {
+        Self { store, client }
+    }
+
+    /// Verify that a charge belongs to the given billable entity.
+    async fn verify_charge_ownership(&self, billable_id: &str, charge_id: &str) -> Result<()> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        let charge_customer_id = self.client.get_charge_customer_id(charge_id).await?;
+
+        if charge_customer_id != sub.stripe_customer_id {
+            return Err(super::error::BillingError::ChargeNotFound {
+                charge_id: charge_id.to_string(),
+            }.into());
+        }
+
+        Ok(())
+    }
+
+    /// Verify that a payment intent belongs to the given billable entity.
+    async fn verify_payment_intent_ownership(&self, billable_id: &str, payment_intent_id: &str) -> Result<()> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        let pi_customer_id = self.client.get_payment_intent_customer_id(payment_intent_id).await?;
+
+        if pi_customer_id != sub.stripe_customer_id {
+            return Err(super::error::BillingError::RefundFailed {
+                reason: "Payment intent does not belong to this customer".to_string(),
+            }.into());
+        }
+
+        Ok(())
+    }
+
+    /// Refund a charge with ownership verification.
+    ///
+    /// Verifies that the charge belongs to the billable entity before processing.
+    ///
+    /// # Arguments
+    ///
+    /// * `billable_id` - The billable entity ID (used to verify ownership)
+    /// * `charge_id` - The Stripe charge ID
+    /// * `amount` - Amount to refund in cents. If None, refunds the full charge.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Full refund - verifies charge belongs to org_123
+    /// let refund = manager.refund_charge("org_123", "ch_xxx", None).await?;
+    ///
+    /// // Partial refund ($5.00)
+    /// let refund = manager.refund_charge("org_123", "ch_xxx", Some(500)).await?;
+    /// ```
+    pub async fn refund_charge(
+        &self,
+        billable_id: &str,
+        charge_id: &str,
+        amount: Option<i64>,
+    ) -> Result<Refund> {
+        // Verify the charge belongs to this customer
+        self.verify_charge_ownership(billable_id, charge_id).await?;
+
+        let mut request = CreateRefundRequest::for_charge(charge_id);
+        if let Some(amt) = amount {
+            request = request.with_amount(amt);
+        }
+        self.client.create_refund(request).await
+    }
+
+    /// Refund a payment intent with ownership verification.
+    ///
+    /// Verifies that the payment intent belongs to the billable entity before processing.
+    ///
+    /// # Arguments
+    ///
+    /// * `billable_id` - The billable entity ID (used to verify ownership)
+    /// * `payment_intent_id` - The Stripe payment intent ID
+    /// * `amount` - Amount to refund in cents. If None, refunds the full payment.
+    pub async fn refund_payment_intent(
+        &self,
+        billable_id: &str,
+        payment_intent_id: &str,
+        amount: Option<i64>,
+    ) -> Result<Refund> {
+        // Verify the payment intent belongs to this customer
+        self.verify_payment_intent_ownership(billable_id, payment_intent_id).await?;
+
+        let mut request = CreateRefundRequest::for_payment_intent(payment_intent_id);
+        if let Some(amt) = amount {
+            request = request.with_amount(amt);
+        }
+        self.client.create_refund(request).await
+    }
+
+    /// Refund a charge with a specific reason and ownership verification.
+    ///
+    /// # Arguments
+    ///
+    /// * `billable_id` - The billable entity ID (used to verify ownership)
+    /// * `charge_id` - The Stripe charge ID
+    /// * `amount` - Amount to refund in cents. If None, refunds the full charge.
+    /// * `reason` - The reason for the refund
+    pub async fn refund_with_reason(
+        &self,
+        billable_id: &str,
+        charge_id: &str,
+        amount: Option<i64>,
+        reason: RefundReason,
+    ) -> Result<Refund> {
+        // Verify the charge belongs to this customer
+        self.verify_charge_ownership(billable_id, charge_id).await?;
+
+        let mut request = CreateRefundRequest::for_charge(charge_id)
+            .with_reason(reason);
+        if let Some(amt) = amount {
+            request = request.with_amount(amt);
+        }
+        self.client.create_refund(request).await
+    }
+
+    /// Get a refund by ID.
+    pub async fn get_refund(&self, refund_id: &str) -> Result<Refund> {
+        self.client.get_refund(refund_id).await
+    }
+
+    /// List refunds for a charge with ownership verification.
+    ///
+    /// # Arguments
+    ///
+    /// * `billable_id` - The billable entity ID (used to verify ownership)
+    /// * `charge_id` - The Stripe charge ID
+    /// * `limit` - Maximum number of refunds to return
+    pub async fn list_refunds_for_charge(
+        &self,
+        billable_id: &str,
+        charge_id: &str,
+        limit: u8,
+    ) -> Result<Vec<Refund>> {
+        // Verify the charge belongs to this customer
+        self.verify_charge_ownership(billable_id, charge_id).await?;
+
+        self.client.list_refunds(charge_id, limit).await
+    }
+}
+
 /// Mock Stripe refund client for testing.
 #[cfg(any(test, feature = "test-billing"))]
 pub mod test {
@@ -257,6 +473,8 @@ pub mod test {
     pub struct MockStripeRefundClient {
         refunds: std::sync::Arc<RwLock<HashMap<String, Refund>>>,
         charge_refunds: std::sync::Arc<RwLock<HashMap<String, Vec<String>>>>,
+        charge_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
+        payment_intent_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
         refund_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
     }
 
@@ -265,6 +483,22 @@ pub mod test {
         #[must_use]
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Register a charge with its customer ID for ownership verification.
+        pub fn add_charge(&self, charge_id: &str, customer_id: &str) {
+            self.charge_customers
+                .write()
+                .unwrap()
+                .insert(charge_id.to_string(), customer_id.to_string());
+        }
+
+        /// Register a payment intent with its customer ID for ownership verification.
+        pub fn add_payment_intent(&self, payment_intent_id: &str, customer_id: &str) {
+            self.payment_intent_customers
+                .write()
+                .unwrap()
+                .insert(payment_intent_id.to_string(), customer_id.to_string());
         }
     }
 
@@ -330,6 +564,28 @@ pub mod test {
                 .collect();
 
             Ok(result)
+        }
+
+        async fn get_charge_customer_id(&self, charge_id: &str) -> Result<String> {
+            self.charge_customers
+                .read()
+                .unwrap()
+                .get(charge_id)
+                .cloned()
+                .ok_or_else(|| super::super::error::BillingError::ChargeNotFound {
+                    charge_id: charge_id.to_string(),
+                }.into())
+        }
+
+        async fn get_payment_intent_customer_id(&self, payment_intent_id: &str) -> Result<String> {
+            self.payment_intent_customers
+                .read()
+                .unwrap()
+                .get(payment_intent_id)
+                .cloned()
+                .ok_or_else(|| super::super::error::BillingError::RefundFailed {
+                    reason: format!("Payment intent not found: {}", payment_intent_id),
+                }.into())
         }
     }
 }
@@ -436,5 +692,125 @@ mod tests {
         assert_eq!(request.charge_id, Some("ch_123".to_string()));
         assert_eq!(request.amount, Some(500));
         assert_eq!(request.reason, Some(RefundReason::RequestedByCustomer));
+    }
+
+    // ========================================================================
+    // SecureRefundManager Tests
+    // ========================================================================
+
+    use crate::billing::storage::test::InMemoryBillingStore;
+    use crate::billing::storage::{StoredSubscription, SubscriptionStatus};
+
+    fn create_test_subscription() -> StoredSubscription {
+        StoredSubscription {
+            stripe_subscription_id: "sub_123".to_string(),
+            stripe_customer_id: "cus_123".to_string(),
+            plan_id: "starter".to_string(),
+            status: SubscriptionStatus::Active,
+            current_period_start: 1700000000,
+            current_period_end: 1702592000,
+            extra_seats: 0,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: None,
+            seat_item_id: None,
+            updated_at: 1700000000,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_charge_with_valid_ownership() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        // Set up subscription
+        store.save_subscription("org_123", &create_test_subscription()).await.unwrap();
+
+        // Register charge with correct customer
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        // Should succeed - charge belongs to customer
+        let refund = manager.refund_charge("org_123", "ch_test", None).await.unwrap();
+        assert!(refund.id.starts_with("re_mock_"));
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_charge_with_invalid_ownership() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        // Set up subscription
+        store.save_subscription("org_123", &create_test_subscription()).await.unwrap();
+
+        // Register charge with DIFFERENT customer
+        client.add_charge("ch_other", "cus_other");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        // Should fail - charge belongs to different customer
+        let result = manager.refund_charge("org_123", "ch_other", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_charge_no_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        // No subscription set up
+
+        let manager = SecureRefundManager::new(store, client);
+
+        // Should fail - no subscription
+        let result = manager.refund_charge("nonexistent", "ch_test", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_payment_intent_with_valid_ownership() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store.save_subscription("org_123", &create_test_subscription()).await.unwrap();
+        client.add_payment_intent("pi_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        let refund = manager.refund_payment_intent("org_123", "pi_test", None).await.unwrap();
+        assert!(refund.id.starts_with("re_mock_"));
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_payment_intent_with_invalid_ownership() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store.save_subscription("org_123", &create_test_subscription()).await.unwrap();
+        client.add_payment_intent("pi_other", "cus_other");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        let result = manager.refund_payment_intent("org_123", "pi_other", None).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_secure_list_refunds_with_ownership() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store.save_subscription("org_123", &create_test_subscription()).await.unwrap();
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        // Create a refund first
+        manager.refund_charge("org_123", "ch_test", Some(100)).await.unwrap();
+
+        // List should work
+        let refunds = manager.list_refunds_for_charge("org_123", "ch_test", 10).await.unwrap();
+        assert_eq!(refunds.len(), 1);
     }
 }

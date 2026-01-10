@@ -117,7 +117,8 @@ pub use payment::{PaymentMethod, PaymentMethodList, PaymentMethodManager, Stripe
 
 // Refund exports
 pub use refund::{
-    CreateRefundRequest, Refund, RefundManager, RefundReason, RefundStatus, StripeRefundClient,
+    CreateRefundRequest, Refund, RefundManager, RefundReason, RefundStatus, SecureRefundManager,
+    StripeRefundClient,
 };
 
 // Entitlements exports
