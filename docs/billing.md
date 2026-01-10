@@ -78,6 +78,30 @@ The billing module uses a layered architecture:
 - **Generic storage** - `BillingStore` trait lets you bring your own database
 - **No business logic assumptions** - Uses `BillableEntity` trait instead of assuming user/org models
 
+## Currency Support
+
+The billing module fully supports multiple currencies. Currency is determined by your Stripe Price configuration - when you create prices in Stripe, you specify the currency (GBP, USD, EUR, etc.).
+
+```rust
+// Define plans with explicit currency for documentation/display
+let plans = Plans::builder()
+    .plan("starter")
+        .stripe_price("price_starter_gbp")  // GBP price in Stripe
+        .currency("gbp")                     // Optional: for display purposes
+        .included_seats(3)
+        .done()
+    .build();
+```
+
+The module defaults to GBP for mock clients in tests. For other currencies:
+
+```rust
+// Create mock client with specific currency
+let client = ComprehensiveMockStripeClient::with_currency("usd");
+let invoice_client = MockStripeInvoiceClient::with_currency("eur");
+let refund_client = MockStripeRefundClient::with_currency("gbp");
+```
+
 ## Plans Configuration
 
 Define your subscription plans with the builder pattern:
@@ -593,7 +617,6 @@ Current limitations that may be addressed in future versions:
 | Proration preview | Not implemented | Requires raw API call |
 | Webhook signature verification | Partial | Often handled at HTTP layer |
 | Usage-based billing | Not implemented | Metered subscription support |
-| Multi-currency | Limited | Defaults to USD |
 | Subscription schedules | Not implemented | For delayed plan changes |
 
 These cover edge cases - the current implementation handles 95%+ of typical SaaS billing needs.

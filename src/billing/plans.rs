@@ -129,6 +129,10 @@ pub struct PlanConfig {
     pub display_name: Option<String>,
     /// Description of the plan.
     pub description: Option<String>,
+    /// Currency code (e.g., "gbp", "usd", "eur").
+    /// This should match the currency of the Stripe price.
+    /// Used for display purposes and validation.
+    pub currency: Option<String>,
 }
 
 impl PlanConfig {
@@ -258,6 +262,7 @@ impl PlansBuilder {
             trial_days: None,
             display_name: None,
             description: None,
+            currency: None,
         }
     }
 
@@ -286,6 +291,7 @@ pub struct PlanBuilder {
     trial_days: Option<u32>,
     display_name: Option<String>,
     description: Option<String>,
+    currency: Option<String>,
 }
 
 impl PlanBuilder {
@@ -384,6 +390,16 @@ impl PlanBuilder {
         self
     }
 
+    /// Set the currency code (e.g., "gbp", "usd", "eur").
+    ///
+    /// This should match the currency of your Stripe price.
+    /// Used for display purposes and validation.
+    #[must_use]
+    pub fn currency(mut self, currency: &str) -> Self {
+        self.currency = Some(currency.to_lowercase());
+        self
+    }
+
     /// Finish defining this plan and return to the parent builder.
     ///
     /// # Panics
@@ -403,6 +419,7 @@ impl PlanBuilder {
             trial_days: self.trial_days,
             display_name: self.display_name,
             description: self.description,
+            currency: self.currency,
         };
         self.parent.add_plan(config)
     }

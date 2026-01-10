@@ -1866,7 +1866,10 @@ fn map_stripe_invoice(inv: stripe::Invoice) -> Result<Invoice> {
         amount_due: inv.amount_due.unwrap_or(0),
         amount_paid: inv.amount_paid.unwrap_or(0),
         amount_remaining: inv.amount_remaining.unwrap_or(0),
-        currency: inv.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
+        currency: inv.currency.map(|c| c.to_string()).unwrap_or_else(|| {
+            tracing::warn!(invoice_id = %inv.id, "Invoice missing currency from Stripe, defaulting to GBP");
+            "gbp".to_string()
+        }),
         created: inv.created.map(|t| t as u64).unwrap_or(0),
         due_date: inv.due_date.map(|t| t as u64),
         period_start,

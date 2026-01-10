@@ -20,7 +20,7 @@ pub struct Refund {
     pub id: String,
     /// Amount refunded in cents.
     pub amount: i64,
-    /// Currency (e.g., "usd").
+    /// Currency code (e.g., "gbp", "usd", "eur").
     pub currency: String,
     /// Refund status.
     pub status: RefundStatus,
@@ -476,20 +476,43 @@ pub mod test {
     use std::collections::HashMap;
 
     /// Mock Stripe refund client.
-    #[derive(Default)]
     pub struct MockStripeRefundClient {
         refunds: std::sync::Arc<RwLock<HashMap<String, Refund>>>,
         charge_refunds: std::sync::Arc<RwLock<HashMap<String, Vec<String>>>>,
         charge_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
         payment_intent_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
         refund_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        /// Default currency for mock refunds (e.g., "gbp", "usd").
+        pub default_currency: String,
+    }
+
+    impl Default for MockStripeRefundClient {
+        fn default() -> Self {
+            Self {
+                refunds: std::sync::Arc::new(RwLock::new(HashMap::new())),
+                charge_refunds: std::sync::Arc::new(RwLock::new(HashMap::new())),
+                charge_customers: std::sync::Arc::new(RwLock::new(HashMap::new())),
+                payment_intent_customers: std::sync::Arc::new(RwLock::new(HashMap::new())),
+                refund_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                default_currency: "gbp".to_string(),
+            }
+        }
     }
 
     impl MockStripeRefundClient {
-        /// Create a new mock client.
+        /// Create a new mock client with GBP as the default currency.
         #[must_use]
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Create a new mock client with a specific default currency.
+        #[must_use]
+        pub fn with_currency(currency: impl Into<String>) -> Self {
+            Self {
+                default_currency: currency.into().to_lowercase(),
+                ..Self::default()
+            }
         }
 
         /// Register a charge with its customer ID for ownership verification.
@@ -523,8 +546,8 @@ pub mod test {
 
             let refund = Refund {
                 id: id.clone(),
-                amount: request.amount.unwrap_or(1000), // Default to $10
-                currency: "usd".to_string(),
+                amount: request.amount.unwrap_or(1000),
+                currency: self.default_currency.clone(),
                 status: RefundStatus::Succeeded,
                 reason: request.reason,
                 created: now,

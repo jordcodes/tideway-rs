@@ -1007,17 +1007,38 @@ pub mod test {
     use std::sync::{Arc, RwLock};
 
     /// A mock Stripe invoice client for testing.
-    #[derive(Default, Clone)]
+    #[derive(Clone)]
     pub struct MockStripeInvoiceClient {
         invoices: Arc<RwLock<Vec<Invoice>>>,
         upcoming: Arc<RwLock<Option<Invoice>>>,
+        /// Default currency for mock invoices (e.g., "gbp", "usd").
+        pub default_currency: String,
+    }
+
+    impl Default for MockStripeInvoiceClient {
+        fn default() -> Self {
+            Self {
+                invoices: Arc::new(RwLock::new(Vec::new())),
+                upcoming: Arc::new(RwLock::new(None)),
+                default_currency: "gbp".to_string(),
+            }
+        }
     }
 
     impl MockStripeInvoiceClient {
-        /// Create a new mock client.
+        /// Create a new mock client with GBP as the default currency.
         #[must_use]
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Create a new mock client with a specific default currency.
+        #[must_use]
+        pub fn with_currency(currency: impl Into<String>) -> Self {
+            Self {
+                default_currency: currency.into().to_lowercase(),
+                ..Self::default()
+            }
         }
 
         /// Add an invoice to the mock.
@@ -1034,9 +1055,20 @@ pub mod test {
             }
         }
 
-        /// Create a test invoice.
+        /// Create a test invoice with GBP currency.
         #[must_use]
         pub fn create_test_invoice(id: &str, customer_id: &str, status: InvoiceStatus) -> Invoice {
+            Self::create_test_invoice_with_currency(id, customer_id, status, "gbp")
+        }
+
+        /// Create a test invoice with a specific currency.
+        #[must_use]
+        pub fn create_test_invoice_with_currency(
+            id: &str,
+            customer_id: &str,
+            status: InvoiceStatus,
+            currency: &str,
+        ) -> Invoice {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -1050,7 +1082,7 @@ pub mod test {
                 amount_due: 2999,
                 amount_paid: if status == InvoiceStatus::Paid { 2999 } else { 0 },
                 amount_remaining: if status == InvoiceStatus::Paid { 0 } else { 2999 },
-                currency: "usd".to_string(),
+                currency: currency.to_lowercase(),
                 created: now,
                 due_date: Some(now + 30 * 24 * 60 * 60),
                 period_start: now,
@@ -1138,7 +1170,7 @@ pub mod test {
                     id: format!("il_{}_1", invoice_id),
                     description: Some("Pro Plan".to_string()),
                     amount: 2999,
-                    currency: "usd".to_string(),
+                    currency: self.default_currency.clone(),
                     quantity: Some(1),
                     price_id: Some("price_pro".to_string()),
                     period_start: now,

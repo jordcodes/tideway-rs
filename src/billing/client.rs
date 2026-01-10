@@ -57,6 +57,8 @@ pub mod test {
         portal_counter: AtomicU64,
         payment_methods: std::sync::Arc<RwLock<HashMap<String, Vec<PaymentMethod>>>>,
         default_payment_methods: std::sync::Arc<RwLock<HashMap<String, String>>>,
+        /// Default currency for mock invoices and refunds (e.g., "gbp", "usd").
+        pub default_currency: String,
     }
 
     impl Default for ComprehensiveMockStripeClient {
@@ -67,15 +69,25 @@ pub mod test {
                 portal_counter: AtomicU64::new(0),
                 payment_methods: std::sync::Arc::new(RwLock::new(HashMap::new())),
                 default_payment_methods: std::sync::Arc::new(RwLock::new(HashMap::new())),
+                default_currency: "gbp".to_string(),
             }
         }
     }
 
     impl ComprehensiveMockStripeClient {
-        /// Create a new comprehensive mock client.
+        /// Create a new comprehensive mock client with GBP as the default currency.
         #[must_use]
         pub fn new() -> Self {
             Self::default()
+        }
+
+        /// Create a new comprehensive mock client with a specific default currency.
+        #[must_use]
+        pub fn with_currency(currency: impl Into<String>) -> Self {
+            Self {
+                default_currency: currency.into().to_lowercase(),
+                ..Self::default()
+            }
         }
     }
 
@@ -229,7 +241,7 @@ pub mod test {
                 amount_due: 2999,
                 amount_paid: 2999,
                 amount_remaining: 0,
-                currency: "usd".to_string(),
+                currency: self.default_currency.clone(),
                 created: now,
                 due_date: Some(now + 30 * 24 * 60 * 60),
                 period_start: now,
@@ -261,7 +273,7 @@ pub mod test {
                     id: format!("il_{}_1", invoice_id),
                     description: Some("Pro Plan".to_string()),
                     amount: 2999,
-                    currency: "usd".to_string(),
+                    currency: self.default_currency.clone(),
                     quantity: Some(1),
                     price_id: Some("price_pro".to_string()),
                     period_start: now,
