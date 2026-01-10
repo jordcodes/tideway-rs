@@ -70,7 +70,7 @@
 use async_trait::async_trait;
 use sea_orm::{
     entity::prelude::*, sea_query::OnConflict, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, Set,
+    QueryFilter, Set, TransactionTrait,
 };
 use std::str::FromStr;
 
@@ -234,9 +234,10 @@ pub struct SeaOrmInvitation {
 }
 
 /// Invitation status.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum InvitationStatus {
     /// Invitation is pending acceptance.
+    #[default]
     Pending,
     /// Invitation has been accepted.
     Accepted,
@@ -254,15 +255,24 @@ impl InvitationStatus {
             Self::Revoked => "revoked",
         }
     }
+}
 
-    /// Parse from string.
-    #[must_use]
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for InvitationStatus {
+    type Err = std::convert::Infallible;
+
+    /// Parse from string. Unknown values default to `Pending`.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "accepted" => Self::Accepted,
             "revoked" => Self::Revoked,
             _ => Self::Pending,
-        }
+        })
+    }
+}
+
+impl std::fmt::Display for InvitationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -280,6 +290,12 @@ fn i64_to_u64(value: i64) -> u64 {
 #[inline]
 fn u64_to_i64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Convert u64 to u32 safely (values > u32::MAX become u32::MAX).
+#[inline]
+fn saturating_u32(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 /// Convert organization model to exported type.
@@ -314,7 +330,7 @@ fn model_to_invitation(model: invitation::Model) -> SeaOrmInvitation {
         role: DefaultOrgRole::from_str(&model.role).unwrap_or(DefaultOrgRole::Member),
         invited_by: model.invited_by,
         token: model.token,
-        status: InvitationStatus::from_str(&model.status),
+        status: model.status.parse().unwrap_or_default(),
         expires_at: i64_to_u64(model.expires_at),
         created_at: i64_to_u64(model.created_at),
     }
@@ -391,6 +407,79 @@ impl SeaOrmOrgStore {
     #[must_use]
     pub fn connection(&self) -> &DatabaseConnection {
         &self.db
+    }
+
+    /// Create organization and initial owner membership atomically.
+    ///
+    /// This method uses a database transaction to ensure both the organization
+    /// and the owner membership are created together or not at all.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let org = SeaOrmOrganization { /* ... */ };
+    /// let membership = SeaOrmMembership { /* ... */ };
+    ///
+    /// store.create_org_and_member_atomic(&org, &membership).await?;
+    /// ```
+    pub async fn create_org_and_member_atomic(
+        &self,
+        org: &SeaOrmOrganization,
+        membership: &SeaOrmMembership,
+    ) -> Result<()> {
+        tracing::debug!(
+            org_id = %org.id,
+            user_id = %membership.user_id,
+            "creating organization and member atomically"
+        );
+
+        let txn = self
+            .db
+            .begin()
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        // Create organization
+        let org_model = organization::ActiveModel {
+            id: Set(org.id.clone()),
+            name: Set(org.name.clone()),
+            slug: Set(org.slug.clone()),
+            owner_id: Set(org.owner_id.clone()),
+            contact_email: Set(org.contact_email.clone()),
+            created_at: Set(u64_to_i64(org.created_at)),
+            updated_at: Set(u64_to_i64(org.updated_at)),
+        };
+
+        organization::Entity::insert(org_model)
+            .exec(&txn)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        // Create membership
+        let member_model = membership::ActiveModel {
+            org_id: Set(membership.org_id.clone()),
+            user_id: Set(membership.user_id.clone()),
+            role: Set(membership.role.as_str().to_string()),
+            joined_at: Set(u64_to_i64(membership.joined_at)),
+        };
+
+        membership::Entity::insert(member_model)
+            .exec(&txn)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        // Commit transaction
+        txn.commit()
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        tracing::info!(
+            org_id = %org.id,
+            owner_id = %membership.user_id,
+            "organization and owner created atomically"
+        );
+
+        Ok(())
     }
 }
 
@@ -544,7 +633,7 @@ impl OrganizationStore for SeaOrmOrgStore {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        Ok(count as u32)
+        Ok(saturating_u32(count))
     }
 }
 
@@ -688,7 +777,7 @@ impl MembershipStore for SeaOrmOrgStore {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        Ok(count as u32)
+        Ok(saturating_u32(count))
     }
 
     async fn list_user_memberships(&self, user_id: &str) -> Result<Vec<Self::Membership>> {
@@ -701,6 +790,47 @@ impl MembershipStore for SeaOrmOrgStore {
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
         Ok(members.into_iter().map(model_to_membership).collect())
+    }
+
+    async fn update_memberships_atomic(&self, memberships: &[Self::Membership]) -> Result<()> {
+        if memberships.is_empty() {
+            return Ok(());
+        }
+
+        tracing::debug!(count = memberships.len(), "updating memberships atomically");
+
+        let txn = self
+            .db
+            .begin()
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        for m in memberships {
+            let model = membership::ActiveModel {
+                org_id: Set(m.org_id.clone()),
+                user_id: Set(m.user_id.clone()),
+                role: Set(m.role.as_str().to_string()),
+                joined_at: Set(u64_to_i64(m.joined_at)),
+            };
+
+            membership::Entity::insert(model)
+                .on_conflict(
+                    OnConflict::columns([membership::Column::OrgId, membership::Column::UserId])
+                        .update_columns([membership::Column::Role])
+                        .to_owned(),
+                )
+                .exec(&txn)
+                .await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+        }
+
+        txn.commit()
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        tracing::debug!(count = memberships.len(), "memberships updated atomically");
+
+        Ok(())
     }
 }
 
@@ -888,7 +1018,7 @@ impl InvitationStore for SeaOrmOrgStore {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        Ok(count as u32)
+        Ok(saturating_u32(count))
     }
 }
 
@@ -906,10 +1036,12 @@ mod tests {
         assert_eq!(InvitationStatus::Accepted.as_str(), "accepted");
         assert_eq!(InvitationStatus::Revoked.as_str(), "revoked");
 
-        assert_eq!(InvitationStatus::from_str("pending"), InvitationStatus::Pending);
-        assert_eq!(InvitationStatus::from_str("accepted"), InvitationStatus::Accepted);
-        assert_eq!(InvitationStatus::from_str("revoked"), InvitationStatus::Revoked);
-        assert_eq!(InvitationStatus::from_str("unknown"), InvitationStatus::Pending);
+        assert_eq!("pending".parse::<InvitationStatus>().unwrap(), InvitationStatus::Pending);
+        assert_eq!("accepted".parse::<InvitationStatus>().unwrap(), InvitationStatus::Accepted);
+        assert_eq!("revoked".parse::<InvitationStatus>().unwrap(), InvitationStatus::Revoked);
+        assert_eq!("unknown".parse::<InvitationStatus>().unwrap(), InvitationStatus::Pending);
+        // Case insensitive
+        assert_eq!("ACCEPTED".parse::<InvitationStatus>().unwrap(), InvitationStatus::Accepted);
     }
 
     #[test]
@@ -926,6 +1058,12 @@ mod tests {
         assert_eq!(u64_to_i64(0), 0);
         assert_eq!(u64_to_i64(i64::MAX as u64), i64::MAX);
         assert_eq!(u64_to_i64(u64::MAX), i64::MAX);
+
+        // u64 to u32: values > u32::MAX become u32::MAX
+        assert_eq!(saturating_u32(100), 100);
+        assert_eq!(saturating_u32(0), 0);
+        assert_eq!(saturating_u32(u32::MAX as u64), u32::MAX);
+        assert_eq!(saturating_u32(u64::MAX), u32::MAX);
     }
 
     #[test]

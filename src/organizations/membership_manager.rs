@@ -312,13 +312,14 @@ where
             .await?
             .ok_or(OrganizationError::NotMember)?;
 
-        // Demote current owner
+        // Prepare both updates
         let demoted = demote_owner(&actor_membership);
-        self.membership_store.update_membership(&demoted).await?;
-
-        // Promote new owner
         let promoted = make_owner(&new_owner_membership);
-        self.membership_store.update_membership(&promoted).await?;
+
+        // Update both atomically (uses transaction in SeaORM, sequential in default impl)
+        self.membership_store
+            .update_memberships_atomic(&[demoted, promoted])
+            .await?;
 
         info!(org_id, new_owner_id, former_owner = actor_id, "Ownership transferred");
 

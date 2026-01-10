@@ -221,9 +221,14 @@ where
             joined_at: now,
         });
 
-        // Persist organization and membership
-        self.org_store.create(&org).await?;
-        self.membership_store.add_member(&membership).await?;
+        // Persist organization and membership atomically
+        // Uses rollback (delete org) if membership creation fails
+        let membership_store = &self.membership_store;
+        self.org_store
+            .create_with_rollback(&org, || async {
+                membership_store.add_member(&membership).await
+            })
+            .await?;
 
         info!(
             org_id,

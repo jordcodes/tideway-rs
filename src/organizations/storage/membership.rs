@@ -131,4 +131,34 @@ pub trait MembershipStore: Send + Sync {
     async fn list_user_memberships(&self, _user_id: &str) -> Result<Vec<Self::Membership>> {
         Ok(vec![])
     }
+
+    /// Update multiple memberships atomically.
+    ///
+    /// Used for operations like ownership transfer where multiple membership
+    /// updates must succeed or fail together.
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation updates memberships sequentially and is
+    /// **not atomic**. Database implementations should override this to use
+    /// transactions.
+    ///
+    /// # Example Override (SeaORM)
+    ///
+    /// ```rust,ignore
+    /// async fn update_memberships_atomic(&self, memberships: &[Self::Membership]) -> Result<()> {
+    ///     let txn = self.db.begin().await?;
+    ///     for m in memberships {
+    ///         // update using txn...
+    ///     }
+    ///     txn.commit().await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    async fn update_memberships_atomic(&self, memberships: &[Self::Membership]) -> Result<()> {
+        for m in memberships {
+            self.update_membership(m).await?;
+        }
+        Ok(())
+    }
 }

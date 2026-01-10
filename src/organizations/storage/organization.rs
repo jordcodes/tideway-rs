@@ -135,4 +135,45 @@ pub trait OrganizationStore: Send + Sync {
     async fn count_owned_by_user(&self, _user_id: &str) -> Result<u32> {
         Ok(0)
     }
+
+    /// Create organization and run additional setup with rollback on failure.
+    ///
+    /// If `setup` fails, the organization is deleted (compensating transaction).
+    /// Database implementations should override to use proper transactions.
+    ///
+    /// # Default Behavior
+    ///
+    /// 1. Creates the organization
+    /// 2. Runs the setup callback
+    /// 3. If setup fails, deletes the organization and returns the error
+    ///
+    /// # Example Override (SeaORM)
+    ///
+    /// ```rust,ignore
+    /// async fn create_with_setup<F, Fut>(&self, org: &Self::Organization, setup: F) -> Result<()>
+    /// where
+    ///     F: FnOnce() -> Fut + Send,
+    ///     Fut: std::future::Future<Output = Result<()>> + Send,
+    /// {
+    ///     let txn = self.db.begin().await?;
+    ///     // Insert org using txn...
+    ///     setup().await?;  // Note: setup also needs txn access for true atomicity
+    ///     txn.commit().await?;
+    ///     Ok(())
+    /// }
+    /// ```
+    async fn create_with_rollback<F, Fut>(&self, org: &Self::Organization, setup: F) -> Result<()>
+    where
+        F: FnOnce() -> Fut + Send,
+        Fut: std::future::Future<Output = Result<()>> + Send,
+    {
+        self.create(org).await?;
+        if let Err(e) = setup().await {
+            // Compensating transaction: delete the organization
+            // Ignore delete errors - the original error is more important
+            let _ = self.delete(&self.org_id(org)).await;
+            return Err(e);
+        }
+        Ok(())
+    }
 }
