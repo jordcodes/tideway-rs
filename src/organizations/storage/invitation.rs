@@ -92,6 +92,9 @@ pub trait InvitationStore: Send + Sync {
     /// Check if the invitation has expired.
     fn is_expired(&self, inv: &Self::Invitation) -> bool;
 
+    /// Check if the invitation has been revoked.
+    fn is_revoked(&self, inv: &Self::Invitation) -> bool;
+
     // === Optional methods with defaults ===
 
     /// Find pending invitation by email for an organization.

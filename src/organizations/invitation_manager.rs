@@ -2,11 +2,13 @@
 //!
 //! Handles invitation creation, acceptance, and revocation.
 
+use super::audit::{OrgAuditEntry, OrgAuditEvent};
 use super::config::InvitationConfig;
 use super::error::{OrganizationError, Result};
 use super::manager::MembershipCreateParams;
+use super::rate_limit::{InvitationRateLimiter, OptionalInvitationRateLimiter, WithInvitationRateLimiter};
 use super::seats::{SeatChecker, UnlimitedSeats};
-use super::storage::{InvitationStore, MembershipStore, OrganizationStore};
+use super::storage::{InvitationStore, MembershipStore, OrgAuditStore, OptionalAuditStore, OrganizationStore, WithAuditStore};
 use super::utils::{current_timestamp, is_valid_email};
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
@@ -73,21 +75,43 @@ pub struct InvitationCreateParams {
 ///     },
 /// ).await?;
 /// ```
-pub struct InvitationManager<I, M, O, S = UnlimitedSeats>
+///
+/// # Audit Logging
+///
+/// Enable audit logging with `with_audit_store`:
+///
+/// ```rust,ignore
+/// let manager = InvitationManager::new(...)
+///     .with_audit_store(my_audit_store);
+/// ```
+///
+/// # Rate Limiting
+///
+/// Enable rate limiting with `with_rate_limiter`:
+///
+/// ```rust,ignore
+/// let manager = InvitationManager::new(...)
+///     .with_rate_limiter(InvitationRateLimiter::new(config));
+/// ```
+pub struct InvitationManager<I, M, O, S = UnlimitedSeats, A = (), L = ()>
 where
     I: InvitationStore,
     M: MembershipStore,
     O: OrganizationStore,
     S: SeatChecker,
+    A: OptionalAuditStore,
+    L: OptionalInvitationRateLimiter,
 {
     invitation_store: I,
     membership_store: M,
     org_store: O,
     seat_checker: S,
+    audit_store: A,
+    rate_limiter: L,
     config: InvitationConfig,
 }
 
-impl<I, M, O> InvitationManager<I, M, O, UnlimitedSeats>
+impl<I, M, O> InvitationManager<I, M, O, UnlimitedSeats, (), ()>
 where
     I: InvitationStore,
     M: MembershipStore,
@@ -106,12 +130,14 @@ where
             membership_store,
             org_store,
             seat_checker: UnlimitedSeats,
+            audit_store: (),
+            rate_limiter: (),
             config,
         }
     }
 }
 
-impl<I, M, O, S> InvitationManager<I, M, O, S>
+impl<I, M, O, S> InvitationManager<I, M, O, S, (), ()>
 where
     I: InvitationStore,
     M: MembershipStore,
@@ -132,10 +158,54 @@ where
             membership_store,
             org_store,
             seat_checker,
+            audit_store: (),
+            rate_limiter: (),
             config,
         }
     }
 
+    /// Enable audit logging with the given store.
+    pub fn with_audit_store<AuditStore: OrgAuditStore + Clone + 'static>(
+        self,
+        audit_store: AuditStore,
+    ) -> InvitationManager<I, M, O, S, WithAuditStore<AuditStore>, ()> {
+        InvitationManager {
+            invitation_store: self.invitation_store,
+            membership_store: self.membership_store,
+            org_store: self.org_store,
+            seat_checker: self.seat_checker,
+            audit_store: WithAuditStore(audit_store),
+            rate_limiter: (),
+            config: self.config,
+        }
+    }
+
+    /// Enable rate limiting with the given limiter.
+    pub fn with_rate_limiter(
+        self,
+        rate_limiter: InvitationRateLimiter,
+    ) -> InvitationManager<I, M, O, S, (), WithInvitationRateLimiter> {
+        InvitationManager {
+            invitation_store: self.invitation_store,
+            membership_store: self.membership_store,
+            org_store: self.org_store,
+            seat_checker: self.seat_checker,
+            audit_store: (),
+            rate_limiter: WithInvitationRateLimiter(rate_limiter),
+            config: self.config,
+        }
+    }
+}
+
+impl<I, M, O, S, A, L> InvitationManager<I, M, O, S, A, L>
+where
+    I: InvitationStore,
+    M: MembershipStore,
+    O: OrganizationStore,
+    S: SeatChecker,
+    A: OptionalAuditStore,
+    L: OptionalInvitationRateLimiter,
+{
     /// Get a reference to the invitation store.
     pub fn invitation_store(&self) -> &I {
         &self.invitation_store
@@ -148,7 +218,7 @@ where
 
     /// Create an invitation.
     ///
-    /// Checks email format, seat availability, pending invitation limit, and actor permissions.
+    /// Checks email format, rate limits, seat availability, pending invitation limit, and actor permissions.
     #[instrument(skip(self, invitation_factory))]
     pub async fn invite<F>(
         &self,
@@ -160,6 +230,9 @@ where
     where
         F: FnOnce(InvitationCreateParams) -> I::Invitation,
     {
+        // Check rate limit first (before any other work)
+        self.rate_limiter.check_invitation_rate(org_id, actor_id)?;
+
         // Validate email format
         if !is_valid_email(email) {
             return Err(OrganizationError::invalid_email(email));
@@ -245,6 +318,14 @@ where
             "Invitation created"
         );
 
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::InvitationSent, org_id, actor_id)
+                    .with_details(format!("email={email}")),
+            )
+            .await;
+
         Ok(invitation)
     }
 
@@ -271,6 +352,11 @@ where
         // Check not expired
         if self.invitation_store.is_expired(&invitation) {
             return Err(OrganizationError::InvitationExpired);
+        }
+
+        // Check not revoked
+        if self.invitation_store.is_revoked(&invitation) {
+            return Err(OrganizationError::InvalidToken);
         }
 
         let org_id = self.invitation_store.invitation_org_id(&invitation);
@@ -305,6 +391,14 @@ where
             "Invitation accepted"
         );
 
+        // Record audit event (actor is the new member)
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::InvitationAccepted, &org_id, user_id)
+                    .with_target(user_id),
+            )
+            .await;
+
         Ok(membership)
     }
 
@@ -338,6 +432,14 @@ where
         self.invitation_store.mark_revoked(invitation_id).await?;
 
         info!(org_id, invitation_id, actor_id, "Invitation revoked");
+
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::InvitationRevoked, &org_id, actor_id)
+                    .with_details(format!("invitation_id={invitation_id}")),
+            )
+            .await;
 
         Ok(())
     }

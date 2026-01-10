@@ -2,10 +2,11 @@
 //!
 //! Handles membership operations with permission checks and seat validation.
 
+use super::audit::{OrgAuditEntry, OrgAuditEvent};
 use super::error::{OrganizationError, Result};
 use super::manager::MembershipCreateParams;
 use super::seats::{SeatChecker, UnlimitedSeats};
-use super::storage::MembershipStore;
+use super::storage::{MembershipStore, OrgAuditStore, OptionalAuditStore, WithAuditStore};
 use super::utils::current_timestamp;
 use tracing::{debug, info, instrument};
 
@@ -35,16 +36,27 @@ use tracing::{debug, info, instrument};
 ///     },
 /// ).await?;
 /// ```
-pub struct MembershipManager<M, S = UnlimitedSeats>
+///
+/// # Audit Logging
+///
+/// Enable audit logging with `with_audit_store`:
+///
+/// ```rust,ignore
+/// let manager = MembershipManager::new(...)
+///     .with_audit_store(my_audit_store);
+/// ```
+pub struct MembershipManager<M, S = UnlimitedSeats, A = ()>
 where
     M: MembershipStore,
     S: SeatChecker,
+    A: OptionalAuditStore,
 {
     membership_store: M,
     seat_checker: S,
+    audit_store: A,
 }
 
-impl<M> MembershipManager<M, UnlimitedSeats>
+impl<M> MembershipManager<M, UnlimitedSeats, ()>
 where
     M: MembershipStore,
 {
@@ -54,11 +66,12 @@ where
         Self {
             membership_store,
             seat_checker: UnlimitedSeats,
+            audit_store: (),
         }
     }
 }
 
-impl<M, S> MembershipManager<M, S>
+impl<M, S> MembershipManager<M, S, ()>
 where
     M: MembershipStore,
     S: SeatChecker,
@@ -69,9 +82,29 @@ where
         Self {
             membership_store,
             seat_checker,
+            audit_store: (),
         }
     }
 
+    /// Enable audit logging with the given store.
+    pub fn with_audit_store<AuditStore: OrgAuditStore + Clone + 'static>(
+        self,
+        audit_store: AuditStore,
+    ) -> MembershipManager<M, S, WithAuditStore<AuditStore>> {
+        MembershipManager {
+            membership_store: self.membership_store,
+            seat_checker: self.seat_checker,
+            audit_store: WithAuditStore(audit_store),
+        }
+    }
+}
+
+impl<M, S, A> MembershipManager<M, S, A>
+where
+    M: MembershipStore,
+    S: SeatChecker,
+    A: OptionalAuditStore,
+{
     /// Get a reference to the membership store.
     pub fn membership_store(&self) -> &M {
         &self.membership_store
@@ -145,6 +178,14 @@ where
 
         info!(org_id, user_id, actor_id, "Member added");
 
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::MemberAdded, org_id, actor_id)
+                    .with_target(user_id),
+            )
+            .await;
+
         Ok(membership)
     }
 
@@ -188,6 +229,14 @@ where
 
         info!(org_id, user_id, actor_id, "Member removed");
 
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::MemberRemoved, org_id, actor_id)
+                    .with_target(user_id),
+            )
+            .await;
+
         Ok(())
     }
 
@@ -213,6 +262,11 @@ where
         self.membership_store.remove_member(org_id, user_id).await?;
 
         info!(org_id, user_id, "Member left organization");
+
+        // Record audit event (actor is the member themselves)
+        self.audit_store
+            .record(OrgAuditEntry::new(OrgAuditEvent::MemberLeft, org_id, user_id))
+            .await;
 
         Ok(())
     }
@@ -274,6 +328,14 @@ where
 
         debug!(org_id, user_id, actor_id, "Membership updated");
 
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::MemberRoleChanged, org_id, actor_id)
+                    .with_target(user_id),
+            )
+            .await;
+
         Ok(updated)
     }
 
@@ -323,6 +385,14 @@ where
 
         info!(org_id, new_owner_id, former_owner = actor_id, "Ownership transferred");
 
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::OwnershipTransferred, org_id, actor_id)
+                    .with_target(new_owner_id),
+            )
+            .await;
+
         Ok(())
     }
 
@@ -357,7 +427,7 @@ where
     /// Check if user has can_manage_members permission.
     pub async fn can_manage_members(&self, org_id: &str, user_id: &str) -> Result<bool> {
         let membership = self.membership_store.get_membership(org_id, user_id).await?;
-        Ok(membership.map_or(false, |m| {
+        Ok(membership.is_some_and(|m| {
             let role = self.membership_store.membership_role(&m);
             self.membership_store.can_manage_members(&role)
         }))
@@ -366,7 +436,7 @@ where
     /// Check if user has can_manage_settings permission.
     pub async fn can_manage_settings(&self, org_id: &str, user_id: &str) -> Result<bool> {
         let membership = self.membership_store.get_membership(org_id, user_id).await?;
-        Ok(membership.map_or(false, |m| {
+        Ok(membership.is_some_and(|m| {
             let role = self.membership_store.membership_role(&m);
             self.membership_store.can_manage_settings(&role)
         }))
@@ -375,7 +445,7 @@ where
     /// Check if user has can_delete_org permission.
     pub async fn can_delete_org(&self, org_id: &str, user_id: &str) -> Result<bool> {
         let membership = self.membership_store.get_membership(org_id, user_id).await?;
-        Ok(membership.map_or(false, |m| {
+        Ok(membership.is_some_and(|m| {
             let role = self.membership_store.membership_role(&m);
             self.membership_store.can_delete_org(&role)
         }))

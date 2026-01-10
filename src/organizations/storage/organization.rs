@@ -110,30 +110,27 @@ pub trait OrganizationStore: Send + Sync {
     /// Get the billing/contact email.
     fn contact_email(&self, org: &Self::Organization) -> String;
 
-    // === Optional methods with defaults ===
+    // === Required query methods ===
 
     /// List organizations for a user.
     ///
-    /// Override this if you want optimized queries (e.g., JOIN with memberships).
-    /// Default implementation returns empty - you should override this for
-    /// production use.
-    async fn list_for_user(&self, _user_id: &str) -> Result<Vec<Self::Organization>> {
-        Ok(vec![])
-    }
+    /// Returns all organizations where the user is a member.
+    /// Typically implemented with a JOIN on memberships table.
+    async fn list_for_user(&self, user_id: &str) -> Result<Vec<Self::Organization>>;
+
+    /// Count organizations owned by a user.
+    ///
+    /// Used to enforce `max_orgs_per_user` limit in configuration.
+    /// Must return accurate count for limit enforcement to work.
+    async fn count_owned_by_user(&self, user_id: &str) -> Result<u32>;
+
+    // === Optional methods with defaults ===
 
     /// Check if a slug is available.
     ///
     /// Default implementation checks if `find_by_slug` returns None.
     async fn is_slug_available(&self, slug: &str) -> Result<bool> {
         Ok(self.find_by_slug(slug).await?.is_none())
-    }
-
-    /// Count organizations owned by a user.
-    ///
-    /// Used to enforce `max_orgs_per_user` limit.
-    /// Default implementation returns 0 - override for proper counting.
-    async fn count_owned_by_user(&self, _user_id: &str) -> Result<u32> {
-        Ok(0)
     }
 
     /// Create organization and run additional setup with rollback on failure.

@@ -91,6 +91,13 @@ pub enum OrganizationError {
         email: String,
     },
 
+    /// Rate limited.
+    #[error("Too many requests. Try again in {retry_after_seconds} seconds")]
+    RateLimited {
+        /// Seconds until retry is allowed.
+        retry_after_seconds: u64,
+    },
+
     /// Storage error.
     #[error("Storage error: {0}")]
     Storage(#[from] crate::error::TidewayError),

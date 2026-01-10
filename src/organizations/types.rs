@@ -22,7 +22,7 @@ use std::str::FromStr;
 /// assert!(role.can_manage_members());
 /// assert!(!role.can_delete_org());
 /// ```
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DefaultOrgRole {
     /// Organization owner with full permissions.
@@ -30,6 +30,7 @@ pub enum DefaultOrgRole {
     /// Administrator with management permissions.
     Admin,
     /// Regular member with basic permissions.
+    #[default]
     Member,
 }
 
@@ -93,12 +94,6 @@ impl FromStr for DefaultOrgRole {
 impl fmt::Display for DefaultOrgRole {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
-    }
-}
-
-impl Default for DefaultOrgRole {
-    fn default() -> Self {
-        Self::Member
     }
 }
 

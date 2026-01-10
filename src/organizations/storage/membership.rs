@@ -113,6 +113,13 @@ pub trait MembershipStore: Send + Sync {
     /// Check if this role is the owner role.
     fn is_owner(&self, role: &Self::Role) -> bool;
 
+    // === Required query methods ===
+
+    /// List all memberships for a user across all organizations.
+    ///
+    /// Returns all organizations the user is a member of.
+    async fn list_user_memberships(&self, user_id: &str) -> Result<Vec<Self::Membership>>;
+
     // === Optional methods with defaults ===
 
     /// Count members in an organization.
@@ -123,13 +130,6 @@ pub trait MembershipStore: Send + Sync {
     /// Check if a user is a member of an organization.
     async fn is_member(&self, org_id: &str, user_id: &str) -> Result<bool> {
         Ok(self.get_membership(org_id, user_id).await?.is_some())
-    }
-
-    /// List all organizations a user is a member of.
-    ///
-    /// Default returns empty - override for proper implementation.
-    async fn list_user_memberships(&self, _user_id: &str) -> Result<Vec<Self::Membership>> {
-        Ok(vec![])
     }
 
     /// Update multiple memberships atomically.

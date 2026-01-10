@@ -33,11 +33,13 @@
 //! let manager = OrganizationManager::new(store, membership_store, UnlimitedSeats, config);
 //! ```
 
+mod audit;
 mod config;
 mod error;
 mod manager;
 mod membership_manager;
 mod invitation_manager;
+mod rate_limit;
 mod seats;
 pub mod storage;
 mod types;
@@ -70,6 +72,16 @@ pub use seats::{SeatChecker, UnlimitedSeats};
 
 // Storage trait exports
 pub use storage::{InvitationStore, MembershipStore, OrganizationStore};
+
+// Audit exports
+pub use audit::{OrgAuditEntry, OrgAuditEvent};
+pub use storage::{OrgAuditStore, OptionalAuditStore, WithAuditStore};
+
+// Rate limiting exports
+pub use rate_limit::{
+    InvitationRateLimitConfig, InvitationRateLimiter, OptionalInvitationRateLimiter,
+    WithInvitationRateLimiter,
+};
 
 // Type exports
 pub use types::{DefaultOrgRole, OrgRolePermissions, ParseRoleError};

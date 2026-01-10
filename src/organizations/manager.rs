@@ -2,10 +2,11 @@
 //!
 //! Handles organization CRUD operations with business logic and tracing.
 
+use super::audit::{OrgAuditEntry, OrgAuditEvent};
 use super::config::OrganizationConfig;
 use super::error::{OrganizationError, Result};
 use super::seats::{SeatChecker, UnlimitedSeats};
-use super::storage::{MembershipStore, OrganizationStore};
+use super::storage::{MembershipStore, OptionalAuditStore, OrganizationStore, WithAuditStore, OrgAuditStore};
 use super::utils::current_timestamp;
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
@@ -80,19 +81,30 @@ pub struct MembershipCreateParams {
 ///     },
 /// ).await?;
 /// ```
-pub struct OrganizationManager<O, M, S = UnlimitedSeats>
+///
+/// # Audit Logging
+///
+/// Enable audit logging with `with_audit_store`:
+///
+/// ```rust,ignore
+/// let manager = OrganizationManager::new(...)
+///     .with_audit_store(my_audit_store);
+/// ```
+pub struct OrganizationManager<O, M, S = UnlimitedSeats, A = ()>
 where
     O: OrganizationStore,
     M: MembershipStore,
     S: SeatChecker,
+    A: OptionalAuditStore,
 {
     org_store: O,
     membership_store: M,
     seat_checker: S,
+    audit_store: A,
     config: OrganizationConfig,
 }
 
-impl<O, M> OrganizationManager<O, M, UnlimitedSeats>
+impl<O, M> OrganizationManager<O, M, UnlimitedSeats, ()>
 where
     O: OrganizationStore,
     M: MembershipStore,
@@ -108,12 +120,13 @@ where
             org_store,
             membership_store,
             seat_checker: UnlimitedSeats,
+            audit_store: (),
             config,
         }
     }
 }
 
-impl<O, M, S> OrganizationManager<O, M, S>
+impl<O, M, S> OrganizationManager<O, M, S, ()>
 where
     O: OrganizationStore,
     M: MembershipStore,
@@ -131,9 +144,40 @@ where
             org_store,
             membership_store,
             seat_checker,
+            audit_store: (),
             config,
         }
     }
+
+    /// Enable audit logging with the given store.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let manager = OrganizationManager::new(...)
+    ///     .with_audit_store(my_audit_store);
+    /// ```
+    pub fn with_audit_store<AuditStore: OrgAuditStore + Clone + 'static>(
+        self,
+        audit_store: AuditStore,
+    ) -> OrganizationManager<O, M, S, WithAuditStore<AuditStore>> {
+        OrganizationManager {
+            org_store: self.org_store,
+            membership_store: self.membership_store,
+            seat_checker: self.seat_checker,
+            audit_store: WithAuditStore(audit_store),
+            config: self.config,
+        }
+    }
+}
+
+impl<O, M, S, A> OrganizationManager<O, M, S, A>
+where
+    O: OrganizationStore,
+    M: MembershipStore,
+    S: SeatChecker,
+    A: OptionalAuditStore,
+{
 
     /// Get a reference to the organization store.
     pub fn org_store(&self) -> &O {
@@ -237,6 +281,14 @@ where
             "Organization created"
         );
 
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::OrgCreated, &org_id, user_id)
+                    .with_details(format!("name={name}, slug={slug}")),
+            )
+            .await;
+
         Ok(org)
     }
 
@@ -327,6 +379,11 @@ where
 
         debug!(org_id, "Organization updated");
 
+        // Record audit event
+        self.audit_store
+            .record(OrgAuditEntry::new(OrgAuditEvent::OrgUpdated, org_id, actor_id))
+            .await;
+
         Ok(updated)
     }
 
@@ -349,6 +406,11 @@ where
         self.org_store.delete(org_id).await?;
 
         info!(org_id, actor_id, "Organization deleted");
+
+        // Record audit event
+        self.audit_store
+            .record(OrgAuditEntry::new(OrgAuditEvent::OrgDeleted, org_id, actor_id))
+            .await;
 
         Ok(())
     }

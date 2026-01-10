@@ -984,6 +984,10 @@ impl InvitationStore for SeaOrmOrgStore {
         inv.expires_at <= current_timestamp()
     }
 
+    fn is_revoked(&self, inv: &Self::Invitation) -> bool {
+        inv.status == InvitationStatus::Revoked
+    }
+
     async fn find_pending_by_email(
         &self,
         org_id: &str,
