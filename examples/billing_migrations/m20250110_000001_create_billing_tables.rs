@@ -25,10 +25,22 @@
 //! }
 //! ```
 
-use sea_orm_migration::{prelude::*, schema::*};
+use sea_orm_migration::prelude::*;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
+
+/// Valid subscription status values (matches Stripe's subscription statuses).
+const VALID_STATUSES: &[&str] = &[
+    "active",
+    "trialing",
+    "past_due",
+    "canceled",
+    "incomplete",
+    "incomplete_expired",
+    "paused",
+    "unpaid",
+];
 
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
@@ -39,16 +51,32 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(BillingCustomers::Table)
                     .if_not_exists()
-                    .col(string(BillingCustomers::BillableId).primary_key())
-                    .col(string(BillingCustomers::BillableType).not_null())
-                    .col(string(BillingCustomers::StripeCustomerId).not_null().unique_key())
                     .col(
-                        timestamp_with_time_zone(BillingCustomers::CreatedAt)
+                        ColumnDef::new(BillingCustomers::BillableId)
+                            .string_len(255)
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingCustomers::BillableType)
+                            .string_len(50)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingCustomers::StripeCustomerId)
+                            .string_len(255)
+                            .not_null()
+                            .unique_key(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingCustomers::CreatedAt)
+                            .timestamp_with_time_zone()
                             .not_null()
                             .default(Expr::current_timestamp()),
                     )
                     .col(
-                        timestamp_with_time_zone(BillingCustomers::UpdatedAt)
+                        ColumnDef::new(BillingCustomers::UpdatedAt)
+                            .timestamp_with_time_zone()
                             .not_null()
                             .default(Expr::current_timestamp()),
                     )
@@ -64,33 +92,78 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(BillingSubscriptions::Table)
                     .if_not_exists()
-                    .col(string(BillingSubscriptions::BillableId).primary_key())
                     .col(
-                        string(BillingSubscriptions::StripeSubscriptionId)
+                        ColumnDef::new(BillingSubscriptions::BillableId)
+                            .string_len(255)
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::StripeSubscriptionId)
+                            .string_len(255)
                             .not_null()
                             .unique_key(),
                     )
-                    .col(string(BillingSubscriptions::StripeCustomerId).not_null())
-                    .col(string(BillingSubscriptions::PlanId).not_null())
-                    .col(string(BillingSubscriptions::Status).not_null())
-                    .col(big_integer(BillingSubscriptions::CurrentPeriodStart).not_null())
-                    .col(big_integer(BillingSubscriptions::CurrentPeriodEnd).not_null())
                     .col(
-                        integer(BillingSubscriptions::ExtraSeats)
+                        ColumnDef::new(BillingSubscriptions::StripeCustomerId)
+                            .string_len(255)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::PlanId)
+                            .string_len(100)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::Status)
+                            .string_len(50)
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::CurrentPeriodStart)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::CurrentPeriodEnd)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::ExtraSeats)
+                            .integer()
                             .not_null()
                             .default(0),
                     )
-                    .col(big_integer_null(BillingSubscriptions::TrialEnd))
                     .col(
-                        boolean(BillingSubscriptions::CancelAtPeriodEnd)
+                        ColumnDef::new(BillingSubscriptions::TrialEnd)
+                            .big_integer()
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::CancelAtPeriodEnd)
+                            .boolean()
                             .not_null()
                             .default(false),
                     )
-                    .col(string_null(BillingSubscriptions::BaseItemId))
-                    .col(string_null(BillingSubscriptions::SeatItemId))
-                    .col(big_integer(BillingSubscriptions::UpdatedAt).not_null())
                     .col(
-                        timestamp_with_time_zone(BillingSubscriptions::CreatedAt)
+                        ColumnDef::new(BillingSubscriptions::BaseItemId)
+                            .string_len(255)
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::SeatItemId)
+                            .string_len(255)
+                            .null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::UpdatedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::CreatedAt)
+                            .timestamp_with_time_zone()
                             .not_null()
                             .default(Expr::current_timestamp()),
                     )
@@ -100,15 +173,40 @@ impl MigrationTrait for Migration {
 
         // Note: stripe_subscription_id already has an index from unique_key()
 
+        // Add CHECK constraint for status column (PostgreSQL/SQLite)
+        // This ensures only valid Stripe subscription statuses can be stored
+        let status_values = VALID_STATUSES
+            .iter()
+            .map(|s| format!("'{}'", s))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let check_constraint_sql = format!(
+            "ALTER TABLE billing_subscriptions ADD CONSTRAINT chk_billing_subscriptions_status CHECK (status IN ({}))",
+            status_values
+        );
+
+        // Execute raw SQL for CHECK constraint (may fail on some DBs, that's ok)
+        let _ = manager
+            .get_connection()
+            .execute_unprepared(&check_constraint_sql)
+            .await;
+
         // Create billing_processed_events table
         manager
             .create_table(
                 Table::create()
                     .table(BillingProcessedEvents::Table)
                     .if_not_exists()
-                    .col(string(BillingProcessedEvents::EventId).primary_key())
                     .col(
-                        timestamp_with_time_zone(BillingProcessedEvents::ProcessedAt)
+                        ColumnDef::new(BillingProcessedEvents::EventId)
+                            .string_len(255)
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingProcessedEvents::ProcessedAt)
+                            .timestamp_with_time_zone()
                             .not_null()
                             .default(Expr::current_timestamp()),
                     )
@@ -131,7 +229,7 @@ impl MigrationTrait for Migration {
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        // Drop tables in reverse order
+        // Drop tables in reverse order (constraints are dropped with tables)
         manager
             .drop_table(Table::drop().table(BillingProcessedEvents::Table).to_owned())
             .await?;

@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use sea_orm::{
     entity::prelude::*, sea_query::OnConflict, ActiveModelTrait, ColumnTrait, DatabaseConnection,
-    EntityTrait, QueryFilter, Set, TransactionTrait,
+    EntityTrait, QueryFilter, QuerySelect, Set, TransactionTrait,
 };
 
 use super::storage::{BillingStore, StoredSubscription, SubscriptionStatus};
@@ -115,6 +115,38 @@ use entity::{billing_customer, billing_processed_event, billing_subscription};
 // Helper Functions
 // =============================================================================
 
+// Safe integer conversions to prevent overflow
+
+/// Convert i64 to u64 safely (negative values become 0).
+#[inline]
+fn i64_to_u64(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+/// Convert u64 to i64 safely (values > i64::MAX become i64::MAX).
+#[inline]
+fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+/// Convert i32 to u32 safely (negative values become 0).
+#[inline]
+fn i32_to_u32(value: i32) -> u32 {
+    u32::try_from(value).unwrap_or(0)
+}
+
+/// Convert u32 to i32 safely (values > i32::MAX become i32::MAX).
+#[inline]
+fn u32_to_i32(value: u32) -> i32 {
+    i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+/// Convert u64 to usize safely (values > usize::MAX become usize::MAX).
+#[inline]
+fn u64_to_usize(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
 /// Convert a database model to a StoredSubscription.
 fn model_to_stored_subscription(model: billing_subscription::Model) -> StoredSubscription {
     StoredSubscription {
@@ -122,14 +154,14 @@ fn model_to_stored_subscription(model: billing_subscription::Model) -> StoredSub
         stripe_customer_id: model.stripe_customer_id,
         plan_id: model.plan_id,
         status: SubscriptionStatus::from_stripe(&model.status),
-        current_period_start: model.current_period_start as u64,
-        current_period_end: model.current_period_end as u64,
-        extra_seats: model.extra_seats as u32,
-        trial_end: model.trial_end.map(|t| t as u64),
+        current_period_start: i64_to_u64(model.current_period_start),
+        current_period_end: i64_to_u64(model.current_period_end),
+        extra_seats: i32_to_u32(model.extra_seats),
+        trial_end: model.trial_end.map(i64_to_u64),
         cancel_at_period_end: model.cancel_at_period_end,
         base_item_id: model.base_item_id,
         seat_item_id: model.seat_item_id,
-        updated_at: model.updated_at as u64,
+        updated_at: i64_to_u64(model.updated_at),
     }
 }
 
@@ -145,16 +177,75 @@ fn subscription_to_active_model(
         stripe_customer_id: Set(subscription.stripe_customer_id.clone()),
         plan_id: Set(subscription.plan_id.clone()),
         status: Set(subscription.status.as_str().to_string()),
-        current_period_start: Set(subscription.current_period_start as i64),
-        current_period_end: Set(subscription.current_period_end as i64),
-        extra_seats: Set(subscription.extra_seats as i32),
-        trial_end: Set(subscription.trial_end.map(|t| t as i64)),
+        current_period_start: Set(u64_to_i64(subscription.current_period_start)),
+        current_period_end: Set(u64_to_i64(subscription.current_period_end)),
+        extra_seats: Set(u32_to_i32(subscription.extra_seats)),
+        trial_end: Set(subscription.trial_end.map(u64_to_i64)),
         cancel_at_period_end: Set(subscription.cancel_at_period_end),
         base_item_id: Set(subscription.base_item_id.clone()),
         seat_item_id: Set(subscription.seat_item_id.clone()),
-        updated_at: Set(subscription.updated_at as i64),
+        updated_at: Set(u64_to_i64(subscription.updated_at)),
         created_at: Set(created_at),
     }
+}
+
+/// Build a conditional UPDATE query for a subscription with version check.
+fn build_subscription_update(
+    billable_id: &str,
+    subscription: &StoredSubscription,
+    expected_version: u64,
+) -> sea_orm::UpdateMany<billing_subscription::Entity> {
+    billing_subscription::Entity::update_many()
+        .col_expr(
+            billing_subscription::Column::StripeSubscriptionId,
+            Expr::value(&subscription.stripe_subscription_id),
+        )
+        .col_expr(
+            billing_subscription::Column::StripeCustomerId,
+            Expr::value(&subscription.stripe_customer_id),
+        )
+        .col_expr(
+            billing_subscription::Column::PlanId,
+            Expr::value(&subscription.plan_id),
+        )
+        .col_expr(
+            billing_subscription::Column::Status,
+            Expr::value(subscription.status.as_str()),
+        )
+        .col_expr(
+            billing_subscription::Column::CurrentPeriodStart,
+            Expr::value(u64_to_i64(subscription.current_period_start)),
+        )
+        .col_expr(
+            billing_subscription::Column::CurrentPeriodEnd,
+            Expr::value(u64_to_i64(subscription.current_period_end)),
+        )
+        .col_expr(
+            billing_subscription::Column::ExtraSeats,
+            Expr::value(u32_to_i32(subscription.extra_seats)),
+        )
+        .col_expr(
+            billing_subscription::Column::TrialEnd,
+            Expr::value(subscription.trial_end.map(u64_to_i64)),
+        )
+        .col_expr(
+            billing_subscription::Column::CancelAtPeriodEnd,
+            Expr::value(subscription.cancel_at_period_end),
+        )
+        .col_expr(
+            billing_subscription::Column::BaseItemId,
+            Expr::value(subscription.base_item_id.clone()),
+        )
+        .col_expr(
+            billing_subscription::Column::SeatItemId,
+            Expr::value(subscription.seat_item_id.clone()),
+        )
+        .col_expr(
+            billing_subscription::Column::UpdatedAt,
+            Expr::value(u64_to_i64(subscription.updated_at)),
+        )
+        .filter(billing_subscription::Column::BillableId.eq(billable_id))
+        .filter(billing_subscription::Column::UpdatedAt.eq(u64_to_i64(expected_version)))
 }
 
 // =============================================================================
@@ -335,64 +426,13 @@ impl BillingStore for SeaOrmBillingStore {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        // First, try conditional UPDATE for existing records
-        let update_result = billing_subscription::Entity::update_many()
-            .col_expr(
-                billing_subscription::Column::StripeSubscriptionId,
-                Expr::value(&subscription.stripe_subscription_id),
-            )
-            .col_expr(
-                billing_subscription::Column::StripeCustomerId,
-                Expr::value(&subscription.stripe_customer_id),
-            )
-            .col_expr(
-                billing_subscription::Column::PlanId,
-                Expr::value(&subscription.plan_id),
-            )
-            .col_expr(
-                billing_subscription::Column::Status,
-                Expr::value(subscription.status.as_str()),
-            )
-            .col_expr(
-                billing_subscription::Column::CurrentPeriodStart,
-                Expr::value(subscription.current_period_start as i64),
-            )
-            .col_expr(
-                billing_subscription::Column::CurrentPeriodEnd,
-                Expr::value(subscription.current_period_end as i64),
-            )
-            .col_expr(
-                billing_subscription::Column::ExtraSeats,
-                Expr::value(subscription.extra_seats as i32),
-            )
-            .col_expr(
-                billing_subscription::Column::TrialEnd,
-                Expr::value(subscription.trial_end.map(|t| t as i64)),
-            )
-            .col_expr(
-                billing_subscription::Column::CancelAtPeriodEnd,
-                Expr::value(subscription.cancel_at_period_end),
-            )
-            .col_expr(
-                billing_subscription::Column::BaseItemId,
-                Expr::value(subscription.base_item_id.clone()),
-            )
-            .col_expr(
-                billing_subscription::Column::SeatItemId,
-                Expr::value(subscription.seat_item_id.clone()),
-            )
-            .col_expr(
-                billing_subscription::Column::UpdatedAt,
-                Expr::value(subscription.updated_at as i64),
-            )
-            .filter(billing_subscription::Column::BillableId.eq(billable_id))
-            .filter(billing_subscription::Column::UpdatedAt.eq(expected_version as i64))
+        // Try conditional UPDATE for existing records (version must match)
+        let update_result = build_subscription_update(billable_id, subscription, expected_version)
             .exec(&txn)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
         if update_result.rows_affected > 0 {
-            // Update succeeded - version matched
             txn.commit()
                 .await
                 .map_err(|e| TidewayError::Database(e.to_string()))?;
@@ -400,8 +440,7 @@ impl BillingStore for SeaOrmBillingStore {
             return Ok(true);
         }
 
-        // UPDATE affected 0 rows - either record doesn't exist or version mismatch
-        // Check if record exists
+        // UPDATE affected 0 rows - check why
         let exists = billing_subscription::Entity::find_by_id(billable_id)
             .one(&txn)
             .await
@@ -420,12 +459,10 @@ impl BillingStore for SeaOrmBillingStore {
             return Ok(false);
         }
 
-        // Record doesn't exist and expected_version is 0 - insert new record
+        // Record doesn't exist - insert if expected_version is 0
         if expected_version == 0 {
             let now = chrono::Utc::now().fixed_offset();
-            let active_model = subscription_to_active_model(billable_id, subscription, now);
-
-            active_model
+            subscription_to_active_model(billable_id, subscription, now)
                 .insert(&txn)
                 .await
                 .map_err(|e| TidewayError::Database(e.to_string()))?;
@@ -523,19 +560,102 @@ impl BillingStore for SeaOrmBillingStore {
     }
 
     async fn cleanup_old_events(&self, older_than_days: u32) -> Result<usize> {
-        tracing::debug!(older_than_days = older_than_days, "cleaning up old events");
+        self.cleanup_old_events_batched(older_than_days, None).await
+    }
+}
 
-        let cutoff = chrono::Utc::now() - chrono::Duration::days(older_than_days as i64);
+// =============================================================================
+// Additional Methods (not part of BillingStore trait)
+// =============================================================================
+
+impl SeaOrmBillingStore {
+    /// Delete old processed events in batches to avoid locking the table.
+    ///
+    /// This is useful for high-volume production systems where the
+    /// `billing_processed_events` table may contain millions of rows.
+    ///
+    /// # Arguments
+    ///
+    /// * `older_than_days` - Delete events older than this many days
+    /// * `batch_size` - Optional batch size (default: 1000, None for unbatched)
+    ///
+    /// # Returns
+    ///
+    /// Total number of deleted events across all batches.
+    pub async fn cleanup_old_events_batched(
+        &self,
+        older_than_days: u32,
+        batch_size: Option<u32>,
+    ) -> Result<usize> {
+        tracing::debug!(
+            older_than_days = older_than_days,
+            batch_size = ?batch_size,
+            "cleaning up old events"
+        );
+
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(i64::from(older_than_days));
         let cutoff_tz = cutoff.fixed_offset();
 
-        let result = billing_processed_event::Entity::delete_many()
-            .filter(billing_processed_event::Column::ProcessedAt.lt(cutoff_tz))
-            .exec(&self.db)
-            .await
-            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        let batch_size = match batch_size {
+            Some(0) => return Ok(0), // No-op if batch size is 0
+            Some(size) => size,
+            None => {
+                // Unbatched: delete all at once
+                let result = billing_processed_event::Entity::delete_many()
+                    .filter(billing_processed_event::Column::ProcessedAt.lt(cutoff_tz))
+                    .exec(&self.db)
+                    .await
+                    .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        tracing::info!(deleted = result.rows_affected, "cleaned up old billing events");
-        Ok(result.rows_affected as usize)
+                let deleted = u64_to_usize(result.rows_affected);
+                tracing::info!(deleted = deleted, "cleaned up old billing events");
+                return Ok(deleted);
+            }
+        };
+
+        // Batched deletion
+        let mut total_deleted: usize = 0;
+        loop {
+            // Find batch of event IDs to delete
+            let events_to_delete: Vec<String> = billing_processed_event::Entity::find()
+                .filter(billing_processed_event::Column::ProcessedAt.lt(cutoff_tz))
+                .limit(u64::from(batch_size))
+                .all(&self.db)
+                .await
+                .map_err(|e| TidewayError::Database(e.to_string()))?
+                .into_iter()
+                .map(|e| e.event_id)
+                .collect();
+
+            if events_to_delete.is_empty() {
+                break;
+            }
+
+            let batch_count = events_to_delete.len();
+
+            // Delete this batch
+            billing_processed_event::Entity::delete_many()
+                .filter(billing_processed_event::Column::EventId.is_in(events_to_delete))
+                .exec(&self.db)
+                .await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+            total_deleted = total_deleted.saturating_add(batch_count);
+
+            tracing::debug!(
+                batch_deleted = batch_count,
+                total_deleted = total_deleted,
+                "deleted batch of old billing events"
+            );
+
+            // If we got fewer than batch_size, we're done
+            if batch_count < batch_size as usize {
+                break;
+            }
+        }
+
+        tracing::info!(deleted = total_deleted, "cleaned up old billing events");
+        Ok(total_deleted)
     }
 }
 
@@ -625,5 +745,40 @@ mod tests {
             SubscriptionStatus::from_stripe("canceled"),
             SubscriptionStatus::Canceled
         );
+    }
+
+    #[test]
+    fn test_safe_integer_conversions() {
+        // i64 to u64: negative becomes 0
+        assert_eq!(i64_to_u64(100), 100);
+        assert_eq!(i64_to_u64(0), 0);
+        assert_eq!(i64_to_u64(-1), 0);
+        assert_eq!(i64_to_u64(i64::MIN), 0);
+        assert_eq!(i64_to_u64(i64::MAX), i64::MAX as u64);
+
+        // u64 to i64: values > i64::MAX become i64::MAX
+        assert_eq!(u64_to_i64(100), 100);
+        assert_eq!(u64_to_i64(0), 0);
+        assert_eq!(u64_to_i64(i64::MAX as u64), i64::MAX);
+        assert_eq!(u64_to_i64(u64::MAX), i64::MAX);
+
+        // i32 to u32: negative becomes 0
+        assert_eq!(i32_to_u32(100), 100);
+        assert_eq!(i32_to_u32(0), 0);
+        assert_eq!(i32_to_u32(-1), 0);
+        assert_eq!(i32_to_u32(i32::MIN), 0);
+
+        // u32 to i32: values > i32::MAX become i32::MAX
+        assert_eq!(u32_to_i32(100), 100);
+        assert_eq!(u32_to_i32(0), 0);
+        assert_eq!(u32_to_i32(i32::MAX as u32), i32::MAX);
+        assert_eq!(u32_to_i32(u32::MAX), i32::MAX);
+
+        // u64 to usize: values > usize::MAX become usize::MAX
+        assert_eq!(u64_to_usize(100), 100);
+        assert_eq!(u64_to_usize(0), 0);
+        assert_eq!(u64_to_usize(usize::MAX as u64), usize::MAX);
+        // On 64-bit platforms u64::MAX == usize::MAX, on 32-bit it saturates
+        assert!(u64_to_usize(u64::MAX) <= usize::MAX);
     }
 }
