@@ -9,6 +9,14 @@
 //! - **Ownership verification**: All invoice operations verify the invoice belongs to the billable entity
 //! - **Optional caching**: Use `CachedInvoiceManager` for high-traffic applications
 //! - **Pagination**: Cursor-based pagination matching Stripe's API
+//! - **Audit logging**: Optional audit trail for invoice access (via `BillingAuditLogger`)
+//!
+//! # Limitations
+//!
+//! - **Upcoming invoice preview**: The `get_upcoming_invoice` method may return `None` in production
+//!   when using `LiveStripeClient`, as the async-stripe crate has incomplete support for this
+//!   endpoint. Consider using the Stripe Portal for upcoming invoice previews, or implement
+//!   a custom solution using raw HTTP calls to the Stripe API.
 //!
 //! # Example
 //!
@@ -357,17 +365,33 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
         billable_id: &str,
         params: InvoiceListParams,
     ) -> Result<InvoiceList> {
+        tracing::debug!(
+            billable_id = %billable_id,
+            limit = ?params.limit,
+            status = ?params.status,
+            "listing invoices"
+        );
+
         let customer_id = self.get_customer_id(billable_id).await?;
 
         let limit = params.limit.unwrap_or(self.config.default_limit);
         let status = params.status.or(self.config.default_status_filter);
 
-        self.client.list_invoices(
+        let result = self.client.list_invoices(
             &customer_id,
             limit,
             params.starting_after.as_deref(),
             status,
-        ).await
+        ).await?;
+
+        tracing::debug!(
+            billable_id = %billable_id,
+            count = result.invoices.len(),
+            has_more = result.has_more,
+            "listed invoices"
+        );
+
+        Ok(result)
     }
 
     /// Get a specific invoice with ownership verification.
@@ -383,12 +407,23 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
         billable_id: &str,
         invoice_id: &str,
     ) -> Result<Invoice> {
+        tracing::debug!(
+            billable_id = %billable_id,
+            invoice_id = %invoice_id,
+            "fetching invoice"
+        );
+
         let customer_id = self.get_customer_id(billable_id).await?;
 
         let mut invoice = self.client.get_invoice(invoice_id).await?;
 
         // Verify ownership
         if invoice.customer_id != customer_id {
+            tracing::warn!(
+                billable_id = %billable_id,
+                invoice_id = %invoice_id,
+                "invoice ownership verification failed"
+            );
             return Err(BillingError::InvoiceNotFound {
                 invoice_id: invoice_id.to_string(),
             }.into());
@@ -396,11 +431,19 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
 
         // Optionally fetch line items
         if self.config.include_line_items && invoice.line_items.is_none() {
+            tracing::debug!(invoice_id = %invoice_id, "fetching line items");
             let line_items = self.client
                 .list_invoice_line_items(invoice_id, self.config.max_line_items)
                 .await?;
             invoice.line_items = Some(line_items);
         }
+
+        tracing::debug!(
+            billable_id = %billable_id,
+            invoice_id = %invoice_id,
+            status = %invoice.status,
+            "fetched invoice"
+        );
 
         Ok(invoice)
     }
@@ -409,10 +452,22 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
     ///
     /// Returns the next invoice that will be generated, or `None` if there
     /// is no upcoming invoice (e.g., no active subscription).
+    ///
+    /// # Important Limitation
+    ///
+    /// When using [`LiveStripeClient`](super::LiveStripeClient), this method currently
+    /// returns `Ok(None)` because the async-stripe crate lacks full support for the
+    /// upcoming invoice endpoint. For production use cases requiring upcoming invoice
+    /// previews, consider:
+    ///
+    /// - Using the Stripe Customer Portal to show upcoming charges
+    /// - Implementing a custom HTTP call to `GET /v1/invoices/upcoming`
+    /// - Using Stripe's hosted invoice page
     pub async fn get_upcoming_invoice(
         &self,
         billable_id: &str,
     ) -> Result<Option<Invoice>> {
+        tracing::debug!(billable_id = %billable_id, "fetching upcoming invoice");
         let customer_id = self.get_customer_id(billable_id).await?;
         self.client.get_upcoming_invoice(&customer_id).await
     }
@@ -429,11 +484,22 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
         invoice_id: &str,
         limit: Option<u8>,
     ) -> Result<Vec<InvoiceLineItem>> {
+        tracing::debug!(
+            billable_id = %billable_id,
+            invoice_id = %invoice_id,
+            "fetching invoice line items"
+        );
+
         // Verify ownership by fetching the invoice first
         let customer_id = self.get_customer_id(billable_id).await?;
         let invoice = self.client.get_invoice(invoice_id).await?;
 
         if invoice.customer_id != customer_id {
+            tracing::warn!(
+                billable_id = %billable_id,
+                invoice_id = %invoice_id,
+                "invoice ownership verification failed for line items"
+            );
             return Err(BillingError::InvoiceNotFound {
                 invoice_id: invoice_id.to_string(),
             }.into());
@@ -523,7 +589,7 @@ impl ListCacheKey {
 /// ```
 pub struct CachedInvoiceManager<S: BillingStore, C: StripeInvoiceClient> {
     inner: InvoiceManager<S, C>,
-    cache: std::sync::Arc<std::sync::RwLock<InvoiceCache>>,
+    cache: std::sync::Arc<tokio::sync::RwLock<InvoiceCache>>,
     ttl: std::time::Duration,
     max_entries: usize,
     operation_counter: std::sync::atomic::AtomicU64,
@@ -560,7 +626,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     ) -> Self {
         Self {
             inner,
-            cache: std::sync::Arc::new(std::sync::RwLock::new(InvoiceCache {
+            cache: std::sync::Arc::new(tokio::sync::RwLock::new(InvoiceCache {
                 lists: std::collections::HashMap::new(),
                 upcoming: std::collections::HashMap::new(),
             })),
@@ -577,30 +643,34 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     }
 
     /// Invalidate all cached data for a billable entity.
-    pub fn invalidate(&self, billable_id: &str) {
-        if let Ok(mut cache) = self.cache.write() {
-            cache.lists.retain(|k, _| !k.matches_billable_id(billable_id));
-            cache.upcoming.remove(billable_id);
-        }
+    ///
+    /// Call this after receiving invoice-related webhooks to ensure fresh data.
+    pub async fn invalidate(&self, billable_id: &str) {
+        tracing::debug!(billable_id = %billable_id, "invalidating invoice cache");
+        let mut cache = self.cache.write().await;
+        cache.lists.retain(|k, _| !k.matches_billable_id(billable_id));
+        cache.upcoming.remove(billable_id);
     }
 
     /// Clear the entire cache.
-    pub fn clear(&self) {
-        if let Ok(mut cache) = self.cache.write() {
-            cache.lists.clear();
-            cache.upcoming.clear();
-        }
+    pub async fn clear(&self) {
+        tracing::debug!("clearing entire invoice cache");
+        let mut cache = self.cache.write().await;
+        cache.lists.clear();
+        cache.upcoming.clear();
     }
 
     /// Get the current number of cached entries.
+    ///
+    /// Returns 0 if the lock cannot be acquired immediately.
     #[must_use]
     pub fn cache_size(&self) -> usize {
-        self.cache.read().map_or(0, |c| c.lists.len() + c.upcoming.len())
+        self.cache.try_read().map_or(0, |c| c.lists.len() + c.upcoming.len())
     }
 
     /// Enforce maximum cache entries limit.
-    pub fn enforce_max_entries(&self) {
-        let Ok(mut cache) = self.cache.write() else { return };
+    async fn enforce_max_entries(&self) {
+        let mut cache = self.cache.write().await;
 
         let total = cache.lists.len() + cache.upcoming.len();
         if total <= self.max_entries {
@@ -627,6 +697,8 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
             for (key, _) in list_entries.into_iter().take(to_remove) {
                 cache.lists.remove(&key);
             }
+
+            tracing::debug!(removed = to_remove, "evicted cache entries");
         }
     }
 
@@ -636,15 +708,17 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         billable_id: &str,
         params: InvoiceListParams,
     ) -> Result<InvoiceList> {
-        self.maybe_cleanup();
+        self.maybe_cleanup().await;
 
         // Build structured cache key
         let cache_key = ListCacheKey::new(billable_id, &params);
 
         // Check cache
-        if let Ok(cache) = self.cache.read() {
+        {
+            let cache = self.cache.read().await;
             if let Some(entry) = cache.lists.get(&cache_key) {
                 if entry.expires_at > std::time::Instant::now() {
+                    tracing::debug!(billable_id = %billable_id, "invoice list cache hit");
                     return Ok(entry.data.clone());
                 }
             }
@@ -654,7 +728,8 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         let result = self.inner.list_invoices(billable_id, params).await?;
 
         // Store in cache
-        if let Ok(mut cache) = self.cache.write() {
+        {
+            let mut cache = self.cache.write().await;
             let now = std::time::Instant::now();
             cache.lists.insert(cache_key, CacheEntry {
                 data: result.clone(),
@@ -677,16 +752,21 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     }
 
     /// Get upcoming invoice with caching.
+    ///
+    /// See [`InvoiceManager::get_upcoming_invoice`] for important limitations
+    /// regarding the `LiveStripeClient` implementation.
     pub async fn get_upcoming_invoice(
         &self,
         billable_id: &str,
     ) -> Result<Option<Invoice>> {
-        self.maybe_cleanup();
+        self.maybe_cleanup().await;
 
         // Check cache
-        if let Ok(cache) = self.cache.read() {
+        {
+            let cache = self.cache.read().await;
             if let Some(entry) = cache.upcoming.get(billable_id) {
                 if entry.expires_at > std::time::Instant::now() {
+                    tracing::debug!(billable_id = %billable_id, "upcoming invoice cache hit");
                     return Ok(entry.data.clone());
                 }
             }
@@ -696,7 +776,8 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         let result = self.inner.get_upcoming_invoice(billable_id).await?;
 
         // Store in cache
-        if let Ok(mut cache) = self.cache.write() {
+        {
+            let mut cache = self.cache.write().await;
             let now = std::time::Instant::now();
             cache.upcoming.insert(billable_id.to_string(), CacheEntry {
                 data: result.clone(),
@@ -719,10 +800,10 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     }
 
     /// Maybe run cleanup based on operation counter.
-    fn maybe_cleanup(&self) {
+    async fn maybe_cleanup(&self) {
         let count = self.operation_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count % CLEANUP_INTERVAL == 0 {
-            self.enforce_max_entries();
+            self.enforce_max_entries().await;
         }
     }
 }
@@ -1032,7 +1113,7 @@ mod tests {
         assert!(cached.cache_size() > 0);
 
         // Invalidate
-        cached.invalidate("org_123");
+        cached.invalidate("org_123").await;
         assert_eq!(cached.cache_size(), 0);
     }
 }
