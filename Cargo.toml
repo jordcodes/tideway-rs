@@ -157,6 +157,8 @@ billing-seaorm = ["billing", "database"]
 test-billing = []
 # Organizations module
 organizations = []
+# Organizations with SeaORM database storage
+organizations-seaorm = ["organizations", "database"]
 # Organizations with billing integration
 organizations-billing = ["organizations", "billing"]
 # Testing helper for organizations (in-memory store)

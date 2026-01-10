@@ -46,6 +46,9 @@ mod utils;
 #[cfg(feature = "billing")]
 mod billing;
 
+#[cfg(feature = "organizations-seaorm")]
+mod sea_orm_store;
+
 pub mod auth;
 
 #[cfg(any(test, feature = "test-organizations"))]
@@ -74,6 +77,12 @@ pub use types::{DefaultOrgRole, OrgRolePermissions, ParseRoleError};
 // Billing exports (when billing feature enabled)
 #[cfg(feature = "billing")]
 pub use billing::{BillableOrganization, BillingSeatChecker};
+
+// SeaORM exports (when organizations-seaorm feature enabled)
+#[cfg(feature = "organizations-seaorm")]
+pub use sea_orm_store::{
+    InvitationStatus, SeaOrmInvitation, SeaOrmMembership, SeaOrmOrganization, SeaOrmOrgStore,
+};
 
 // Auth integration exports
 pub use auth::{create_org_token_subject, AuthenticatedUserId, CurrentMembership, CurrentOrg, OrgClaims};
