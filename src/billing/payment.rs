@@ -63,24 +63,49 @@ pub trait StripePaymentMethodClient: Send + Sync {
     ) -> Result<()>;
 }
 
+/// Default limit for listing payment methods.
+const DEFAULT_PAYMENT_METHOD_LIMIT: u8 = 100;
+
 /// Payment method management operations.
 ///
 /// Handles listing, setting default, and removing payment methods.
 pub struct PaymentMethodManager<S: BillingStore, C: StripePaymentMethodClient> {
     store: S,
     client: C,
+    /// Maximum number of payment methods to return in list operations.
+    list_limit: u8,
 }
 
 impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
-    /// Create a new payment method manager.
+    /// Create a new payment method manager with default settings.
     #[must_use]
     pub fn new(store: S, client: C) -> Self {
-        Self { store, client }
+        Self {
+            store,
+            client,
+            list_limit: DEFAULT_PAYMENT_METHOD_LIMIT,
+        }
+    }
+
+    /// Create a new payment method manager with a custom list limit.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` - The billing store
+    /// * `client` - The Stripe payment method client
+    /// * `list_limit` - Maximum number of payment methods to return (1-100)
+    #[must_use]
+    pub fn with_limit(store: S, client: C, list_limit: u8) -> Self {
+        Self {
+            store,
+            client,
+            list_limit: list_limit.clamp(1, 100),
+        }
     }
 
     /// List payment methods for a billable entity.
     ///
-    /// Returns all payment methods attached to the customer.
+    /// Returns payment methods attached to the customer, up to the configured limit.
     pub async fn list_payment_methods(
         &self,
         billable_id: &str,
@@ -90,7 +115,23 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
                 billable_id: billable_id.to_string(),
             })?;
 
-        self.client.list_payment_methods(&sub.stripe_customer_id, 100).await
+        self.client.list_payment_methods(&sub.stripe_customer_id, self.list_limit).await
+    }
+
+    /// List payment methods with a specific limit.
+    ///
+    /// Use this for pagination or when you need a different limit than the default.
+    pub async fn list_payment_methods_with_limit(
+        &self,
+        billable_id: &str,
+        limit: u8,
+    ) -> Result<PaymentMethodList> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        self.client.list_payment_methods(&sub.stripe_customer_id, limit.clamp(1, 100)).await
     }
 
     /// Set the default payment method for a billable entity.
@@ -112,7 +153,7 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
             })?;
 
         // Verify the payment method belongs to this customer
-        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, 100).await?;
+        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, self.list_limit).await?;
         if !methods.methods.iter().any(|m| m.id == payment_method_id) {
             return Err(super::error::BillingError::PaymentMethodNotFound {
                 payment_method_id: payment_method_id.to_string(),
@@ -142,7 +183,7 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
             })?;
 
         // Verify the payment method belongs to this customer before detaching
-        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, 100).await?;
+        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, self.list_limit).await?;
         if !methods.methods.iter().any(|m| m.id == payment_method_id) {
             return Err(super::error::BillingError::PaymentMethodNotFound {
                 payment_method_id: payment_method_id.to_string(),

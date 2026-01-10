@@ -43,6 +43,16 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
         self.config.validate_redirect_url(&request.success_url)?;
         self.config.validate_redirect_url(&request.cancel_url)?;
 
+        // Validate coupon and promotion codes are not both enabled
+        // Stripe doesn't allow both a pre-applied coupon and promotion code entry
+        let allow_promos = request.allow_promotion_codes.unwrap_or(self.config.allow_promotion_codes);
+        if request.coupon.is_some() && allow_promos {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Cannot use both a coupon and allow_promotion_codes. \
+                 Either apply a specific coupon or let users enter promotion codes, not both.".to_string()
+            ));
+        }
+
         // Validate plan exists
         let plan = self.plans.get(&request.plan_id)
             .ok_or_else(|| crate::error::TidewayError::BadRequest(
@@ -787,14 +797,73 @@ mod tests {
             email: "test@example.com".to_string(),
         };
 
+        // Must disable promotion codes when using a coupon
         let request = CheckoutRequest::new(
             "starter",
             "https://example.com/success",
             "https://example.com/cancel",
         )
-        .with_coupon("WELCOME50");
+        .with_coupon("WELCOME50")
+        .with_promotion_codes(false);
 
         let session = manager.create_checkout_session(&entity, request).await.unwrap();
         assert!(session.id.starts_with("cs_test_"));
+    }
+
+    #[tokio::test]
+    async fn test_checkout_rejects_coupon_with_promotion_codes() {
+        let store = InMemoryBillingStore::new();
+        let client = MockFullStripeClient::new();
+        let plans = create_test_plans();
+        // Config has allow_promotion_codes: true by default
+        let config = CheckoutConfig::default();
+
+        let manager = CheckoutManager::new(store, client, plans, config);
+
+        let entity = TestEntity {
+            id: "org_conflict_test".to_string(),
+            email: "test@example.com".to_string(),
+        };
+
+        // Try to use both coupon AND promotion codes - should fail
+        let request = CheckoutRequest::new(
+            "starter",
+            "https://example.com/success",
+            "https://example.com/cancel",
+        )
+        .with_coupon("SAVE20")
+        .with_promotion_codes(true);
+
+        let result = manager.create_checkout_session(&entity, request).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("coupon") && err.contains("promotion"));
+    }
+
+    #[tokio::test]
+    async fn test_checkout_allows_coupon_without_promotion_codes() {
+        let store = InMemoryBillingStore::new();
+        let client = MockFullStripeClient::new();
+        let plans = create_test_plans();
+        let config = CheckoutConfig::default();
+
+        let manager = CheckoutManager::new(store, client, plans, config);
+
+        let entity = TestEntity {
+            id: "org_coupon_only".to_string(),
+            email: "test@example.com".to_string(),
+        };
+
+        // Use coupon with promotion codes disabled - should succeed
+        let request = CheckoutRequest::new(
+            "starter",
+            "https://example.com/success",
+            "https://example.com/cancel",
+        )
+        .with_coupon("SAVE20")
+        .with_promotion_codes(false);
+
+        let result = manager.create_checkout_session(&entity, request).await;
+        assert!(result.is_ok());
     }
 }

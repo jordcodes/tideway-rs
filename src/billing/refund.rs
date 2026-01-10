@@ -139,9 +139,16 @@ impl CreateRefundRequest {
     }
 
     /// Set the refund amount (partial refund).
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug mode if amount is not positive.
+    /// In release mode, negative amounts are clamped to 1.
     #[must_use]
     pub fn with_amount(mut self, amount: i64) -> Self {
-        self.amount = Some(amount);
+        debug_assert!(amount > 0, "Refund amount must be positive, got {}", amount);
+        // In release, ensure we never send invalid amounts to Stripe
+        self.amount = Some(amount.max(1));
         self
     }
 

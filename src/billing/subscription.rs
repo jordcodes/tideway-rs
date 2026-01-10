@@ -110,12 +110,22 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
     ///
     /// # Errors
     ///
-    /// Returns an error if the subscription is not found or not in trialing state.
+    /// Returns an error if:
+    /// - `additional_days` is 0 (use at least 1 day)
+    /// - The subscription is not found
+    /// - The subscription is not in trialing state
     pub async fn extend_trial(
         &self,
         billable_id: &str,
         additional_days: u32,
     ) -> Result<Subscription> {
+        // Validate additional_days is at least 1
+        if additional_days == 0 {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Trial extension must be at least 1 day".to_string()
+            ));
+        }
+
         let sub = self.store.get_subscription(billable_id).await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
@@ -1208,6 +1218,21 @@ mod tests {
         // Try to extend trial - should fail
         let result = manager.extend_trial("org_123", 14).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_extend_trial_zero_days() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let manager = SubscriptionManager::new(store, client, plans);
+
+        // Try to extend trial with 0 days - should fail immediately
+        let result = manager.extend_trial("org_123", 0).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("at least 1 day"));
     }
 
     // ========================================================================
