@@ -73,8 +73,9 @@ pub use customer::{
 
 // Subscription exports
 pub use subscription::{
-    ProrationBehavior, StripeSubscriptionClient, StripeSubscriptionData, Subscription,
-    SubscriptionManager, SubscriptionMetadata, UpdateSubscriptionRequest,
+    ProrationBehavior, ReconcileDifference, ReconcileResult, StripeSubscriptionClient,
+    StripeSubscriptionData, Subscription, SubscriptionManager, SubscriptionMetadata,
+    UpdateSubscriptionRequest,
 };
 
 // Checkout exports

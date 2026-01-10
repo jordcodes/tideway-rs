@@ -37,6 +37,29 @@ pub trait BillingStore: Send + Sync {
         subscription: &StoredSubscription,
     ) -> Result<()>;
 
+    /// Save subscription only if it hasn't been modified since `expected_version`.
+    ///
+    /// This is used for optimistic locking to prevent race conditions.
+    /// Returns `Ok(true)` if the save succeeded, `Ok(false)` if the version didn't match.
+    ///
+    /// The default implementation always succeeds (no locking) for backwards compatibility.
+    async fn compare_and_save_subscription(
+        &self,
+        billable_id: &str,
+        subscription: &StoredSubscription,
+        expected_version: u64,
+    ) -> Result<bool> {
+        // Default implementation: check version and save
+        // Implementers should override with atomic compare-and-swap
+        if let Some(current) = self.get_subscription(billable_id).await? {
+            if current.updated_at != expected_version {
+                return Ok(false);
+            }
+        }
+        self.save_subscription(billable_id, subscription).await?;
+        Ok(true)
+    }
+
     /// Delete the subscription record.
     async fn delete_subscription(&self, billable_id: &str) -> Result<()>;
 
@@ -324,6 +347,26 @@ pub mod test {
                 .unwrap()
                 .insert(billable_id.to_string(), subscription.clone());
             Ok(())
+        }
+
+        async fn compare_and_save_subscription(
+            &self,
+            billable_id: &str,
+            subscription: &StoredSubscription,
+            expected_version: u64,
+        ) -> Result<bool> {
+            let mut subs = self.inner.subscriptions.write().unwrap();
+
+            // Check if current version matches expected
+            if let Some(current) = subs.get(billable_id) {
+                if current.updated_at != expected_version {
+                    return Ok(false);
+                }
+            }
+
+            // Version matches (or no existing record), save the new subscription
+            subs.insert(billable_id.to_string(), subscription.clone());
+            Ok(true)
         }
 
         async fn delete_subscription(&self, billable_id: &str) -> Result<()> {

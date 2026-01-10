@@ -163,6 +163,146 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             None => Ok(None),
         }
     }
+
+    /// Refresh subscription state from Stripe.
+    ///
+    /// Fetches the current subscription state from Stripe and updates local storage.
+    /// Use this when you need guaranteed fresh data (e.g., before critical operations).
+    ///
+    /// Returns the refreshed subscription, or None if no subscription exists locally.
+    pub async fn refresh_from_stripe(&self, billable_id: &str) -> Result<Option<Subscription>> {
+        let stored = match self.store.get_subscription(billable_id).await? {
+            Some(sub) => sub,
+            None => return Ok(None),
+        };
+
+        // Fetch fresh data from Stripe
+        let stripe_data = self.client.get_subscription(&stored.stripe_subscription_id).await?;
+
+        // Update local state
+        self.sync_from_stripe(stripe_data).await?;
+
+        // Return the updated subscription
+        self.get_subscription(billable_id).await
+    }
+
+    /// Reconcile local subscription state with Stripe.
+    ///
+    /// Compares local state with Stripe and returns information about any differences.
+    /// Optionally updates local state to match Stripe.
+    ///
+    /// This is useful for:
+    /// - Periodic health checks to detect missed webhooks
+    /// - Debugging subscription state issues
+    /// - Recovering from webhook delivery failures
+    pub async fn reconcile(
+        &self,
+        billable_id: &str,
+        update_local: bool,
+    ) -> Result<ReconcileResult> {
+        let stored = match self.store.get_subscription(billable_id).await? {
+            Some(sub) => sub,
+            None => return Ok(ReconcileResult::NoLocalSubscription),
+        };
+
+        // Fetch current state from Stripe
+        let stripe_data = match self.client.get_subscription(&stored.stripe_subscription_id).await {
+            Ok(data) => data,
+            Err(_) => return Ok(ReconcileResult::NotFoundInStripe),
+        };
+
+        // Compare key fields
+        let status_matches = stored.status == SubscriptionStatus::from_stripe(&stripe_data.status);
+        let seats_match = stored.extra_seats == stripe_data.extra_seats;
+        let plan_matches = stored.plan_id == stripe_data.plan_id;
+        let period_matches = stored.current_period_end == stripe_data.current_period_end;
+        let cancel_matches = stored.cancel_at_period_end == stripe_data.cancel_at_period_end;
+
+        if status_matches && seats_match && plan_matches && period_matches && cancel_matches {
+            return Ok(ReconcileResult::InSync);
+        }
+
+        // Build list of differences
+        let mut differences = Vec::new();
+
+        if !status_matches {
+            differences.push(ReconcileDifference::Status {
+                local: stored.status.as_str().to_string(),
+                remote: stripe_data.status.clone(),
+            });
+        }
+
+        if !seats_match {
+            differences.push(ReconcileDifference::Seats {
+                local: stored.extra_seats,
+                remote: stripe_data.extra_seats,
+            });
+        }
+
+        if !plan_matches {
+            differences.push(ReconcileDifference::Plan {
+                local: stored.plan_id.clone(),
+                remote: stripe_data.plan_id.clone(),
+            });
+        }
+
+        if !period_matches {
+            differences.push(ReconcileDifference::PeriodEnd {
+                local: stored.current_period_end,
+                remote: stripe_data.current_period_end,
+            });
+        }
+
+        if !cancel_matches {
+            differences.push(ReconcileDifference::CancelAtPeriodEnd {
+                local: stored.cancel_at_period_end,
+                remote: stripe_data.cancel_at_period_end,
+            });
+        }
+
+        // Update local state if requested
+        if update_local {
+            self.sync_from_stripe(stripe_data).await?;
+        }
+
+        Ok(ReconcileResult::Diverged {
+            differences,
+            updated_local: update_local,
+        })
+    }
+}
+
+/// Result of a reconciliation check.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReconcileResult {
+    /// No local subscription found for this billable ID.
+    NoLocalSubscription,
+    /// Subscription not found in Stripe (may have been deleted).
+    NotFoundInStripe,
+    /// Local and Stripe state are in sync.
+    InSync,
+    /// Local and Stripe state have diverged.
+    Diverged {
+        /// List of differences found.
+        differences: Vec<ReconcileDifference>,
+        /// Whether local state was updated.
+        updated_local: bool,
+    },
+}
+
+/// A specific difference between local and Stripe state.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ReconcileDifference {
+    /// Subscription status differs.
+    Status { local: String, remote: String },
+    /// Extra seat count differs.
+    Seats { local: u32, remote: u32 },
+    /// Plan ID differs.
+    Plan { local: String, remote: String },
+    /// Current period end differs.
+    PeriodEnd { local: u64, remote: u64 },
+    /// Cancel at period end flag differs.
+    CancelAtPeriodEnd { local: bool, remote: bool },
 }
 
 /// Rich subscription object with plan details.
@@ -373,9 +513,9 @@ pub mod test {
     use std::collections::HashMap;
 
     /// Mock Stripe subscription client.
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     pub struct MockStripeSubscriptionClient {
-        subscriptions: RwLock<HashMap<String, MockSubscription>>,
+        subscriptions: std::sync::Arc<RwLock<HashMap<String, MockSubscription>>>,
     }
 
     #[derive(Clone)]
@@ -638,5 +778,145 @@ mod tests {
 
         // Should be gone
         assert!(manager.get_subscription("org_123").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_refresh_from_stripe() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Set up initial local state
+        let stripe_data = create_test_subscription_data("org_123");
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client.clone(), plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Modify the Stripe state (simulating an external change)
+        let mut updated_stripe = create_test_subscription_data("org_123");
+        updated_stripe.extra_seats = 10;
+        updated_stripe.status = "past_due".to_string();
+        client.add_subscription(updated_stripe);
+
+        // Refresh from Stripe
+        let sub = manager.refresh_from_stripe("org_123").await.unwrap().unwrap();
+
+        // Should reflect Stripe's current state
+        assert_eq!(sub.extra_seats, 10);
+        assert_eq!(sub.status, SubscriptionStatus::PastDue);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_in_sync() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let stripe_data = create_test_subscription_data("org_123");
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Local and Stripe should be in sync
+        let result = manager.reconcile("org_123", false).await.unwrap();
+        assert_eq!(result, ReconcileResult::InSync);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_diverged() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Set up initial state
+        let stripe_data = create_test_subscription_data("org_123");
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client.clone(), plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Modify Stripe state to create divergence
+        let mut updated_stripe = create_test_subscription_data("org_123");
+        updated_stripe.extra_seats = 5; // Changed from 2 to 5
+        updated_stripe.cancel_at_period_end = true; // Changed from false to true
+        client.add_subscription(updated_stripe);
+
+        // Check for divergence without updating
+        let result = manager.reconcile("org_123", false).await.unwrap();
+
+        match result {
+            ReconcileResult::Diverged { differences, updated_local } => {
+                assert!(!updated_local);
+                assert!(differences.iter().any(|d| matches!(d, ReconcileDifference::Seats { local: 2, remote: 5 })));
+                assert!(differences.iter().any(|d| matches!(d, ReconcileDifference::CancelAtPeriodEnd { local: false, remote: true })));
+            }
+            _ => panic!("Expected Diverged result"),
+        }
+
+        // Local state should still be old
+        let sub = manager.get_subscription("org_123").await.unwrap().unwrap();
+        assert_eq!(sub.extra_seats, 2);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_with_update() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let stripe_data = create_test_subscription_data("org_123");
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client.clone(), plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Modify Stripe state
+        let mut updated_stripe = create_test_subscription_data("org_123");
+        updated_stripe.extra_seats = 8;
+        client.add_subscription(updated_stripe);
+
+        // Reconcile WITH update
+        let result = manager.reconcile("org_123", true).await.unwrap();
+
+        match result {
+            ReconcileResult::Diverged { updated_local, .. } => {
+                assert!(updated_local);
+            }
+            _ => panic!("Expected Diverged result"),
+        }
+
+        // Local state should now match Stripe
+        let sub = manager.get_subscription("org_123").await.unwrap().unwrap();
+        assert_eq!(sub.extra_seats, 8);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_no_local_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+        let manager = SubscriptionManager::new(store, client, plans);
+
+        let result = manager.reconcile("nonexistent", false).await.unwrap();
+        assert_eq!(result, ReconcileResult::NoLocalSubscription);
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_not_found_in_stripe() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Sync a subscription but don't add it to mock client
+        let stripe_data = create_test_subscription_data("org_123");
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Reconcile - should find local but not in Stripe
+        let result = manager.reconcile("org_123", false).await.unwrap();
+        assert_eq!(result, ReconcileResult::NotFoundInStripe);
     }
 }
