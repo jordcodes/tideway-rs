@@ -862,15 +862,7 @@ impl StripeCheckoutClient for LiveStripeClient {
             .collect();
         params.line_items = Some(line_items);
 
-        // Set trial period if provided
-        if let Some(trial_days) = request.trial_period_days {
-            params.subscription_data = Some(stripe::CreateCheckoutSessionSubscriptionData {
-                trial_period_days: Some(trial_days),
-                ..Default::default()
-            });
-        }
-
-        // Set metadata
+        // Set metadata - must be on subscription_data for it to transfer to the subscription
         let mut meta = std::collections::HashMap::new();
         meta.insert(
             META_BILLABLE_ID.to_string(),
@@ -881,6 +873,16 @@ impl StripeCheckoutClient for LiveStripeClient {
             request.metadata.billable_type.clone(),
         );
         meta.insert(META_PLAN_ID.to_string(), request.metadata.plan_id.clone());
+
+        // Set subscription data with metadata (and trial period if provided)
+        // Metadata must be on subscription_data for Stripe to copy it to the subscription
+        params.subscription_data = Some(stripe::CreateCheckoutSessionSubscriptionData {
+            trial_period_days: request.trial_period_days,
+            metadata: Some(meta.clone()),
+            ..Default::default()
+        });
+
+        // Also set on session for reference
         params.metadata = Some(meta);
 
         // Tax and billing options
