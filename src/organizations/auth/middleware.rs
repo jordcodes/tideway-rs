@@ -8,7 +8,92 @@ use super::extractors::AuthenticatedUserId;
 use crate::error::TidewayError;
 use crate::organizations::storage::MembershipStore;
 use axum::{extract::Request, middleware::Next, response::Response};
+use std::future::Future;
 use std::marker::PhantomData;
+use std::pin::Pin;
+
+// =============================================================================
+// Type Aliases
+// =============================================================================
+
+/// Type alias for async middleware function return type.
+///
+/// This reduces verbosity when defining middleware functions.
+pub type MiddlewareFuture = Pin<Box<dyn Future<Output = Result<Response, TidewayError>> + Send>>;
+
+// =============================================================================
+// Helper: OrgContext
+// =============================================================================
+
+/// Extracted organization context from request extensions.
+///
+/// Contains the store, org claims, and user ID needed for authorization checks.
+struct OrgContext<M: MembershipStore> {
+    store: M,
+    org_id: String,
+    user_id: String,
+}
+
+impl<M: MembershipStore + Clone + 'static> OrgContext<M> {
+    /// Extract organization context from request extensions.
+    fn from_request(request: &Request) -> Result<Self, TidewayError> {
+        let store = request
+            .extensions()
+            .get::<M>()
+            .cloned()
+            .ok_or_else(|| {
+                TidewayError::internal("MembershipStore not found in request extensions")
+            })?;
+
+        let org_claims = request
+            .extensions()
+            .get::<OrgClaims>()
+            .ok_or_else(|| TidewayError::unauthorized("No organization context in token"))?;
+
+        let user_id = request
+            .extensions()
+            .get::<AuthenticatedUserId>()
+            .ok_or_else(|| TidewayError::unauthorized("User not authenticated"))?;
+
+        Ok(Self {
+            store,
+            org_id: org_claims.org_id.clone(),
+            user_id: user_id.0.clone(),
+        })
+    }
+
+    /// Check if the user is a member of the organization.
+    async fn check_membership(&self) -> Result<(), TidewayError> {
+        let is_member = self
+            .store
+            .is_member(&self.org_id, &self.user_id)
+            .await
+            .map_err(|e| TidewayError::internal(format!("Failed to check membership: {e}")))?;
+
+        if !is_member {
+            return Err(TidewayError::forbidden("Not a member of this organization"));
+        }
+
+        Ok(())
+    }
+
+    /// Get the user's membership and role.
+    async fn get_membership_and_role(&self) -> Result<(M::Membership, M::Role), TidewayError> {
+        let membership = self
+            .store
+            .get_membership(&self.org_id, &self.user_id)
+            .await
+            .map_err(|e| TidewayError::internal(format!("Failed to get membership: {e}")))?
+            .ok_or_else(|| TidewayError::forbidden("Not a member of this organization"))?;
+
+        let role = self.store.membership_role(&membership);
+        Ok((membership, role))
+    }
+}
+
+// =============================================================================
+// RequireOrgMembership
+// =============================================================================
 
 /// Middleware that requires the user to be a member of their claimed organization.
 ///
@@ -43,39 +128,15 @@ impl<M: MembershipStore + Clone + 'static> RequireOrgMembership<M> {
     /// - AuthenticatedUserId is not in request extensions
     /// - User is not a member of the claimed organization
     pub async fn middleware(request: Request, next: Next) -> Result<Response, TidewayError> {
-        // Get the membership store from extensions
-        let store = request
-            .extensions()
-            .get::<M>()
-            .cloned()
-            .ok_or_else(|| {
-                TidewayError::internal("MembershipStore not found in request extensions")
-            })?;
-
-        // Get org claims from extensions
-        let org_claims = request.extensions().get::<OrgClaims>().ok_or_else(|| {
-            TidewayError::unauthorized("No organization context in token")
-        })?;
-
-        // Get user ID from extensions
-        let user_id = request
-            .extensions()
-            .get::<AuthenticatedUserId>()
-            .ok_or_else(|| TidewayError::unauthorized("User not authenticated"))?;
-
-        // Check membership
-        let is_member = store
-            .is_member(&org_claims.org_id, &user_id.0)
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to check membership: {e}")))?;
-
-        if !is_member {
-            return Err(TidewayError::forbidden("Not a member of this organization"));
-        }
-
+        let ctx = OrgContext::<M>::from_request(&request)?;
+        ctx.check_membership().await?;
         Ok(next.run(request).await)
     }
 }
+
+// =============================================================================
+// OrgStoreLayer
+// =============================================================================
 
 /// Layer that adds a MembershipStore to request extensions.
 ///
@@ -109,6 +170,10 @@ impl<M: MembershipStore + Clone + 'static> OrgStoreLayer<M> {
     }
 }
 
+// =============================================================================
+// RequirePermission
+// =============================================================================
+
 /// Middleware that requires a specific permission.
 ///
 /// Generic over the MembershipStore and permission check function.
@@ -137,52 +202,17 @@ where
     /// Create a middleware function that checks a custom permission.
     pub fn check<F>(
         check: F,
-    ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, TidewayError>> + Send>>
-           + Clone
-           + Send
-           + Sync
-           + 'static
+    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static
     where
         F: Fn(&M, &M::Role) -> bool + Clone + Send + Sync + 'static,
     {
         move |request: Request, next: Next| {
             let check = check.clone();
             Box::pin(async move {
-                // Get the membership store from extensions
-                let store = request
-                    .extensions()
-                    .get::<M>()
-                    .cloned()
-                    .ok_or_else(|| {
-                        TidewayError::internal("MembershipStore not found in request extensions")
-                    })?;
+                let ctx = OrgContext::<M>::from_request(&request)?;
+                let (_, role) = ctx.get_membership_and_role().await?;
 
-                // Get org claims from extensions
-                let org_claims =
-                    request.extensions().get::<OrgClaims>().ok_or_else(|| {
-                        TidewayError::unauthorized("No organization context in token")
-                    })?;
-
-                // Get user ID from extensions
-                let user_id = request
-                    .extensions()
-                    .get::<AuthenticatedUserId>()
-                    .ok_or_else(|| TidewayError::unauthorized("User not authenticated"))?;
-
-                // Get membership
-                let membership = store
-                    .get_membership(&org_claims.org_id, &user_id.0)
-                    .await
-                    .map_err(|e| {
-                        TidewayError::internal(format!("Failed to get membership: {e}"))
-                    })?
-                    .ok_or_else(|| {
-                        TidewayError::forbidden("Not a member of this organization")
-                    })?;
-
-                // Check permission
-                let role = store.membership_role(&membership);
-                if !check(&store, &role) {
+                if !check(&ctx.store, &role) {
                     return Err(TidewayError::forbidden("Insufficient permissions"));
                 }
 
@@ -193,41 +223,25 @@ where
 
     /// Middleware that requires `can_manage_members` permission.
     pub fn can_manage_members(
-    ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, TidewayError>> + Send>>
-           + Clone
-           + Send
-           + Sync
-           + 'static {
+    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
         Self::check(|store, role| store.can_manage_members(role))
     }
 
     /// Middleware that requires `can_manage_settings` permission.
     pub fn can_manage_settings(
-    ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, TidewayError>> + Send>>
-           + Clone
-           + Send
-           + Sync
-           + 'static {
+    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
         Self::check(|store, role| store.can_manage_settings(role))
     }
 
     /// Middleware that requires `can_delete_org` permission.
     pub fn can_delete_org(
-    ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, TidewayError>> + Send>>
-           + Clone
-           + Send
-           + Sync
-           + 'static {
+    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
         Self::check(|store, role| store.can_delete_org(role))
     }
 
     /// Middleware that requires `is_owner` permission.
     pub fn is_owner(
-    ) -> impl Fn(Request, Next) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Response, TidewayError>> + Send>>
-           + Clone
-           + Send
-           + Sync
-           + 'static {
+    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
         Self::check(|store, role| store.is_owner(role))
     }
 }
