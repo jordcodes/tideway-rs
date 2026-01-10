@@ -1,0 +1,172 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useOrganization } from './composables/useOrganization'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const props = defineProps<{
+  organizationId: string
+  currentUserId?: string
+  onInvite?: () => void
+}>()
+
+const { members, isLoading, error, fetchMembers, updateMemberRole, removeMember } = useOrganization()
+
+// Fetch members on mount
+fetchMembers(props.organizationId)
+
+const sortedMembers = computed(() => {
+  return [...members.value].sort((a, b) => {
+    // Sort by role: owner first, then admin, then member
+    const roleOrder = { owner: 0, admin: 1, member: 2 }
+    return (roleOrder[a.role as keyof typeof roleOrder] || 3) - (roleOrder[b.role as keyof typeof roleOrder] || 3)
+  })
+})
+
+function getRoleVariant(role: string): 'default' | 'secondary' | 'outline' {
+  switch (role) {
+    case 'owner':
+      return 'default'
+    case 'admin':
+      return 'secondary'
+    default:
+      return 'outline'
+  }
+}
+
+function getInitials(name: string | undefined, email: string): string {
+  if (name) {
+    return name
+      .split(' ')
+      .map(word => word[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2)
+  }
+  return email.slice(0, 2).toUpperCase()
+}
+
+async function handleRoleChange(userId: string, role: string) {
+  await updateMemberRole(props.organizationId, userId, role)
+}
+
+async function handleRemove(userId: string) {
+  if (confirm('Are you sure you want to remove this member?')) {
+    await removeMember(props.organizationId, userId)
+  }
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader class="flex flex-row items-center justify-between">
+      <div>
+        <CardTitle>Team Members</CardTitle>
+        <CardDescription>
+          Manage who has access to this organization
+        </CardDescription>
+      </div>
+      <Button v-if="onInvite" @click="onInvite">
+        Invite Member
+      </Button>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <div v-if="isLoading" class="space-y-3">
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+      </div>
+
+      <Table v-else>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Member</TableHead>
+            <TableHead>Role</TableHead>
+            <TableHead>Joined</TableHead>
+            <TableHead class="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="member in sortedMembers" :key="member.user_id">
+            <TableCell>
+              <div class="flex items-center gap-3">
+                <Avatar class="h-8 w-8">
+                  <AvatarFallback class="text-xs">
+                    \{{ getInitials(member.name, member.email) }}
+                  </AvatarFallback>
+                </Avatar>
+                <div>
+                  <p class="font-medium">\{{ member.name || member.email }}</p>
+                  <p v-if="member.name" class="text-sm text-muted-foreground">
+                    \{{ member.email }}
+                  </p>
+                </div>
+              </div>
+            </TableCell>
+            <TableCell>
+              <Badge :variant="getRoleVariant(member.role)">
+                \{{ member.role }}
+              </Badge>
+            </TableCell>
+            <TableCell class="text-muted-foreground">
+              \{{ new Date(member.joined_at * 1000).toLocaleDateString() }}
+            </TableCell>
+            <TableCell class="text-right">
+              <DropdownMenu v-if="member.role !== 'owner' && member.user_id !== currentUserId">
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm">
+                    <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        stroke-width="2"
+                        d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"
+                      />
+                    </svg>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    v-if="member.role !== 'admin'"
+                    @click="handleRoleChange(member.user_id, 'admin')"
+                  >
+                    Make admin
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    v-if="member.role !== 'member'"
+                    @click="handleRoleChange(member.user_id, 'member')"
+                  >
+                    Make member
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    class="text-destructive"
+                    @click="handleRemove(member.user_id)"
+                  >
+                    Remove from organization
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+    </CardContent>
+  </Card>
+</template>

@@ -1,0 +1,50 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { useBilling } from './composables/useBilling'
+import { Button } from '@/components/ui/button'
+
+const props = defineProps<{
+  organizationId: string
+  returnUrl?: string
+  variant?: 'default' | 'secondary' | 'outline' | 'ghost'
+  size?: 'default' | 'sm' | 'lg'
+}>()
+
+const emit = defineEmits<{
+  success: [url: string]
+  error: [error: string]
+}>()
+
+const { createPortalSession, isLoading } = useBilling()
+
+async function handlePortal() {
+  try {
+    const result = await createPortalSession({
+      organization_id: props.organizationId,
+      return_url: props.returnUrl || window.location.href,
+    })
+
+    if (result.portal_url) {
+      emit('success', result.portal_url)
+      window.location.href = result.portal_url
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to open billing portal'
+    emit('error', message)
+  }
+}
+</script>
+
+<template>
+  <Button
+    :variant="variant || 'outline'"
+    :size="size || 'default'"
+    :disabled="isLoading"
+    @click="handlePortal"
+  >
+    <slot>
+      <span v-if="isLoading">Loading...</span>
+      <span v-else>Manage Billing</span>
+    </slot>
+  </Button>
+</template>

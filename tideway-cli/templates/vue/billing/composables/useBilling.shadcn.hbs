@@ -1,0 +1,132 @@
+import { ref, readonly } from 'vue'
+import { useApi } from '../../composables/useApi'
+import type {
+  Subscription,
+  Invoice,
+  CheckoutRequest,
+  CheckoutResponse,
+  PortalRequest,
+  PortalResponse,
+} from '../../types'
+
+export function useBilling() {
+  const api = useApi()
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+  const subscription = ref<Subscription | null>(null)
+  const invoices = ref<Invoice[]>([])
+
+  async function fetchSubscription(organizationId: string): Promise<Subscription | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<Subscription>(
+        `/billing/subscription?organization_id=${encodeURIComponent(organizationId)}`
+      )
+      subscription.value = response
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch subscription'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchInvoices(organizationId: string): Promise<Invoice[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ invoices: Invoice[] }>(
+        `/billing/invoices?organization_id=${encodeURIComponent(organizationId)}`
+      )
+      invoices.value = response.invoices
+      return response.invoices
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch invoices'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function createCheckout(request: CheckoutRequest): Promise<CheckoutResponse> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<CheckoutResponse>('/billing/checkout', request)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to create checkout session'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function createPortalSession(request: PortalRequest): Promise<PortalResponse> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<PortalResponse>('/billing/portal', request)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to create portal session'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function cancelSubscription(organizationId: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.post('/billing/subscription/cancel', { organization_id: organizationId })
+      // Refresh subscription after cancellation
+      await fetchSubscription(organizationId)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to cancel subscription'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function resumeSubscription(organizationId: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.post('/billing/subscription/resume', { organization_id: organizationId })
+      // Refresh subscription after resuming
+      await fetchSubscription(organizationId)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to resume subscription'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  return {
+    // State
+    subscription: readonly(subscription),
+    invoices: readonly(invoices),
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+
+    // Actions
+    fetchSubscription,
+    fetchInvoices,
+    createCheckout,
+    createPortalSession,
+    cancelSubscription,
+    resumeSubscription,
+  }
+}

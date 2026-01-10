@@ -1,0 +1,105 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useBilling } from './composables/useBilling'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const props = defineProps<{
+  organizationId: string
+}>()
+
+const { subscription, isLoading, error, fetchSubscription } = useBilling()
+
+// Fetch subscription on mount
+fetchSubscription(props.organizationId)
+
+const statusVariant = computed(() => {
+  if (!subscription.value) return 'secondary'
+  switch (subscription.value.status) {
+    case 'active':
+      return 'default'
+    case 'trialing':
+      return 'secondary'
+    case 'past_due':
+      return 'destructive'
+    case 'canceled':
+      return 'outline'
+    default:
+      return 'secondary'
+  }
+})
+
+const statusLabel = computed(() => {
+  if (!subscription.value) return 'No subscription'
+  switch (subscription.value.status) {
+    case 'active':
+      return 'Active'
+    case 'trialing':
+      return 'Trial'
+    case 'past_due':
+      return 'Past Due'
+    case 'canceled':
+      return 'Canceled'
+    case 'incomplete':
+      return 'Incomplete'
+    default:
+      return subscription.value.status
+  }
+})
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <CardTitle class="flex items-center justify-between">
+        Subscription
+        <Badge v-if="subscription" :variant="statusVariant">
+          \{{ statusLabel }}
+        </Badge>
+      </CardTitle>
+      <CardDescription>
+        Your current plan and billing status
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <div v-if="isLoading" class="space-y-3">
+        <Skeleton class="h-4 w-[200px]" />
+        <Skeleton class="h-4 w-[150px]" />
+        <Skeleton class="h-4 w-[180px]" />
+      </div>
+
+      <div v-else-if="subscription?.has_subscription" class="space-y-4">
+        <div class="flex justify-between">
+          <span class="text-muted-foreground">Plan</span>
+          <span class="font-medium">\{{ subscription.plan_id }}</span>
+        </div>
+
+        <div v-if="subscription.trial_days_remaining" class="flex justify-between">
+          <span class="text-muted-foreground">Trial ends in</span>
+          <span class="font-medium">\{{ subscription.trial_days_remaining }} days</span>
+        </div>
+
+        <div v-if="subscription.cancel_at_period_end" class="mt-4">
+          <Alert>
+            <AlertDescription>
+              Your subscription will be canceled at the end of the current billing period.
+            </AlertDescription>
+          </Alert>
+        </div>
+      </div>
+
+      <div v-else class="text-center py-4">
+        <p class="text-muted-foreground">No active subscription</p>
+        <p class="text-sm text-muted-foreground mt-1">
+          Choose a plan to get started
+        </p>
+      </div>
+    </CardContent>
+  </Card>
+</template>

@@ -1,0 +1,24 @@
+[package]
+name = "tideway-cli"
+version = "0.1.0"
+edition = "2024"
+authors = ["JD"]
+description = "CLI tool for generating Vue/React components for tideway applications"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jordcodes/tideway-rs"
+keywords = ["cli", "generator", "vue", "scaffold"]
+categories = ["command-line-utilities", "development-tools"]
+rust-version = "1.85"
+
+[[bin]]
+name = "tideway"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+handlebars = "6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+include_dir = "0.7"
+colored = "2"
+anyhow = "1"

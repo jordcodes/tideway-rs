@@ -1,0 +1,120 @@
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import { useOrganization } from './composables/useOrganization'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Separator } from '@/components/ui/separator'
+
+const props = defineProps<{
+  organizationId: string
+  onSaved?: () => void
+}>()
+
+const { currentOrganization, updateOrganization, isLoading, error, fetchOrganization } = useOrganization()
+
+const name = ref('')
+const contactEmail = ref('')
+const saved = ref(false)
+
+// Fetch organization and populate form
+fetchOrganization(props.organizationId)
+
+watch(currentOrganization, (org) => {
+  if (org) {
+    name.value = org.name
+    contactEmail.value = org.contact_email || ''
+  }
+}, { immediate: true })
+
+async function handleSubmit() {
+  saved.value = false
+  await updateOrganization(props.organizationId, {
+    name: name.value,
+    contact_email: contactEmail.value,
+  })
+
+  if (!error.value) {
+    saved.value = true
+    props.onSaved?.()
+  }
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <CardTitle>Organization Settings</CardTitle>
+      <CardDescription>
+        Manage your organization's details
+      </CardDescription>
+    </CardHeader>
+    <form @submit.prevent="handleSubmit">
+      <CardContent class="space-y-4">
+        <Alert v-if="error" variant="destructive">
+          <AlertDescription>\{{ error }}</AlertDescription>
+        </Alert>
+
+        <Alert v-if="saved" variant="default">
+          <AlertDescription>Settings saved successfully</AlertDescription>
+        </Alert>
+
+        <div class="space-y-2">
+          <Label for="name">Organization Name</Label>
+          <Input
+            id="name"
+            v-model="name"
+            type="text"
+            placeholder="Acme Inc."
+            required
+          />
+        </div>
+
+        <div class="space-y-2">
+          <Label for="contactEmail">Contact Email</Label>
+          <Input
+            id="contactEmail"
+            v-model="contactEmail"
+            type="email"
+            placeholder="billing@example.com"
+          />
+          <p class="text-sm text-muted-foreground">
+            Used for billing and important notifications
+          </p>
+        </div>
+
+        <Separator />
+
+        <div class="space-y-2">
+          <Label>Organization ID</Label>
+          <Input
+            :value="currentOrganization?.id"
+            disabled
+            class="font-mono text-sm"
+          />
+          <p class="text-sm text-muted-foreground">
+            This is your unique organization identifier
+          </p>
+        </div>
+
+        <div class="space-y-2">
+          <Label>Slug</Label>
+          <Input
+            :value="currentOrganization?.slug"
+            disabled
+            class="font-mono text-sm"
+          />
+        </div>
+      </CardContent>
+
+      <CardFooter>
+        <Button type="submit" :disabled="isLoading">
+          <span v-if="isLoading">Saving...</span>
+          <span v-else>Save Changes</span>
+        </Button>
+      </CardFooter>
+    </form>
+  </Card>
+</template>

@@ -1,0 +1,223 @@
+import { ref, readonly, computed } from 'vue'
+import { useApi } from '../../composables/useApi'
+import type { Organization, Member, Invitation } from '../../types'
+
+const organizations = ref<Organization[]>([])
+const currentOrganizationId = ref<string | null>(null)
+
+// Load current org from localStorage on init
+if (typeof window !== 'undefined') {
+  currentOrganizationId.value = localStorage.getItem('current_organization_id')
+}
+
+export function useOrganization() {
+  const api = useApi()
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+  const members = ref<Member[]>([])
+  const invitations = ref<Invitation[]>([])
+
+  const currentOrganization = computed(() => {
+    return organizations.value.find(org => org.id === currentOrganizationId.value) || null
+  })
+
+  async function fetchOrganizations(): Promise<Organization[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ organizations: Organization[] }>('/organizations')
+      organizations.value = response.organizations
+
+      // Set current org if not set
+      if (!currentOrganizationId.value && organizations.value.length > 0) {
+        currentOrganizationId.value = organizations.value[0].id
+        localStorage.setItem('current_organization_id', currentOrganizationId.value)
+      }
+
+      return organizations.value
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch organizations'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchOrganization(orgId: string): Promise<Organization | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<Organization>(`/organizations/${orgId}`)
+
+      // Update in list if exists
+      const index = organizations.value.findIndex(org => org.id === orgId)
+      if (index >= 0) {
+        organizations.value[index] = response
+      } else {
+        organizations.value.push(response)
+      }
+
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch organization'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function updateOrganization(
+    orgId: string,
+    data: Partial<Organization>
+  ): Promise<Organization | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.patch<Organization>(`/organizations/${orgId}`, data)
+
+      // Update in list
+      const index = organizations.value.findIndex(org => org.id === orgId)
+      if (index >= 0) {
+        organizations.value[index] = response
+      }
+
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update organization'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function switchOrganization(orgId: string) {
+    currentOrganizationId.value = orgId
+    localStorage.setItem('current_organization_id', orgId)
+  }
+
+  async function fetchMembers(orgId: string): Promise<Member[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ members: Member[] }>(`/organizations/${orgId}/members`)
+      members.value = response.members
+      return response.members
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch members'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function updateMemberRole(orgId: string, userId: string, role: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.patch(`/organizations/${orgId}/members/${userId}`, { role })
+      // Refresh members list
+      await fetchMembers(orgId)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update member role'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function removeMember(orgId: string, userId: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.delete(`/organizations/${orgId}/members/${userId}`)
+      // Remove from local list
+      members.value = members.value.filter(m => m.user_id !== userId)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to remove member'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function inviteMember(
+    orgId: string,
+    data: { email: string; role: string }
+  ): Promise<Invitation | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<Invitation>(`/organizations/${orgId}/invitations`, data)
+      invitations.value.push(response)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to send invitation'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchInvitations(orgId: string): Promise<Invitation[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ invitations: Invitation[] }>(
+        `/organizations/${orgId}/invitations`
+      )
+      invitations.value = response.invitations
+      return response.invitations
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch invitations'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function cancelInvitation(orgId: string, invitationId: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.delete(`/organizations/${orgId}/invitations/${invitationId}`)
+      invitations.value = invitations.value.filter(i => i.id !== invitationId)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to cancel invitation'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  return {
+    // State
+    organizations: readonly(organizations),
+    currentOrganization,
+    currentOrganizationId: readonly(currentOrganizationId),
+    members: readonly(members),
+    invitations: readonly(invitations),
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+
+    // Actions
+    fetchOrganizations,
+    fetchOrganization,
+    updateOrganization,
+    switchOrganization,
+    fetchMembers,
+    updateMemberRole,
+    removeMember,
+    inviteMember,
+    fetchInvitations,
+    cancelInvitation,
+  }
+}

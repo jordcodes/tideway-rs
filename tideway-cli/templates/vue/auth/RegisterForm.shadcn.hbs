@@ -1,0 +1,179 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import { useAuth } from './composables/useAuth'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Separator } from '@/components/ui/separator'
+
+const props = defineProps<{
+  onSuccess?: (data: { userId: string; organizationId: string }) => void
+  onLogin?: () => void
+}>()
+
+const { register, isLoading, error } = useAuth()
+
+const email = ref('')
+const password = ref('')
+const confirmPassword = ref('')
+const name = ref('')
+const organizationName = ref('')
+
+const passwordsMatch = computed(() => password.value === confirmPassword.value)
+
+const isFormValid = computed(() => {
+  return (
+    email.value.trim() !== '' &&
+    password.value.length >= 8 &&
+    passwordsMatch.value &&
+    name.value.trim() !== '' &&
+    organizationName.value.trim() !== ''
+  )
+})
+
+const passwordError = computed(() => {
+  if (confirmPassword.value && !passwordsMatch.value) {
+    return 'Passwords do not match'
+  }
+  if (password.value && password.value.length < 8) {
+    return 'Password must be at least 8 characters'
+  }
+  return null
+})
+
+async function handleSubmit() {
+  if (!isFormValid.value) return
+
+  const result = await register({
+    email: email.value,
+    password: password.value,
+    name: name.value,
+    organization_name: organizationName.value,
+  })
+
+  if (result.success) {
+    props.onSuccess?.({
+      userId: result.user_id,
+      organizationId: result.organization_id,
+    })
+  }
+}
+</script>
+
+<template>
+  <Card class="w-full max-w-md">
+    <CardHeader class="space-y-1">
+      <CardTitle class="text-2xl font-bold">Create an account</CardTitle>
+      <CardDescription>
+        Enter your details to create your account and organization
+      </CardDescription>
+    </CardHeader>
+    <form @submit.prevent="handleSubmit">
+      <CardContent class="space-y-4">
+        <Alert v-if="error" variant="destructive">
+          <AlertDescription>\{{ error }}</AlertDescription>
+        </Alert>
+
+        <div class="space-y-2">
+          <Label for="name">Full Name</Label>
+          <Input
+            id="name"
+            v-model="name"
+            type="text"
+            placeholder="John Doe"
+            autocomplete="name"
+            required
+          />
+        </div>
+
+        <div class="space-y-2">
+          <Label for="email">Email</Label>
+          <Input
+            id="email"
+            v-model="email"
+            type="email"
+            placeholder="name@example.com"
+            autocomplete="email"
+            required
+          />
+        </div>
+
+        <div class="space-y-2">
+          <Label for="password">Password</Label>
+          <Input
+            id="password"
+            v-model="password"
+            type="password"
+            placeholder="Create a password"
+            autocomplete="new-password"
+            required
+          />
+        </div>
+
+        <div class="space-y-2">
+          <Label for="confirmPassword">Confirm Password</Label>
+          <Input
+            id="confirmPassword"
+            v-model="confirmPassword"
+            type="password"
+            placeholder="Confirm your password"
+            autocomplete="new-password"
+            required
+            :class="{ 'border-destructive': passwordError }"
+          />
+          <p v-if="passwordError" class="text-sm text-destructive">
+            \{{ passwordError }}
+          </p>
+        </div>
+
+        <Separator />
+
+        <div class="space-y-2">
+          <Label for="organizationName">Organization Name</Label>
+          <Input
+            id="organizationName"
+            v-model="organizationName"
+            type="text"
+            placeholder="Acme Inc."
+            required
+          />
+          <p class="text-sm text-muted-foreground">
+            This will be your team's workspace
+          </p>
+        </div>
+      </CardContent>
+
+      <CardFooter class="flex flex-col space-y-4">
+        <Button
+          type="submit"
+          class="w-full"
+          :disabled="!isFormValid || isLoading"
+        >
+          <span v-if="isLoading">Creating account...</span>
+          <span v-else>Create account</span>
+        </Button>
+
+        <p class="text-center text-xs text-muted-foreground">
+          By creating an account, you agree to our
+          <a href="/terms" class="underline hover:text-primary">Terms of Service</a>
+          and
+          <a href="/privacy" class="underline hover:text-primary">Privacy Policy</a>
+        </p>
+
+        <p v-if="onLogin" class="text-center text-sm text-muted-foreground">
+          Already have an account?
+          <Button
+            type="button"
+            variant="link"
+            class="px-1 font-normal h-auto"
+            @click="onLogin"
+          >
+            Sign in
+          </Button>
+        </p>
+      </CardFooter>
+    </form>
+  </Card>
+</template>

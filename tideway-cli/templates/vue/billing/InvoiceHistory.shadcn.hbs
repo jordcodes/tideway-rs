@@ -1,0 +1,107 @@
+<script setup lang="ts">
+import { useBilling } from './composables/useBilling'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const props = defineProps<{
+  organizationId: string
+}>()
+
+const { invoices, isLoading, error, fetchInvoices } = useBilling()
+
+// Fetch invoices on mount
+fetchInvoices(props.organizationId)
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+function formatAmount(amount: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  }).format(amount / 100)
+}
+
+function getStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (status) {
+    case 'paid':
+      return 'default'
+    case 'open':
+      return 'secondary'
+    case 'void':
+    case 'uncollectible':
+      return 'destructive'
+    default:
+      return 'outline'
+  }
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <CardTitle>Invoice History</CardTitle>
+      <CardDescription>
+        View and download your past invoices
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <div v-if="isLoading" class="space-y-3">
+        <Skeleton class="h-10 w-full" />
+        <Skeleton class="h-10 w-full" />
+        <Skeleton class="h-10 w-full" />
+      </div>
+
+      <Table v-else-if="invoices.length > 0">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Date</TableHead>
+            <TableHead>Amount</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead class="text-right">Invoice</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="invoice in invoices" :key="invoice.id">
+            <TableCell>\{{ formatDate(invoice.created) }}</TableCell>
+            <TableCell>\{{ formatAmount(invoice.amount_due, invoice.currency) }}</TableCell>
+            <TableCell>
+              <Badge :variant="getStatusVariant(invoice.status)">
+                \{{ invoice.status }}
+              </Badge>
+            </TableCell>
+            <TableCell class="text-right">
+              <Button
+                v-if="invoice.invoice_pdf"
+                variant="ghost"
+                size="sm"
+                as="a"
+                :href="invoice.invoice_pdf"
+                target="_blank"
+              >
+                Download
+              </Button>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+
+      <div v-else class="text-center py-8">
+        <p class="text-muted-foreground">No invoices yet</p>
+      </div>
+    </CardContent>
+  </Card>
+</template>

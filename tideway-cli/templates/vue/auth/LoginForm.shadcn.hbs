@@ -1,0 +1,124 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import { useAuth } from './composables/useAuth'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Checkbox } from '@/components/ui/checkbox'
+
+const props = defineProps<{
+  onSuccess?: () => void
+  onMfaRequired?: (mfaToken: string) => void
+  onForgotPassword?: () => void
+  onRegister?: () => void
+}>()
+
+const { login, isLoading, error } = useAuth()
+
+const email = ref('')
+const password = ref('')
+const rememberMe = ref(false)
+
+const isFormValid = computed(() => {
+  return email.value.trim() !== '' && password.value.length >= 8
+})
+
+async function handleSubmit() {
+  const result = await login({
+    email: email.value,
+    password: password.value,
+    remember_me: rememberMe.value,
+  })
+
+  if (result.mfa_required && result.mfa_token) {
+    props.onMfaRequired?.(result.mfa_token)
+  } else if (result.access_token) {
+    props.onSuccess?.()
+  }
+}
+</script>
+
+<template>
+  <Card class="w-full max-w-md">
+    <CardHeader class="space-y-1">
+      <CardTitle class="text-2xl font-bold">Sign in</CardTitle>
+      <CardDescription>
+        Enter your email and password to access your account
+      </CardDescription>
+    </CardHeader>
+    <form @submit.prevent="handleSubmit">
+      <CardContent class="space-y-4">
+        <Alert v-if="error" variant="destructive">
+          <AlertDescription>\{{ error }}</AlertDescription>
+        </Alert>
+
+        <div class="space-y-2">
+          <Label for="email">Email</Label>
+          <Input
+            id="email"
+            v-model="email"
+            type="email"
+            placeholder="name@example.com"
+            autocomplete="email"
+            required
+          />
+        </div>
+
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <Label for="password">Password</Label>
+            <Button
+              v-if="onForgotPassword"
+              type="button"
+              variant="link"
+              class="px-0 font-normal h-auto"
+              @click="onForgotPassword"
+            >
+              Forgot password?
+            </Button>
+          </div>
+          <Input
+            id="password"
+            v-model="password"
+            type="password"
+            placeholder="Enter your password"
+            autocomplete="current-password"
+            required
+          />
+        </div>
+
+        <div class="flex items-center space-x-2">
+          <Checkbox id="remember" v-model:checked="rememberMe" />
+          <Label for="remember" class="text-sm font-normal">
+            Remember me for 30 days
+          </Label>
+        </div>
+      </CardContent>
+
+      <CardFooter class="flex flex-col space-y-4">
+        <Button
+          type="submit"
+          class="w-full"
+          :disabled="!isFormValid || isLoading"
+        >
+          <span v-if="isLoading">Signing in...</span>
+          <span v-else>Sign in</span>
+        </Button>
+
+        <p v-if="onRegister" class="text-center text-sm text-muted-foreground">
+          Don't have an account?
+          <Button
+            type="button"
+            variant="link"
+            class="px-1 font-normal h-auto"
+            @click="onRegister"
+          >
+            Sign up
+          </Button>
+        </p>
+      </CardFooter>
+    </form>
+  </Card>
+</template>

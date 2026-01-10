@@ -1,0 +1,214 @@
+/**
+ * TypeScript types for tideway API requests and responses.
+ * These types match the tideway Rust backend API.
+ */
+
+// ============================================================================
+// Auth Types
+// ============================================================================
+
+export interface User {
+  id: string
+  email: string
+  name?: string
+  mfa_enabled: boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface LoginRequest {
+  email: string
+  password: string
+  remember_me?: boolean
+  mfa_code?: string
+}
+
+export interface LoginResponse {
+  access_token?: string
+  refresh_token?: string
+  token_type?: string
+  expires_in?: number
+  mfa_required?: boolean
+  mfa_token?: string
+}
+
+export interface RegisterRequest {
+  email: string
+  password: string
+  name?: string
+  organization_name: string
+}
+
+export interface RegisterResponse {
+  success: boolean
+  message: string
+  user_id: string
+  organization_id: string
+}
+
+export interface PasswordResetRequest {
+  email: string
+}
+
+export interface PasswordResetCompleteRequest {
+  token: string
+  new_password: string
+}
+
+export interface MfaVerifyRequest {
+  mfa_token: string
+  code: string
+}
+
+export interface RefreshRequest {
+  refresh_token: string
+}
+
+export interface RefreshResponse {
+  access_token: string
+  refresh_token: string
+  expires_in: number
+  token_type: string
+}
+
+// ============================================================================
+// Billing Types
+// ============================================================================
+
+export type SubscriptionStatus =
+  | 'active'
+  | 'trialing'
+  | 'past_due'
+  | 'canceled'
+  | 'incomplete'
+  | 'incomplete_expired'
+  | 'unpaid'
+  | 'paused'
+
+export interface Subscription {
+  has_subscription: boolean
+  status?: SubscriptionStatus
+  plan_id?: string
+  trial_days_remaining?: number
+  cancel_at_period_end: boolean
+  current_period_start?: number
+  current_period_end?: number
+}
+
+export interface Plan {
+  id: string
+  stripe_price_id: string
+  display_name: string
+  description?: string
+  price?: number
+  currency?: string
+  interval?: 'month' | 'year'
+  trial_days?: number
+  features: string[]
+  popular?: boolean
+}
+
+export interface Invoice {
+  id: string
+  status: 'draft' | 'open' | 'paid' | 'void' | 'uncollectible'
+  amount_due: number
+  amount_paid: number
+  currency: string
+  created: number
+  invoice_pdf?: string
+  hosted_invoice_url?: string
+}
+
+export interface CheckoutRequest {
+  organization_id: string
+  plan_id?: string
+  success_url: string
+  cancel_url: string
+}
+
+export interface CheckoutResponse {
+  checkout_url: string
+  session_id: string
+}
+
+export interface PortalRequest {
+  organization_id: string
+  return_url: string
+}
+
+export interface PortalResponse {
+  portal_url: string
+}
+
+// ============================================================================
+// Organization Types
+// ============================================================================
+
+export interface Organization {
+  id: string
+  name: string
+  slug: string
+  owner_id: string
+  contact_email?: string
+  created_at: number
+  updated_at: number
+}
+
+export interface Member {
+  user_id: string
+  org_id: string
+  email: string
+  name?: string
+  role: 'owner' | 'admin' | 'member'
+  joined_at: number
+}
+
+export interface Invitation {
+  id: string
+  org_id: string
+  email: string
+  role: string
+  invited_by: string
+  created_at: number
+  expires_at: number
+  status: 'pending' | 'accepted' | 'expired' | 'canceled'
+}
+
+export interface CreateOrganizationRequest {
+  name: string
+  slug?: string
+}
+
+export interface UpdateOrganizationRequest {
+  name?: string
+  contact_email?: string
+}
+
+export interface InviteMemberRequest {
+  email: string
+  role: string
+}
+
+// ============================================================================
+// Common Types
+// ============================================================================
+
+export interface ApiResponse<T> {
+  success: boolean
+  message?: string
+  data?: T
+}
+
+export interface PaginatedResponse<T> {
+  items: T[]
+  total: number
+  page: number
+  per_page: number
+  total_pages: number
+}
+
+export interface ApiError {
+  error: string
+  message: string
+  status: number
+}

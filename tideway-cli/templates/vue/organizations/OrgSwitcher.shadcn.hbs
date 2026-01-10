@@ -1,0 +1,151 @@
+<script setup lang="ts">
+import { computed } from 'vue'
+import { useOrganization } from './composables/useOrganization'
+import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Avatar, AvatarFallback } from '@/components/ui/avatar'
+import { Skeleton } from '@/components/ui/skeleton'
+
+const props = defineProps<{
+  onCreateOrg?: () => void
+  onOrgSettings?: (orgId: string) => void
+}>()
+
+const emit = defineEmits<{
+  change: [orgId: string]
+}>()
+
+const { organizations, currentOrganization, isLoading, switchOrganization } = useOrganization()
+
+const initials = computed(() => {
+  if (!currentOrganization.value?.name) return '?'
+  return currentOrganization.value.name
+    .split(' ')
+    .map(word => word[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2)
+})
+
+async function handleSwitch(orgId: string) {
+  await switchOrganization(orgId)
+  emit('change', orgId)
+}
+</script>
+
+<template>
+  <DropdownMenu>
+    <DropdownMenuTrigger asChild>
+      <Button variant="outline" class="w-full justify-start gap-2">
+        <template v-if="isLoading">
+          <Skeleton class="h-6 w-6 rounded-full" />
+          <Skeleton class="h-4 w-24" />
+        </template>
+        <template v-else-if="currentOrganization">
+          <Avatar class="h-6 w-6">
+            <AvatarFallback class="text-xs">\{{ initials }}</AvatarFallback>
+          </Avatar>
+          <span class="truncate">\{{ currentOrganization.name }}</span>
+          <svg
+            class="ml-auto h-4 w-4 shrink-0 opacity-50"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M8 9l4-4 4 4m0 6l-4 4-4-4"
+            />
+          </svg>
+        </template>
+        <template v-else>
+          <span class="text-muted-foreground">Select organization</span>
+        </template>
+      </Button>
+    </DropdownMenuTrigger>
+
+    <DropdownMenuContent class="w-56" align="start">
+      <DropdownMenuLabel>Organizations</DropdownMenuLabel>
+      <DropdownMenuSeparator />
+
+      <DropdownMenuItem
+        v-for="org in organizations"
+        :key="org.id"
+        class="gap-2 cursor-pointer"
+        @click="handleSwitch(org.id)"
+      >
+        <Avatar class="h-6 w-6">
+          <AvatarFallback class="text-xs">
+            \{{ org.name.slice(0, 2).toUpperCase() }}
+          </AvatarFallback>
+        </Avatar>
+        <span class="truncate">\{{ org.name }}</span>
+        <svg
+          v-if="org.id === currentOrganization?.id"
+          class="ml-auto h-4 w-4 text-primary"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M5 13l4 4L19 7"
+          />
+        </svg>
+      </DropdownMenuItem>
+
+      <template v-if="onCreateOrg || onOrgSettings">
+        <DropdownMenuSeparator />
+
+        <DropdownMenuItem
+          v-if="onOrgSettings && currentOrganization"
+          class="gap-2 cursor-pointer"
+          @click="onOrgSettings(currentOrganization.id)"
+        >
+          <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"
+            />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+            />
+          </svg>
+          Organization settings
+        </DropdownMenuItem>
+
+        <DropdownMenuItem
+          v-if="onCreateOrg"
+          class="gap-2 cursor-pointer"
+          @click="onCreateOrg"
+        >
+          <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M12 4v16m8-8H4"
+            />
+          </svg>
+          Create organization
+        </DropdownMenuItem>
+      </template>
+    </DropdownMenuContent>
+  </DropdownMenu>
+</template>

@@ -1,0 +1,57 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { useBilling } from './composables/useBilling'
+import { Button } from '@/components/ui/button'
+
+const props = defineProps<{
+  organizationId: string
+  planId?: string
+  successUrl?: string
+  cancelUrl?: string
+  variant?: 'default' | 'secondary' | 'outline' | 'ghost'
+  size?: 'default' | 'sm' | 'lg'
+}>()
+
+const emit = defineEmits<{
+  success: [url: string]
+  error: [error: string]
+}>()
+
+const { createCheckout, isLoading } = useBilling()
+const buttonRef = ref<HTMLButtonElement | null>(null)
+
+async function handleCheckout() {
+  try {
+    const currentUrl = window.location.href
+    const result = await createCheckout({
+      organization_id: props.organizationId,
+      plan_id: props.planId,
+      success_url: props.successUrl || `${currentUrl}?checkout=success`,
+      cancel_url: props.cancelUrl || `${currentUrl}?checkout=canceled`,
+    })
+
+    if (result.checkout_url) {
+      emit('success', result.checkout_url)
+      window.location.href = result.checkout_url
+    }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Failed to create checkout session'
+    emit('error', message)
+  }
+}
+</script>
+
+<template>
+  <Button
+    ref="buttonRef"
+    :variant="variant || 'default'"
+    :size="size || 'default'"
+    :disabled="isLoading"
+    @click="handleCheckout"
+  >
+    <slot>
+      <span v-if="isLoading">Loading...</span>
+      <span v-else>Subscribe</span>
+    </slot>
+  </Button>
+</template>

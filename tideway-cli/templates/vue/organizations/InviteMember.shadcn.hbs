@@ -1,0 +1,136 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import { useOrganization } from './composables/useOrganization'
+import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const props = defineProps<{
+  organizationId: string
+  open: boolean
+}>()
+
+const emit = defineEmits<{
+  'update:open': [value: boolean]
+  success: []
+}>()
+
+const { inviteMember, isLoading, error } = useOrganization()
+
+const email = ref('')
+const role = ref('member')
+const success = ref(false)
+
+const isFormValid = computed(() => {
+  return email.value.trim() !== '' && email.value.includes('@')
+})
+
+function handleOpenChange(value: boolean) {
+  emit('update:open', value)
+  if (!value) {
+    // Reset form when closing
+    email.value = ''
+    role.value = 'member'
+    success.value = false
+  }
+}
+
+async function handleSubmit() {
+  success.value = false
+  await inviteMember(props.organizationId, {
+    email: email.value,
+    role: role.value,
+  })
+
+  if (!error.value) {
+    success.value = true
+    email.value = ''
+    emit('success')
+  }
+}
+</script>
+
+<template>
+  <Dialog :open="open" @update:open="handleOpenChange">
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Invite Team Member</DialogTitle>
+        <DialogDescription>
+          Send an invitation to join your organization
+        </DialogDescription>
+      </DialogHeader>
+
+      <form @submit.prevent="handleSubmit" class="space-y-4">
+        <Alert v-if="error" variant="destructive">
+          <AlertDescription>\{{ error }}</AlertDescription>
+        </Alert>
+
+        <Alert v-if="success">
+          <AlertDescription>
+            Invitation sent successfully!
+          </AlertDescription>
+        </Alert>
+
+        <div class="space-y-2">
+          <Label for="email">Email Address</Label>
+          <Input
+            id="email"
+            v-model="email"
+            type="email"
+            placeholder="colleague@example.com"
+            required
+          />
+        </div>
+
+        <div class="space-y-2">
+          <Label for="role">Role</Label>
+          <Select v-model="role">
+            <SelectTrigger>
+              <SelectValue placeholder="Select a role" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="member">
+                <div>
+                  <p class="font-medium">Member</p>
+                  <p class="text-sm text-muted-foreground">Can view and use the application</p>
+                </div>
+              </SelectItem>
+              <SelectItem value="admin">
+                <div>
+                  <p class="font-medium">Admin</p>
+                  <p class="text-sm text-muted-foreground">Can manage members and settings</p>
+                </div>
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
+        <DialogFooter>
+          <Button type="button" variant="outline" @click="handleOpenChange(false)">
+            Cancel
+          </Button>
+          <Button type="submit" :disabled="!isFormValid || isLoading">
+            <span v-if="isLoading">Sending...</span>
+            <span v-else>Send Invitation</span>
+          </Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
+  </Dialog>
+</template>

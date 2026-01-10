@@ -1,0 +1,194 @@
+import { ref, computed, readonly } from 'vue'
+import { useApi } from '../../composables/useApi'
+import type {
+  User,
+  LoginRequest,
+  LoginResponse,
+  RegisterRequest,
+  RegisterResponse,
+  PasswordResetRequest,
+  PasswordResetCompleteRequest,
+  MfaVerifyRequest,
+} from '../../types'
+
+const user = ref<User | null>(null)
+const accessToken = ref<string | null>(null)
+const refreshToken = ref<string | null>(null)
+
+// Load tokens from localStorage on init
+if (typeof window !== 'undefined') {
+  accessToken.value = localStorage.getItem('access_token')
+  refreshToken.value = localStorage.getItem('refresh_token')
+}
+
+export function useAuth() {
+  const api = useApi()
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+
+  const isAuthenticated = computed(() => !!accessToken.value)
+
+  function setTokens(access: string, refresh: string) {
+    accessToken.value = access
+    refreshToken.value = refresh
+    localStorage.setItem('access_token', access)
+    localStorage.setItem('refresh_token', refresh)
+  }
+
+  function clearTokens() {
+    accessToken.value = null
+    refreshToken.value = null
+    user.value = null
+    localStorage.removeItem('access_token')
+    localStorage.removeItem('refresh_token')
+  }
+
+  async function login(request: LoginRequest): Promise<LoginResponse> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<LoginResponse>('/auth/login', request)
+
+      if (response.access_token && response.refresh_token) {
+        setTokens(response.access_token, response.refresh_token)
+      }
+
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Login failed'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function register(request: RegisterRequest): Promise<RegisterResponse> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<RegisterResponse>('/auth/register', request)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Registration failed'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function logout(): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      if (refreshToken.value) {
+        await api.post('/auth/logout', { refresh_token: refreshToken.value })
+      }
+    } catch (e) {
+      // Ignore logout errors - clear tokens anyway
+      console.warn('Logout request failed:', e)
+    } finally {
+      clearTokens()
+      isLoading.value = false
+    }
+  }
+
+  async function refreshAccessToken(): Promise<boolean> {
+    if (!refreshToken.value) return false
+
+    try {
+      const response = await api.post<{ access_token: string; refresh_token: string }>(
+        '/auth/refresh',
+        { refresh_token: refreshToken.value }
+      )
+
+      if (response.access_token && response.refresh_token) {
+        setTokens(response.access_token, response.refresh_token)
+        return true
+      }
+      return false
+    } catch (e) {
+      clearTokens()
+      return false
+    }
+  }
+
+  async function requestPasswordReset(email: string): Promise<{ success: boolean; message: string }> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<{ success: boolean; message: string }>(
+        '/auth/password/reset',
+        { email } as PasswordResetRequest
+      )
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Password reset request failed'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function completePasswordReset(
+    request: PasswordResetCompleteRequest
+  ): Promise<{ success: boolean; message: string }> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<{ success: boolean; message: string }>(
+        '/auth/password/reset/complete',
+        request
+      )
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Password reset failed'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function verifyMfa(request: MfaVerifyRequest): Promise<LoginResponse> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<LoginResponse>('/auth/mfa/verify', request)
+
+      if (response.access_token && response.refresh_token) {
+        setTokens(response.access_token, response.refresh_token)
+      }
+
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'MFA verification failed'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  return {
+    // State
+    user: readonly(user),
+    accessToken: readonly(accessToken),
+    isAuthenticated,
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+
+    // Actions
+    login,
+    register,
+    logout,
+    refreshAccessToken,
+    requestPasswordReset,
+    completePasswordReset,
+    verifyMfa,
+    clearTokens,
+  }
+}

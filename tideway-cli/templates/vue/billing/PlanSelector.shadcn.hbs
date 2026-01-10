@@ -1,0 +1,107 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Separator } from '@/components/ui/separator'
+import type { Plan } from '../../types'
+
+const props = defineProps<{
+  plans: Plan[]
+  currentPlanId?: string
+  onSelect?: (planId: string) => void
+}>()
+
+const selectedPlanId = ref<string | null>(props.currentPlanId || null)
+
+const sortedPlans = computed(() => {
+  return [...props.plans].sort((a, b) => (a.price || 0) - (b.price || 0))
+})
+
+function formatPrice(price: number, currency: string, interval: string): string {
+  const formatted = new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  }).format(price / 100)
+
+  return `${formatted}/${interval === 'year' ? 'year' : 'mo'}`
+}
+
+function handleSelect(planId: string) {
+  selectedPlanId.value = planId
+  props.onSelect?.(planId)
+}
+</script>
+
+<template>
+  <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+    <Card
+      v-for="plan in sortedPlans"
+      :key="plan.id"
+      :class="[
+        'relative cursor-pointer transition-all',
+        selectedPlanId === plan.id ? 'border-primary ring-2 ring-primary' : 'hover:border-primary/50'
+      ]"
+      @click="handleSelect(plan.id)"
+    >
+      <CardHeader>
+        <div class="flex items-center justify-between">
+          <CardTitle>\{{ plan.display_name }}</CardTitle>
+          <Badge v-if="plan.id === currentPlanId" variant="secondary">
+            Current
+          </Badge>
+          <Badge v-else-if="plan.popular" variant="default">
+            Popular
+          </Badge>
+        </div>
+        <CardDescription>\{{ plan.description }}</CardDescription>
+      </CardHeader>
+
+      <CardContent class="space-y-4">
+        <div class="flex items-baseline gap-1">
+          <span class="text-3xl font-bold">
+            \{{ formatPrice(plan.price || 0, plan.currency || 'usd', plan.interval || 'month') }}
+          </span>
+        </div>
+
+        <div v-if="plan.trial_days" class="text-sm text-muted-foreground">
+          \{{ plan.trial_days }}-day free trial
+        </div>
+
+        <Separator />
+
+        <ul class="space-y-2">
+          <li
+            v-for="feature in plan.features"
+            :key="feature"
+            class="flex items-center gap-2 text-sm"
+          >
+            <svg
+              class="h-4 w-4 text-primary"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M5 13l4 4L19 7"
+              />
+            </svg>
+            \{{ feature }}
+          </li>
+        </ul>
+      </CardContent>
+
+      <CardFooter>
+        <Button
+          class="w-full"
+          :variant="selectedPlanId === plan.id ? 'default' : 'outline'"
+        >
+          \{{ plan.id === currentPlanId ? 'Current Plan' : 'Select Plan' }}
+        </Button>
+      </CardFooter>
+    </Card>
+  </div>
+</template>

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "tideway-macros"]
+members = [".", "tideway-macros", "tideway-cli"]
 
 [package]
 name = "tideway"
