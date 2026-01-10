@@ -287,7 +287,7 @@ pub mod test {
                 card_brand: Some("visa".to_string()),
                 card_last4: Some("4242".to_string()),
                 card_exp_month: Some(12),
-                card_exp_year: Some(2025),
+                card_exp_year: Some(2099),
                 is_default: false,
             };
 
@@ -329,7 +329,7 @@ mod tests {
     use crate::billing::storage::test::InMemoryBillingStore;
     use crate::billing::storage::{StoredSubscription, SubscriptionStatus};
 
-    fn create_test_subscription(billable_id: &str) -> StoredSubscription {
+    fn create_test_subscription(_billable_id: &str) -> StoredSubscription {
         StoredSubscription {
             stripe_subscription_id: "sub_123".to_string(),
             stripe_customer_id: "cus_123".to_string(),
@@ -360,7 +360,7 @@ mod tests {
             card_brand: Some("visa".to_string()),
             card_last4: Some("4242".to_string()),
             card_exp_month: Some(12),
-            card_exp_year: Some(2025),
+            card_exp_year: Some(2099),
             is_default: false,
         });
         client.add_payment_method("cus_123", PaymentMethod {
@@ -391,7 +391,7 @@ mod tests {
             card_brand: Some("visa".to_string()),
             card_last4: Some("4242".to_string()),
             card_exp_month: Some(12),
-            card_exp_year: Some(2025),
+            card_exp_year: Some(2099),
             is_default: false,
         });
 
@@ -437,7 +437,7 @@ mod tests {
             card_brand: Some("visa".to_string()),
             card_last4: Some("4242".to_string()),
             card_exp_month: Some(12),
-            card_exp_year: Some(2025),
+            card_exp_year: Some(2099),
             is_default: false,
         });
 
