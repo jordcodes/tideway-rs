@@ -481,6 +481,55 @@ pub struct UpdateSubscriptionRequest {
     pub seat_quantity: Option<u32>,
     /// Proration behavior.
     pub proration_behavior: Option<ProrationBehavior>,
+    /// Base plan subscription item ID (to avoid extra API call).
+    /// If not provided, will be fetched from Stripe.
+    pub base_item_id: Option<String>,
+    /// Seat subscription item ID (to avoid extra API call).
+    /// If not provided, will be fetched from Stripe.
+    pub seat_item_id: Option<String>,
+}
+
+impl UpdateSubscriptionRequest {
+    /// Create a new update request.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the new price ID.
+    #[must_use]
+    pub fn price_id(mut self, price_id: impl Into<String>) -> Self {
+        self.price_id = Some(price_id.into());
+        self
+    }
+
+    /// Set the new seat quantity.
+    #[must_use]
+    pub fn seat_quantity(mut self, quantity: u32) -> Self {
+        self.seat_quantity = Some(quantity);
+        self
+    }
+
+    /// Set the proration behavior.
+    #[must_use]
+    pub fn proration_behavior(mut self, behavior: ProrationBehavior) -> Self {
+        self.proration_behavior = Some(behavior);
+        self
+    }
+
+    /// Set the base item ID (avoids fetching from Stripe).
+    #[must_use]
+    pub fn base_item_id(mut self, id: impl Into<String>) -> Self {
+        self.base_item_id = Some(id.into());
+        self
+    }
+
+    /// Set the seat item ID (avoids fetching from Stripe).
+    #[must_use]
+    pub fn seat_item_id(mut self, id: impl Into<String>) -> Self {
+        self.seat_item_id = Some(id.into());
+        self
+    }
 }
 
 /// How to handle proration on plan changes.

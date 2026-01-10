@@ -117,7 +117,10 @@ pub use error::BillingError;
 pub use client::FullStripeClient;
 
 // Live client exports (production Stripe client)
-pub use live_client::{InvalidApiKeyError, LiveStripeClient, LiveStripeClientConfig};
+pub use live_client::{
+    CircuitBreaker, CircuitBreakerConfig, CircuitState, InvalidApiKeyError, LiveStripeClient,
+    LiveStripeClientConfig,
+};
 
 // Validation exports
 pub use validation::{validate_billable_id, validate_plan_id};

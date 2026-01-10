@@ -1,10 +1,18 @@
 //! Live Stripe client implementation.
 //!
 //! Production-ready Stripe client with retry logic, secure API key handling,
-//! and proper error mapping.
+//! circuit breaker pattern, and proper error mapping.
+//!
+//! # Connection Pooling
+//!
+//! The underlying HTTP client (hyper) automatically manages connection pooling.
+//! Connections are reused across requests, and HTTP/2 multiplexing is enabled
+//! for improved performance.
 
 use crate::error::Result;
 use secrecy::{ExposeSecret, SecretString};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::checkout::{
@@ -37,6 +45,209 @@ const META_ITEM_TYPE_SEATS: &str = "seats";
 /// Metadata value indicating an item is the base plan.
 const META_ITEM_TYPE_BASE: &str = "base";
 
+/// Maximum allowed length for metadata values.
+const MAX_METADATA_VALUE_LENGTH: usize = 500;
+
+// ============================================================================
+// Metadata Sanitization
+// ============================================================================
+
+/// Sanitize a metadata value to prevent injection attacks.
+///
+/// - Truncates to maximum length
+/// - Removes control characters
+/// - Trims whitespace
+#[inline]
+fn sanitize_metadata_value(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(MAX_METADATA_VALUE_LENGTH)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Safely extract and sanitize a metadata value.
+#[inline]
+fn get_sanitized_metadata(
+    metadata: &std::collections::HashMap<String, String>,
+    key: &str,
+) -> Option<String> {
+    metadata.get(key).map(|v| sanitize_metadata_value(v))
+}
+
+// ============================================================================
+// Circuit Breaker
+// ============================================================================
+
+/// Circuit breaker state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CircuitState {
+    /// Circuit is closed, requests flow normally.
+    Closed,
+    /// Circuit is open, requests fail fast.
+    Open,
+    /// Circuit is half-open, allowing a test request.
+    HalfOpen,
+}
+
+/// Circuit breaker for Stripe API calls.
+///
+/// Prevents cascading failures by failing fast when the Stripe API
+/// is experiencing issues.
+#[derive(Debug)]
+pub struct CircuitBreaker {
+    /// Number of consecutive failures.
+    failure_count: AtomicU32,
+    /// Timestamp when circuit opened (0 if closed).
+    opened_at: AtomicU64,
+    /// Configuration.
+    config: CircuitBreakerConfig,
+}
+
+/// Configuration for the circuit breaker.
+#[derive(Debug, Clone)]
+pub struct CircuitBreakerConfig {
+    /// Number of consecutive failures before opening the circuit.
+    pub failure_threshold: u32,
+    /// How long the circuit stays open before allowing a test request.
+    pub open_duration_seconds: u64,
+    /// Whether the circuit breaker is enabled.
+    pub enabled: bool,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: 5,
+            open_duration_seconds: 30,
+            enabled: true,
+        }
+    }
+}
+
+impl CircuitBreakerConfig {
+    /// Create a disabled circuit breaker config.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Default::default()
+        }
+    }
+
+    /// Set the failure threshold.
+    #[must_use]
+    pub fn failure_threshold(mut self, threshold: u32) -> Self {
+        self.failure_threshold = threshold;
+        self
+    }
+
+    /// Set the open duration in seconds.
+    #[must_use]
+    pub fn open_duration_seconds(mut self, seconds: u64) -> Self {
+        self.open_duration_seconds = seconds;
+        self
+    }
+}
+
+impl CircuitBreaker {
+    /// Create a new circuit breaker with the given configuration.
+    #[must_use]
+    pub fn new(config: CircuitBreakerConfig) -> Self {
+        Self {
+            failure_count: AtomicU32::new(0),
+            opened_at: AtomicU64::new(0),
+            config,
+        }
+    }
+
+    /// Get the current state of the circuit.
+    #[must_use]
+    pub fn state(&self) -> CircuitState {
+        if !self.config.enabled {
+            return CircuitState::Closed;
+        }
+
+        let opened_at = self.opened_at.load(Ordering::Acquire);
+        if opened_at == 0 {
+            return CircuitState::Closed;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let elapsed = now.saturating_sub(opened_at);
+        if elapsed >= self.config.open_duration_seconds {
+            CircuitState::HalfOpen
+        } else {
+            CircuitState::Open
+        }
+    }
+
+    /// Check if a request should be allowed.
+    ///
+    /// Returns `Ok(())` if the request can proceed, or an error if the circuit is open.
+    pub fn check(&self) -> std::result::Result<(), BillingError> {
+        match self.state() {
+            CircuitState::Closed | CircuitState::HalfOpen => Ok(()),
+            CircuitState::Open => Err(BillingError::StripeApiError {
+                operation: "circuit_breaker".to_string(),
+                message: "Circuit breaker is open, failing fast".to_string(),
+                code: Some("CIRCUIT_OPEN".to_string()),
+                http_status: Some(503),
+            }),
+        }
+    }
+
+    /// Record a successful request.
+    pub fn record_success(&self) {
+        if !self.config.enabled {
+            return;
+        }
+        self.failure_count.store(0, Ordering::Release);
+        self.opened_at.store(0, Ordering::Release);
+    }
+
+    /// Record a failed request.
+    pub fn record_failure(&self) {
+        if !self.config.enabled {
+            return;
+        }
+
+        let failures = self.failure_count.fetch_add(1, Ordering::AcqRel) + 1;
+        if failures >= self.config.failure_threshold {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            self.opened_at.store(now, Ordering::Release);
+
+            tracing::warn!(
+                target: "tideway::billing::stripe",
+                failures = failures,
+                threshold = self.config.failure_threshold,
+                "Circuit breaker opened due to consecutive failures"
+            );
+        }
+    }
+
+    /// Get the current failure count.
+    #[must_use]
+    pub fn failure_count(&self) -> u32 {
+        self.failure_count.load(Ordering::Acquire)
+    }
+
+    /// Reset the circuit breaker.
+    pub fn reset(&self) {
+        self.failure_count.store(0, Ordering::Release);
+        self.opened_at.store(0, Ordering::Release);
+    }
+}
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -52,6 +263,8 @@ pub struct LiveStripeClientConfig {
     pub max_delay_ms: u64,
     /// Request timeout in seconds.
     pub timeout_seconds: u64,
+    /// Circuit breaker configuration.
+    pub circuit_breaker: CircuitBreakerConfig,
 }
 
 impl Default for LiveStripeClientConfig {
@@ -61,6 +274,7 @@ impl Default for LiveStripeClientConfig {
             base_delay_ms: 500,
             max_delay_ms: 30_000,
             timeout_seconds: 30,
+            circuit_breaker: CircuitBreakerConfig::default(),
         }
     }
 }
@@ -97,6 +311,20 @@ impl LiveStripeClientConfig {
     #[must_use]
     pub fn timeout_seconds(mut self, seconds: u64) -> Self {
         self.timeout_seconds = seconds;
+        self
+    }
+
+    /// Set circuit breaker configuration.
+    #[must_use]
+    pub fn circuit_breaker(mut self, config: CircuitBreakerConfig) -> Self {
+        self.circuit_breaker = config;
+        self
+    }
+
+    /// Disable the circuit breaker.
+    #[must_use]
+    pub fn disable_circuit_breaker(mut self) -> Self {
+        self.circuit_breaker = CircuitBreakerConfig::disabled();
         self
     }
 }
@@ -182,6 +410,7 @@ fn parse_subscription_id(id: &str) -> Result<stripe::SubscriptionId> {
 /// Implements all Stripe client traits with:
 /// - Secure API key handling using `SecretString`
 /// - Retry logic with exponential backoff for transient failures
+/// - Circuit breaker pattern for fail-fast behavior
 /// - Idempotency key support for mutating operations
 /// - Proper error mapping to `BillingError` types
 ///
@@ -203,6 +432,7 @@ pub struct LiveStripeClient {
     client: stripe::Client,
     config: LiveStripeClientConfig,
     api_key: SecretString,
+    circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl LiveStripeClient {
@@ -223,6 +453,9 @@ impl LiveStripeClient {
         // Validate API key format
         validate_api_key(api_key.expose_secret())?;
 
+        // Create circuit breaker
+        let circuit_breaker = Arc::new(CircuitBreaker::new(config.circuit_breaker.clone()));
+
         // Create client with app info for Stripe analytics
         let client = stripe::Client::new(api_key.expose_secret()).with_app_info(
             "tideway".to_string(),
@@ -234,6 +467,7 @@ impl LiveStripeClient {
             client,
             config,
             api_key,
+            circuit_breaker,
         })
     }
 
@@ -269,6 +503,17 @@ impl LiveStripeClient {
         Duration::from_secs(self.config.timeout_seconds)
     }
 
+    /// Get the circuit breaker state.
+    #[must_use]
+    pub fn circuit_state(&self) -> CircuitState {
+        self.circuit_breaker.state()
+    }
+
+    /// Reset the circuit breaker.
+    pub fn reset_circuit_breaker(&self) {
+        self.circuit_breaker.reset();
+    }
+
     /// Generate an idempotency key for retryable operations.
     #[inline]
     fn generate_idempotency_key(operation: &str) -> String {
@@ -291,6 +536,7 @@ impl std::fmt::Debug for LiveStripeClient {
         f.debug_struct("LiveStripeClient")
             .field("config", &self.config)
             .field("is_test_mode", &self.is_test_mode())
+            .field("circuit_state", &self.circuit_state())
             .finish_non_exhaustive()
     }
 }
@@ -299,14 +545,17 @@ impl std::fmt::Debug for LiveStripeClient {
 // Retry Logic
 // ============================================================================
 
-/// Execute an async operation with retry logic and timeout.
+/// Execute an async operation with retry logic, timeout, and circuit breaker.
 ///
 /// Retries on:
 /// - HTTP 429 (Rate Limited)
 /// - HTTP 5xx (Server Errors)
 /// - Timeouts
-async fn with_retry<T, F, Fut>(
+///
+/// The circuit breaker will fail fast if too many consecutive failures occur.
+async fn with_retry_cb<T, F, Fut>(
     config: &LiveStripeClientConfig,
+    circuit_breaker: &CircuitBreaker,
     operation: &str,
     operation_fn: F,
 ) -> Result<T>
@@ -314,6 +563,9 @@ where
     F: Fn() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, stripe::StripeError>>,
 {
+    // Check circuit breaker before attempting
+    circuit_breaker.check()?;
+
     let timeout_duration = Duration::from_secs(config.timeout_seconds);
     let mut attempts = 0;
 
@@ -322,9 +574,13 @@ where
         let result = tokio::time::timeout(timeout_duration, operation_fn()).await;
 
         match result {
-            Ok(Ok(value)) => return Ok(value),
+            Ok(Ok(value)) => {
+                circuit_breaker.record_success();
+                return Ok(value);
+            }
             Ok(Err(e)) => {
                 if !is_retryable_error(&e) || attempts >= config.max_retries {
+                    circuit_breaker.record_failure();
                     return Err(map_stripe_error(e, operation));
                 }
 
@@ -334,6 +590,7 @@ where
             }
             Err(_timeout) => {
                 if attempts >= config.max_retries {
+                    circuit_breaker.record_failure();
                     return Err(BillingError::StripeApiError {
                         operation: operation.to_string(),
                         message: format!(
@@ -487,7 +744,7 @@ impl StripeClient for LiveStripeClient {
             params.metadata = Some(meta);
         }
 
-        let customer = with_retry(&self.config, "create_customer", || {
+        let customer = with_retry_cb(&self.config, &self.circuit_breaker, "create_customer", || {
             let client = client.clone();
             let params = params.clone();
             async move { stripe::Customer::create(&client, params).await }
@@ -513,7 +770,7 @@ impl StripeClient for LiveStripeClient {
             params.name = Some(name);
         }
 
-        with_retry(&self.config, "update_customer", || {
+        with_retry_cb(&self.config, &self.circuit_breaker, "update_customer", || {
             let client = client.clone();
             let customer_id = customer_id.clone();
             let params = params.clone();
@@ -527,7 +784,7 @@ impl StripeClient for LiveStripeClient {
     async fn delete_customer(&self, customer_id: &str) -> Result<()> {
         let customer_id = parse_customer_id(customer_id)?;
 
-        with_retry(&self.config, "delete_customer", || {
+        with_retry_cb(&self.config, &self.circuit_breaker, "delete_customer", || {
             let client = self.client.clone();
             let customer_id = customer_id.clone();
             async move { stripe::Customer::delete(&client, &customer_id).await }
@@ -540,7 +797,7 @@ impl StripeClient for LiveStripeClient {
     async fn get_default_payment_method(&self, customer_id: &str) -> Result<Option<String>> {
         let customer_id = parse_customer_id(customer_id)?;
 
-        let customer = with_retry(&self.config, "get_default_payment_method", || {
+        let customer = with_retry_cb(&self.config, &self.circuit_breaker, "get_default_payment_method", || {
             let client = self.client.clone();
             let customer_id = customer_id.clone();
             async move { stripe::Customer::retrieve(&client, &customer_id, &[]).await }
@@ -625,7 +882,7 @@ impl StripeCheckoutClient for LiveStripeClient {
                 Some(stripe::CheckoutSessionBillingAddressCollection::Required);
         }
 
-        let session = with_retry(&self.config, "create_checkout_session", || {
+        let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_checkout_session", || {
             let client = client.clone();
             let params = params.clone();
             async move { stripe::CheckoutSession::create(&client, params).await }
@@ -649,7 +906,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
     async fn cancel_subscription(&self, subscription_id: &str) -> Result<()> {
         let sub_id = parse_subscription_id(subscription_id)?;
 
-        with_retry(&self.config, "cancel_subscription", || {
+        with_retry_cb(&self.config, &self.circuit_breaker, "cancel_subscription", || {
             let client = self.client.clone();
             let sub_id = sub_id.clone();
             async move {
@@ -673,7 +930,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let mut params = stripe::UpdateSubscription::new();
         params.cancel_at_period_end = Some(true);
 
-        with_retry(&self.config, "cancel_subscription_at_period_end", || {
+        with_retry_cb(&self.config, &self.circuit_breaker, "cancel_subscription_at_period_end", || {
             let client = client.clone();
             let sub_id = sub_id.clone();
             let params = params.clone();
@@ -691,7 +948,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let mut params = stripe::UpdateSubscription::new();
         params.cancel_at_period_end = Some(false);
 
-        with_retry(&self.config, "resume_subscription", || {
+        with_retry_cb(&self.config, &self.circuit_breaker, "resume_subscription", || {
             let client = client.clone();
             let sub_id = sub_id.clone();
             let params = params.clone();
@@ -705,7 +962,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
     async fn get_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData> {
         let sub_id = parse_subscription_id(subscription_id)?;
 
-        let subscription = with_retry(&self.config, "get_subscription", || {
+        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "get_subscription", || {
             let client = self.client.clone();
             let sub_id = sub_id.clone();
             async move { stripe::Subscription::retrieve(&client, &sub_id, &[]).await }
@@ -723,8 +980,16 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let client = self.idempotent_client("update_subscription");
         let sub_id = parse_subscription_id(subscription_id)?;
 
-        // First get the current subscription to find item IDs
-        let current = self.get_subscription(subscription_id).await?;
+        // Use provided item IDs or fetch from Stripe (optimization: skip API call if IDs provided)
+        let (base_item_id, seat_item_id) = match (&update.base_item_id, &update.seat_item_id) {
+            // If we need item IDs but they weren't provided, fetch from Stripe
+            (None, None) if update.price_id.is_some() || update.seat_quantity.is_some() => {
+                let current = self.get_subscription(subscription_id).await?;
+                (current.base_item_id, current.seat_item_id)
+            }
+            // Use provided IDs (avoids extra API call)
+            (base, seat) => (base.clone(), seat.clone()),
+        };
 
         let mut params = stripe::UpdateSubscription::new();
 
@@ -739,7 +1004,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
 
         // Handle seat quantity updates
         if let Some(seat_quantity) = update.seat_quantity {
-            if let Some(ref seat_item_id) = current.seat_item_id {
+            if let Some(ref seat_item_id) = seat_item_id {
                 params.items = Some(vec![stripe::UpdateSubscriptionItems {
                     id: Some(seat_item_id.clone()),
                     quantity: Some(seat_quantity as u64),
@@ -750,7 +1015,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
 
         // Handle price changes
         if let Some(ref price_id) = update.price_id {
-            if let Some(ref base_item_id) = current.base_item_id {
+            if let Some(ref base_item_id) = base_item_id {
                 let items = params.items.get_or_insert_with(Vec::new);
                 items.push(stripe::UpdateSubscriptionItems {
                     id: Some(base_item_id.clone()),
@@ -760,7 +1025,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
             }
         }
 
-        let subscription = with_retry(&self.config, "update_subscription", || {
+        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "update_subscription", || {
             let client = client.clone();
             let sub_id = sub_id.clone();
             let params = params.clone();
@@ -780,6 +1045,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
 ///
 /// Uses metadata to identify base plan vs seat items when available,
 /// falling back to position-based detection for backwards compatibility.
+/// All metadata values are sanitized to prevent injection attacks.
 fn map_subscription_to_data(sub: stripe::Subscription) -> Result<StripeSubscriptionData> {
     let status = match sub.status {
         stripe::SubscriptionStatus::Active => "active",
@@ -792,12 +1058,8 @@ fn map_subscription_to_data(sub: stripe::Subscription) -> Result<StripeSubscript
         stripe::SubscriptionStatus::Paused => "paused",
     };
 
-    // Extract plan_id from subscription metadata
-    let plan_id = sub
-        .metadata
-        .get(META_PLAN_ID)
-        .cloned()
-        .unwrap_or_default();
+    // Extract and sanitize plan_id from subscription metadata
+    let plan_id = get_sanitized_metadata(&sub.metadata, META_PLAN_ID).unwrap_or_default();
 
     // Parse subscription items using metadata for identification
     let (base_item_id, seat_item_id, extra_seats, fallback_plan_id) =
@@ -815,9 +1077,10 @@ fn map_subscription_to_data(sub: stripe::Subscription) -> Result<StripeSubscript
         stripe::Expandable::Object(c) => c.id.to_string(),
     };
 
+    // Sanitize all metadata values
     let metadata = SubscriptionMetadata {
-        billable_id: sub.metadata.get(META_BILLABLE_ID).cloned(),
-        billable_type: sub.metadata.get(META_BILLABLE_TYPE).cloned(),
+        billable_id: get_sanitized_metadata(&sub.metadata, META_BILLABLE_ID),
+        billable_type: get_sanitized_metadata(&sub.metadata, META_BILLABLE_TYPE),
     };
 
     Ok(StripeSubscriptionData {
@@ -907,7 +1170,7 @@ impl StripePortalClient for LiveStripeClient {
             params.configuration = Some(config_id.as_str());
         }
 
-        let session = with_retry(&self.config, "create_portal_session", || {
+        let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_portal_session", || {
             let client = self.client.clone();
             let params = params.clone();
             async move { stripe::BillingPortalSession::create(&client, params).await }
@@ -966,7 +1229,7 @@ impl StripePortalClient for LiveStripeClient {
         };
         params.flow_data = Some(flow_data);
 
-        let session = with_retry(&self.config, "create_portal_session_with_flow", || {
+        let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_portal_session_with_flow", || {
             let client = self.client.clone();
             let params = params.clone();
             async move { stripe::BillingPortalSession::create(&client, params).await }
@@ -1103,5 +1366,166 @@ mod tests {
         assert_eq!(META_ITEM_TYPE, "item_type");
         assert_eq!(META_ITEM_TYPE_SEATS, "seats");
         assert_eq!(META_ITEM_TYPE_BASE, "base");
+    }
+
+    // ========================================================================
+    // Circuit Breaker Tests
+    // ========================================================================
+
+    #[test]
+    fn test_circuit_breaker_starts_closed() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig::default());
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert!(cb.check().is_ok());
+    }
+
+    #[test]
+    fn test_circuit_breaker_opens_after_threshold() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 3,
+            open_duration_seconds: 60,
+            enabled: true,
+        };
+        let cb = CircuitBreaker::new(config);
+
+        // Record failures
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Closed);
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Closed);
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        // Check should fail when open
+        assert!(cb.check().is_err());
+    }
+
+    #[test]
+    fn test_circuit_breaker_resets_on_success() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 3,
+            open_duration_seconds: 60,
+            enabled: true,
+        };
+        let cb = CircuitBreaker::new(config);
+
+        // Record some failures
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.failure_count(), 2);
+
+        // Success resets the counter
+        cb.record_success();
+        assert_eq!(cb.failure_count(), 0);
+        assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_disabled() {
+        let config = CircuitBreakerConfig::disabled();
+        let cb = CircuitBreaker::new(config);
+
+        // Even after many failures, circuit stays closed
+        for _ in 0..10 {
+            cb.record_failure();
+        }
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert!(cb.check().is_ok());
+    }
+
+    #[test]
+    fn test_circuit_breaker_reset() {
+        let config = CircuitBreakerConfig {
+            failure_threshold: 2,
+            open_duration_seconds: 60,
+            enabled: true,
+        };
+        let cb = CircuitBreaker::new(config);
+
+        // Open the circuit
+        cb.record_failure();
+        cb.record_failure();
+        assert_eq!(cb.state(), CircuitState::Open);
+
+        // Reset should close it
+        cb.reset();
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert_eq!(cb.failure_count(), 0);
+    }
+
+    #[test]
+    fn test_circuit_breaker_config_builder() {
+        let config = CircuitBreakerConfig::default()
+            .failure_threshold(10)
+            .open_duration_seconds(120);
+
+        assert_eq!(config.failure_threshold, 10);
+        assert_eq!(config.open_duration_seconds, 120);
+        assert!(config.enabled);
+    }
+
+    // ========================================================================
+    // Metadata Sanitization Tests
+    // ========================================================================
+
+    #[test]
+    fn test_sanitize_metadata_value_normal() {
+        assert_eq!(sanitize_metadata_value("hello"), "hello");
+        assert_eq!(sanitize_metadata_value("org_123"), "org_123");
+    }
+
+    #[test]
+    fn test_sanitize_metadata_value_trims_whitespace() {
+        assert_eq!(sanitize_metadata_value("  hello  "), "hello");
+        assert_eq!(sanitize_metadata_value("\thello\n"), "hello");
+    }
+
+    #[test]
+    fn test_sanitize_metadata_value_removes_control_chars() {
+        assert_eq!(sanitize_metadata_value("hello\x00world"), "helloworld");
+        assert_eq!(sanitize_metadata_value("test\x1b[31mred"), "test[31mred");
+    }
+
+    #[test]
+    fn test_sanitize_metadata_value_truncates_long_values() {
+        let long_value = "a".repeat(1000);
+        let sanitized = sanitize_metadata_value(&long_value);
+        assert_eq!(sanitized.len(), MAX_METADATA_VALUE_LENGTH);
+    }
+
+    #[test]
+    fn test_get_sanitized_metadata() {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("key1".to_string(), "value1".to_string());
+        metadata.insert("key2".to_string(), "  trimmed  ".to_string());
+
+        assert_eq!(get_sanitized_metadata(&metadata, "key1"), Some("value1".to_string()));
+        assert_eq!(get_sanitized_metadata(&metadata, "key2"), Some("trimmed".to_string()));
+        assert_eq!(get_sanitized_metadata(&metadata, "missing"), None);
+    }
+
+    // ========================================================================
+    // Config with Circuit Breaker Tests
+    // ========================================================================
+
+    #[test]
+    fn test_config_with_circuit_breaker() {
+        let config = LiveStripeClientConfig::new()
+            .circuit_breaker(CircuitBreakerConfig::default().failure_threshold(10));
+
+        assert_eq!(config.circuit_breaker.failure_threshold, 10);
+    }
+
+    #[test]
+    fn test_config_disable_circuit_breaker() {
+        let config = LiveStripeClientConfig::new().disable_circuit_breaker();
+
+        assert!(!config.circuit_breaker.enabled);
+    }
+
+    #[test]
+    fn test_client_circuit_state() {
+        let client = LiveStripeClient::with_default_config("sk_test_12345678901234567890").unwrap();
+        assert_eq!(client.circuit_state(), CircuitState::Closed);
     }
 }
