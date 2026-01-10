@@ -55,6 +55,7 @@ pub mod client;
 pub mod customer;
 pub mod entitlements;
 pub mod error;
+pub mod live_client;
 pub mod plans;
 pub mod portal;
 pub mod seats;
@@ -114,6 +115,9 @@ pub use error::BillingError;
 
 // Client exports
 pub use client::FullStripeClient;
+
+// Live client exports (production Stripe client)
+pub use live_client::{InvalidApiKeyError, LiveStripeClient, LiveStripeClientConfig};
 
 // Validation exports
 pub use validation::{validate_billable_id, validate_plan_id};

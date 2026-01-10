@@ -61,6 +61,15 @@ pub enum BillingError {
     /// Webhook event data is malformed.
     InvalidWebhookPayload { message: String },
 
+    // Stripe API errors
+    /// Stripe API returned an error.
+    StripeApiError {
+        operation: String,
+        message: String,
+        code: Option<String>,
+        http_status: Option<u16>,
+    },
+
     // General errors
     /// The operation failed after multiple retries.
     RetryLimitExceeded { operation: String },
@@ -125,6 +134,16 @@ impl fmt::Display for BillingError {
             Self::InvalidWebhookPayload { message } => {
                 write!(f, "Invalid webhook payload: {}", message)
             }
+            Self::StripeApiError { operation, message, code, http_status } => {
+                write!(f, "Stripe API error during '{}': {}", operation, message)?;
+                if let Some(code) = code {
+                    write!(f, " (code: {})", code)?;
+                }
+                if let Some(status) = http_status {
+                    write!(f, " [HTTP {}]", status)?;
+                }
+                Ok(())
+            }
             Self::RetryLimitExceeded { operation } => {
                 write!(f, "Operation '{}' failed after multiple retries", operation)
             }
@@ -175,6 +194,14 @@ impl From<BillingError> for crate::error::TidewayError {
             | BillingError::Internal { .. } => {
                 crate::error::TidewayError::Internal(err.to_string())
             }
+
+            // Map Stripe API errors based on HTTP status
+            BillingError::StripeApiError { http_status, .. } => {
+                match http_status {
+                    Some(400..=499) => crate::error::TidewayError::BadRequest(err.to_string()),
+                    _ => crate::error::TidewayError::Internal(err.to_string()),
+                }
+            }
         }
     }
 }
@@ -183,43 +210,56 @@ impl BillingError {
     /// Check if this is a client error (4xx).
     #[must_use]
     pub fn is_client_error(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::InvalidBillableId { .. }
-                | Self::InvalidPlanId { .. }
-                | Self::PlanNotFound { .. }
-                | Self::NoSubscription { .. }
-                | Self::NoCustomer { .. }
-                | Self::StripeSubscriptionNotFound { .. }
-                | Self::SubscriptionInactive { .. }
-                | Self::SubscriptionCancelling { .. }
-                | Self::FeatureNotIncluded { .. }
-                | Self::PlanDoesNotSupportSeats { .. }
-                | Self::InsufficientSeats { .. }
-                | Self::InvalidSeatCount { .. }
-                | Self::InvalidRedirectUrl { .. }
-                | Self::RedirectDomainNotAllowed { .. }
-                | Self::InvalidWebhookSignature
-                | Self::WebhookTimestampExpired { .. }
-                | Self::InvalidWebhookPayload { .. }
-        )
+            | Self::InvalidPlanId { .. }
+            | Self::PlanNotFound { .. }
+            | Self::NoSubscription { .. }
+            | Self::NoCustomer { .. }
+            | Self::StripeSubscriptionNotFound { .. }
+            | Self::SubscriptionInactive { .. }
+            | Self::SubscriptionCancelling { .. }
+            | Self::FeatureNotIncluded { .. }
+            | Self::PlanDoesNotSupportSeats { .. }
+            | Self::InsufficientSeats { .. }
+            | Self::InvalidSeatCount { .. }
+            | Self::InvalidRedirectUrl { .. }
+            | Self::RedirectDomainNotAllowed { .. }
+            | Self::InvalidWebhookSignature
+            | Self::WebhookTimestampExpired { .. }
+            | Self::InvalidWebhookPayload { .. } => true,
+            Self::StripeApiError { http_status, .. } => {
+                matches!(http_status, Some(400..=499))
+            }
+            _ => false,
+        }
     }
 
     /// Check if this is a server error (5xx).
     #[must_use]
     pub fn is_server_error(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::ConcurrentModification { .. }
-                | Self::RetryLimitExceeded { .. }
-                | Self::Internal { .. }
-        )
+            | Self::RetryLimitExceeded { .. }
+            | Self::Internal { .. } => true,
+            Self::StripeApiError { http_status, .. } => {
+                matches!(http_status, Some(500..=599) | None)
+            }
+            _ => false,
+        }
     }
 
     /// Check if this error is retryable.
     #[must_use]
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::ConcurrentModification { .. })
+        match self {
+            Self::ConcurrentModification { .. } => true,
+            Self::StripeApiError { http_status, .. } => {
+                // Rate limit (429) and server errors (5xx) are retryable
+                matches!(http_status, Some(429) | Some(500..=599))
+            }
+            _ => false,
+        }
     }
 }
 

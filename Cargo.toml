@@ -87,6 +87,13 @@ subtle = "2.5"
 # Secret management (optional, for secure secret storage in memory)
 secrecy = { version = "0.10", optional = true }
 
+# Stripe billing (optional)
+async-stripe = { version = "0.41", default-features = false, features = [
+    "runtime-tokio-hyper-rustls-webpki",
+    "checkout",
+    "billing",
+], optional = true }
+
 # Auth (optional - password hashing and MFA)
 argon2 = { version = "0.5", optional = true }
 totp-rs = { version = "5.6", features = ["qr", "gen_secret"], optional = true }
@@ -143,7 +150,7 @@ auth-mfa = ["auth", "totp-rs"]
 # Password breach checking via HaveIBeenPwned
 auth-breach = ["sha1"]
 # Stripe-based billing
-billing = ["hex", "secrecy"]
+billing = ["hex", "secrecy", "async-stripe"]
 # Testing helper for billing (in-memory store)
 test-billing = []
 
