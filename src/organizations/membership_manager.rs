@@ -49,6 +49,7 @@ where
     M: MembershipStore,
 {
     /// Create a manager without seat checking.
+    #[must_use]
     pub fn new_without_seats(membership_store: M) -> Self {
         Self {
             membership_store,
@@ -63,6 +64,7 @@ where
     S: SeatChecker,
 {
     /// Create a new membership manager.
+    #[must_use]
     pub fn new(membership_store: M, seat_checker: S) -> Self {
         Self {
             membership_store,

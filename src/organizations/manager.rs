@@ -98,6 +98,7 @@ where
     M: MembershipStore,
 {
     /// Create a manager without seat checking.
+    #[must_use]
     pub fn new_without_seats(
         org_store: O,
         membership_store: M,
@@ -119,6 +120,7 @@ where
     S: SeatChecker,
 {
     /// Create a new organization manager.
+    #[must_use]
     pub fn new(
         org_store: O,
         membership_store: M,

@@ -84,6 +84,13 @@ pub enum OrganizationError {
     #[error("Invalid or expired invitation token")]
     InvalidToken,
 
+    /// Invalid email format.
+    #[error("Invalid email format: {email}")]
+    InvalidEmail {
+        /// The invalid email address.
+        email: String,
+    },
+
     /// Storage error.
     #[error("Storage error: {0}")]
     Storage(#[from] crate::error::TidewayError),
@@ -129,6 +136,13 @@ impl OrganizationError {
     /// Create a max pending invitations reached error.
     pub fn max_pending_invitations(limit: u32) -> Self {
         Self::MaxPendingInvitationsReached { limit }
+    }
+
+    /// Create an invalid email error.
+    pub fn invalid_email(email: impl Into<String>) -> Self {
+        Self::InvalidEmail {
+            email: email.into(),
+        }
     }
 }
 

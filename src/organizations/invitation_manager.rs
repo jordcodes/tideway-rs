@@ -7,7 +7,7 @@ use super::error::{OrganizationError, Result};
 use super::manager::MembershipCreateParams;
 use super::seats::{SeatChecker, UnlimitedSeats};
 use super::storage::{InvitationStore, MembershipStore, OrganizationStore};
-use super::utils::current_timestamp;
+use super::utils::{current_timestamp, is_valid_email};
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
 
@@ -94,6 +94,7 @@ where
     O: OrganizationStore,
 {
     /// Create a manager without seat checking.
+    #[must_use]
     pub fn new_without_seats(
         invitation_store: I,
         membership_store: M,
@@ -118,6 +119,7 @@ where
     S: SeatChecker,
 {
     /// Create a new invitation manager.
+    #[must_use]
     pub fn new(
         invitation_store: I,
         membership_store: M,
@@ -146,7 +148,7 @@ where
 
     /// Create an invitation.
     ///
-    /// Checks seat availability, pending invitation limit, and actor permissions.
+    /// Checks email format, seat availability, pending invitation limit, and actor permissions.
     #[instrument(skip(self, invitation_factory))]
     pub async fn invite<F>(
         &self,
@@ -158,6 +160,11 @@ where
     where
         F: FnOnce(InvitationCreateParams) -> I::Invitation,
     {
+        // Validate email format
+        if !is_valid_email(email) {
+            return Err(OrganizationError::invalid_email(email));
+        }
+
         // Check organization exists
         self.org_store
             .find_by_id(org_id)

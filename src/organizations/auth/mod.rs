@@ -7,4 +7,4 @@ mod claims;
 mod extractors;
 
 pub use claims::{create_org_token_subject, OrgClaims};
-pub use extractors::{CurrentMembership, CurrentOrg};
+pub use extractors::{AuthenticatedUserId, CurrentMembership, CurrentOrg};

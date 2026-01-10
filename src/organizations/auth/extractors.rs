@@ -220,6 +220,7 @@ pub struct AuthenticatedUserId(pub String);
 
 impl AuthenticatedUserId {
     /// Create a new authenticated user ID.
+    #[must_use]
     pub fn new(user_id: impl Into<String>) -> Self {
         Self(user_id.into())
     }

@@ -76,7 +76,7 @@ pub use types::{DefaultOrgRole, OrgRolePermissions, ParseRoleError};
 pub use billing::{BillableOrganization, BillingSeatChecker};
 
 // Auth integration exports
-pub use auth::{create_org_token_subject, CurrentMembership, CurrentOrg, OrgClaims};
+pub use auth::{create_org_token_subject, AuthenticatedUserId, CurrentMembership, CurrentOrg, OrgClaims};
 
 // Test exports
 #[cfg(any(test, feature = "test-organizations"))]
