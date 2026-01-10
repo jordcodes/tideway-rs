@@ -30,9 +30,10 @@ export function useOrganization() {
       organizations.value = response.organizations
 
       // Set current org if not set
-      if (!currentOrganizationId.value && organizations.value.length > 0) {
-        currentOrganizationId.value = organizations.value[0].id
-        localStorage.setItem('current_organization_id', currentOrganizationId.value)
+      const firstOrg = organizations.value[0]
+      if (!currentOrganizationId.value && firstOrg) {
+        currentOrganizationId.value = firstOrg.id
+        localStorage.setItem('current_organization_id', firstOrg.id)
       }
 
       return organizations.value
