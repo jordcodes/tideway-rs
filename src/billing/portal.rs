@@ -3,7 +3,9 @@
 //! Handles creating Stripe Customer Portal sessions for subscription management.
 
 use crate::error::Result;
+use super::error::BillingError;
 use super::storage::BillingStore;
+use url::Url;
 
 /// Customer Portal session management.
 ///
@@ -31,6 +33,9 @@ impl<S: BillingStore, C: StripePortalClient> PortalManager<S, C> {
         billable_id: &str,
         return_url: &str,
     ) -> Result<PortalSession> {
+        // Validate return URL
+        self.config.validate_return_url(return_url)?;
+
         // Get customer ID
         let customer_id = self.store.get_stripe_customer_id(billable_id).await?
             .ok_or_else(|| crate::error::TidewayError::NotFound(
@@ -56,6 +61,9 @@ impl<S: BillingStore, C: StripePortalClient> PortalManager<S, C> {
         return_url: &str,
         flow: PortalFlow,
     ) -> Result<PortalSession> {
+        // Validate return URL
+        self.config.validate_return_url(return_url)?;
+
         let customer_id = self.store.get_stripe_customer_id(billable_id).await?
             .ok_or_else(|| crate::error::TidewayError::NotFound(
                 "No Stripe customer found".to_string()
@@ -77,6 +85,9 @@ pub struct PortalConfig {
     /// Stripe portal configuration ID (optional).
     /// If not set, uses the default configuration.
     pub configuration_id: Option<String>,
+    /// Allowed domains for return URLs.
+    /// If empty, any HTTPS URL is allowed.
+    pub allowed_return_domains: Vec<String>,
 }
 
 impl PortalConfig {
@@ -91,6 +102,63 @@ impl PortalConfig {
     pub fn configuration_id(mut self, id: impl Into<String>) -> Self {
         self.configuration_id = Some(id.into());
         self
+    }
+
+    /// Set allowed domains for return URLs.
+    ///
+    /// Subdomains are automatically allowed (e.g., "example.com" allows "app.example.com").
+    /// If not set, any HTTPS URL is allowed.
+    #[must_use]
+    pub fn allowed_return_domains<I, S>(mut self, domains: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.allowed_return_domains = domains.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Validate a return URL.
+    ///
+    /// Checks that the URL is valid HTTPS and the domain is allowed.
+    pub fn validate_return_url(&self, url: &str) -> Result<()> {
+        let parsed = Url::parse(url).map_err(|e| {
+            BillingError::InvalidRedirectUrl {
+                url: url.to_string(),
+                reason: format!("invalid URL: {}", e),
+            }
+        })?;
+
+        // Must be HTTPS
+        if parsed.scheme() != "https" {
+            return Err(BillingError::InvalidRedirectUrl {
+                url: url.to_string(),
+                reason: "return URL must use HTTPS".to_string(),
+            }.into());
+        }
+
+        // Check domain if allowed list is configured
+        if !self.allowed_return_domains.is_empty() {
+            let host = parsed.host_str().ok_or_else(|| {
+                BillingError::InvalidRedirectUrl {
+                    url: url.to_string(),
+                    reason: "return URL must have a host".to_string(),
+                }
+            })?;
+
+            let domain_allowed = self.allowed_return_domains.iter().any(|allowed| {
+                // Exact match or subdomain match
+                host == allowed || host.ends_with(&format!(".{}", allowed))
+            });
+
+            if !domain_allowed {
+                return Err(BillingError::RedirectDomainNotAllowed {
+                    domain: host.to_string(),
+                }.into());
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -267,5 +335,61 @@ mod tests {
         assert_eq!(PortalFlow::PaymentMethodUpdate.flow_type(), "payment_method_update");
         assert_eq!(PortalFlow::SubscriptionUpdate { subscription_id: "sub_123".to_string() }.flow_type(), "subscription_update");
         assert_eq!(PortalFlow::SubscriptionCancel { subscription_id: "sub_123".to_string() }.flow_type(), "subscription_cancel");
+    }
+
+    #[test]
+    fn test_portal_url_validation_https_required() {
+        let config = PortalConfig::new();
+
+        // HTTPS should pass
+        assert!(config.validate_return_url("https://example.com/billing").is_ok());
+
+        // HTTP should fail
+        let result = config.validate_return_url("http://example.com/billing");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_portal_url_validation_invalid_url() {
+        let config = PortalConfig::new();
+
+        assert!(config.validate_return_url("not-a-url").is_err());
+        assert!(config.validate_return_url("").is_err());
+    }
+
+    #[test]
+    fn test_portal_url_validation_allowed_domains() {
+        let config = PortalConfig::new()
+            .allowed_return_domains(["example.com", "myapp.io"]);
+
+        // Exact match should pass
+        assert!(config.validate_return_url("https://example.com/billing").is_ok());
+        assert!(config.validate_return_url("https://myapp.io/settings").is_ok());
+
+        // Subdomain should pass
+        assert!(config.validate_return_url("https://app.example.com/billing").is_ok());
+
+        // Different domain should fail
+        assert!(config.validate_return_url("https://evil.com/billing").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_portal_rejects_invalid_url() {
+        let store = InMemoryBillingStore::new();
+        store.set_stripe_customer_id("org_url", "org", "cus_url").await.unwrap();
+
+        let client = MockStripePortalClient::new();
+        let config = PortalConfig::new()
+            .allowed_return_domains(["example.com"]);
+
+        let manager = PortalManager::new(store, client, config);
+
+        // Valid domain should succeed
+        let result = manager.create_portal_session("org_url", "https://example.com/billing").await;
+        assert!(result.is_ok());
+
+        // Invalid domain should fail
+        let result = manager.create_portal_session("org_url", "https://evil.com/billing").await;
+        assert!(result.is_err());
     }
 }

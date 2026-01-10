@@ -184,6 +184,7 @@ impl FeatureCheckResult {
 /// Check a feature for use in middleware or guards.
 ///
 /// This is a convenience function for checking feature access.
+#[must_use = "feature check result must be used to enforce access control"]
 pub async fn require_feature<S: BillingStore>(
     store: &S,
     plans: &Plans,
@@ -213,6 +214,7 @@ pub async fn require_feature<S: BillingStore>(
 }
 
 /// Check if a seat is available for use in middleware or guards.
+#[must_use = "seat check result must be used to enforce access control"]
 pub async fn require_seat<S: BillingStore>(
     store: &S,
     plans: &Plans,
@@ -266,7 +268,15 @@ pub struct CachedEntitlementsManager<S: BillingStore> {
     inner: EntitlementsManager<S>,
     cache: std::sync::Arc<std::sync::RwLock<EntitlementsCache>>,
     ttl: std::time::Duration,
+    max_entries: usize,
+    operation_counter: std::sync::atomic::AtomicU64,
 }
+
+/// Default maximum cache entries.
+const DEFAULT_MAX_CACHE_ENTRIES: usize = 10_000;
+
+/// Cleanup interval (every N operations).
+const CLEANUP_INTERVAL: u64 = 100;
 
 struct EntitlementsCache {
     entries: std::collections::HashMap<String, CacheEntry>,
@@ -275,10 +285,13 @@ struct EntitlementsCache {
 struct CacheEntry {
     entitlements: Entitlements,
     expires_at: std::time::Instant,
+    last_accessed: std::time::Instant,
 }
 
 impl<S: BillingStore> CachedEntitlementsManager<S> {
     /// Create a new cached entitlements manager.
+    ///
+    /// Uses a default maximum of 10,000 cache entries.
     ///
     /// # Arguments
     ///
@@ -292,16 +305,82 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
                 entries: std::collections::HashMap::new(),
             })),
             ttl,
+            max_entries: DEFAULT_MAX_CACHE_ENTRIES,
+            operation_counter: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new cached entitlements manager with a custom max entries limit.
+    ///
+    /// # Arguments
+    ///
+    /// * `inner` - The underlying entitlements manager
+    /// * `ttl` - How long to cache entitlements
+    /// * `max_entries` - Maximum number of entries to keep in cache
+    #[must_use]
+    pub fn with_max_entries(
+        inner: EntitlementsManager<S>,
+        ttl: std::time::Duration,
+        max_entries: usize,
+    ) -> Self {
+        Self {
+            inner,
+            cache: std::sync::Arc::new(std::sync::RwLock::new(EntitlementsCache {
+                entries: std::collections::HashMap::new(),
+            })),
+            ttl,
+            max_entries,
+            operation_counter: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Perform periodic maintenance (cleanup expired entries, enforce max size).
+    fn maybe_cleanup(&self) {
+        let count = self.operation_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count % CLEANUP_INTERVAL == 0 {
+            self.cleanup_expired();
+            self.enforce_max_entries();
+        }
+    }
+
+    /// Enforce maximum cache size by removing oldest entries.
+    ///
+    /// This is called automatically during periodic maintenance, but can be
+    /// called manually if needed.
+    pub fn enforce_max_entries(&self) {
+        if let Ok(mut cache) = self.cache.write() {
+            if cache.entries.len() <= self.max_entries {
+                return;
+            }
+
+            // Collect entries with their last_accessed time
+            let mut entries: Vec<_> = cache.entries.iter()
+                .map(|(k, v)| (k.clone(), v.last_accessed))
+                .collect();
+
+            // Sort by last_accessed (oldest first)
+            entries.sort_by_key(|(_, accessed)| *accessed);
+
+            // Remove oldest entries until we're under the limit
+            let to_remove = cache.entries.len() - self.max_entries;
+            for (key, _) in entries.into_iter().take(to_remove) {
+                cache.entries.remove(&key);
+            }
         }
     }
 
     /// Get entitlements, using cache if available and not expired.
     pub async fn get_entitlements(&self, billable_id: &str) -> Result<Entitlements> {
+        // Periodic maintenance
+        self.maybe_cleanup();
+
         // Check cache first
         // If lock is poisoned, treat as cache miss (safe for read-only cache check)
-        if let Ok(cache) = self.cache.read() {
-            if let Some(entry) = cache.entries.get(billable_id) {
+        if let Ok(mut cache) = self.cache.write() {
+            if let Some(entry) = cache.entries.get_mut(billable_id) {
                 if entry.expires_at > std::time::Instant::now() {
+                    // Update last accessed time
+                    entry.last_accessed = std::time::Instant::now();
                     return Ok(entry.entitlements.clone());
                 }
             }
@@ -311,13 +390,14 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
         let entitlements = self.inner.get_entitlements(billable_id).await?;
 
         // Update cache
-        // If lock is poisoned, we can still return the entitlements, just skip caching
+        let now = std::time::Instant::now();
         if let Ok(mut cache) = self.cache.write() {
             cache.entries.insert(
                 billable_id.to_string(),
                 CacheEntry {
                     entitlements: entitlements.clone(),
-                    expires_at: std::time::Instant::now() + self.ttl,
+                    expires_at: now + self.ttl,
+                    last_accessed: now,
                 },
             );
         } else {
@@ -651,6 +731,37 @@ mod tests {
         // Clear all
         cached.clear();
         assert_eq!(cached.cache_size(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cached_max_entries() {
+        let store = InMemoryBillingStore::new();
+        let plans = create_test_plans();
+
+        // Create subscriptions for 5 orgs
+        let sub = create_test_subscription("starter", SubscriptionStatus::Active, 0);
+        for i in 0..5 {
+            store.save_subscription(&format!("org_{}", i), &sub).await.unwrap();
+        }
+
+        let inner = EntitlementsManager::new(store, plans);
+        // Set max entries to 3
+        let cached = CachedEntitlementsManager::with_max_entries(
+            inner,
+            std::time::Duration::from_secs(60),
+            3,
+        );
+
+        // Populate cache with 5 entries
+        for i in 0..5 {
+            let _ = cached.get_entitlements(&format!("org_{}", i)).await.unwrap();
+        }
+
+        // Force cleanup (happens every 100 operations, so trigger manually)
+        cached.enforce_max_entries();
+
+        // Should have at most 3 entries
+        assert!(cached.cache_size() <= 3);
     }
 
     #[tokio::test]

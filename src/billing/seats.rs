@@ -8,9 +8,6 @@ use super::storage::BillingStore;
 use super::subscription::{StripeSubscriptionClient, UpdateSubscriptionRequest, ProrationBehavior};
 use super::validation::validate_billable_id;
 
-/// Maximum number of retries for optimistic locking conflicts.
-const MAX_RETRIES: u32 = 3;
-
 /// Get current Unix timestamp in seconds.
 fn current_timestamp() -> u64 {
     std::time::SystemTime::now()
@@ -33,6 +30,69 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
     #[must_use]
     pub fn new(store: S, client: C, plans: Plans) -> Self {
         Self { store, client, plans }
+    }
+
+    /// Save seat update to local store after successful Stripe update.
+    ///
+    /// Handles version conflict reconciliation. Returns Ok if saved successfully
+    /// or if state is already consistent. Returns Err if reconciliation fails.
+    async fn save_seat_update_after_stripe(
+        &self,
+        billable_id: &str,
+        sub: &super::storage::StoredSubscription,
+        plan: &super::plans::PlanConfig,
+        updated_extra_seats: u32,
+        original_version: u64,
+    ) -> Result<SeatChangeResult> {
+        let mut updated_sub = sub.clone();
+        updated_sub.extra_seats = updated_extra_seats;
+        updated_sub.updated_at = current_timestamp();
+
+        let saved = self.store.compare_and_save_subscription(
+            billable_id,
+            &updated_sub,
+            original_version,
+        ).await?;
+
+        if saved {
+            return Ok(SeatChangeResult {
+                previous_seats: sub.extra_seats,
+                new_seats: updated_extra_seats,
+                total_seats: plan.included_seats + updated_extra_seats,
+            });
+        }
+
+        // Version conflict after Stripe success - try to reconcile
+        // Re-read to check if another process (e.g., webhook) already updated the state
+        if let Some(current) = self.store.get_subscription(billable_id).await? {
+            if current.extra_seats == updated_extra_seats {
+                // State is already consistent (likely updated by webhook)
+                tracing::debug!(
+                    billable_id = %billable_id,
+                    "Local state already matches Stripe after version conflict"
+                );
+                return Ok(SeatChangeResult {
+                    previous_seats: sub.extra_seats,
+                    new_seats: current.extra_seats,
+                    total_seats: plan.included_seats + current.extra_seats,
+                });
+            }
+        }
+
+        // Local state differs from Stripe - this shouldn't happen normally.
+        // Log and fail rather than risk inconsistent state.
+        tracing::error!(
+            billable_id = %billable_id,
+            stripe_subscription_id = %sub.stripe_subscription_id,
+            expected_seats = updated_extra_seats,
+            "Stripe update succeeded but local save failed - state may be inconsistent. \
+             A webhook should reconcile this, or manual intervention may be needed."
+        );
+
+        Err(crate::error::TidewayError::Internal(
+            "Seat update succeeded in Stripe but local state update failed. \
+             Please retry or contact support if the issue persists.".to_string()
+        ))
     }
 
     /// Get seat information for a subscription.
@@ -73,7 +133,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
     /// Add seats to a subscription.
     ///
     /// This will update the subscription in Stripe and prorate the charge.
-    /// Uses optimistic locking to prevent race conditions with concurrent requests.
+    /// Uses optimistic locking to handle concurrent modifications.
     pub async fn add_seats(
         &self,
         billable_id: &str,
@@ -87,100 +147,49 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             ));
         }
 
-        for _attempt in 0..MAX_RETRIES {
-            let sub = self.store.get_subscription(billable_id).await?
-                .ok_or_else(|| crate::error::TidewayError::NotFound(
-                    "No subscription found".to_string()
-                ))?;
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "No subscription found".to_string()
+            ))?;
 
-            let plan = self.plans.get(&sub.plan_id)
-                .ok_or_else(|| crate::error::TidewayError::NotFound(
-                    "Plan not found".to_string()
-                ))?;
+        let plan = self.plans.get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "Plan not found".to_string()
+            ))?;
 
-            if plan.extra_seat_price_id.is_none() {
-                return Err(crate::error::TidewayError::BadRequest(
-                    "Plan does not support extra seats".to_string()
-                ));
-            }
-
-            let original_version = sub.updated_at;
-            let new_seat_count = sub.extra_seats + count;
-
-            // Update in Stripe
-            let updated = self.client.update_subscription(
-                &sub.stripe_subscription_id,
-                UpdateSubscriptionRequest {
-                    seat_quantity: Some(new_seat_count),
-                    proration_behavior: Some(ProrationBehavior::CreateProrations),
-                    ..Default::default()
-                },
-            ).await?;
-
-            // IMPORTANT: Stripe update succeeded. We must now save locally.
-            // If local save fails, we MUST NOT retry the Stripe call.
-            let mut updated_sub = sub.clone();
-            updated_sub.extra_seats = updated.extra_seats;
-            updated_sub.updated_at = current_timestamp();
-
-            let saved = self.store.compare_and_save_subscription(
-                billable_id,
-                &updated_sub,
-                original_version,
-            ).await?;
-
-            if saved {
-                return Ok(SeatChangeResult {
-                    previous_seats: sub.extra_seats,
-                    new_seats: updated.extra_seats,
-                    total_seats: plan.included_seats + updated.extra_seats,
-                });
-            }
-
-            // Version conflict after Stripe success - try to reconcile
-            // Re-read to check if another process (e.g., webhook) already updated the state
-            if let Some(current) = self.store.get_subscription(billable_id).await? {
-                if current.extra_seats == updated.extra_seats {
-                    // State is already consistent (likely updated by webhook)
-                    tracing::debug!(
-                        billable_id = %billable_id,
-                        "Local state already matches Stripe after version conflict"
-                    );
-                    return Ok(SeatChangeResult {
-                        previous_seats: sub.extra_seats,
-                        new_seats: current.extra_seats,
-                        total_seats: plan.included_seats + current.extra_seats,
-                    });
-                }
-            }
-
-            // If this is not the last attempt and local state differs from what we
-            // sent to Stripe, we have a problem. Another concurrent request may have
-            // changed the seats. Log this and fail rather than risk double-charging.
-            tracing::error!(
-                billable_id = %billable_id,
-                stripe_subscription_id = %sub.stripe_subscription_id,
-                expected_seats = new_seat_count,
-                "Stripe update succeeded but local save failed - state may be inconsistent. \
-                 A webhook should reconcile this, or manual intervention may be needed."
-            );
-
-            // Don't retry - we already charged the customer in Stripe
-            return Err(crate::error::TidewayError::Internal(
-                "Seat update succeeded in Stripe but local state update failed. \
-                 Please retry or contact support if the issue persists.".to_string()
+        if plan.extra_seat_price_id.is_none() {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Plan does not support extra seats".to_string()
             ));
         }
 
-        Err(crate::error::TidewayError::Internal(
-            "Failed to update seats after multiple retries due to concurrent modifications".to_string()
-        ))
+        let original_version = sub.updated_at;
+        let new_seat_count = sub.extra_seats + count;
+
+        // Update in Stripe
+        let updated = self.client.update_subscription(
+            &sub.stripe_subscription_id,
+            UpdateSubscriptionRequest {
+                seat_quantity: Some(new_seat_count),
+                proration_behavior: Some(ProrationBehavior::CreateProrations),
+                ..Default::default()
+            },
+        ).await?;
+
+        // Save locally - this handles reconciliation if version conflict occurs
+        self.save_seat_update_after_stripe(
+            billable_id,
+            &sub,
+            plan,
+            updated.extra_seats,
+            original_version,
+        ).await
     }
 
     /// Remove seats from a subscription.
     ///
     /// Cannot reduce below 0 extra seats. This will credit the account via proration.
-    /// Uses optimistic locking to prevent race conditions with concurrent requests.
+    /// Uses optimistic locking to handle concurrent modifications.
     pub async fn remove_seats(
         &self,
         billable_id: &str,
@@ -194,93 +203,49 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             ));
         }
 
-        for _attempt in 0..MAX_RETRIES {
-            let sub = self.store.get_subscription(billable_id).await?
-                .ok_or_else(|| crate::error::TidewayError::NotFound(
-                    "No subscription found".to_string()
-                ))?;
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "No subscription found".to_string()
+            ))?;
 
-            let plan = self.plans.get(&sub.plan_id)
-                .ok_or_else(|| crate::error::TidewayError::NotFound(
-                    "Plan not found".to_string()
-                ))?;
+        let plan = self.plans.get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "Plan not found".to_string()
+            ))?;
 
-            if count > sub.extra_seats {
-                return Err(crate::error::TidewayError::BadRequest(
-                    format!("Cannot remove {} seats, only {} extra seats on subscription", count, sub.extra_seats)
-                ));
-            }
-
-            let original_version = sub.updated_at;
-            let new_seat_count = sub.extra_seats - count;
-
-            // Update in Stripe
-            let updated = self.client.update_subscription(
-                &sub.stripe_subscription_id,
-                UpdateSubscriptionRequest {
-                    seat_quantity: Some(new_seat_count),
-                    proration_behavior: Some(ProrationBehavior::CreateProrations),
-                    ..Default::default()
-                },
-            ).await?;
-
-            // IMPORTANT: Stripe update succeeded. We must now save locally.
-            // If local save fails, we MUST NOT retry the Stripe call.
-            let mut updated_sub = sub.clone();
-            updated_sub.extra_seats = updated.extra_seats;
-            updated_sub.updated_at = current_timestamp();
-
-            let saved = self.store.compare_and_save_subscription(
-                billable_id,
-                &updated_sub,
-                original_version,
-            ).await?;
-
-            if saved {
-                return Ok(SeatChangeResult {
-                    previous_seats: sub.extra_seats,
-                    new_seats: updated.extra_seats,
-                    total_seats: plan.included_seats + updated.extra_seats,
-                });
-            }
-
-            // Version conflict after Stripe success - try to reconcile
-            if let Some(current) = self.store.get_subscription(billable_id).await? {
-                if current.extra_seats == updated.extra_seats {
-                    tracing::debug!(
-                        billable_id = %billable_id,
-                        "Local state already matches Stripe after version conflict"
-                    );
-                    return Ok(SeatChangeResult {
-                        previous_seats: sub.extra_seats,
-                        new_seats: current.extra_seats,
-                        total_seats: plan.included_seats + current.extra_seats,
-                    });
-                }
-            }
-
-            tracing::error!(
-                billable_id = %billable_id,
-                stripe_subscription_id = %sub.stripe_subscription_id,
-                expected_seats = new_seat_count,
-                "Stripe update succeeded but local save failed - state may be inconsistent."
-            );
-
-            return Err(crate::error::TidewayError::Internal(
-                "Seat update succeeded in Stripe but local state update failed. \
-                 Please retry or contact support if the issue persists.".to_string()
+        if count > sub.extra_seats {
+            return Err(crate::error::TidewayError::BadRequest(
+                format!("Cannot remove {} seats, only {} extra seats on subscription", count, sub.extra_seats)
             ));
         }
 
-        Err(crate::error::TidewayError::Internal(
-            "Failed to update seats after multiple retries due to concurrent modifications".to_string()
-        ))
+        let original_version = sub.updated_at;
+        let new_seat_count = sub.extra_seats - count;
+
+        // Update in Stripe
+        let updated = self.client.update_subscription(
+            &sub.stripe_subscription_id,
+            UpdateSubscriptionRequest {
+                seat_quantity: Some(new_seat_count),
+                proration_behavior: Some(ProrationBehavior::CreateProrations),
+                ..Default::default()
+            },
+        ).await?;
+
+        // Save locally - this handles reconciliation if version conflict occurs
+        self.save_seat_update_after_stripe(
+            billable_id,
+            &sub,
+            plan,
+            updated.extra_seats,
+            original_version,
+        ).await
     }
 
     /// Set seats to a specific count.
     ///
     /// More convenient than add/remove for absolute seat management.
-    /// Uses optimistic locking to prevent race conditions with concurrent requests.
+    /// Uses optimistic locking to handle concurrent modifications.
     pub async fn set_seats(
         &self,
         billable_id: &str,
@@ -288,94 +253,50 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
     ) -> Result<SeatChangeResult> {
         validate_billable_id(billable_id)?;
 
-        for _attempt in 0..MAX_RETRIES {
-            let sub = self.store.get_subscription(billable_id).await?
-                .ok_or_else(|| crate::error::TidewayError::NotFound(
-                    "No subscription found".to_string()
-                ))?;
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "No subscription found".to_string()
+            ))?;
 
-            let plan = self.plans.get(&sub.plan_id)
-                .ok_or_else(|| crate::error::TidewayError::NotFound(
-                    "Plan not found".to_string()
-                ))?;
+        let plan = self.plans.get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound(
+                "Plan not found".to_string()
+            ))?;
 
-            if plan.extra_seat_price_id.is_none() {
-                return Err(crate::error::TidewayError::BadRequest(
-                    "Plan does not support extra seats".to_string()
-                ));
-            }
-
-            if count == sub.extra_seats {
-                return Ok(SeatChangeResult {
-                    previous_seats: sub.extra_seats,
-                    new_seats: count,
-                    total_seats: plan.included_seats + count,
-                });
-            }
-
-            let original_version = sub.updated_at;
-
-            // Update in Stripe
-            let updated = self.client.update_subscription(
-                &sub.stripe_subscription_id,
-                UpdateSubscriptionRequest {
-                    seat_quantity: Some(count),
-                    proration_behavior: Some(ProrationBehavior::CreateProrations),
-                    ..Default::default()
-                },
-            ).await?;
-
-            // IMPORTANT: Stripe update succeeded. We must now save locally.
-            // If local save fails, we MUST NOT retry the Stripe call.
-            let mut updated_sub = sub.clone();
-            updated_sub.extra_seats = updated.extra_seats;
-            updated_sub.updated_at = current_timestamp();
-
-            let saved = self.store.compare_and_save_subscription(
-                billable_id,
-                &updated_sub,
-                original_version,
-            ).await?;
-
-            if saved {
-                return Ok(SeatChangeResult {
-                    previous_seats: sub.extra_seats,
-                    new_seats: updated.extra_seats,
-                    total_seats: plan.included_seats + updated.extra_seats,
-                });
-            }
-
-            // Version conflict after Stripe success - try to reconcile
-            if let Some(current) = self.store.get_subscription(billable_id).await? {
-                if current.extra_seats == updated.extra_seats {
-                    tracing::debug!(
-                        billable_id = %billable_id,
-                        "Local state already matches Stripe after version conflict"
-                    );
-                    return Ok(SeatChangeResult {
-                        previous_seats: sub.extra_seats,
-                        new_seats: current.extra_seats,
-                        total_seats: plan.included_seats + current.extra_seats,
-                    });
-                }
-            }
-
-            tracing::error!(
-                billable_id = %billable_id,
-                stripe_subscription_id = %sub.stripe_subscription_id,
-                expected_seats = count,
-                "Stripe update succeeded but local save failed - state may be inconsistent."
-            );
-
-            return Err(crate::error::TidewayError::Internal(
-                "Seat update succeeded in Stripe but local state update failed. \
-                 Please retry or contact support if the issue persists.".to_string()
+        if plan.extra_seat_price_id.is_none() {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Plan does not support extra seats".to_string()
             ));
         }
 
-        Err(crate::error::TidewayError::Internal(
-            "Failed to update seats after multiple retries due to concurrent modifications".to_string()
-        ))
+        if count == sub.extra_seats {
+            return Ok(SeatChangeResult {
+                previous_seats: sub.extra_seats,
+                new_seats: count,
+                total_seats: plan.included_seats + count,
+            });
+        }
+
+        let original_version = sub.updated_at;
+
+        // Update in Stripe
+        let updated = self.client.update_subscription(
+            &sub.stripe_subscription_id,
+            UpdateSubscriptionRequest {
+                seat_quantity: Some(count),
+                proration_behavior: Some(ProrationBehavior::CreateProrations),
+                ..Default::default()
+            },
+        ).await?;
+
+        // Save locally - this handles reconciliation if version conflict occurs
+        self.save_seat_update_after_stripe(
+            billable_id,
+            &sub,
+            plan,
+            updated.extra_seats,
+            original_version,
+        ).await
     }
 }
 

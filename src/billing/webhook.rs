@@ -8,6 +8,7 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
+use super::error::BillingError;
 use super::plans::Plans;
 use super::storage::BillingStore;
 use super::subscription::{StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata};
@@ -79,10 +80,18 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         }
 
         // Parse the JSON payload
+        // Log detailed error internally but return generic message to prevent information leakage
         let event: WebhookEvent = serde_json::from_slice(payload)
-            .map_err(|e| crate::error::TidewayError::BadRequest(
-                format!("Invalid webhook payload: {}", e)
-            ))?;
+            .map_err(|e| {
+                tracing::warn!(
+                    target: "tideway::billing::webhook",
+                    error = %e,
+                    "Failed to parse webhook payload"
+                );
+                BillingError::InvalidWebhookPayload {
+                    message: "malformed JSON payload".to_string(),
+                }
+            })?;
 
         Ok(event)
     }
