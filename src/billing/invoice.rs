@@ -9,7 +9,7 @@
 //! - **Ownership verification**: All invoice operations verify the invoice belongs to the billable entity
 //! - **Optional caching**: Use `CachedInvoiceManager` for high-traffic applications
 //! - **Pagination**: Cursor-based pagination matching Stripe's API
-//! - **Audit logging**: Optional audit trail for invoice access (via `BillingAuditLogger`)
+//! - **Force refresh**: Bypass cache when fresh data is needed
 //!
 //! # Limitations
 //!
@@ -33,6 +33,28 @@
 //! // List invoices
 //! let invoices = manager.list_invoices("org_123", Default::default()).await?;
 //! ```
+//!
+//! # Webhook Integration
+//!
+//! When using `CachedInvoiceManager`, invalidate the cache after receiving
+//! invoice-related webhook events to ensure users see fresh data:
+//!
+//! ```rust,ignore
+//! use tideway::billing::{WebhookHandler, WebhookOutcome};
+//!
+//! async fn handle_webhook(event: WebhookEvent) -> WebhookOutcome {
+//!     match event.event_type.as_str() {
+//!         "invoice.paid" | "invoice.payment_failed" | "invoice.updated" => {
+//!             // Extract billable_id from event metadata or subscription lookup
+//!             if let Some(billable_id) = get_billable_id_from_event(&event) {
+//!                 cached_invoice_manager.invalidate(&billable_id).await;
+//!             }
+//!         }
+//!         _ => {}
+//!     }
+//!     WebhookOutcome::Processed
+//! }
+//! ```
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -40,6 +62,21 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use super::error::BillingError;
 use super::storage::BillingStore;
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/// Sanitize an invoice ID for use in error messages.
+///
+/// Only reveals the prefix to avoid leaking full IDs which could aid enumeration.
+fn sanitize_invoice_id(invoice_id: &str) -> String {
+    if invoice_id.len() > 10 {
+        format!("{}...", &invoice_id[..10])
+    } else {
+        invoice_id.to_string()
+    }
+}
 
 // =============================================================================
 // Configuration
@@ -250,6 +287,9 @@ pub struct InvoiceListParams {
     pub starting_after: Option<String>,
     /// Filter by invoice status. Overrides config default if set.
     pub status: Option<InvoiceStatus>,
+    /// Force a fresh fetch, bypassing any cache.
+    /// Only affects `CachedInvoiceManager`.
+    pub force_refresh: bool,
 }
 
 /// A paginated list of invoices.
@@ -295,6 +335,59 @@ pub trait StripeInvoiceClient: Send + Sync {
         &self,
         invoice_id: &str,
         limit: u8,
+    ) -> Result<Vec<InvoiceLineItem>>;
+}
+
+// =============================================================================
+// Invoice Operations Trait
+// =============================================================================
+
+/// Common trait for invoice operations.
+///
+/// Both [`InvoiceManager`] and [`CachedInvoiceManager`] implement this trait,
+/// allowing them to be used interchangeably in application code.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::InvoiceOperations;
+///
+/// async fn list_recent_invoices<T: InvoiceOperations>(
+///     manager: &T,
+///     billable_id: &str,
+/// ) -> Result<Vec<Invoice>> {
+///     let list = manager.list_invoices(billable_id, Default::default()).await?;
+///     Ok(list.invoices)
+/// }
+/// ```
+#[async_trait]
+pub trait InvoiceOperations: Send + Sync {
+    /// List invoices for a billable entity.
+    async fn list_invoices(
+        &self,
+        billable_id: &str,
+        params: InvoiceListParams,
+    ) -> Result<InvoiceList>;
+
+    /// Get a specific invoice with ownership verification.
+    async fn get_invoice(
+        &self,
+        billable_id: &str,
+        invoice_id: &str,
+    ) -> Result<Invoice>;
+
+    /// Get the upcoming invoice preview for a billable entity.
+    async fn get_upcoming_invoice(
+        &self,
+        billable_id: &str,
+    ) -> Result<Option<Invoice>>;
+
+    /// Get line items for an invoice with ownership verification.
+    async fn get_invoice_line_items(
+        &self,
+        billable_id: &str,
+        invoice_id: &str,
+        limit: Option<u8>,
     ) -> Result<Vec<InvoiceLineItem>>;
 }
 
@@ -425,7 +518,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
                 "invoice ownership verification failed"
             );
             return Err(BillingError::InvoiceNotFound {
-                invoice_id: invoice_id.to_string(),
+                invoice_id: sanitize_invoice_id(invoice_id),
             }.into());
         }
 
@@ -501,7 +594,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
                 "invoice ownership verification failed for line items"
             );
             return Err(BillingError::InvoiceNotFound {
-                invoice_id: invoice_id.to_string(),
+                invoice_id: sanitize_invoice_id(invoice_id),
             }.into());
         }
 
@@ -517,6 +610,41 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
             .ok_or_else(|| BillingError::NoCustomer {
                 billable_id: billable_id.to_string(),
             }.into())
+    }
+}
+
+#[async_trait]
+impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for InvoiceManager<S, C> {
+    async fn list_invoices(
+        &self,
+        billable_id: &str,
+        params: InvoiceListParams,
+    ) -> Result<InvoiceList> {
+        self.list_invoices(billable_id, params).await
+    }
+
+    async fn get_invoice(
+        &self,
+        billable_id: &str,
+        invoice_id: &str,
+    ) -> Result<Invoice> {
+        self.get_invoice(billable_id, invoice_id).await
+    }
+
+    async fn get_upcoming_invoice(
+        &self,
+        billable_id: &str,
+    ) -> Result<Option<Invoice>> {
+        self.get_upcoming_invoice(billable_id).await
+    }
+
+    async fn get_invoice_line_items(
+        &self,
+        billable_id: &str,
+        invoice_id: &str,
+        limit: Option<u8>,
+    ) -> Result<Vec<InvoiceLineItem>> {
+        self.get_invoice_line_items(billable_id, invoice_id, limit).await
     }
 }
 
@@ -597,7 +725,8 @@ pub struct CachedInvoiceManager<S: BillingStore, C: StripeInvoiceClient> {
 
 struct InvoiceCache {
     /// Cache of invoice lists keyed by structured cache key.
-    lists: std::collections::HashMap<ListCacheKey, CacheEntry<InvoiceList>>,
+    /// Uses Arc to avoid cloning large invoice lists on cache hits.
+    lists: std::collections::HashMap<ListCacheKey, CacheEntry<std::sync::Arc<InvoiceList>>>,
     /// Cache of upcoming invoices keyed by billable_id.
     upcoming: std::collections::HashMap<String, CacheEntry<Option<Invoice>>>,
 }
@@ -668,7 +797,10 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         self.cache.try_read().map_or(0, |c| c.lists.len() + c.upcoming.len())
     }
 
-    /// Enforce maximum cache entries limit.
+    /// Enforce maximum cache entries limit using sampling-based eviction.
+    ///
+    /// Instead of sorting all entries (O(n log n)), this uses random sampling
+    /// to find old entries to evict, which is O(k) where k is the sample size.
     async fn enforce_max_entries(&self) {
         let mut cache = self.cache.write().await;
 
@@ -677,32 +809,50 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
             return;
         }
 
-        // Remove expired entries first
+        // Remove expired entries first (quick win)
         let now = std::time::Instant::now();
         cache.lists.retain(|_, v| v.expires_at > now);
         cache.upcoming.retain(|_, v| v.expires_at > now);
 
-        // If still over limit, remove least recently accessed
+        // If still over limit, use sampling-based eviction
         let total = cache.lists.len() + cache.upcoming.len();
         if total > self.max_entries {
             let to_remove = total - self.max_entries;
+            let mut removed = 0;
 
-            // Collect entries with their access times
-            let mut list_entries: Vec<_> = cache.lists.iter()
-                .map(|(k, v)| (k.clone(), v.last_accessed))
-                .collect();
-            list_entries.sort_by_key(|(_, t)| *t);
+            // Sample up to 5x the number we need to remove, pick oldest from sample
+            let sample_size = (to_remove * 5).min(cache.lists.len());
 
-            // Remove oldest entries
-            for (key, _) in list_entries.into_iter().take(to_remove) {
-                cache.lists.remove(&key);
+            if sample_size > 0 && !cache.lists.is_empty() {
+                // Collect a sample of keys with their access times
+                let sample: Vec<_> = cache.lists.iter()
+                    .take(sample_size)
+                    .map(|(k, v)| (k.clone(), v.last_accessed))
+                    .collect();
+
+                // Sort sample by access time and remove oldest
+                let mut sample = sample;
+                sample.sort_by_key(|(_, t)| *t);
+
+                for (key, _) in sample.into_iter().take(to_remove) {
+                    if cache.lists.remove(&key).is_some() {
+                        removed += 1;
+                    }
+                    if removed >= to_remove {
+                        break;
+                    }
+                }
             }
 
-            tracing::debug!(removed = to_remove, "evicted cache entries");
+            if removed > 0 {
+                tracing::debug!(removed = removed, "evicted cache entries via sampling");
+            }
         }
     }
 
     /// List invoices with caching.
+    ///
+    /// Set `params.force_refresh = true` to bypass the cache and fetch fresh data.
     pub async fn list_invoices(
         &self,
         billable_id: &str,
@@ -710,29 +860,32 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     ) -> Result<InvoiceList> {
         self.maybe_cleanup().await;
 
-        // Build structured cache key
+        // Build structured cache key (force_refresh not part of key)
         let cache_key = ListCacheKey::new(billable_id, &params);
 
-        // Check cache
-        {
+        // Check cache unless force_refresh is set
+        if !params.force_refresh {
             let cache = self.cache.read().await;
             if let Some(entry) = cache.lists.get(&cache_key) {
                 if entry.expires_at > std::time::Instant::now() {
                     tracing::debug!(billable_id = %billable_id, "invoice list cache hit");
-                    return Ok(entry.data.clone());
+                    // Clone the Arc, not the underlying data
+                    return Ok((*entry.data).clone());
                 }
             }
+        } else {
+            tracing::debug!(billable_id = %billable_id, "force refresh requested");
         }
 
         // Fetch from API
         let result = self.inner.list_invoices(billable_id, params).await?;
 
-        // Store in cache
+        // Store in cache (wrap in Arc)
         {
             let mut cache = self.cache.write().await;
             let now = std::time::Instant::now();
             cache.lists.insert(cache_key, CacheEntry {
-                data: result.clone(),
+                data: std::sync::Arc::new(result.clone()),
                 expires_at: now + self.ttl,
                 last_accessed: now,
             });
@@ -805,6 +958,41 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         if count % CLEANUP_INTERVAL == 0 {
             self.enforce_max_entries().await;
         }
+    }
+}
+
+#[async_trait]
+impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for CachedInvoiceManager<S, C> {
+    async fn list_invoices(
+        &self,
+        billable_id: &str,
+        params: InvoiceListParams,
+    ) -> Result<InvoiceList> {
+        self.list_invoices(billable_id, params).await
+    }
+
+    async fn get_invoice(
+        &self,
+        billable_id: &str,
+        invoice_id: &str,
+    ) -> Result<Invoice> {
+        self.get_invoice(billable_id, invoice_id).await
+    }
+
+    async fn get_upcoming_invoice(
+        &self,
+        billable_id: &str,
+    ) -> Result<Option<Invoice>> {
+        self.get_upcoming_invoice(billable_id).await
+    }
+
+    async fn get_invoice_line_items(
+        &self,
+        billable_id: &str,
+        invoice_id: &str,
+        limit: Option<u8>,
+    ) -> Result<Vec<InvoiceLineItem>> {
+        self.get_invoice_line_items(billable_id, invoice_id, limit).await
     }
 }
 

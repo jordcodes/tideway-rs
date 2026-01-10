@@ -104,7 +104,7 @@ pub use webhook::{WebhookEvent, WebhookEventData, WebhookHandler, WebhookOutcome
 // Invoice exports
 pub use invoice::{
     CachedInvoiceManager, Invoice, InvoiceConfig, InvoiceLineItem, InvoiceList, InvoiceListParams,
-    InvoiceManager, InvoiceStatus, InvoiceStatusParseError, StripeInvoiceClient,
+    InvoiceManager, InvoiceOperations, InvoiceStatus, InvoiceStatusParseError, StripeInvoiceClient,
 };
 
 // Seats exports
