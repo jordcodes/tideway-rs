@@ -85,7 +85,10 @@ pub use sea_orm_store::{
 };
 
 // Auth integration exports
-pub use auth::{create_org_token_subject, AuthenticatedUserId, CurrentMembership, CurrentOrg, OrgClaims};
+pub use auth::{
+    create_org_token_subject, AuthenticatedUserId, CurrentMembership, CurrentOrg, OrgClaims,
+    OrgStoreLayer, RequireOrgMembership, RequirePermission,
+};
 
 // Test exports
 #[cfg(any(test, feature = "test-organizations"))]

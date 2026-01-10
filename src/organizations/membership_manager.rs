@@ -191,6 +191,32 @@ where
         Ok(())
     }
 
+    /// Leave an organization (member removes themselves).
+    ///
+    /// Owners cannot leave - they must transfer ownership first.
+    #[instrument(skip(self))]
+    pub async fn leave(&self, org_id: &str, user_id: &str) -> Result<()> {
+        // Check user is a member
+        let membership = self
+            .membership_store
+            .get_membership(org_id, user_id)
+            .await?
+            .ok_or(OrganizationError::NotMember)?;
+
+        // Owners cannot leave
+        let role = self.membership_store.membership_role(&membership);
+        if self.membership_store.is_owner(&role) {
+            return Err(OrganizationError::CannotRemoveOwner);
+        }
+
+        // Remove membership
+        self.membership_store.remove_member(org_id, user_id).await?;
+
+        info!(org_id, user_id, "Member left organization");
+
+        Ok(())
+    }
+
     /// Update a member's data (role change, etc).
     #[instrument(skip(self, updater))]
     pub async fn update_membership<F>(

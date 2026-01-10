@@ -256,6 +256,75 @@ where
         self.org_store.find_by_slug(slug).await.map_err(Into::into)
     }
 
+    /// Update an organization.
+    ///
+    /// Requires `can_manage_settings` permission. The updater function receives
+    /// the current organization and returns the updated version.
+    ///
+    /// # Note on Slug Changes
+    ///
+    /// If the updater changes the slug, this method will check availability.
+    /// However, due to race conditions, the database should still enforce
+    /// a unique constraint on the slug column.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// manager.update(
+    ///     "org_123",
+    ///     "actor_user_id",
+    ///     |org| MyOrganization {
+    ///         name: "New Name".to_string(),
+    ///         updated_at: current_timestamp(),
+    ///         ..org
+    ///     },
+    /// ).await?;
+    /// ```
+    #[instrument(skip(self, updater))]
+    pub async fn update<F>(&self, org_id: &str, actor_id: &str, updater: F) -> Result<O::Organization>
+    where
+        F: FnOnce(O::Organization) -> O::Organization,
+    {
+        // Check actor has permission
+        let membership = self
+            .membership_store
+            .get_membership(org_id, actor_id)
+            .await?
+            .ok_or(OrganizationError::NotMember)?;
+
+        let role = self.membership_store.membership_role(&membership);
+        if !self.membership_store.can_manage_settings(&role) {
+            return Err(OrganizationError::insufficient_permission(
+                "can_manage_settings",
+            ));
+        }
+
+        // Get current organization
+        let current = self
+            .org_store
+            .find_by_id(org_id)
+            .await?
+            .ok_or_else(|| OrganizationError::not_found(org_id))?;
+
+        let current_slug = self.org_store.org_slug(&current);
+
+        // Apply update
+        let updated = updater(current);
+
+        // Check if slug changed and is available
+        let new_slug = self.org_store.org_slug(&updated);
+        if new_slug != current_slug && !self.org_store.is_slug_available(&new_slug).await? {
+            return Err(OrganizationError::slug_taken(&new_slug));
+        }
+
+        // Persist update
+        self.org_store.update(&updated).await?;
+
+        debug!(org_id, "Organization updated");
+
+        Ok(updated)
+    }
+
     /// Delete organization (requires owner permission).
     #[instrument(skip(self))]
     pub async fn delete(&self, org_id: &str, actor_id: &str) -> Result<()> {
