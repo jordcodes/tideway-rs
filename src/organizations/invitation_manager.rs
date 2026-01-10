@@ -163,34 +163,56 @@ where
             config,
         }
     }
+}
 
+impl<I, M, O, S, L> InvitationManager<I, M, O, S, (), L>
+where
+    I: InvitationStore,
+    M: MembershipStore,
+    O: OrganizationStore,
+    S: SeatChecker,
+    L: OptionalInvitationRateLimiter,
+{
     /// Enable audit logging with the given store.
+    ///
+    /// Can be chained with `with_rate_limiter()` in any order.
     pub fn with_audit_store<AuditStore: OrgAuditStore + Clone + 'static>(
         self,
         audit_store: AuditStore,
-    ) -> InvitationManager<I, M, O, S, WithAuditStore<AuditStore>, ()> {
+    ) -> InvitationManager<I, M, O, S, WithAuditStore<AuditStore>, L> {
         InvitationManager {
             invitation_store: self.invitation_store,
             membership_store: self.membership_store,
             org_store: self.org_store,
             seat_checker: self.seat_checker,
             audit_store: WithAuditStore(audit_store),
-            rate_limiter: (),
+            rate_limiter: self.rate_limiter,
             config: self.config,
         }
     }
+}
 
+impl<I, M, O, S, A> InvitationManager<I, M, O, S, A, ()>
+where
+    I: InvitationStore,
+    M: MembershipStore,
+    O: OrganizationStore,
+    S: SeatChecker,
+    A: OptionalAuditStore,
+{
     /// Enable rate limiting with the given limiter.
+    ///
+    /// Can be chained with `with_audit_store()` in any order.
     pub fn with_rate_limiter(
         self,
         rate_limiter: InvitationRateLimiter,
-    ) -> InvitationManager<I, M, O, S, (), WithInvitationRateLimiter> {
+    ) -> InvitationManager<I, M, O, S, A, WithInvitationRateLimiter> {
         InvitationManager {
             invitation_store: self.invitation_store,
             membership_store: self.membership_store,
             org_store: self.org_store,
             seat_checker: self.seat_checker,
-            audit_store: (),
+            audit_store: self.audit_store,
             rate_limiter: WithInvitationRateLimiter(rate_limiter),
             config: self.config,
         }
