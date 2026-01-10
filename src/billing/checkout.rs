@@ -93,6 +93,7 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
             },
             tax_id_collection: self.config.collect_tax_id,
             billing_address_collection: self.config.collect_billing_address,
+            coupon: request.coupon,
         }).await?;
 
         Ok(session)
@@ -146,6 +147,7 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
             },
             tax_id_collection: false,
             billing_address_collection: false,
+            coupon: None,
         }).await?;
 
         Ok(session)
@@ -287,6 +289,11 @@ pub struct CheckoutRequest {
     pub trial_days: Option<u32>,
     /// Allow promotion codes.
     pub allow_promotion_codes: Option<bool>,
+    /// Coupon code to apply to the checkout.
+    ///
+    /// When set, this coupon will be automatically applied to the checkout session.
+    /// Note: Cannot be used together with `allow_promotion_codes: true`.
+    pub coupon: Option<String>,
 }
 
 impl CheckoutRequest {
@@ -300,6 +307,7 @@ impl CheckoutRequest {
             extra_seats: None,
             trial_days: None,
             allow_promotion_codes: None,
+            coupon: None,
         }
     }
 
@@ -321,6 +329,24 @@ impl CheckoutRequest {
     #[must_use]
     pub fn with_promotion_codes(mut self, allow: bool) -> Self {
         self.allow_promotion_codes = Some(allow);
+        self
+    }
+
+    /// Apply a coupon code to the checkout.
+    ///
+    /// The coupon will be automatically applied to the checkout session.
+    /// Note: When using a coupon, promotion codes should typically be disabled.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = CheckoutRequest::new("pro", success_url, cancel_url)
+    ///     .with_coupon("SAVE20")
+    ///     .with_promotion_codes(false);
+    /// ```
+    #[must_use]
+    pub fn with_coupon(mut self, coupon: impl Into<String>) -> Self {
+        self.coupon = Some(coupon.into());
         self
     }
 }
@@ -414,6 +440,8 @@ pub struct CreateCheckoutSessionRequest {
     pub tax_id_collection: bool,
     /// Collect billing address.
     pub billing_address_collection: bool,
+    /// Coupon code to apply.
+    pub coupon: Option<String>,
 }
 
 /// Trait for Stripe checkout operations.
@@ -728,5 +756,45 @@ mod tests {
             "https://example.com/cancel",
         );
         assert!(manager.create_checkout_session(&entity, request).await.is_err());
+    }
+
+    #[test]
+    fn test_checkout_request_with_coupon() {
+        let request = CheckoutRequest::new(
+            "pro",
+            "https://example.com/success",
+            "https://example.com/cancel",
+        )
+        .with_coupon("SAVE20")
+        .with_promotion_codes(false);
+
+        assert_eq!(request.plan_id, "pro");
+        assert_eq!(request.coupon, Some("SAVE20".to_string()));
+        assert_eq!(request.allow_promotion_codes, Some(false));
+    }
+
+    #[tokio::test]
+    async fn test_create_checkout_session_with_coupon() {
+        let store = InMemoryBillingStore::new();
+        let client = MockFullStripeClient::new();
+        let plans = create_test_plans();
+        let config = CheckoutConfig::default();
+
+        let manager = CheckoutManager::new(store, client, plans, config);
+
+        let entity = TestEntity {
+            id: "org_coupon_test".to_string(),
+            email: "test@example.com".to_string(),
+        };
+
+        let request = CheckoutRequest::new(
+            "starter",
+            "https://example.com/success",
+            "https://example.com/cancel",
+        )
+        .with_coupon("WELCOME50");
+
+        let session = manager.create_checkout_session(&entity, request).await.unwrap();
+        assert!(session.id.starts_with("cs_test_"));
     }
 }

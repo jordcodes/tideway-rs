@@ -23,9 +23,11 @@ use super::error::BillingError;
 use super::invoice::{
     Invoice, InvoiceLineItem, InvoiceList, InvoiceStatus, StripeInvoiceClient,
 };
+use super::payment::{PaymentMethod, PaymentMethodList, StripePaymentMethodClient};
 use super::portal::{
     CreatePortalSessionRequest, PortalFlow, PortalSession, StripePortalClient,
 };
+use super::refund::{CreateRefundRequest, Refund, RefundReason, RefundStatus, StripeRefundClient};
 use super::subscription::{
     ProrationBehavior, StripeSubscriptionClient, StripeSubscriptionData, SubscriptionMetadata,
     UpdateSubscriptionRequest,
@@ -893,6 +895,14 @@ impl StripeCheckoutClient for LiveStripeClient {
                 Some(stripe::CheckoutSessionBillingAddressCollection::Required);
         }
 
+        // Apply coupon if provided
+        if let Some(ref coupon) = request.coupon {
+            params.discounts = Some(vec![stripe::CreateCheckoutSessionDiscounts {
+                coupon: Some(coupon.clone()),
+                ..Default::default()
+            }]);
+        }
+
         let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_checkout_session", || {
             let client = client.clone();
             let params = params.clone();
@@ -1045,6 +1055,349 @@ impl StripeSubscriptionClient for LiveStripeClient {
         .await?;
 
         map_subscription_to_data(subscription)
+    }
+
+    async fn extend_trial(
+        &self,
+        subscription_id: &str,
+        new_trial_end: u64,
+    ) -> Result<StripeSubscriptionData> {
+        let client = self.idempotent_client("extend_trial");
+        let sub_id = parse_subscription_id(subscription_id)?;
+
+        let mut params = stripe::UpdateSubscription::new();
+        params.trial_end = Some(stripe::Scheduled::Timestamp(new_trial_end as i64));
+
+        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "extend_trial", || {
+            let client = client.clone();
+            let sub_id = sub_id.clone();
+            let params = params.clone();
+            async move { stripe::Subscription::update(&client, &sub_id, params).await }
+        })
+        .await?;
+
+        map_subscription_to_data(subscription)
+    }
+
+    async fn pause_subscription(&self, subscription_id: &str) -> Result<()> {
+        let client = self.idempotent_client("pause_subscription");
+        let sub_id = parse_subscription_id(subscription_id)?;
+
+        let mut params = stripe::UpdateSubscription::new();
+        params.pause_collection = Some(stripe::UpdateSubscriptionPauseCollection {
+            behavior: stripe::UpdateSubscriptionPauseCollectionBehavior::MarkUncollectible,
+            resumes_at: None,
+        });
+
+        with_retry_cb(&self.config, &self.circuit_breaker, "pause_subscription", || {
+            let client = client.clone();
+            let sub_id = sub_id.clone();
+            let params = params.clone();
+            async move { stripe::Subscription::update(&client, &sub_id, params).await }
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    async fn resume_paused_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData> {
+        let client = self.idempotent_client("resume_paused_subscription");
+        let sub_id = parse_subscription_id(subscription_id)?;
+
+        // To resume, we set resumes_at to the current timestamp (immediately resume)
+        // Setting resumes_at to a timestamp in the past or "now" effectively resumes the subscription
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut params = stripe::UpdateSubscription::new();
+        params.pause_collection = Some(stripe::UpdateSubscriptionPauseCollection {
+            behavior: stripe::UpdateSubscriptionPauseCollectionBehavior::KeepAsDraft,
+            resumes_at: Some(now as i64),
+        });
+
+        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "resume_paused_subscription", || {
+            let client = client.clone();
+            let sub_id = sub_id.clone();
+            let params = params.clone();
+            async move { stripe::Subscription::update(&client, &sub_id, params).await }
+        })
+        .await?;
+
+        map_subscription_to_data(subscription)
+    }
+}
+
+// ============================================================================
+// Payment Method Client
+// ============================================================================
+
+impl StripePaymentMethodClient for LiveStripeClient {
+    async fn list_payment_methods(
+        &self,
+        customer_id: &str,
+        limit: u8,
+    ) -> Result<PaymentMethodList> {
+        let client = self.client.clone();
+        let customer_id = customer_id.parse::<stripe::CustomerId>()
+            .map_err(|_| BillingError::NoCustomer {
+                billable_id: customer_id.to_string(),
+            })?;
+
+        // Get customer to find default payment method
+        let customer = with_retry_cb(&self.config, &self.circuit_breaker, "get_customer", || {
+            let client = client.clone();
+            let customer_id = customer_id.clone();
+            async move { stripe::Customer::retrieve(&client, &customer_id, &[]).await }
+        })
+        .await?;
+
+        let default_pm_id = customer.invoice_settings
+            .and_then(|s| s.default_payment_method)
+            .map(|pm| match pm {
+                stripe::Expandable::Id(id) => id.to_string(),
+                stripe::Expandable::Object(pm) => pm.id.to_string(),
+            });
+
+        // List payment methods
+        let mut params = stripe::ListPaymentMethods::new();
+        params.customer = Some(customer_id);
+        params.type_ = Some(stripe::PaymentMethodTypeFilter::Card);
+        params.limit = Some(limit.into());
+
+        let list = with_retry_cb(&self.config, &self.circuit_breaker, "list_payment_methods", || {
+            let client = client.clone();
+            let params = params.clone();
+            async move { stripe::PaymentMethod::list(&client, &params).await }
+        })
+        .await?;
+
+        let methods = list.data.into_iter().map(|pm| {
+            let card = pm.card.as_ref();
+            PaymentMethod {
+                id: pm.id.to_string(),
+                card_brand: card.map(|c| format!("{:?}", c.brand).to_lowercase()),
+                card_last4: card.map(|c| c.last4.clone()),
+                card_exp_month: card.map(|c| c.exp_month as u32),
+                card_exp_year: card.map(|c| c.exp_year as u32),
+                is_default: default_pm_id.as_ref().map(|d| d == &pm.id.to_string()).unwrap_or(false),
+            }
+        }).collect();
+
+        Ok(PaymentMethodList {
+            methods,
+            has_more: list.has_more,
+        })
+    }
+
+    async fn attach_payment_method(
+        &self,
+        payment_method_id: &str,
+        customer_id: &str,
+    ) -> Result<PaymentMethod> {
+        let client = self.client.clone();
+        let pm_id = payment_method_id.parse::<stripe::PaymentMethodId>()
+            .map_err(|_| BillingError::PaymentMethodNotFound {
+                payment_method_id: payment_method_id.to_string(),
+            })?;
+        let customer_id = customer_id.parse::<stripe::CustomerId>()
+            .map_err(|_| BillingError::NoCustomer {
+                billable_id: customer_id.to_string(),
+            })?;
+
+        let pm = with_retry_cb(&self.config, &self.circuit_breaker, "attach_payment_method", || {
+            let client = client.clone();
+            let pm_id = pm_id.clone();
+            let customer_id = customer_id.clone();
+            async move {
+                stripe::PaymentMethod::attach(
+                    &client,
+                    &pm_id,
+                    stripe::AttachPaymentMethod { customer: customer_id },
+                ).await
+            }
+        })
+        .await?;
+
+        let card = pm.card.as_ref();
+        Ok(PaymentMethod {
+            id: pm.id.to_string(),
+            card_brand: card.map(|c| format!("{:?}", c.brand).to_lowercase()),
+            card_last4: card.map(|c| c.last4.clone()),
+            card_exp_month: card.map(|c| c.exp_month as u32),
+            card_exp_year: card.map(|c| c.exp_year as u32),
+            is_default: false,
+        })
+    }
+
+    async fn detach_payment_method(
+        &self,
+        payment_method_id: &str,
+    ) -> Result<()> {
+        let client = self.client.clone();
+        let pm_id = payment_method_id.parse::<stripe::PaymentMethodId>()
+            .map_err(|_| BillingError::PaymentMethodNotFound {
+                payment_method_id: payment_method_id.to_string(),
+            })?;
+
+        with_retry_cb(&self.config, &self.circuit_breaker, "detach_payment_method", || {
+            let client = client.clone();
+            let pm_id = pm_id.clone();
+            async move { stripe::PaymentMethod::detach(&client, &pm_id).await }
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    async fn set_default_payment_method(
+        &self,
+        customer_id: &str,
+        payment_method_id: &str,
+    ) -> Result<()> {
+        let client = self.idempotent_client("set_default_payment_method");
+        let customer_id = customer_id.parse::<stripe::CustomerId>()
+            .map_err(|_| BillingError::NoCustomer {
+                billable_id: customer_id.to_string(),
+            })?;
+        let pm_id = payment_method_id.parse::<stripe::PaymentMethodId>()
+            .map_err(|_| BillingError::PaymentMethodNotFound {
+                payment_method_id: payment_method_id.to_string(),
+            })?;
+
+        let mut params = stripe::UpdateCustomer::new();
+        params.invoice_settings = Some(stripe::CustomerInvoiceSettings {
+            default_payment_method: Some(pm_id.to_string()),
+            ..Default::default()
+        });
+
+        with_retry_cb(&self.config, &self.circuit_breaker, "set_default_payment_method", || {
+            let client = client.clone();
+            let customer_id = customer_id.clone();
+            let params = params.clone();
+            async move { stripe::Customer::update(&client, &customer_id, params).await }
+        })
+        .await?;
+
+        Ok(())
+    }
+}
+
+// ============================================================================
+// Refund Client
+// ============================================================================
+
+impl StripeRefundClient for LiveStripeClient {
+    async fn create_refund(&self, request: CreateRefundRequest) -> Result<Refund> {
+        let client = self.idempotent_client("create_refund");
+
+        let mut params = stripe::CreateRefund::new();
+
+        if let Some(ref charge_id) = request.charge_id {
+            params.charge = Some(charge_id.parse().map_err(|_| BillingError::ChargeNotFound {
+                charge_id: charge_id.clone(),
+            })?);
+        }
+
+        if let Some(ref pi_id) = request.payment_intent_id {
+            params.payment_intent = Some(pi_id.parse().map_err(|_| BillingError::RefundFailed {
+                reason: format!("Invalid payment intent ID: {}", pi_id),
+            })?);
+        }
+
+        if let Some(amount) = request.amount {
+            params.amount = Some(amount);
+        }
+
+        if let Some(reason) = request.reason {
+            params.reason = Some(match reason {
+                RefundReason::Duplicate => stripe::RefundReasonFilter::Duplicate,
+                RefundReason::Fraudulent => stripe::RefundReasonFilter::Fraudulent,
+                RefundReason::RequestedByCustomer => stripe::RefundReasonFilter::RequestedByCustomer,
+            });
+        }
+
+        let refund = with_retry_cb(&self.config, &self.circuit_breaker, "create_refund", || {
+            let client = client.clone();
+            let params = params.clone();
+            async move { stripe::Refund::create(&client, params).await }
+        })
+        .await?;
+
+        Ok(map_refund(refund))
+    }
+
+    async fn get_refund(&self, refund_id: &str) -> Result<Refund> {
+        let client = self.client.clone();
+        let refund_id = refund_id.parse::<stripe::RefundId>()
+            .map_err(|_| BillingError::RefundNotFound {
+                refund_id: refund_id.to_string(),
+            })?;
+
+        let refund = with_retry_cb(&self.config, &self.circuit_breaker, "get_refund", || {
+            let client = client.clone();
+            let refund_id = refund_id.clone();
+            async move { stripe::Refund::retrieve(&client, &refund_id, &[]).await }
+        })
+        .await?;
+
+        Ok(map_refund(refund))
+    }
+
+    async fn list_refunds(&self, charge_id: &str, limit: u8) -> Result<Vec<Refund>> {
+        let client = self.client.clone();
+
+        let mut params = stripe::ListRefunds::new();
+        params.charge = Some(charge_id.parse().map_err(|_| BillingError::ChargeNotFound {
+            charge_id: charge_id.to_string(),
+        })?);
+        params.limit = Some(limit.into());
+
+        let list = with_retry_cb(&self.config, &self.circuit_breaker, "list_refunds", || {
+            let client = client.clone();
+            let params = params.clone();
+            async move { stripe::Refund::list(&client, &params).await }
+        })
+        .await?;
+
+        Ok(list.data.into_iter().map(map_refund).collect())
+    }
+}
+
+/// Map Stripe Refund to internal Refund type.
+fn map_refund(refund: stripe::Refund) -> Refund {
+    let charge_id = refund.charge.map(|c| match c {
+        stripe::Expandable::Id(id) => id.to_string(),
+        stripe::Expandable::Object(charge) => charge.id.to_string(),
+    });
+
+    let payment_intent_id = refund.payment_intent.map(|pi| match pi {
+        stripe::Expandable::Id(id) => id.to_string(),
+        stripe::Expandable::Object(pi) => pi.id.to_string(),
+    });
+
+    let status = refund.status.as_deref().map(RefundStatus::from_stripe).unwrap_or(RefundStatus::Pending);
+
+    let reason = refund.reason.and_then(|r| {
+        let reason_str = match r {
+            stripe::RefundReason::Duplicate => "duplicate",
+            stripe::RefundReason::Fraudulent => "fraudulent",
+            stripe::RefundReason::RequestedByCustomer => "requested_by_customer",
+            _ => return None,
+        };
+        RefundReason::from_stripe(reason_str)
+    });
+
+    Refund {
+        id: refund.id.to_string(),
+        amount: refund.amount,
+        currency: refund.currency.to_string(),
+        status,
+        reason,
+        created: refund.created as u64,
+        charge_id,
+        payment_intent_id,
     }
 }
 

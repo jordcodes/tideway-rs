@@ -431,6 +431,22 @@ impl super::subscription::StripeSubscriptionClient for NullSubscriptionClient {
     ) -> Result<StripeSubscriptionData> {
         Err(crate::error::TidewayError::Internal("Not implemented".to_string()))
     }
+
+    async fn extend_trial(
+        &self,
+        _subscription_id: &str,
+        _new_trial_end: u64,
+    ) -> Result<StripeSubscriptionData> {
+        Err(crate::error::TidewayError::Internal("Not implemented".to_string()))
+    }
+
+    async fn pause_subscription(&self, _subscription_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn resume_paused_subscription(&self, _subscription_id: &str) -> Result<StripeSubscriptionData> {
+        Err(crate::error::TidewayError::Internal("Not implemented".to_string()))
+    }
 }
 
 #[cfg(test)]

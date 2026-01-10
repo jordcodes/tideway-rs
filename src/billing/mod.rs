@@ -56,8 +56,10 @@ pub mod customer;
 pub mod entitlements;
 pub mod error;
 pub mod live_client;
+pub mod payment;
 pub mod plans;
 pub mod portal;
+pub mod refund;
 #[cfg(feature = "billing-seaorm")]
 pub mod sea_orm_store;
 pub mod seats;
@@ -110,6 +112,14 @@ pub use invoice::{
 // Seats exports
 pub use seats::{SeatChangeResult, SeatInfo, SeatManager};
 
+// Payment exports
+pub use payment::{PaymentMethod, PaymentMethodList, PaymentMethodManager, StripePaymentMethodClient};
+
+// Refund exports
+pub use refund::{
+    CreateRefundRequest, Refund, RefundManager, RefundReason, RefundStatus, StripeRefundClient,
+};
+
 // Entitlements exports
 pub use entitlements::{
     CachedEntitlementsManager, EntitlementLimits, Entitlements, EntitlementsManager,
@@ -156,6 +166,12 @@ pub use portal::test::MockStripePortalClient;
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use invoice::test::MockStripeInvoiceClient;
+
+#[cfg(any(test, feature = "test-billing"))]
+pub use payment::test::MockStripePaymentMethodClient;
+
+#[cfg(any(test, feature = "test-billing"))]
+pub use refund::test::MockStripeRefundClient;
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use client::test::{ComprehensiveMockStripeClient, FullMockStripeClient};

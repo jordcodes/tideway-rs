@@ -43,6 +43,18 @@ pub enum BillingError {
     /// Invoice not found or doesn't belong to the customer.
     InvoiceNotFound { invoice_id: String },
 
+    // Payment method errors
+    /// Payment method not found or doesn't belong to the customer.
+    PaymentMethodNotFound { payment_method_id: String },
+
+    // Refund errors
+    /// Refund not found.
+    RefundNotFound { refund_id: String },
+    /// Refund operation failed.
+    RefundFailed { reason: String },
+    /// Charge not found for refund.
+    ChargeNotFound { charge_id: String },
+
     // Seat errors
     /// Cannot remove more seats than are currently extra.
     InsufficientSeats { requested: u32, available: u32 },
@@ -50,6 +62,16 @@ pub enum BillingError {
     InvalidSeatCount { message: String },
     /// Concurrent modification detected, retry the operation.
     ConcurrentModification { billable_id: String },
+
+    // Trial errors
+    /// Subscription is not in trialing state.
+    SubscriptionNotTrialing { billable_id: String },
+
+    // Pause errors
+    /// Subscription is not paused.
+    SubscriptionNotPaused { billable_id: String },
+    /// Subscription is already paused.
+    SubscriptionAlreadyPaused { billable_id: String },
 
     // Checkout errors
     /// Invalid redirect URL provided.
@@ -117,6 +139,18 @@ impl fmt::Display for BillingError {
             Self::InvoiceNotFound { invoice_id } => {
                 write!(f, "Invoice not found: {}", invoice_id)
             }
+            Self::PaymentMethodNotFound { payment_method_id } => {
+                write!(f, "Payment method not found: {}", payment_method_id)
+            }
+            Self::RefundNotFound { refund_id } => {
+                write!(f, "Refund not found: {}", refund_id)
+            }
+            Self::RefundFailed { reason } => {
+                write!(f, "Refund failed: {}", reason)
+            }
+            Self::ChargeNotFound { charge_id } => {
+                write!(f, "Charge not found: {}", charge_id)
+            }
             Self::InsufficientSeats { requested, available } => {
                 write!(f, "Cannot remove {} seats, only {} extra seats available", requested, available)
             }
@@ -125,6 +159,15 @@ impl fmt::Display for BillingError {
             }
             Self::ConcurrentModification { billable_id } => {
                 write!(f, "Concurrent modification detected for '{}', please retry", billable_id)
+            }
+            Self::SubscriptionNotTrialing { billable_id } => {
+                write!(f, "Subscription for '{}' is not in trialing state", billable_id)
+            }
+            Self::SubscriptionNotPaused { billable_id } => {
+                write!(f, "Subscription for '{}' is not paused", billable_id)
+            }
+            Self::SubscriptionAlreadyPaused { billable_id } => {
+                write!(f, "Subscription for '{}' is already paused", billable_id)
             }
             Self::InvalidRedirectUrl { url, reason } => {
                 write!(f, "Invalid redirect URL '{}': {}", url, reason)
@@ -171,7 +214,10 @@ impl From<BillingError> for crate::error::TidewayError {
             | BillingError::NoSubscription { .. }
             | BillingError::NoCustomer { .. }
             | BillingError::StripeSubscriptionNotFound { .. }
-            | BillingError::InvoiceNotFound { .. } => {
+            | BillingError::InvoiceNotFound { .. }
+            | BillingError::PaymentMethodNotFound { .. }
+            | BillingError::RefundNotFound { .. }
+            | BillingError::ChargeNotFound { .. } => {
                 crate::error::TidewayError::NotFound(err.to_string())
             }
 
@@ -192,14 +238,18 @@ impl From<BillingError> for crate::error::TidewayError {
             | BillingError::RedirectDomainNotAllowed { .. }
             | BillingError::InvalidWebhookSignature
             | BillingError::WebhookTimestampExpired { .. }
-            | BillingError::InvalidWebhookPayload { .. } => {
+            | BillingError::InvalidWebhookPayload { .. }
+            | BillingError::SubscriptionNotTrialing { .. }
+            | BillingError::SubscriptionNotPaused { .. }
+            | BillingError::SubscriptionAlreadyPaused { .. } => {
                 crate::error::TidewayError::BadRequest(err.to_string())
             }
 
             // Map to Internal (server errors)
             BillingError::ConcurrentModification { .. }
             | BillingError::RetryLimitExceeded { .. }
-            | BillingError::Internal { .. } => {
+            | BillingError::Internal { .. }
+            | BillingError::RefundFailed { .. } => {
                 crate::error::TidewayError::Internal(err.to_string())
             }
 
@@ -226,6 +276,9 @@ impl BillingError {
             | Self::NoCustomer { .. }
             | Self::StripeSubscriptionNotFound { .. }
             | Self::InvoiceNotFound { .. }
+            | Self::PaymentMethodNotFound { .. }
+            | Self::RefundNotFound { .. }
+            | Self::ChargeNotFound { .. }
             | Self::SubscriptionInactive { .. }
             | Self::SubscriptionCancelling { .. }
             | Self::FeatureNotIncluded { .. }
@@ -236,7 +289,10 @@ impl BillingError {
             | Self::RedirectDomainNotAllowed { .. }
             | Self::InvalidWebhookSignature
             | Self::WebhookTimestampExpired { .. }
-            | Self::InvalidWebhookPayload { .. } => true,
+            | Self::InvalidWebhookPayload { .. }
+            | Self::SubscriptionNotTrialing { .. }
+            | Self::SubscriptionNotPaused { .. }
+            | Self::SubscriptionAlreadyPaused { .. } => true,
             Self::StripeApiError { http_status, .. } => {
                 matches!(http_status, Some(400..=499))
             }
@@ -250,7 +306,8 @@ impl BillingError {
         match self {
             Self::ConcurrentModification { .. }
             | Self::RetryLimitExceeded { .. }
-            | Self::Internal { .. } => true,
+            | Self::Internal { .. }
+            | Self::RefundFailed { .. } => true,
             Self::StripeApiError { http_status, .. } => {
                 matches!(http_status, Some(500..=599) | None)
             }

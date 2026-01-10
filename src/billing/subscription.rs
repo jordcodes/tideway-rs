@@ -99,6 +99,134 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         Ok(())
     }
 
+    /// Extend the trial period for a subscription.
+    ///
+    /// The subscription must currently be in a trialing state.
+    ///
+    /// # Arguments
+    ///
+    /// * `billable_id` - The billable entity ID
+    /// * `additional_days` - Number of days to add to the current trial period
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription is not found or not in trialing state.
+    pub async fn extend_trial(
+        &self,
+        billable_id: &str,
+        additional_days: u32,
+    ) -> Result<Subscription> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        if sub.status != SubscriptionStatus::Trialing {
+            return Err(super::error::BillingError::SubscriptionNotTrialing {
+                billable_id: billable_id.to_string(),
+            }.into());
+        }
+
+        // Calculate new trial end
+        let current_trial_end = sub.trial_end.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+        let additional_seconds = u64::from(additional_days) * 86400;
+        let new_trial_end = current_trial_end.saturating_add(additional_seconds);
+
+        // Update in Stripe
+        let stripe_data = self.client.extend_trial(&sub.stripe_subscription_id, new_trial_end).await?;
+
+        // Update local state
+        self.sync_from_stripe(stripe_data).await?;
+
+        // Return updated subscription
+        self.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::Internal(
+                "Subscription disappeared after extension".to_string()
+            ))
+    }
+
+    /// Check if a subscription is paused.
+    pub async fn is_paused(&self, billable_id: &str) -> Result<bool> {
+        match self.store.get_subscription(billable_id).await? {
+            Some(sub) => Ok(sub.status == SubscriptionStatus::Paused),
+            None => Ok(false),
+        }
+    }
+
+    /// Pause a subscription.
+    ///
+    /// Paused subscriptions stop billing but maintain the subscription relationship.
+    /// The customer's access may be limited depending on your application logic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription is not found, not active, or already paused.
+    pub async fn pause_subscription(&self, billable_id: &str) -> Result<()> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        if sub.status == SubscriptionStatus::Paused {
+            return Err(super::error::BillingError::SubscriptionAlreadyPaused {
+                billable_id: billable_id.to_string(),
+            }.into());
+        }
+
+        if !sub.is_active() {
+            return Err(super::error::BillingError::SubscriptionInactive {
+                billable_id: billable_id.to_string(),
+            }.into());
+        }
+
+        self.client.pause_subscription(&sub.stripe_subscription_id).await?;
+
+        // Update local state
+        let mut updated = sub;
+        updated.status = SubscriptionStatus::Paused;
+        self.store.save_subscription(billable_id, &updated).await?;
+
+        Ok(())
+    }
+
+    /// Resume a paused subscription.
+    ///
+    /// Reactivates billing for a paused subscription. The subscription will
+    /// return to active status and billing will resume.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription is not found or not in paused state.
+    pub async fn resume_paused_subscription(&self, billable_id: &str) -> Result<Subscription> {
+        let sub = self.store.get_subscription(billable_id).await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        if sub.status != SubscriptionStatus::Paused {
+            return Err(super::error::BillingError::SubscriptionNotPaused {
+                billable_id: billable_id.to_string(),
+            }.into());
+        }
+
+        // Resume in Stripe
+        let stripe_data = self.client.resume_paused_subscription(&sub.stripe_subscription_id).await?;
+
+        // Update local state
+        self.sync_from_stripe(stripe_data).await?;
+
+        // Return updated subscription
+        self.get_subscription(billable_id).await?
+            .ok_or_else(|| crate::error::TidewayError::Internal(
+                "Subscription disappeared after resuming".to_string()
+            ))
+    }
+
     /// Update subscription from a Stripe webhook event.
     ///
     /// This is called by the webhook handler to sync subscription state.
@@ -470,6 +598,25 @@ pub trait StripeSubscriptionClient: Send + Sync {
         subscription_id: &str,
         update: UpdateSubscriptionRequest,
     ) -> Result<StripeSubscriptionData>;
+
+    /// Extend trial period for a subscription.
+    ///
+    /// Sets a new trial end timestamp. The subscription must be in trialing state.
+    async fn extend_trial(
+        &self,
+        subscription_id: &str,
+        new_trial_end: u64,
+    ) -> Result<StripeSubscriptionData>;
+
+    /// Pause a subscription.
+    ///
+    /// Paused subscriptions stop billing but maintain the subscription relationship.
+    async fn pause_subscription(&self, subscription_id: &str) -> Result<()>;
+
+    /// Resume a paused subscription.
+    ///
+    /// Reactivates billing for a paused subscription.
+    async fn resume_paused_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData>;
 }
 
 /// Request to update a subscription.
@@ -646,6 +793,46 @@ pub mod test {
                 if let Some(seat_qty) = update.seat_quantity {
                     sub.data.extra_seats = seat_qty;
                 }
+                Ok(sub.data.clone())
+            } else {
+                Err(crate::error::TidewayError::NotFound(
+                    format!("Subscription not found: {}", subscription_id)
+                ))
+            }
+        }
+
+        async fn extend_trial(
+            &self,
+            subscription_id: &str,
+            new_trial_end: u64,
+        ) -> Result<StripeSubscriptionData> {
+            let mut subs = self.subscriptions.write().unwrap();
+            if let Some(sub) = subs.get_mut(subscription_id) {
+                sub.data.trial_end = Some(new_trial_end);
+                Ok(sub.data.clone())
+            } else {
+                Err(crate::error::TidewayError::NotFound(
+                    format!("Subscription not found: {}", subscription_id)
+                ))
+            }
+        }
+
+        async fn pause_subscription(&self, subscription_id: &str) -> Result<()> {
+            let mut subs = self.subscriptions.write().unwrap();
+            if let Some(sub) = subs.get_mut(subscription_id) {
+                sub.data.status = "paused".to_string();
+                Ok(())
+            } else {
+                Err(crate::error::TidewayError::NotFound(
+                    format!("Subscription not found: {}", subscription_id)
+                ))
+            }
+        }
+
+        async fn resume_paused_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData> {
+            let mut subs = self.subscriptions.write().unwrap();
+            if let Some(sub) = subs.get_mut(subscription_id) {
+                sub.data.status = "active".to_string();
                 Ok(sub.data.clone())
             } else {
                 Err(crate::error::TidewayError::NotFound(
@@ -969,5 +1156,148 @@ mod tests {
         // Reconcile - should find local but not in Stripe
         let result = manager.reconcile("org_123", false).await.unwrap();
         assert_eq!(result, ReconcileResult::NotFoundInStripe);
+    }
+
+    // ========================================================================
+    // Trial Extension Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_extend_trial() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Create a trialing subscription
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut stripe_data = create_test_subscription_data("org_123");
+        stripe_data.status = "trialing".to_string();
+        stripe_data.trial_end = Some(now + 7 * 86400); // 7 days from now
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Extend trial by 14 days
+        let sub = manager.extend_trial("org_123", 14).await.unwrap();
+
+        // Trial should be extended
+        assert!(sub.trial_end.is_some());
+        let new_trial_end = sub.trial_end.unwrap();
+        // Should be approximately 21 days from now (7 + 14)
+        assert!(new_trial_end > now + 20 * 86400);
+    }
+
+    #[tokio::test]
+    async fn test_extend_trial_not_trialing() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Create an active (not trialing) subscription
+        let stripe_data = create_test_subscription_data("org_123");
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Try to extend trial - should fail
+        let result = manager.extend_trial("org_123", 14).await;
+        assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Pause/Resume Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_pause_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let stripe_data = create_test_subscription_data("org_123");
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Pause subscription
+        manager.pause_subscription("org_123").await.unwrap();
+
+        // Check it's paused
+        assert!(manager.is_paused("org_123").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_pause_already_paused() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Create a paused subscription
+        let mut stripe_data = create_test_subscription_data("org_123");
+        stripe_data.status = "paused".to_string();
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Try to pause again - should fail
+        let result = manager.pause_subscription("org_123").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_resume_paused_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Create a paused subscription
+        let mut stripe_data = create_test_subscription_data("org_123");
+        stripe_data.status = "paused".to_string();
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Resume
+        let sub = manager.resume_paused_subscription("org_123").await.unwrap();
+        assert!(sub.is_active());
+        assert!(!manager.is_paused("org_123").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_resume_not_paused() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        // Create an active subscription
+        let stripe_data = create_test_subscription_data("org_123");
+        client.add_subscription(stripe_data.clone());
+
+        let manager = SubscriptionManager::new(store, client, plans);
+        manager.sync_from_stripe(stripe_data).await.unwrap();
+
+        // Try to resume - should fail
+        let result = manager.resume_paused_subscription("org_123").await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_is_paused_no_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+        let manager = SubscriptionManager::new(store, client, plans);
+
+        // No subscription - should return false
+        assert!(!manager.is_paused("nonexistent").await.unwrap());
     }
 }
