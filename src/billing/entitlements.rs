@@ -84,6 +84,7 @@ impl<S: BillingStore> EntitlementsManager<S> {
 
 /// Entitlements for a subscription.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Entitlements {
     /// Whether the entity has a subscription.
     pub has_subscription: bool,
@@ -238,6 +239,165 @@ pub async fn require_seat<S: BillingStore>(
         FeatureCheckResult::Allowed
     } else {
         FeatureCheckResult::FeatureNotIncluded
+    }
+}
+
+/// Cached entitlements manager with TTL-based caching.
+///
+/// Wraps an `EntitlementsManager` and caches entitlements to reduce storage calls.
+/// Use this for high-traffic endpoints where entitlement checks are frequent.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::{CachedEntitlementsManager, EntitlementsManager};
+/// use std::time::Duration;
+///
+/// let inner = EntitlementsManager::new(store, plans);
+/// let cached = CachedEntitlementsManager::new(inner, Duration::from_secs(60));
+///
+/// // First call hits storage
+/// let entitlements = cached.get_entitlements("org_123").await?;
+///
+/// // Second call within 60 seconds uses cache
+/// let entitlements = cached.get_entitlements("org_123").await?;
+/// ```
+pub struct CachedEntitlementsManager<S: BillingStore> {
+    inner: EntitlementsManager<S>,
+    cache: std::sync::Arc<std::sync::RwLock<EntitlementsCache>>,
+    ttl: std::time::Duration,
+}
+
+struct EntitlementsCache {
+    entries: std::collections::HashMap<String, CacheEntry>,
+}
+
+struct CacheEntry {
+    entitlements: Entitlements,
+    expires_at: std::time::Instant,
+}
+
+impl<S: BillingStore> CachedEntitlementsManager<S> {
+    /// Create a new cached entitlements manager.
+    ///
+    /// # Arguments
+    ///
+    /// * `inner` - The underlying entitlements manager
+    /// * `ttl` - How long to cache entitlements (e.g., 60 seconds)
+    #[must_use]
+    pub fn new(inner: EntitlementsManager<S>, ttl: std::time::Duration) -> Self {
+        Self {
+            inner,
+            cache: std::sync::Arc::new(std::sync::RwLock::new(EntitlementsCache {
+                entries: std::collections::HashMap::new(),
+            })),
+            ttl,
+        }
+    }
+
+    /// Get entitlements, using cache if available and not expired.
+    pub async fn get_entitlements(&self, billable_id: &str) -> Result<Entitlements> {
+        // Check cache first
+        // If lock is poisoned, treat as cache miss (safe for read-only cache check)
+        if let Ok(cache) = self.cache.read() {
+            if let Some(entry) = cache.entries.get(billable_id) {
+                if entry.expires_at > std::time::Instant::now() {
+                    return Ok(entry.entitlements.clone());
+                }
+            }
+        }
+
+        // Cache miss or expired - fetch from storage
+        let entitlements = self.inner.get_entitlements(billable_id).await?;
+
+        // Update cache
+        // If lock is poisoned, we can still return the entitlements, just skip caching
+        if let Ok(mut cache) = self.cache.write() {
+            cache.entries.insert(
+                billable_id.to_string(),
+                CacheEntry {
+                    entitlements: entitlements.clone(),
+                    expires_at: std::time::Instant::now() + self.ttl,
+                },
+            );
+        } else {
+            tracing::warn!(
+                target: "tideway::billing",
+                "Entitlements cache lock poisoned, skipping cache update"
+            );
+        }
+
+        Ok(entitlements)
+    }
+
+    /// Check if a feature is available (cached).
+    pub async fn has_feature(&self, billable_id: &str, feature: &str) -> Result<bool> {
+        let entitlements = self.get_entitlements(billable_id).await?;
+        Ok(entitlements.has_feature(feature))
+    }
+
+    /// Check if subscription is active (cached).
+    pub async fn is_active(&self, billable_id: &str) -> Result<bool> {
+        let entitlements = self.get_entitlements(billable_id).await?;
+        Ok(entitlements.is_active)
+    }
+
+    /// Check a limit against current usage (cached).
+    pub async fn check_limit(
+        &self,
+        billable_id: &str,
+        limit_name: &str,
+        current_usage: u64,
+    ) -> Result<LimitCheckResult> {
+        let entitlements = self.get_entitlements(billable_id).await?;
+        Ok(entitlements.check_limit(limit_name, current_usage))
+    }
+
+    /// Invalidate cached entitlements for a billable entity.
+    ///
+    /// Call this when a subscription changes (e.g., after webhook processing).
+    pub fn invalidate(&self, billable_id: &str) {
+        // If lock is poisoned, the cache is in an unknown state anyway
+        if let Ok(mut cache) = self.cache.write() {
+            cache.entries.remove(billable_id);
+        } else {
+            tracing::warn!(
+                target: "tideway::billing",
+                billable_id = %billable_id,
+                "Entitlements cache lock poisoned during invalidate"
+            );
+        }
+    }
+
+    /// Clear all cached entitlements.
+    pub fn clear(&self) {
+        // If lock is poisoned, attempt to recover by clearing
+        match self.cache.write() {
+            Ok(mut cache) => cache.entries.clear(),
+            Err(poisoned) => {
+                tracing::warn!(
+                    target: "tideway::billing",
+                    "Entitlements cache lock poisoned, clearing and recovering"
+                );
+                poisoned.into_inner().entries.clear();
+            }
+        }
+    }
+
+    /// Get the number of cached entries.
+    #[must_use]
+    pub fn cache_size(&self) -> usize {
+        self.cache.read().map(|c| c.entries.len()).unwrap_or(0)
+    }
+
+    /// Remove expired entries from the cache.
+    ///
+    /// Call this periodically to prevent unbounded cache growth.
+    pub fn cleanup_expired(&self) {
+        let now = std::time::Instant::now();
+        if let Ok(mut cache) = self.cache.write() {
+            cache.entries.retain(|_, entry| entry.expires_at > now);
+        }
     }
 }
 
@@ -426,5 +586,89 @@ mod tests {
         assert!(!FeatureCheckResult::NoSubscription.is_allowed());
         assert!(!FeatureCheckResult::SubscriptionInactive.is_allowed());
         assert!(!FeatureCheckResult::FeatureNotIncluded.is_allowed());
+    }
+
+    #[tokio::test]
+    async fn test_cached_entitlements() {
+        let store = InMemoryBillingStore::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("starter", SubscriptionStatus::Active, 2);
+        store.save_subscription("org_cache", &sub).await.unwrap();
+
+        let inner = EntitlementsManager::new(store.clone(), plans);
+        let cached = CachedEntitlementsManager::new(inner, std::time::Duration::from_secs(60));
+
+        // First call - cache miss
+        assert_eq!(cached.cache_size(), 0);
+        let entitlements = cached.get_entitlements("org_cache").await.unwrap();
+        assert!(entitlements.is_active);
+        assert_eq!(cached.cache_size(), 1);
+
+        // Second call - cache hit
+        let entitlements = cached.get_entitlements("org_cache").await.unwrap();
+        assert!(entitlements.is_active);
+        assert_eq!(cached.cache_size(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cached_entitlements_invalidate() {
+        let store = InMemoryBillingStore::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("starter", SubscriptionStatus::Active, 0);
+        store.save_subscription("org_inv", &sub).await.unwrap();
+
+        let inner = EntitlementsManager::new(store.clone(), plans);
+        let cached = CachedEntitlementsManager::new(inner, std::time::Duration::from_secs(60));
+
+        // Populate cache
+        let _ = cached.get_entitlements("org_inv").await.unwrap();
+        assert_eq!(cached.cache_size(), 1);
+
+        // Invalidate
+        cached.invalidate("org_inv");
+        assert_eq!(cached.cache_size(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cached_entitlements_clear() {
+        let store = InMemoryBillingStore::new();
+        let plans = create_test_plans();
+
+        let sub1 = create_test_subscription("starter", SubscriptionStatus::Active, 0);
+        store.save_subscription("org_1", &sub1).await.unwrap();
+        store.save_subscription("org_2", &sub1).await.unwrap();
+
+        let inner = EntitlementsManager::new(store, plans);
+        let cached = CachedEntitlementsManager::new(inner, std::time::Duration::from_secs(60));
+
+        // Populate cache
+        let _ = cached.get_entitlements("org_1").await.unwrap();
+        let _ = cached.get_entitlements("org_2").await.unwrap();
+        assert_eq!(cached.cache_size(), 2);
+
+        // Clear all
+        cached.clear();
+        assert_eq!(cached.cache_size(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cached_has_feature() {
+        let store = InMemoryBillingStore::new();
+        let plans = create_test_plans();
+
+        let sub = create_test_subscription("pro", SubscriptionStatus::Active, 0);
+        store.save_subscription("org_feat", &sub).await.unwrap();
+
+        let inner = EntitlementsManager::new(store, plans);
+        let cached = CachedEntitlementsManager::new(inner, std::time::Duration::from_secs(60));
+
+        assert!(cached.has_feature("org_feat", "api_access").await.unwrap());
+        assert!(cached.has_feature("org_feat", "reports").await.unwrap());
+        assert!(!cached.has_feature("org_feat", "nonexistent").await.unwrap());
+
+        // All calls should use the same cache entry
+        assert_eq!(cached.cache_size(), 1);
     }
 }

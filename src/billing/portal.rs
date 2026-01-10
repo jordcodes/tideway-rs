@@ -96,6 +96,7 @@ impl PortalConfig {
 
 /// Portal session response.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct PortalSession {
     /// Stripe portal session ID.
     pub id: String,

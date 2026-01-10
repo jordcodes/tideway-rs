@@ -274,6 +274,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
 
 /// Result of a reconciliation check.
 #[derive(Debug, Clone, PartialEq)]
+#[must_use]
 pub enum ReconcileResult {
     /// No local subscription found for this billable ID.
     NoLocalSubscription,
@@ -307,6 +308,7 @@ pub enum ReconcileDifference {
 
 /// Rich subscription object with plan details.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct Subscription {
     /// Stripe subscription ID.
     pub id: String,

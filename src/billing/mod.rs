@@ -51,13 +51,16 @@
 
 pub mod audit;
 pub mod checkout;
+pub mod client;
 pub mod customer;
 pub mod entitlements;
+pub mod error;
 pub mod plans;
 pub mod portal;
 pub mod seats;
 pub mod storage;
 pub mod subscription;
+pub mod validation;
 pub mod webhook;
 
 // Plan exports
@@ -99,12 +102,21 @@ pub use seats::{SeatChangeResult, SeatInfo, SeatManager};
 
 // Entitlements exports
 pub use entitlements::{
-    EntitlementLimits, Entitlements, EntitlementsManager, FeatureCheckResult,
-    require_feature, require_seat,
+    CachedEntitlementsManager, EntitlementLimits, Entitlements, EntitlementsManager,
+    FeatureCheckResult, require_feature, require_seat,
 };
 
 // Audit exports
 pub use audit::{BillingAuditEvent, BillingAuditLogger, NoOpAuditLogger, TracingAuditLogger};
+
+// Error exports
+pub use error::BillingError;
+
+// Client exports
+pub use client::FullStripeClient;
+
+// Validation exports
+pub use validation::{validate_billable_id, validate_plan_id};
 
 // Test exports
 #[cfg(any(test, feature = "test-billing"))]
@@ -121,3 +133,6 @@ pub use checkout::test::{MockStripeCheckoutClient, MockFullStripeClient};
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use portal::test::MockStripePortalClient;
+
+#[cfg(any(test, feature = "test-billing"))]
+pub use client::test::{ComprehensiveMockStripeClient, FullMockStripeClient};

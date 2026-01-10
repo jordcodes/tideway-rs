@@ -340,6 +340,7 @@ pub struct SeatCheckoutRequest {
 
 /// Checkout session response.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct CheckoutSession {
     /// Stripe checkout session ID.
     pub id: String,

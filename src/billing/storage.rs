@@ -42,15 +42,50 @@ pub trait BillingStore: Send + Sync {
     /// This is used for optimistic locking to prevent race conditions.
     /// Returns `Ok(true)` if the save succeeded, `Ok(false)` if the version didn't match.
     ///
-    /// The default implementation always succeeds (no locking) for backwards compatibility.
+    /// # Important: Production Implementations MUST Override This
+    ///
+    /// The default implementation has a **time-of-check to time-of-use (TOCTOU) race condition**
+    /// and is only suitable for single-threaded development/testing scenarios.
+    ///
+    /// Production implementations MUST override this method with an atomic compare-and-swap
+    /// operation. Examples:
+    ///
+    /// - **PostgreSQL**: Use `UPDATE ... WHERE updated_at = $expected_version`
+    /// - **Redis**: Use `WATCH`/`MULTI`/`EXEC` transactions
+    /// - **DynamoDB**: Use conditional writes with `ConditionExpression`
+    ///
+    /// # Example (PostgreSQL)
+    ///
+    /// ```sql
+    /// UPDATE subscriptions
+    /// SET ..., updated_at = NOW()
+    /// WHERE billable_id = $1 AND updated_at = $2
+    /// RETURNING billable_id
+    /// ```
+    ///
+    /// If the query returns a row, the update succeeded. If not, version mismatch.
     async fn compare_and_save_subscription(
         &self,
         billable_id: &str,
         subscription: &StoredSubscription,
         expected_version: u64,
     ) -> Result<bool> {
-        // Default implementation: check version and save
-        // Implementers should override with atomic compare-and-swap
+        // WARNING: This default implementation is NOT atomic and has a TOCTOU race condition.
+        // It exists only for backwards compatibility and simple development scenarios.
+        // Production code MUST override this method with an atomic implementation.
+        #[cfg(debug_assertions)]
+        {
+            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    target: "tideway::billing",
+                    "Using default non-atomic compare_and_save_subscription implementation. \
+                     This is NOT safe for production use with concurrent requests. \
+                     Override this method with an atomic compare-and-swap operation."
+                );
+            }
+        }
+
         if let Some(current) = self.get_subscription(billable_id).await? {
             if current.updated_at != expected_version {
                 return Ok(false);
