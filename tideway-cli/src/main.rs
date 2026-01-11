@@ -22,6 +22,7 @@ fn main() -> Result<()> {
         Commands::Generate(args) => commands::generate::run(args)?,
         Commands::Backend(args) => commands::backend::run(args)?,
         Commands::Init(args) => commands::init::run(args)?,
+        Commands::Setup(args) => commands::setup::run(args)?,
         Commands::Templates => commands::templates::run()?,
     }
 
@@ -41,4 +42,9 @@ pub fn print_info(message: &str) {
 /// Print a warning message
 pub fn print_warning(message: &str) {
     println!("{} {}", "!".yellow().bold(), message);
+}
+
+/// Print an error message
+pub fn print_error(message: &str) {
+    println!("{} {}", "✗".red().bold(), message);
 }

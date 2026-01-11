@@ -48,6 +48,24 @@ Options:
 - `--no-database` - Skip database setup
 - `--no-migrations` - Skip auto-migration on startup
 
+### `tideway setup`
+
+Set up frontend dependencies (Tailwind, shadcn components).
+
+```bash
+tideway setup
+```
+
+This automatically:
+- Installs and configures Tailwind CSS
+- Initializes shadcn-vue
+- Installs all required shadcn components (button, input, card, dialog, table, etc.)
+
+Options:
+- `--style` - Styling: `shadcn`, `tailwind`, or `unstyled` (default: `shadcn`)
+- `--no-tailwind` - Skip Tailwind setup
+- `--no-components` - Skip shadcn component installation
+
 ### `tideway generate`
 
 Generate frontend components for Vue (more frameworks coming soon).
@@ -69,6 +87,8 @@ Options:
 
 ## Quick Start
 
+### Backend
+
 ```bash
 # Create a new B2B SaaS backend
 mkdir my-saas && cd my-saas
@@ -82,6 +102,21 @@ cp .env.example .env
 
 # Run (migrations run automatically)
 cargo run
+```
+
+### Frontend
+
+```bash
+# Create Vue project
+npm create vue@latest my-saas-web
+cd my-saas-web
+
+# Set up dependencies and generate components
+tideway setup
+tideway generate all --with-views
+
+# Run
+npm run dev
 ```
 
 ## Generated Structure

@@ -23,8 +23,30 @@ pub enum Commands {
     /// Initialize main.rs by scanning for modules and wiring them together
     Init(InitArgs),
 
+    /// Set up frontend dependencies (Tailwind, shadcn components, etc.)
+    Setup(SetupArgs),
+
     /// List available templates
     Templates,
+}
+
+#[derive(Parser, Debug)]
+pub struct SetupArgs {
+    /// Frontend framework
+    #[arg(value_enum, default_value = "vue")]
+    pub framework: Framework,
+
+    /// Styling approach
+    #[arg(short, long, default_value = "shadcn")]
+    pub style: Style,
+
+    /// Skip Tailwind CSS setup
+    #[arg(long, default_value = "false")]
+    pub no_tailwind: bool,
+
+    /// Skip shadcn component installation
+    #[arg(long, default_value = "false")]
+    pub no_components: bool,
 }
 
 #[derive(Parser, Debug)]
