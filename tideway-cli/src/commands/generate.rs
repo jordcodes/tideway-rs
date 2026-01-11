@@ -93,11 +93,26 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         shadcn_components.sort();
         shadcn_components.dedup();
 
-        println!("\n{}", "Required shadcn-vue components:".yellow().bold());
-        println!(
-            "  npx shadcn-vue@latest add {}",
-            shadcn_components.join(" ")
-        );
+        // Detect which components are already installed
+        let installed = detect_installed_shadcn_components();
+        let missing: Vec<&str> = shadcn_components
+            .iter()
+            .filter(|c| !installed.contains(&c.to_string()))
+            .copied()
+            .collect();
+
+        if missing.is_empty() {
+            println!(
+                "\n{} All required shadcn-vue components are installed",
+                "✓".green().bold()
+            );
+        } else {
+            println!("\n{}", "Missing shadcn-vue components:".yellow().bold());
+            println!(
+                "  npx shadcn-vue@latest add {}",
+                missing.join(" ")
+            );
+        }
     }
 
     println!(
@@ -377,4 +392,28 @@ fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
     }
     fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
+}
+
+/// Detect installed shadcn-vue components by checking ./src/components/ui/ subdirectories
+fn detect_installed_shadcn_components() -> Vec<String> {
+    let ui_path = Path::new("./src/components/ui");
+
+    if !ui_path.exists() {
+        return Vec::new();
+    }
+
+    let Ok(entries) = fs::read_dir(ui_path) else {
+        return Vec::new();
+    };
+
+    entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if entry.file_type().ok()?.is_dir() {
+                entry.file_name().to_str().map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
