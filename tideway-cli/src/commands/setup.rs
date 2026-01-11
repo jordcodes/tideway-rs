@@ -17,6 +17,7 @@ const SHADCN_VUE_COMPONENTS: &[&str] = &[
     "checkbox",
     "dialog",
     "dropdown-menu",
+    "form",
     "input",
     "label",
     "select",
