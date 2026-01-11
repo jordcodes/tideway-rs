@@ -342,20 +342,105 @@ fn generate_admin_views(
         print_success(&format!("Generated views/admin/{}", filename));
     }
 
-    // Print router config hint
-    println!("\n{}", "Add to your router:".yellow().bold());
-    println!(
-        r#"  {{
+    // Update router with admin routes
+    update_router()?;
+
+    // Update App.vue with Sonner
+    update_app_vue()?;
+
+    Ok(())
+}
+
+fn update_router() -> Result<()> {
+    let router_path = Path::new("./src/router/index.ts");
+
+    if !router_path.exists() {
+        print_warning("Router file not found at src/router/index.ts - skipping router update");
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(router_path)?;
+
+    // Check if admin routes already added
+    if content.contains("AdminLayout") {
+        print_info("Admin routes already in router");
+        return Ok(());
+    }
+
+    // Find the routes array and add admin routes
+    let admin_routes = r#"
+  {
     path: '/admin',
     component: () => import('@/views/admin/AdminLayout.vue'),
-    meta: {{ requiresAuth: true }},
+    meta: { requiresAuth: true },
     children: [
-      {{ path: '', name: 'admin-dashboard', component: () => import('@/views/admin/AdminDashboardView.vue') }},
-      {{ path: 'users', name: 'admin-users', component: () => import('@/views/admin/AdminUsersView.vue') }},
-      {{ path: 'organizations', name: 'admin-organizations', component: () => import('@/views/admin/AdminOrganizationsView.vue') }},
+      { path: '', name: 'admin-dashboard', component: () => import('@/views/admin/AdminDashboardView.vue') },
+      { path: 'users', name: 'admin-users', component: () => import('@/views/admin/AdminUsersView.vue') },
+      { path: 'organizations', name: 'admin-organizations', component: () => import('@/views/admin/AdminOrganizationsView.vue') },
     ]
-  }}"#
-    );
+  },"#;
+
+    // Try to insert after the first route in the routes array
+    let updated = if content.contains("routes: [") {
+        content.replace("routes: [", &format!("routes: [{}", admin_routes))
+    } else if content.contains("const routes") {
+        // Handle const routes = [ ... ] pattern
+        content.replace("const routes = [", &format!("const routes = [{}", admin_routes))
+    } else {
+        print_warning("Could not find routes array in router file");
+        println!("\n{}", "Add to your router manually:".yellow().bold());
+        println!("{}", admin_routes);
+        return Ok(());
+    };
+
+    fs::write(router_path, updated)?;
+    print_success("Updated router with admin routes");
+
+    Ok(())
+}
+
+fn update_app_vue() -> Result<()> {
+    let app_path = Path::new("./src/App.vue");
+
+    if !app_path.exists() {
+        print_warning("App.vue not found - skipping App.vue update");
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(app_path)?;
+
+    // Check if Sonner already added
+    if content.contains("Sonner") {
+        print_info("Sonner already in App.vue");
+        return Ok(());
+    }
+
+    let mut updated = content;
+
+    // Add Sonner import
+    if updated.contains("<script setup") {
+        // Add import after script setup tag
+        updated = updated.replace(
+            "<script setup lang=\"ts\">",
+            "<script setup lang=\"ts\">\nimport { Sonner } from '@/components/ui/sonner'"
+        );
+    } else if updated.contains("<script setup>") {
+        updated = updated.replace(
+            "<script setup>",
+            "<script setup>\nimport { Sonner } from '@/components/ui/sonner'"
+        );
+    }
+
+    // Add Sonner component before </template>
+    if updated.contains("</template>") {
+        updated = updated.replace(
+            "</template>",
+            "  <Sonner />\n</template>"
+        );
+    }
+
+    fs::write(app_path, updated)?;
+    print_success("Updated App.vue with Sonner");
 
     Ok(())
 }
