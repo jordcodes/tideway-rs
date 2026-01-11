@@ -39,8 +39,8 @@ pub struct GenerateArgs {
     #[arg(short, long, default_value = "./src/components/tideway")]
     pub output: String,
 
-    /// API base URL for fetch calls
-    #[arg(long, default_value = "/api")]
+    /// API base URL for fetch calls (fallback if VITE_API_URL env var not set)
+    #[arg(long, default_value = "http://localhost:3000")]
     pub api_base: String,
 
     /// Overwrite existing files without prompting
@@ -56,6 +56,8 @@ pub enum Module {
     Billing,
     /// Organization components (switcher, settings, members, invites)
     Organizations,
+    /// Admin components (dashboard, users, organizations, impersonation)
+    Admin,
     /// Generate all modules
     All,
 }
@@ -83,6 +85,7 @@ impl std::fmt::Display for Module {
             Module::Auth => write!(f, "auth"),
             Module::Billing => write!(f, "billing"),
             Module::Organizations => write!(f, "organizations"),
+            Module::Admin => write!(f, "admin"),
             Module::All => write!(f, "all"),
         }
     }

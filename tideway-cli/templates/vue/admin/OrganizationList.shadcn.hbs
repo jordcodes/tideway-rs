@@ -1,0 +1,173 @@
+<script setup lang="ts">
+import { ref, onMounted, watch } from 'vue'
+import { useAdmin } from './composables/useAdmin'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const emit = defineEmits<{
+  (e: 'select', orgId: string): void
+}>()
+
+const { organizations, isLoading, error, listOrganizations } = useAdmin()
+
+const searchQuery = ref('')
+const currentPage = ref(1)
+const perPage = 10
+
+// Debounce search
+let searchTimeout: ReturnType<typeof setTimeout> | null = null
+
+watch(searchQuery, () => {
+  if (searchTimeout) clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(() => {
+    currentPage.value = 1
+    fetchOrganizations()
+  }, 300)
+})
+
+onMounted(() => {
+  fetchOrganizations()
+})
+
+async function fetchOrganizations() {
+  await listOrganizations({
+    search: searchQuery.value || undefined,
+    page: currentPage.value,
+    per_page: perPage,
+  })
+}
+
+function handlePageChange(page: number) {
+  currentPage.value = page
+  fetchOrganizations()
+}
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleDateString()
+}
+
+function getStatusVariant(status?: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+  switch (status) {
+    case 'active':
+      return 'default'
+    case 'trialing':
+      return 'secondary'
+    case 'past_due':
+    case 'canceled':
+      return 'destructive'
+    default:
+      return 'outline'
+  }
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <div class="flex items-center justify-between">
+        <div>
+          <CardTitle>Organizations</CardTitle>
+          <CardDescription>
+            View all organizations on the platform
+          </CardDescription>
+        </div>
+      </div>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <!-- Search -->
+      <div class="mb-4">
+        <Input
+          v-model="searchQuery"
+          placeholder="Search by name or slug..."
+          class="max-w-sm"
+        />
+      </div>
+
+      <!-- Loading state -->
+      <div v-if="isLoading && !organizations" class="space-y-3">
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+      </div>
+
+      <!-- Table -->
+      <Table v-else>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Name</TableHead>
+            <TableHead>Slug</TableHead>
+            <TableHead>Subscription</TableHead>
+            <TableHead>Members</TableHead>
+            <TableHead>Created</TableHead>
+            <TableHead class="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow
+            v-for="org in organizations?.items"
+            :key="org.id"
+            class="cursor-pointer hover:bg-muted/50"
+            @click="emit('select', org.id)"
+          >
+            <TableCell class="font-medium">\{{ org.name }}</TableCell>
+            <TableCell class="text-muted-foreground">\{{ org.slug }}</TableCell>
+            <TableCell>
+              <Badge :variant="getStatusVariant(org.subscription_status)">
+                \{{ org.subscription_status || 'No subscription' }}
+              </Badge>
+            </TableCell>
+            <TableCell>\{{ org.member_count ?? '—' }}</TableCell>
+            <TableCell class="text-muted-foreground">
+              \{{ formatDate(org.created_at) }}
+            </TableCell>
+            <TableCell class="text-right">
+              <Button variant="ghost" size="sm" @click.stop="emit('select', org.id)">
+                View
+              </Button>
+            </TableCell>
+          </TableRow>
+          <TableRow v-if="!organizations?.items?.length">
+            <TableCell colspan="6" class="text-center text-muted-foreground py-8">
+              No organizations found
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+
+      <!-- Pagination -->
+      <div v-if="organizations && organizations.total_pages > 1" class="flex items-center justify-between mt-4">
+        <p class="text-sm text-muted-foreground">
+          Showing \{{ ((organizations.page - 1) * organizations.per_page) + 1 }} to
+          \{{ Math.min(organizations.page * organizations.per_page, organizations.total) }} of \{{ organizations.total }} organizations
+        </p>
+        <div class="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="organizations.page <= 1"
+            @click="handlePageChange(organizations.page - 1)"
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="organizations.page >= organizations.total_pages"
+            @click="handlePageChange(organizations.page + 1)"
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+    </CardContent>
+  </Card>
+</template>

@@ -49,10 +49,14 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         Module::Organizations => {
             generate_organizations(&engine, output_path, &args, &mut shadcn_components)?;
         }
+        Module::Admin => {
+            generate_admin(&engine, output_path, &args, &mut shadcn_components)?;
+        }
         Module::All => {
             generate_auth(&engine, output_path, &args, &mut shadcn_components)?;
             generate_billing(&engine, output_path, &args, &mut shadcn_components)?;
             generate_organizations(&engine, output_path, &args, &mut shadcn_components)?;
+            generate_admin(&engine, output_path, &args, &mut shadcn_components)?;
         }
     }
 
@@ -215,6 +219,59 @@ fn generate_organizations(
             "badge",
             "dialog",
             "alert",
+        ]);
+    }
+
+    Ok(())
+}
+
+fn generate_admin(
+    engine: &TemplateEngine,
+    output_path: &Path,
+    args: &GenerateArgs,
+    shadcn_components: &mut Vec<&str>,
+) -> Result<()> {
+    let admin_path = output_path.join("admin");
+    fs::create_dir_all(&admin_path)?;
+
+    let composables_path = admin_path.join("composables");
+    fs::create_dir_all(&composables_path)?;
+
+    // Generate components
+    let components = [
+        ("AdminDashboard.vue", "admin/AdminDashboard"),
+        ("UserList.vue", "admin/UserList"),
+        ("UserDetail.vue", "admin/UserDetail"),
+        ("OrganizationList.vue", "admin/OrganizationList"),
+        ("ImpersonationBanner.vue", "admin/ImpersonationBanner"),
+    ];
+
+    for (filename, template_name) in components {
+        let content = engine.render(template_name)?;
+        let file_path = admin_path.join(filename);
+        write_file(&file_path, &content, args.force)?;
+        print_success(&format!("Generated admin/{}", filename));
+    }
+
+    // Generate composable
+    let composable_content = engine.render("admin/composables/useAdmin")?;
+    let composable_path = composables_path.join("useAdmin.ts");
+    write_file(&composable_path, &composable_content, args.force)?;
+    print_success("Generated admin/composables/useAdmin.ts");
+
+    // Track shadcn components needed for admin
+    if args.style == Style::Shadcn {
+        shadcn_components.extend(&[
+            "button",
+            "card",
+            "input",
+            "label",
+            "table",
+            "badge",
+            "skeleton",
+            "alert",
+            "separator",
+            "switch",
         ]);
     }
 

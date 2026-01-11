@@ -1,0 +1,248 @@
+import { ref, computed, readonly } from 'vue'
+import { useApi } from '../../composables/useApi'
+import type {
+  AdminUser,
+  AdminOrganization,
+  PlatformStats,
+  PaginatedResponse,
+  UpdateUserRequest,
+  ImpersonationSession,
+} from '../../types'
+
+const impersonationInfo = ref<ImpersonationSession | null>(null)
+
+// Check localStorage for existing impersonation on init
+if (typeof window !== 'undefined') {
+  const stored = localStorage.getItem('impersonation_info')
+  if (stored) {
+    try {
+      impersonationInfo.value = JSON.parse(stored)
+    } catch {
+      localStorage.removeItem('impersonation_info')
+    }
+  }
+}
+
+export function useAdmin() {
+  const api = useApi()
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+  const stats = ref<PlatformStats | null>(null)
+  const users = ref<PaginatedResponse<AdminUser> | null>(null)
+  const organizations = ref<PaginatedResponse<AdminOrganization> | null>(null)
+
+  const isImpersonating = computed(() => !!impersonationInfo.value)
+
+  // Platform stats
+  async function fetchStats(): Promise<PlatformStats | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<PlatformStats>('/admin/stats')
+      stats.value = response
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch stats'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  // Users
+  async function listUsers(params?: {
+    search?: string
+    page?: number
+    per_page?: number
+  }): Promise<PaginatedResponse<AdminUser> | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const queryParams = new URLSearchParams()
+      if (params?.search) queryParams.set('search', params.search)
+      if (params?.page) queryParams.set('page', params.page.toString())
+      if (params?.per_page) queryParams.set('per_page', params.per_page.toString())
+
+      const query = queryParams.toString()
+      const url = query ? `/admin/users?${query}` : '/admin/users'
+      const response = await api.get<PaginatedResponse<AdminUser>>(url)
+      users.value = response
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to list users'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function getUser(userId: string): Promise<AdminUser | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<AdminUser>(`/admin/users/${userId}`)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to get user'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function updateUser(userId: string, data: UpdateUserRequest): Promise<boolean> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.patch(`/admin/users/${userId}`, data)
+      return true
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update user'
+      return false
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  // Organizations
+  async function listOrganizations(params?: {
+    search?: string
+    page?: number
+    per_page?: number
+  }): Promise<PaginatedResponse<AdminOrganization> | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const queryParams = new URLSearchParams()
+      if (params?.search) queryParams.set('search', params.search)
+      if (params?.page) queryParams.set('page', params.page.toString())
+      if (params?.per_page) queryParams.set('per_page', params.per_page.toString())
+
+      const query = queryParams.toString()
+      const url = query ? `/admin/organizations?${query}` : '/admin/organizations'
+      const response = await api.get<PaginatedResponse<AdminOrganization>>(url)
+      organizations.value = response
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to list organizations'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function getOrganization(orgId: string): Promise<AdminOrganization | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<AdminOrganization>(`/admin/organizations/${orgId}`)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to get organization'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  // Impersonation
+  async function startImpersonation(
+    userId: string,
+    reason?: string
+  ): Promise<ImpersonationSession | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<ImpersonationSession>(
+        `/admin/users/${userId}/impersonate`,
+        { reason }
+      )
+
+      // Store original tokens
+      const originalAccessToken = localStorage.getItem('access_token')
+      const originalRefreshToken = localStorage.getItem('refresh_token')
+
+      // Save impersonation info
+      const info: ImpersonationSession = {
+        ...response,
+        original_access_token: originalAccessToken || undefined,
+        original_refresh_token: originalRefreshToken || undefined,
+      }
+      impersonationInfo.value = info
+      localStorage.setItem('impersonation_info', JSON.stringify(info))
+
+      // Set impersonation tokens as active tokens
+      if (response.access_token) {
+        localStorage.setItem('access_token', response.access_token)
+      }
+      if (response.refresh_token) {
+        localStorage.setItem('refresh_token', response.refresh_token)
+      }
+
+      return info
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to start impersonation'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function endImpersonation(): Promise<boolean> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      // Call backend to end impersonation
+      await api.post('/admin/impersonation/end', {})
+
+      // Restore original tokens
+      const info = impersonationInfo.value
+      if (info?.original_access_token) {
+        localStorage.setItem('access_token', info.original_access_token)
+      }
+      if (info?.original_refresh_token) {
+        localStorage.setItem('refresh_token', info.original_refresh_token)
+      }
+
+      // Clear impersonation info
+      impersonationInfo.value = null
+      localStorage.removeItem('impersonation_info')
+
+      return true
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to end impersonation'
+      return false
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  return {
+    // State
+    stats: readonly(stats),
+    users: readonly(users),
+    organizations: readonly(organizations),
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+    isImpersonating,
+    impersonationInfo: readonly(impersonationInfo),
+
+    // Actions
+    fetchStats,
+    listUsers,
+    getUser,
+    updateUser,
+    listOrganizations,
+    getOrganization,
+    startImpersonation,
+    endImpersonation,
+  }
+}

@@ -3,7 +3,7 @@
  * Handles authentication headers and token refresh automatically.
  */
 
-const API_BASE_URL = '{{api_base_url}}'
+const API_BASE_URL = import.meta.env.VITE_API_URL || '{{api_base_url}}'
 
 interface RequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown

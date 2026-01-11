@@ -1,0 +1,160 @@
+<script setup lang="ts">
+import { ref, onMounted, watch } from 'vue'
+import { useAdmin } from './composables/useAdmin'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const emit = defineEmits<{
+  (e: 'select', userId: string): void
+}>()
+
+const { users, isLoading, error, listUsers } = useAdmin()
+
+const searchQuery = ref('')
+const currentPage = ref(1)
+const perPage = 10
+
+// Debounce search
+let searchTimeout: ReturnType<typeof setTimeout> | null = null
+
+watch(searchQuery, () => {
+  if (searchTimeout) clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(() => {
+    currentPage.value = 1
+    fetchUsers()
+  }, 300)
+})
+
+onMounted(() => {
+  fetchUsers()
+})
+
+async function fetchUsers() {
+  await listUsers({
+    search: searchQuery.value || undefined,
+    page: currentPage.value,
+    per_page: perPage,
+  })
+}
+
+function handlePageChange(page: number) {
+  currentPage.value = page
+  fetchUsers()
+}
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleDateString()
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <div class="flex items-center justify-between">
+        <div>
+          <CardTitle>Users</CardTitle>
+          <CardDescription>
+            Manage all users on the platform
+          </CardDescription>
+        </div>
+      </div>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <!-- Search -->
+      <div class="mb-4">
+        <Input
+          v-model="searchQuery"
+          placeholder="Search by email or name..."
+          class="max-w-sm"
+        />
+      </div>
+
+      <!-- Loading state -->
+      <div v-if="isLoading && !users" class="space-y-3">
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+      </div>
+
+      <!-- Table -->
+      <Table v-else>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Email</TableHead>
+            <TableHead>Name</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead>Created</TableHead>
+            <TableHead class="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow
+            v-for="user in users?.items"
+            :key="user.id"
+            class="cursor-pointer hover:bg-muted/50"
+            @click="emit('select', user.id)"
+          >
+            <TableCell class="font-medium">\{{ user.email }}</TableCell>
+            <TableCell>\{{ user.name || '—' }}</TableCell>
+            <TableCell>
+              <div class="flex gap-1">
+                <Badge v-if="user.is_platform_admin" variant="default">Admin</Badge>
+                <Badge v-if="user.locked" variant="destructive">Locked</Badge>
+                <Badge v-if="user.email_verified" variant="secondary">Verified</Badge>
+                <Badge v-if="!user.email_verified" variant="outline">Unverified</Badge>
+              </div>
+            </TableCell>
+            <TableCell class="text-muted-foreground">
+              \{{ formatDate(user.created_at) }}
+            </TableCell>
+            <TableCell class="text-right">
+              <Button variant="ghost" size="sm" @click.stop="emit('select', user.id)">
+                View
+              </Button>
+            </TableCell>
+          </TableRow>
+          <TableRow v-if="!users?.items?.length">
+            <TableCell colspan="5" class="text-center text-muted-foreground py-8">
+              No users found
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+
+      <!-- Pagination -->
+      <div v-if="users && users.total_pages > 1" class="flex items-center justify-between mt-4">
+        <p class="text-sm text-muted-foreground">
+          Showing \{{ ((users.page - 1) * users.per_page) + 1 }} to
+          \{{ Math.min(users.page * users.per_page, users.total) }} of \{{ users.total }} users
+        </p>
+        <div class="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="users.page <= 1"
+            @click="handlePageChange(users.page - 1)"
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="users.page >= users.total_pages"
+            @click="handlePageChange(users.page + 1)"
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+    </CardContent>
+  </Card>
+</template>

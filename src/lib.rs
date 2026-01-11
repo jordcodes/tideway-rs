@@ -44,6 +44,8 @@ pub mod auth;
 pub mod billing;
 #[cfg(feature = "organizations")]
 pub mod organizations;
+#[cfg(feature = "admin")]
+pub mod admin;
 #[cfg(feature = "cache")]
 pub mod cache;
 pub mod compression;

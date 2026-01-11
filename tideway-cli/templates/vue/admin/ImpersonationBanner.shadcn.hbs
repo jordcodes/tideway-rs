@@ -1,0 +1,56 @@
+<script setup lang="ts">
+import { useAdmin } from './composables/useAdmin'
+import { Button } from '@/components/ui/button'
+
+const { isImpersonating, impersonationInfo, endImpersonation } = useAdmin()
+
+async function handleEndImpersonation() {
+  const success = await endImpersonation()
+  if (success) {
+    // Reload the page to apply the original tokens
+    window.location.href = '/admin'
+  }
+}
+</script>
+
+<template>
+  <div
+    v-if="isImpersonating"
+    class="fixed top-0 left-0 right-0 z-50 bg-yellow-500 text-yellow-950 py-2 px-4"
+  >
+    <div class="container mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+          />
+        </svg>
+        <span class="font-medium">
+          You are currently viewing as another user
+        </span>
+        <span v-if="impersonationInfo?.target_user_email" class="text-sm">
+          (\{{ impersonationInfo.target_user_email }})
+        </span>
+      </div>
+      <Button
+        variant="outline"
+        size="sm"
+        class="bg-yellow-600 hover:bg-yellow-700 text-white border-yellow-600"
+        @click="handleEndImpersonation"
+      >
+        <svg class="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+          />
+        </svg>
+        Exit Impersonation
+      </Button>
+    </div>
+  </div>
+</template>

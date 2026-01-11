@@ -190,6 +190,60 @@ export interface InviteMemberRequest {
 }
 
 // ============================================================================
+// Admin Types
+// ============================================================================
+
+export interface AdminUser {
+  id: string
+  email: string
+  name?: string
+  mfa_enabled: boolean
+  email_verified: boolean
+  locked: boolean
+  is_platform_admin: boolean
+  created_at: number
+  updated_at: number
+}
+
+export interface AdminOrganization {
+  id: string
+  name: string
+  slug: string
+  owner_id: string
+  contact_email?: string
+  subscription_status?: string
+  member_count?: number
+  created_at: number
+  updated_at: number
+}
+
+export interface PlatformStats {
+  total_users: number
+  total_organizations: number
+  active_subscriptions: number
+  mrr_cents: number
+  recent_signups: number
+}
+
+export interface UpdateUserRequest {
+  name?: string
+  email_verified?: boolean
+  locked?: boolean
+  is_platform_admin?: boolean
+}
+
+export interface ImpersonationSession {
+  session_id: string
+  target_user_id: string
+  target_user_email?: string
+  access_token?: string
+  refresh_token?: string
+  expires_at?: number
+  original_access_token?: string
+  original_refresh_token?: string
+}
+
+// ============================================================================
 // Common Types
 // ============================================================================
 

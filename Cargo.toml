@@ -157,6 +157,8 @@ billing-seaorm = ["billing", "database"]
 test-billing = []
 # Organizations module
 organizations = []
+# Admin module (traits and types for platform administration)
+admin = ["chrono"]
 # Organizations with SeaORM database storage
 organizations-seaorm = ["organizations", "database"]
 # Organizations with billing integration

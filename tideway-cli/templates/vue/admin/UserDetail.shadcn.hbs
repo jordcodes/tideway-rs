@@ -1,0 +1,226 @@
+<script setup lang="ts">
+import { ref, onMounted, watch } from 'vue'
+import { useAdmin } from './composables/useAdmin'
+import type { AdminUser } from '../types'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Separator } from '@/components/ui/separator'
+import { Switch } from '@/components/ui/switch'
+import { Label } from '@/components/ui/label'
+
+const props = defineProps<{
+  userId: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'back'): void
+  (e: 'impersonate'): void
+}>()
+
+const { isLoading, error, getUser, updateUser, startImpersonation } = useAdmin()
+
+const user = ref<AdminUser | null>(null)
+const isSaving = ref(false)
+
+onMounted(() => {
+  fetchUser()
+})
+
+watch(() => props.userId, () => {
+  fetchUser()
+})
+
+async function fetchUser() {
+  user.value = await getUser(props.userId)
+}
+
+async function handleToggleLock() {
+  if (!user.value) return
+  isSaving.value = true
+  const success = await updateUser(props.userId, { locked: !user.value.locked })
+  if (success) {
+    user.value = { ...user.value, locked: !user.value.locked }
+  }
+  isSaving.value = false
+}
+
+async function handleToggleAdmin() {
+  if (!user.value) return
+  isSaving.value = true
+  const success = await updateUser(props.userId, {
+    is_platform_admin: !user.value.is_platform_admin
+  })
+  if (success) {
+    user.value = { ...user.value, is_platform_admin: !user.value.is_platform_admin }
+  }
+  isSaving.value = false
+}
+
+async function handleToggleVerified() {
+  if (!user.value) return
+  isSaving.value = true
+  const success = await updateUser(props.userId, {
+    email_verified: !user.value.email_verified
+  })
+  if (success) {
+    user.value = { ...user.value, email_verified: !user.value.email_verified }
+  }
+  isSaving.value = false
+}
+
+async function handleImpersonate() {
+  const reason = prompt('Reason for impersonation (optional):')
+  const session = await startImpersonation(props.userId, reason || undefined)
+  if (session) {
+    emit('impersonate')
+    // Reload the page to apply the new tokens
+    window.location.href = '/'
+  }
+}
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleString()
+}
+</script>
+
+<template>
+  <div class="space-y-6">
+    <div class="flex items-center gap-4">
+      <Button variant="ghost" size="sm" @click="emit('back')">
+        <svg class="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+        </svg>
+        Back to Users
+      </Button>
+    </div>
+
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>\{{ error }}</AlertDescription>
+    </Alert>
+
+    <div v-if="isLoading && !user" class="space-y-4">
+      <Skeleton class="h-32 w-full" />
+      <Skeleton class="h-48 w-full" />
+    </div>
+
+    <template v-else-if="user">
+      <!-- User Header -->
+      <Card>
+        <CardHeader>
+          <div class="flex items-start justify-between">
+            <div>
+              <CardTitle class="text-2xl">\{{ user.name || user.email }}</CardTitle>
+              <CardDescription v-if="user.name">\{{ user.email }}</CardDescription>
+            </div>
+            <Button @click="handleImpersonate">
+              <svg class="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+              Login as User
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div class="flex gap-2">
+            <Badge v-if="user.is_platform_admin" variant="default">Platform Admin</Badge>
+            <Badge v-if="user.locked" variant="destructive">Locked</Badge>
+            <Badge v-if="user.email_verified" variant="secondary">Email Verified</Badge>
+            <Badge v-if="!user.email_verified" variant="outline">Email Not Verified</Badge>
+            <Badge v-if="user.mfa_enabled" variant="secondary">MFA Enabled</Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- User Details -->
+      <Card>
+        <CardHeader>
+          <CardTitle>Details</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <dl class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">User ID</dt>
+              <dd class="font-mono text-sm">\{{ user.id }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Email</dt>
+              <dd>\{{ user.email }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Name</dt>
+              <dd>\{{ user.name || '—' }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Created</dt>
+              <dd>\{{ formatDate(user.created_at) }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Last Updated</dt>
+              <dd>\{{ formatDate(user.updated_at) }}</dd>
+            </div>
+          </dl>
+        </CardContent>
+      </Card>
+
+      <!-- User Actions -->
+      <Card>
+        <CardHeader>
+          <CardTitle>Admin Actions</CardTitle>
+          <CardDescription>
+            Manage user access and permissions
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-6">
+          <div class="flex items-center justify-between">
+            <div class="space-y-0.5">
+              <Label>Lock Account</Label>
+              <p class="text-sm text-muted-foreground">
+                Prevent user from logging in
+              </p>
+            </div>
+            <Switch
+              :checked="user.locked"
+              :disabled="isSaving"
+              @update:checked="handleToggleLock"
+            />
+          </div>
+
+          <Separator />
+
+          <div class="flex items-center justify-between">
+            <div class="space-y-0.5">
+              <Label>Email Verified</Label>
+              <p class="text-sm text-muted-foreground">
+                Mark email as verified manually
+              </p>
+            </div>
+            <Switch
+              :checked="user.email_verified"
+              :disabled="isSaving"
+              @update:checked="handleToggleVerified"
+            />
+          </div>
+
+          <Separator />
+
+          <div class="flex items-center justify-between">
+            <div class="space-y-0.5">
+              <Label>Platform Admin</Label>
+              <p class="text-sm text-muted-foreground">
+                Grant admin access to the platform
+              </p>
+            </div>
+            <Switch
+              :checked="user.is_platform_admin"
+              :disabled="isSaving"
+              @update:checked="handleToggleAdmin"
+            />
+          </div>
+        </CardContent>
+      </Card>
+    </template>
+  </div>
+</template>
