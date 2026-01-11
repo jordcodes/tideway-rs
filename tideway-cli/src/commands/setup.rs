@@ -198,6 +198,17 @@ fn setup_shadcn_vue() -> Result<()> {
 
     print_success("shadcn components installed");
 
+    // Install tw-animate-css (required by shadcn-vue animations)
+    print_info("Installing tw-animate-css...");
+    let status = Command::new("npm")
+        .args(["install", "tw-animate-css"])
+        .status()
+        .context("Failed to install tw-animate-css")?;
+
+    if status.success() {
+        print_success("tw-animate-css installed");
+    }
+
     Ok(())
 }
 
