@@ -207,16 +207,11 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     imports.push("use tideway::App;".to_string());
 
     if modules.auth || modules.admin {
-        imports.push("use tideway::auth::JwtIssuer;".to_string());
+        imports.push("use tideway::auth::{JwtIssuer, JwtIssuerConfig};".to_string());
     }
 
     if modules.auth {
         imports.push(format!("use {}::auth::AuthModule;", project_name));
-    }
-
-    if modules.billing {
-        imports.push(format!("use {}::billing::{{billing_routes, BillingState}};", project_name));
-        imports.push("use tideway::billing::{CheckoutConfig, PortalConfig, PlanRegistry, StripeClient};".to_string());
     }
 
     if modules.organizations {
@@ -227,15 +222,18 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
         imports.push(format!("use {}::admin::AdminModule;", project_name));
     }
 
-    if !args.no_migrations {
-        imports.push("use migration::Migrator;".to_string());
-    }
+    // Note: billing is commented out for now as it needs manual setup
 
     let mut body = String::new();
+
+    // Tracing init
+    body.push_str("    // Initialize tracing\n");
+    body.push_str("    tracing_subscriber::fmt::init();\n\n");
 
     // Config loading
     body.push_str("    // Load configuration from environment\n");
     body.push_str("    let config = AppConfig::from_env()?;\n\n");
+    body.push_str("    tracing::info!(\"Starting {} on {}:{}\", config.app_name, config.host, config.port);\n\n");
 
     // Database connection
     if !args.no_database {
@@ -244,12 +242,14 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
         body.push_str("        .await\n");
         body.push_str("        .expect(\"Failed to connect to database\");\n");
         body.push_str("    let db = Arc::new(db);\n\n");
+        body.push_str("    tracing::info!(\"Connected to database\");\n\n");
     }
 
     // JWT issuer
     if modules.auth || modules.admin {
         body.push_str("    // Create JWT issuer\n");
-        body.push_str("    let jwt_issuer = Arc::new(JwtIssuer::new(&config.jwt_secret));\n\n");
+        body.push_str("    let jwt_config = JwtIssuerConfig::with_secret(&config.jwt_secret, &config.app_name);\n");
+        body.push_str("    let jwt_issuer = Arc::new(JwtIssuer::new(jwt_config)?);\n\n");
     }
 
     // Module instantiation
@@ -279,58 +279,37 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
         body.push_str("    );\n\n");
     }
 
-    // Billing setup
-    if modules.billing {
-        body.push_str("    // Setup billing\n");
-        body.push_str("    let stripe_client = StripeClient::new(&config.stripe_secret_key);\n");
-        body.push_str("    let plans = PlanRegistry::new(); // TODO: Configure your plans\n");
-        body.push_str("    let billing_store = DbBillingStore::new(db.clone()); // TODO: Import from billing module\n");
-        body.push_str("    let billing_state = Arc::new(BillingState {\n");
-        body.push_str("        db: db.clone(),\n");
-        body.push_str("        stripe_client: Arc::new(stripe_client),\n");
-        body.push_str("        billing_store: Arc::new(billing_store),\n");
-        body.push_str("        plans: Arc::new(plans),\n");
-        body.push_str("        webhook_secret: config.stripe_webhook_secret.clone(),\n");
-        body.push_str("        checkout_config: CheckoutConfig::default(),\n");
-        body.push_str("        portal_config: PortalConfig::default(),\n");
-        body.push_str("    });\n\n");
-    }
-
     // App builder
-    body.push_str("    // Build and run application\n");
-    body.push_str("    let mut app = App::new();\n\n");
+    body.push_str("    // Build application with modules\n");
+    body.push_str("    let app = App::new()");
 
     if modules.auth {
-        body.push_str("    app = app.register_module(auth_module);\n");
+        body.push_str("\n        .register_module(auth_module)");
     }
 
     if modules.organizations {
-        body.push_str("    app = app.register_module(org_module);\n");
+        body.push_str("\n        .register_module(org_module)");
     }
 
     if modules.admin {
-        body.push_str("    app = app.register_module(admin_module);\n");
+        body.push_str("\n        .register_module(admin_module)");
     }
 
+    body.push_str(";\n\n");
+
+    // Billing note
     if modules.billing {
-        body.push_str("    // Note: Billing uses a separate router, merge it with the app\n");
-        body.push_str("    let billing_router = billing_routes().with_state(billing_state);\n");
-    }
-
-    body.push_str("\n    let app = app.build();\n\n");
-
-    // Migrations
-    if !args.no_migrations {
-        body.push_str("    // Run migrations\n");
-        body.push_str("    app.run_migrations::<Migrator>().await?;\n\n");
+        body.push_str("    // TODO: Set up billing routes\n");
+        body.push_str("    // let billing_router = billing::billing_routes();\n\n");
     }
 
     // Server binding
     body.push_str("    // Start server\n");
     body.push_str("    let addr = format!(\"{}:{}\", config.host, config.port);\n");
-    body.push_str("    println!(\"Server running on http://{}\", addr);\n\n");
+    body.push_str("    tracing::info!(\"Server running on http://{}\", addr);\n\n");
     body.push_str("    let listener = tokio::net::TcpListener::bind(&addr).await?;\n");
-    body.push_str("    axum::serve(listener, app).await?;\n\n");
+    body.push_str("    let router = app.into_router();\n");
+    body.push_str("    axum::serve(listener, router).await?;\n\n");
     body.push_str("    Ok(())");
 
     format!(
