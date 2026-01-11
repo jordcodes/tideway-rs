@@ -1,0 +1,29 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import OrganizationList from '@/components/tideway/admin/OrganizationList.vue'
+import OrganizationDetail from '@/components/tideway/admin/OrganizationDetail.vue'
+
+const selectedOrgId = ref<string | null>(null)
+
+function handleSelectOrg(orgId: string) {
+  selectedOrgId.value = orgId
+}
+
+function handleBack() {
+  selectedOrgId.value = null
+}
+</script>
+
+<template>
+  <div>
+    <OrganizationDetail
+      v-if="selectedOrgId"
+      :org-id="selectedOrgId"
+      @back="handleBack"
+    />
+    <OrganizationList
+      v-else
+      @select="handleSelectOrg"
+    />
+  </div>
+</template>

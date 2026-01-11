@@ -50,6 +50,14 @@ pub struct GenerateArgs {
     /// Skip generating shared files (useApi.ts, types/index.ts)
     #[arg(long, default_value = "false")]
     pub no_shared: bool,
+
+    /// Also generate view files (e.g., AdminLayout.vue, AdminUsersView.vue)
+    #[arg(long, default_value = "false")]
+    pub with_views: bool,
+
+    /// Output directory for view files (only used with --with-views)
+    #[arg(long, default_value = "./src/views")]
+    pub views_output: String,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]

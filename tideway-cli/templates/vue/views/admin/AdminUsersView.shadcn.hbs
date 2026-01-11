@@ -1,0 +1,35 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import UserList from '@/components/tideway/admin/UserList.vue'
+import UserDetail from '@/components/tideway/admin/UserDetail.vue'
+
+const selectedUserId = ref<string | null>(null)
+
+function handleSelectUser(userId: string) {
+  selectedUserId.value = userId
+}
+
+function handleBack() {
+  selectedUserId.value = null
+}
+
+function handleImpersonate() {
+  // The ImpersonationBanner will show after page reload
+  // The useAdmin composable handles the token swap
+}
+</script>
+
+<template>
+  <div>
+    <UserDetail
+      v-if="selectedUserId"
+      :user-id="selectedUserId"
+      @back="handleBack"
+      @impersonate="handleImpersonate"
+    />
+    <UserList
+      v-else
+      @select="handleSelectUser"
+    />
+  </div>
+</template>

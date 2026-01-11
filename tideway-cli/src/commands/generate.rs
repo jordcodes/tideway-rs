@@ -67,6 +67,27 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         print_info("Skipping shared files (--no-shared)");
     }
 
+    // Generate view files if --with-views is set
+    if args.with_views {
+        let views_path = Path::new(&args.views_output);
+        if !views_path.exists() {
+            fs::create_dir_all(views_path)
+                .with_context(|| format!("Failed to create views directory: {}", args.views_output))?;
+        }
+
+        match args.module {
+            Module::Admin => {
+                generate_admin_views(&engine, views_path, &args)?;
+            }
+            Module::All => {
+                generate_admin_views(&engine, views_path, &args)?;
+            }
+            _ => {
+                print_info("Views not yet available for this module");
+            }
+        }
+    }
+
     // Print shadcn component requirements if using shadcn style
     if args.style == Style::Shadcn && !shadcn_components.is_empty() {
         shadcn_components.sort();
@@ -279,6 +300,47 @@ fn generate_admin(
             "switch",
         ]);
     }
+
+    Ok(())
+}
+
+fn generate_admin_views(
+    engine: &TemplateEngine,
+    views_path: &Path,
+    args: &GenerateArgs,
+) -> Result<()> {
+    let admin_views_path = views_path.join("admin");
+    fs::create_dir_all(&admin_views_path)?;
+
+    // Generate view files
+    let views = [
+        ("AdminLayout.vue", "views/admin/AdminLayout"),
+        ("AdminDashboardView.vue", "views/admin/AdminDashboardView"),
+        ("AdminUsersView.vue", "views/admin/AdminUsersView"),
+        ("AdminOrganizationsView.vue", "views/admin/AdminOrganizationsView"),
+    ];
+
+    for (filename, template_name) in views {
+        let content = engine.render(template_name)?;
+        let file_path = admin_views_path.join(filename);
+        write_file(&file_path, &content, args.force)?;
+        print_success(&format!("Generated views/admin/{}", filename));
+    }
+
+    // Print router config hint
+    println!("\n{}", "Add to your router:".yellow().bold());
+    println!(
+        r#"  {{
+    path: '/admin',
+    component: () => import('@/views/admin/AdminLayout.vue'),
+    meta: {{ requiresAuth: true }},
+    children: [
+      {{ path: '', name: 'admin-dashboard', component: () => import('@/views/admin/AdminDashboardView.vue') }},
+      {{ path: 'users', name: 'admin-users', component: () => import('@/views/admin/AdminUsersView.vue') }},
+      {{ path: 'organizations', name: 'admin-organizations', component: () => import('@/views/admin/AdminOrganizationsView.vue') }},
+    ]
+  }}"#
+    );
 
     Ok(())
 }
