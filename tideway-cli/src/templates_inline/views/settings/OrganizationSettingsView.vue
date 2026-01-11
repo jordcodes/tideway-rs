@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import OrgSettings from '@/components/organizations/OrgSettings.vue'
-import OrgSwitcher from '@/components/organizations/OrgSwitcher.vue'
+import OrgSettings from '@/components/tideway/organizations/OrgSettings.vue'
+import OrgSwitcher from '@/components/tideway/organizations/OrgSwitcher.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 </script>

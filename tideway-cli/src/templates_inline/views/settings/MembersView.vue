@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import MemberList from '@/components/organizations/MemberList.vue'
-import InviteMember from '@/components/organizations/InviteMember.vue'
+import MemberList from '@/components/tideway/organizations/MemberList.vue'
+import InviteMember from '@/components/tideway/organizations/InviteMember.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'

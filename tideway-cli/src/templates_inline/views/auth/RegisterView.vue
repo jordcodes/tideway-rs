@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import RegisterForm from '@/components/auth/RegisterForm.vue'
+import RegisterForm from '@/components/tideway/auth/RegisterForm.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 </script>
 

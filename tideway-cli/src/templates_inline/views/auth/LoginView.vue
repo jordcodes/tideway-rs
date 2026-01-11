@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import LoginForm from '@/components/auth/LoginForm.vue'
+import LoginForm from '@/components/tideway/auth/LoginForm.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 </script>
 

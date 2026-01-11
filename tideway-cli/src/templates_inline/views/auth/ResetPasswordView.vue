@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import ResetPassword from '@/components/auth/ResetPassword.vue'
+import ResetPassword from '@/components/tideway/auth/ResetPassword.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 </script>
 

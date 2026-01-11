@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import ForgotPassword from '@/components/auth/ForgotPassword.vue'
+import ForgotPassword from '@/components/tideway/auth/ForgotPassword.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 </script>
 

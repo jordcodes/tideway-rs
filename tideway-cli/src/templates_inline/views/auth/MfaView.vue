@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import MfaVerify from '@/components/auth/MfaVerify.vue'
+import MfaVerify from '@/components/tideway/auth/MfaVerify.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 </script>
 

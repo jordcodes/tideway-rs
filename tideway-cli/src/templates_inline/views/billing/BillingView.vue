@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import SubscriptionStatus from '@/components/billing/SubscriptionStatus.vue'
-import InvoiceHistory from '@/components/billing/InvoiceHistory.vue'
-import BillingPortalButton from '@/components/billing/BillingPortalButton.vue'
+import SubscriptionStatus from '@/components/tideway/billing/SubscriptionStatus.vue'
+import InvoiceHistory from '@/components/tideway/billing/InvoiceHistory.vue'
+import BillingPortalButton from '@/components/tideway/billing/BillingPortalButton.vue'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 </script>
