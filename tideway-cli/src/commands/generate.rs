@@ -76,16 +76,31 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         }
 
         match args.module {
+            Module::Auth => {
+                generate_auth_views(&engine, views_path, &args)?;
+            }
+            Module::Billing => {
+                generate_billing_views(&engine, views_path, &args)?;
+            }
+            Module::Organizations => {
+                generate_org_views(&engine, views_path, &args)?;
+            }
             Module::Admin => {
                 generate_admin_views(&engine, views_path, &args)?;
             }
             Module::All => {
+                generate_auth_views(&engine, views_path, &args)?;
+                generate_billing_views(&engine, views_path, &args)?;
+                generate_org_views(&engine, views_path, &args)?;
                 generate_admin_views(&engine, views_path, &args)?;
             }
-            _ => {
-                print_info("Views not yet available for this module");
-            }
         }
+
+        // Update router with all routes
+        update_router_all()?;
+
+        // Update App.vue with Toaster
+        update_app_vue()?;
     }
 
     // Print shadcn component requirements if using shadcn style
@@ -342,16 +357,79 @@ fn generate_admin_views(
         print_success(&format!("Generated views/admin/{}", filename));
     }
 
-    // Update router with admin routes
-    update_router()?;
+    Ok(())
+}
 
-    // Update App.vue with Sonner
-    update_app_vue()?;
+fn generate_auth_views(
+    _engine: &TemplateEngine,
+    views_path: &Path,
+    args: &GenerateArgs,
+) -> Result<()> {
+    let auth_views_path = views_path.join("auth");
+    fs::create_dir_all(&auth_views_path)?;
+
+    // Generate auth view files inline (simple wrappers around components)
+    let views = [
+        ("LoginView.vue", include_str!("../templates_inline/views/auth/LoginView.vue")),
+        ("RegisterView.vue", include_str!("../templates_inline/views/auth/RegisterView.vue")),
+        ("ForgotPasswordView.vue", include_str!("../templates_inline/views/auth/ForgotPasswordView.vue")),
+        ("ResetPasswordView.vue", include_str!("../templates_inline/views/auth/ResetPasswordView.vue")),
+        ("MfaView.vue", include_str!("../templates_inline/views/auth/MfaView.vue")),
+    ];
+
+    for (filename, content) in views {
+        let file_path = auth_views_path.join(filename);
+        write_file(&file_path, content, args.force)?;
+        print_success(&format!("Generated views/auth/{}", filename));
+    }
 
     Ok(())
 }
 
-fn update_router() -> Result<()> {
+fn generate_billing_views(
+    _engine: &TemplateEngine,
+    views_path: &Path,
+    args: &GenerateArgs,
+) -> Result<()> {
+    let billing_views_path = views_path.join("billing");
+    fs::create_dir_all(&billing_views_path)?;
+
+    let views = [
+        ("BillingView.vue", include_str!("../templates_inline/views/billing/BillingView.vue")),
+    ];
+
+    for (filename, content) in views {
+        let file_path = billing_views_path.join(filename);
+        write_file(&file_path, content, args.force)?;
+        print_success(&format!("Generated views/billing/{}", filename));
+    }
+
+    Ok(())
+}
+
+fn generate_org_views(
+    _engine: &TemplateEngine,
+    views_path: &Path,
+    args: &GenerateArgs,
+) -> Result<()> {
+    let org_views_path = views_path.join("settings");
+    fs::create_dir_all(&org_views_path)?;
+
+    let views = [
+        ("OrganizationSettingsView.vue", include_str!("../templates_inline/views/settings/OrganizationSettingsView.vue")),
+        ("MembersView.vue", include_str!("../templates_inline/views/settings/MembersView.vue")),
+    ];
+
+    for (filename, content) in views {
+        let file_path = org_views_path.join(filename);
+        write_file(&file_path, content, args.force)?;
+        print_success(&format!("Generated views/settings/{}", filename));
+    }
+
+    Ok(())
+}
+
+fn update_router_all() -> Result<()> {
     let router_path = Path::new("./src/router/index.ts");
 
     if !router_path.exists() {
@@ -361,18 +439,33 @@ fn update_router() -> Result<()> {
 
     let content = fs::read_to_string(router_path)?;
 
-    // Check if admin routes already added
-    if content.contains("AdminLayout") {
-        print_info("Admin routes already in router");
+    // Check if routes already added
+    if content.contains("LoginView") {
+        print_info("Routes already configured in router");
         return Ok(());
     }
 
-    // Find the routes array and add admin routes
-    let admin_routes = r#"
+    // All routes to add
+    let all_routes = r#"
+  // Auth routes (public)
+  { path: '/login', name: 'login', component: () => import('@/views/auth/LoginView.vue') },
+  { path: '/register', name: 'register', component: () => import('@/views/auth/RegisterView.vue') },
+  { path: '/forgot-password', name: 'forgot-password', component: () => import('@/views/auth/ForgotPasswordView.vue') },
+  { path: '/reset-password', name: 'reset-password', component: () => import('@/views/auth/ResetPasswordView.vue') },
+  { path: '/mfa', name: 'mfa', component: () => import('@/views/auth/MfaView.vue') },
+
+  // Billing (protected)
+  { path: '/billing', name: 'billing', component: () => import('@/views/billing/BillingView.vue'), meta: { requiresAuth: true } },
+
+  // Organization settings (protected)
+  { path: '/settings/organization', name: 'organization-settings', component: () => import('@/views/settings/OrganizationSettingsView.vue'), meta: { requiresAuth: true } },
+  { path: '/settings/members', name: 'members', component: () => import('@/views/settings/MembersView.vue'), meta: { requiresAuth: true } },
+
+  // Admin routes (protected, admin only)
   {
     path: '/admin',
     component: () => import('@/views/admin/AdminLayout.vue'),
-    meta: { requiresAuth: true },
+    meta: { requiresAuth: true, requiresAdmin: true },
     children: [
       { path: '', name: 'admin-dashboard', component: () => import('@/views/admin/AdminDashboardView.vue') },
       { path: 'users', name: 'admin-users', component: () => import('@/views/admin/AdminUsersView.vue') },
@@ -382,19 +475,19 @@ fn update_router() -> Result<()> {
 
     // Try to insert after the first route in the routes array
     let updated = if content.contains("routes: [") {
-        content.replace("routes: [", &format!("routes: [{}", admin_routes))
+        content.replace("routes: [", &format!("routes: [{}", all_routes))
     } else if content.contains("const routes") {
         // Handle const routes = [ ... ] pattern
-        content.replace("const routes = [", &format!("const routes = [{}", admin_routes))
+        content.replace("const routes = [", &format!("const routes = [{}", all_routes))
     } else {
         print_warning("Could not find routes array in router file");
         println!("\n{}", "Add to your router manually:".yellow().bold());
-        println!("{}", admin_routes);
+        println!("{}", all_routes);
         return Ok(());
     };
 
     fs::write(router_path, updated)?;
-    print_success("Updated router with admin routes");
+    print_success("Updated router with all routes (auth, billing, settings, admin)");
 
     Ok(())
 }
