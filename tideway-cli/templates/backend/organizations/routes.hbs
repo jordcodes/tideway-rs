@@ -1,0 +1,406 @@
+//! Organization routes module.
+
+use axum::{
+    extract::{Extension, Path},
+    routing::{get, patch, delete},
+    Json, Router,
+};
+use sea_orm::{entity::*, DatabaseConnection, QueryFilter, ColumnTrait};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tideway::auth::{AccessTokenClaims, JwtVerifier};
+use tideway::{AppContext, Result, RouteModule, TidewayError};
+use uuid::Uuid;
+
+use crate::entities::{membership, organization, user};
+
+/// Organization routes state.
+#[derive(Clone)]
+pub struct OrganizationState {
+    pub db: Arc<DatabaseConnection>,
+    pub jwt_verifier: JwtVerifier<AccessTokenClaims>,
+}
+
+/// Organization routes module.
+pub struct OrganizationModule {
+    state: OrganizationState,
+}
+
+impl OrganizationModule {
+    pub fn new(db: Arc<DatabaseConnection>, jwt_secret: String) -> Self {
+        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret(jwt_secret.as_bytes());
+        Self {
+            state: OrganizationState { db, jwt_verifier },
+        }
+    }
+}
+
+impl RouteModule for OrganizationModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/", get(list_organizations))
+            .route("/{org_id}", get(get_organization))
+            .route("/{org_id}", patch(update_organization))
+            .route("/{org_id}/members", get(list_members))
+            .route("/{org_id}/members/{user_id}", patch(update_member_role))
+            .route("/{org_id}/members/{user_id}", delete(remove_member))
+            .layer(Extension(self.state.clone()))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/organizations")
+    }
+}
+
+// Response types
+
+#[derive(Debug, Serialize)]
+pub struct OrganizationResponse {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub owner_id: String,
+    pub contact_email: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl From<organization::Model> for OrganizationResponse {
+    fn from(org: organization::Model) -> Self {
+        Self {
+            id: org.id,
+            name: org.name,
+            slug: org.slug,
+            owner_id: org.owner_id.to_string(),
+            contact_email: Some(org.contact_email),
+            created_at: org.created_at,
+            updated_at: org.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct OrganizationsListResponse {
+    pub organizations: Vec<OrganizationResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MemberResponse {
+    pub user_id: String,
+    pub org_id: String,
+    pub email: String,
+    pub name: Option<String>,
+    pub role: String,
+    pub joined_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MembersListResponse {
+    pub members: Vec<MemberResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateOrganizationBody {
+    pub name: Option<String>,
+    pub contact_email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateMemberRoleBody {
+    pub role: String,
+}
+
+// Helper to extract user ID from JWT
+async fn extract_user_id(auth_header: &str, verifier: &JwtVerifier<AccessTokenClaims>) -> Result<Uuid> {
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
+
+    let token_data = verifier.verify(token).await?;
+
+    Uuid::parse_str(&token_data.claims.standard.sub)
+        .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))
+}
+
+// Handlers
+
+async fn list_organizations(
+    Extension(state): Extension<OrganizationState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<OrganizationsListResponse>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
+
+    let memberships = membership::Entity::find()
+        .filter(membership::Column::UserId.eq(user_id))
+        .all(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let org_ids: Vec<String> = memberships.iter().map(|m| m.org_id.clone()).collect();
+
+    let orgs = if org_ids.is_empty() {
+        vec![]
+    } else {
+        organization::Entity::find()
+            .filter(organization::Column::Id.is_in(org_ids))
+            .all(state.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?
+    };
+
+    let organizations = orgs.into_iter().map(OrganizationResponse::from).collect();
+
+    Ok(Json(OrganizationsListResponse { organizations }))
+}
+
+async fn get_organization(
+    Extension(state): Extension<OrganizationState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<OrganizationResponse>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
+
+    let _membership = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .filter(membership::Column::UserId.eq(user_id))
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    let org = organization::Entity::find_by_id(&org_id)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    Ok(Json(OrganizationResponse::from(org)))
+}
+
+async fn update_organization(
+    Extension(state): Extension<OrganizationState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+    Json(body): Json<UpdateOrganizationBody>,
+) -> Result<Json<OrganizationResponse>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
+
+    let membership = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .filter(membership::Column::UserId.eq(user_id))
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    if membership.role != "owner" && membership.role != "admin" {
+        return Err(TidewayError::Forbidden("Insufficient permissions".into()));
+    }
+
+    let org = organization::Entity::find_by_id(&org_id)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let mut active: organization::ActiveModel = org.into();
+
+    if let Some(name) = body.name {
+        active.name = Set(name);
+    }
+    if let Some(email) = body.contact_email {
+        active.contact_email = Set(email);
+    }
+    active.updated_at = Set(now);
+
+    let updated = active
+        .update(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    Ok(Json(OrganizationResponse::from(updated)))
+}
+
+async fn list_members(
+    Extension(state): Extension<OrganizationState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<MembersListResponse>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
+
+    let _ = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .filter(membership::Column::UserId.eq(user_id))
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    let memberships = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .all(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let user_ids: Vec<Uuid> = memberships.iter().map(|m| m.user_id).collect();
+
+    let users = user::Entity::find()
+        .filter(user::Column::Id.is_in(user_ids))
+        .all(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let members: Vec<MemberResponse> = memberships
+        .into_iter()
+        .map(|m| {
+            let u = users.iter().find(|u| u.id == m.user_id);
+            MemberResponse {
+                user_id: m.user_id.to_string(),
+                org_id: m.org_id,
+                email: u.map(|u| u.email.clone()).unwrap_or_default(),
+                name: u.and_then(|u| u.name.clone()),
+                role: m.role,
+                joined_at: m.joined_at,
+            }
+        })
+        .collect();
+
+    Ok(Json(MembersListResponse { members }))
+}
+
+async fn update_member_role(
+    Extension(state): Extension<OrganizationState>,
+    headers: axum::http::HeaderMap,
+    Path((org_id, target_user_id)): Path<(String, String)>,
+    Json(body): Json<UpdateMemberRoleBody>,
+) -> Result<Json<serde_json::Value>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
+
+    let requester_membership = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .filter(membership::Column::UserId.eq(user_id))
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    if requester_membership.role != "owner" && requester_membership.role != "admin" {
+        return Err(TidewayError::Forbidden("Insufficient permissions".into()));
+    }
+
+    let target_uuid = Uuid::parse_str(&target_user_id)
+        .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+    if body.role == "owner" && requester_membership.role != "owner" {
+        return Err(TidewayError::Forbidden("Only owner can transfer ownership".into()));
+    }
+
+    let target = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .filter(membership::Column::UserId.eq(target_uuid))
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Member not found".into()))?;
+
+    if target.role == "owner" {
+        return Err(TidewayError::Forbidden("Cannot change owner's role".into()));
+    }
+
+    let mut active: membership::ActiveModel = target.into();
+    active.role = Set(body.role);
+
+    active
+        .update(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Member role updated"
+    })))
+}
+
+async fn remove_member(
+    Extension(state): Extension<OrganizationState>,
+    headers: axum::http::HeaderMap,
+    Path((org_id, target_user_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
+
+    let requester_membership = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .filter(membership::Column::UserId.eq(user_id))
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    let target_uuid = Uuid::parse_str(&target_user_id)
+        .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+    let can_remove = user_id == target_uuid
+        || requester_membership.role == "owner"
+        || requester_membership.role == "admin";
+
+    if !can_remove {
+        return Err(TidewayError::Forbidden("Insufficient permissions".into()));
+    }
+
+    let target = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .filter(membership::Column::UserId.eq(target_uuid))
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Member not found".into()))?;
+
+    if target.role == "owner" {
+        return Err(TidewayError::Forbidden("Cannot remove organization owner".into()));
+    }
+
+    membership::Entity::delete_by_id((org_id, target_uuid))
+        .exec(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Member removed"
+    })))
+}

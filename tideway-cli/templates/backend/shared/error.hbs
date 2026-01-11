@@ -1,0 +1,18 @@
+//! Application error types and billing state.
+
+use sea_orm::DatabaseConnection;
+use std::sync::Arc;
+use tideway::billing::{
+    CheckoutConfig, LiveStripeClient, Plans, PortalConfig, SeaOrmBillingStore,
+};
+
+/// Shared application state for billing routes.
+pub struct BillingState {
+    pub db: Arc<DatabaseConnection>,
+    pub billing_store: SeaOrmBillingStore,
+    pub stripe_client: LiveStripeClient,
+    pub plans: Plans,
+    pub checkout_config: CheckoutConfig,
+    pub portal_config: PortalConfig,
+    pub webhook_secret: String,
+}

@@ -1,0 +1,71 @@
+//! User entity.
+
+use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "users")]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: Uuid,
+    #[sea_orm(unique)]
+    pub email: String,
+    pub password_hash: String,
+    pub name: Option<String>,
+    {{#if has_organizations}}
+    pub organization_id: Option<String>,
+    {{/if}}
+    pub email_verified_at: Option<DateTimeWithTimeZone>,
+    pub locked_until: Option<DateTimeWithTimeZone>,
+    pub failed_attempts: i32,
+    pub failed_mfa_attempts: i32,
+    pub is_platform_admin: bool,
+    pub created_at: DateTimeWithTimeZone,
+    pub updated_at: DateTimeWithTimeZone,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(has_many = "super::refresh_token_family::Entity")]
+    RefreshTokenFamilies,
+    #[sea_orm(has_many = "super::verification_token::Entity")]
+    VerificationTokens,
+    {{#if has_organizations}}
+    #[sea_orm(has_many = "super::membership::Entity")]
+    Memberships,
+    #[sea_orm(
+        belongs_to = "super::organization::Entity",
+        from = "Column::OrganizationId",
+        to = "super::organization::Column::Id"
+    )]
+    Organization,
+    {{/if}}
+}
+
+impl Related<super::refresh_token_family::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::RefreshTokenFamilies.def()
+    }
+}
+
+impl Related<super::verification_token::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::VerificationTokens.def()
+    }
+}
+
+{{#if has_organizations}}
+impl Related<super::membership::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Memberships.def()
+    }
+}
+
+impl Related<super::organization::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Organization.def()
+    }
+}
+{{/if}}
+
+impl ActiveModelBehavior for ActiveModel {}

@@ -20,6 +20,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Generate(args) => commands::generate::run(args)?,
+        Commands::Backend(args) => commands::backend::run(args)?,
         Commands::Templates => commands::templates::run()?,
     }
 

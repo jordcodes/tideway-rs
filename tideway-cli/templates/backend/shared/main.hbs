@@ -1,0 +1,172 @@
+//! {{project_name_pascal}} API server.
+
+use axum::Router;
+use sea_orm::DatabaseConnection;
+use std::sync::Arc;
+use tideway::{
+    init_tracing,
+    App, AppContext,
+    ConfigBuilder, CorsConfig,
+};
+use tideway::auth::{JwtIssuer, JwtIssuerConfig};
+use tideway::billing::{
+    CheckoutConfig, LiveStripeClient, LiveStripeClientConfig, Plans, PortalConfig,
+    SeaOrmBillingStore,
+};
+use tracing::info;
+
+mod auth;
+mod billing;
+mod entities;
+{{#if has_organizations}}
+mod organizations;
+{{/if}}
+mod admin;
+
+use crate::auth::AuthModule;
+use crate::billing::billing_routes;
+{{#if has_organizations}}
+use crate::organizations::OrganizationModule;
+{{/if}}
+use crate::admin::AdminModule;
+
+pub mod config;
+pub mod error;
+
+use config::AppConfig;
+use error::BillingState;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Load .env file
+    if let Err(e) = dotenvy::dotenv() {
+        eprintln!("Warning: Failed to load .env file: {}", e);
+    }
+
+    // Initialize tracing
+    init_tracing();
+
+    // Load configuration
+    let app_config = AppConfig::from_env();
+
+    info!("Starting {} API server", app_config.app_name);
+
+    // Connect to database
+    let db = sea_orm::Database::connect(&app_config.database_url).await?;
+    info!("Connected to database");
+
+    // Run migrations
+    use migration::{Migrator, MigratorTrait};
+    Migrator::up(&db, None).await?;
+    info!("Migrations completed");
+
+    // Create JWT issuer
+    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(
+        &app_config.jwt_secret,
+        &app_config.app_name,
+    ))?);
+
+    // Create auth module
+    let auth_module = AuthModule::new(
+        Arc::new(db.clone()),
+        jwt_issuer.clone(),
+        app_config.jwt_secret.clone(),
+        app_config.app_name.clone(),
+    );
+
+    {{#if has_organizations}}
+    // Create organization module
+    let organization_module = OrganizationModule::new(
+        Arc::new(db.clone()),
+        app_config.jwt_secret.clone(),
+    );
+
+    {{/if}}
+    // Create admin module
+    let admin_module = AdminModule::new(
+        Arc::new(db.clone()),
+        app_config.jwt_secret.clone(),
+        jwt_issuer.clone(),
+    );
+
+    // Create Stripe client
+    let stripe_client = LiveStripeClient::new(
+        app_config.stripe_secret_key.clone(),
+        LiveStripeClientConfig::default(),
+    ).expect("Failed to create Stripe client");
+    info!("Stripe client initialized");
+
+    // Create billing store
+    let billing_store = SeaOrmBillingStore::new(db.clone());
+
+    // Configure plans
+    let plans = Plans::builder()
+        .plan("default")
+            .stripe_price(&app_config.stripe_price_id)
+            .display_name("Default Plan")
+            .description("Full access")
+            .trial_days(14)
+            .currency("usd")
+            .included_seats(1)
+            .features(["full_access"])
+            .done()
+        .build();
+
+    // Determine if we're in development mode
+    let is_development = app_config.host == "localhost"
+        || app_config.host == "127.0.0.1"
+        || app_config.host == "0.0.0.0";
+
+    // Create billing configs
+    let (checkout_config, portal_config) = if is_development {
+        (
+            CheckoutConfig::default().allow_localhost_http(true),
+            PortalConfig::default().allow_localhost_http(true),
+        )
+    } else {
+        (CheckoutConfig::default(), PortalConfig::default())
+    };
+
+    // Create billing state
+    let billing_state = Arc::new(BillingState {
+        db: Arc::new(db.clone()),
+        billing_store,
+        stripe_client,
+        plans,
+        checkout_config,
+        portal_config,
+        webhook_secret: app_config.stripe_webhook_secret.clone(),
+    });
+
+    // Build billing router
+    let billing_router: Router<()> = Router::new()
+        .nest("/billing", billing_routes())
+        .with_state(billing_state);
+
+    // Build tideway config
+    let config = ConfigBuilder::new()
+        .with_host(&app_config.host)
+        .with_port(app_config.port)
+        .from_env()
+        .with_cors(CorsConfig::permissive())
+        .build()?;
+
+    // Build AppContext with database
+    let context = AppContext::builder()
+        .with_database(Arc::new(tideway::SeaOrmPool::new(db, app_config.database_url.clone())))
+        .build();
+
+    // Build and serve app
+    App::with_config(config)
+        .with_context(context)
+        .register_module(auth_module)
+        {{#if has_organizations}}
+        .register_module(organization_module)
+        {{/if}}
+        .register_module(admin_module)
+        .merge_router(billing_router)
+        .serve()
+        .await?;
+
+    Ok(())
+}

@@ -1,0 +1,571 @@
+//! Authentication store implementations.
+
+use async_trait::async_trait;
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use std::sync::Arc;
+use std::time::SystemTime;
+use tideway::auth::{
+    JwtIssuer, RefreshTokenStore, TokenIssuer, UserCreator, UserLoader, UserStore,
+    PasswordResetStore, VerificationStore,
+};
+use tideway::{Result, TidewayError};
+use uuid::Uuid;
+use chrono::{Duration, Utc};
+
+use crate::entities::{user, refresh_token_family, verification_token};
+
+/// Database-backed user store implementation.
+#[derive(Clone)]
+pub struct DbUserStore {
+    db: Arc<DatabaseConnection>,
+    max_failed_attempts: i32,
+    lockout_duration_minutes: i64,
+}
+
+impl DbUserStore {
+    pub fn new(db: Arc<DatabaseConnection>) -> Self {
+        Self {
+            db,
+            max_failed_attempts: 5,
+            lockout_duration_minutes: 15,
+        }
+    }
+}
+
+#[async_trait]
+impl UserStore for DbUserStore {
+    type User = user::Model;
+
+    async fn find_by_email(&self, email: &str) -> Result<Option<Self::User>> {
+        let user = user::Entity::find()
+            .filter(user::Column::Email.eq(email.to_lowercase()))
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(user)
+    }
+
+    async fn find_by_id(&self, id: &str) -> Result<Option<Self::User>> {
+        let uuid = Uuid::parse_str(id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+        let user = user::Entity::find_by_id(uuid)
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(user)
+    }
+
+    fn user_id(&self, user: &Self::User) -> String {
+        user.id.to_string()
+    }
+
+    fn user_email(&self, user: &Self::User) -> String {
+        user.email.clone()
+    }
+
+    fn user_name(&self, user: &Self::User) -> Option<String> {
+        user.name.clone()
+    }
+
+    async fn get_password_hash(&self, user: &Self::User) -> Result<String> {
+        Ok(user.password_hash.clone())
+    }
+
+    async fn update_password_hash(&self, user: &Self::User, hash: &str) -> Result<()> {
+        let mut active: user::ActiveModel = user.clone().into();
+        active.password_hash = Set(hash.to_string());
+        active.updated_at = Set(Utc::now().into());
+        active.update(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn is_verified(&self, user: &Self::User) -> Result<bool> {
+        Ok(user.email_verified_at.is_some())
+    }
+
+    async fn mark_verified(&self, user: &Self::User) -> Result<()> {
+        let mut active: user::ActiveModel = user.clone().into();
+        active.email_verified_at = Set(Some(Utc::now().into()));
+        active.updated_at = Set(Utc::now().into());
+        active.update(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn is_locked(&self, user: &Self::User) -> Result<Option<SystemTime>> {
+        if let Some(locked_until) = user.locked_until {
+            let locked_time: SystemTime = locked_until.into();
+            if locked_time > SystemTime::now() {
+                return Ok(Some(locked_time));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn record_failed_attempt(&self, user: &Self::User) -> Result<()> {
+        let new_count = user.failed_attempts + 1;
+        let mut active: user::ActiveModel = user.clone().into();
+        active.failed_attempts = Set(new_count);
+
+        if new_count >= self.max_failed_attempts {
+            let locked_until = Utc::now() + Duration::minutes(self.lockout_duration_minutes);
+            active.locked_until = Set(Some(locked_until.into()));
+        }
+
+        active.updated_at = Set(Utc::now().into());
+        active.update(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn record_failed_mfa_attempt(&self, user: &Self::User) -> Result<()> {
+        let new_count = user.failed_mfa_attempts + 1;
+        let mut active: user::ActiveModel = user.clone().into();
+        active.failed_mfa_attempts = Set(new_count);
+
+        if new_count >= self.max_failed_attempts {
+            let locked_until = Utc::now() + Duration::minutes(self.lockout_duration_minutes);
+            active.locked_until = Set(Some(locked_until.into()));
+        }
+
+        active.updated_at = Set(Utc::now().into());
+        active.update(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn clear_failed_attempts(&self, user: &Self::User) -> Result<()> {
+        let mut active: user::ActiveModel = user.clone().into();
+        active.failed_attempts = Set(0);
+        active.failed_mfa_attempts = Set(0);
+        active.locked_until = Set(None);
+        active.updated_at = Set(Utc::now().into());
+        active.update(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn has_mfa_enabled(&self, _user: &Self::User) -> Result<bool> {
+        // TODO: Implement MFA check
+        Ok(false)
+    }
+
+    async fn get_totp_secret(&self, _user: &Self::User) -> Result<Option<String>> {
+        // TODO: Implement TOTP secret retrieval
+        Ok(None)
+    }
+
+    async fn get_backup_codes(&self, _user: &Self::User) -> Result<Vec<String>> {
+        // TODO: Implement backup codes retrieval
+        Ok(vec![])
+    }
+
+    async fn remove_backup_code(&self, _user: &Self::User, _index: usize) -> Result<()> {
+        // TODO: Implement backup code removal
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl UserCreator for DbUserStore {
+    type User = user::Model;
+
+    fn user_id(&self, user: &Self::User) -> String {
+        user.id.to_string()
+    }
+
+    async fn email_exists(&self, email: &str) -> Result<bool> {
+        let exists = user::Entity::find()
+            .filter(user::Column::Email.eq(email.to_lowercase()))
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?
+            .is_some();
+        Ok(exists)
+    }
+
+    async fn create_user(
+        &self,
+        email: &str,
+        password_hash: &str,
+        name: Option<&str>,
+    ) -> Result<Self::User> {
+        let now = Utc::now();
+        let auto_verify = std::env::var("AUTO_VERIFY_EMAIL").is_ok();
+
+        let user = user::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            email: Set(email.to_lowercase()),
+            password_hash: Set(password_hash.to_string()),
+            name: Set(name.map(String::from)),
+            {{#if has_organizations}}
+            organization_id: Set(None),
+            {{/if}}
+            email_verified_at: Set(if auto_verify { Some(now.into()) } else { None }),
+            locked_until: Set(None),
+            failed_attempts: Set(0),
+            failed_mfa_attempts: Set(0),
+            is_platform_admin: Set(false),
+            created_at: Set(now.into()),
+            updated_at: Set(now.into()),
+        };
+
+        let user = user.insert(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(user)
+    }
+
+    async fn send_verification_email(&self, _user: &Self::User) -> Result<()> {
+        tracing::info!("Would send verification email to user");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl PasswordResetStore for DbUserStore {
+    type User = user::Model;
+
+    async fn find_by_email(&self, email: &str) -> Result<Option<Self::User>> {
+        UserStore::find_by_email(self, email).await
+    }
+
+    fn user_id(&self, user: &Self::User) -> String {
+        UserStore::user_id(self, user)
+    }
+
+    async fn store_reset_token(
+        &self,
+        user_id: &str,
+        token_hash: &str,
+        expires: SystemTime,
+    ) -> Result<()> {
+        let uuid = Uuid::parse_str(user_id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+        let expires_at: chrono::DateTime<Utc> = expires.into();
+
+        let token = verification_token::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            user_id: Set(uuid),
+            token_hash: Set(token_hash.to_string()),
+            token_type: Set("password_reset".to_string()),
+            expires_at: Set(expires_at.into()),
+            used_at: Set(None),
+            created_at: Set(Utc::now().into()),
+        };
+
+        token.insert(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn consume_reset_token(&self, token_hash: &str) -> Result<Option<String>> {
+        let token = verification_token::Entity::find()
+            .filter(verification_token::Column::TokenHash.eq(token_hash))
+            .filter(verification_token::Column::TokenType.eq("password_reset"))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        if let Some(token) = token {
+            let expires_at: SystemTime = token.expires_at.into();
+            if expires_at < SystemTime::now() {
+                return Ok(None);
+            }
+
+            let user_id = token.user_id.to_string();
+            let mut active: verification_token::ActiveModel = token.into();
+            active.used_at = Set(Some(Utc::now().into()));
+            active.update(self.db.as_ref()).await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+            return Ok(Some(user_id));
+        }
+        Ok(None)
+    }
+
+    async fn update_password(&self, user_id: &str, hash: &str) -> Result<()> {
+        let uuid = Uuid::parse_str(user_id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+        let user = user::Entity::find_by_id(uuid)
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?
+            .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+        self.update_password_hash(&user, hash).await
+    }
+
+    async fn invalidate_sessions(&self, _user_id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    async fn send_reset_email(
+        &self,
+        _user: &Self::User,
+        _token: &str,
+        _expires_in: std::time::Duration,
+    ) -> Result<()> {
+        tracing::info!("Would send password reset email");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl VerificationStore for DbUserStore {
+    async fn store_verification_token(
+        &self,
+        user_id: &str,
+        token_hash: &str,
+        expires: SystemTime,
+    ) -> Result<()> {
+        let uuid = Uuid::parse_str(user_id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+        let expires_at: chrono::DateTime<Utc> = expires.into();
+
+        let token = verification_token::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            user_id: Set(uuid),
+            token_hash: Set(token_hash.to_string()),
+            token_type: Set("email_verification".to_string()),
+            expires_at: Set(expires_at.into()),
+            used_at: Set(None),
+            created_at: Set(Utc::now().into()),
+        };
+
+        token.insert(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn consume_verification_token(&self, token_hash: &str) -> Result<Option<String>> {
+        let token = verification_token::Entity::find()
+            .filter(verification_token::Column::TokenHash.eq(token_hash))
+            .filter(verification_token::Column::TokenType.eq("email_verification"))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        if let Some(token) = token {
+            let expires_at: SystemTime = token.expires_at.into();
+            if expires_at < SystemTime::now() {
+                return Ok(None);
+            }
+
+            let user_id = token.user_id.to_string();
+            let mut active: verification_token::ActiveModel = token.into();
+            active.used_at = Set(Some(Utc::now().into()));
+            active.update(self.db.as_ref()).await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+            return Ok(Some(user_id));
+        }
+        Ok(None)
+    }
+
+    async fn mark_user_verified(&self, user_id: &str) -> Result<()> {
+        let uuid = Uuid::parse_str(user_id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+        let user = user::Entity::find_by_id(uuid)
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?
+            .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+        self.mark_verified(&user).await
+    }
+
+    async fn send_verification_email(
+        &self,
+        _user_id: &str,
+        _email: &str,
+        _token: &str,
+        _expires_in: std::time::Duration,
+    ) -> Result<()> {
+        tracing::info!("Would send verification email");
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl UserLoader for DbUserStore {
+    type User = user::Model;
+
+    async fn load_user(&self, user_id: &str) -> Result<Option<Self::User>> {
+        self.find_by_id(user_id).await
+    }
+
+    fn user_email(&self, user: &Self::User) -> Option<String> {
+        Some(user.email.clone())
+    }
+
+    fn user_name(&self, user: &Self::User) -> Option<String> {
+        user.name.clone()
+    }
+}
+
+/// Database-backed refresh token store implementation.
+#[derive(Clone)]
+pub struct DbRefreshTokenStore {
+    db: Arc<DatabaseConnection>,
+}
+
+impl DbRefreshTokenStore {
+    pub fn new(db: Arc<DatabaseConnection>) -> Self {
+        Self { db }
+    }
+}
+
+#[async_trait]
+impl RefreshTokenStore for DbRefreshTokenStore {
+    async fn is_family_revoked(&self, family: &str) -> Result<bool> {
+        let record = refresh_token_family::Entity::find_by_id(family.to_string())
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(record.map(|r| r.revoked).unwrap_or(true))
+    }
+
+    async fn get_family_generation(&self, family: &str) -> Result<Option<u32>> {
+        let record = refresh_token_family::Entity::find_by_id(family.to_string())
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(record.map(|r| r.generation as u32))
+    }
+
+    async fn set_family_generation(&self, family: &str, generation: u32) -> Result<()> {
+        let record = refresh_token_family::Entity::find_by_id(family.to_string())
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        if let Some(record) = record {
+            let mut active: refresh_token_family::ActiveModel = record.into();
+            active.generation = Set(generation as i32);
+            active.update(self.db.as_ref()).await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn revoke_family(&self, family: &str) -> Result<()> {
+        let record = refresh_token_family::Entity::find_by_id(family.to_string())
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        if let Some(record) = record {
+            let mut active: refresh_token_family::ActiveModel = record.into();
+            active.revoked = Set(true);
+            active.update(self.db.as_ref()).await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn revoke_all_for_user(&self, user_id: &str) -> Result<()> {
+        let uuid = Uuid::parse_str(user_id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+        let families = refresh_token_family::Entity::find()
+            .filter(refresh_token_family::Column::UserId.eq(uuid))
+            .filter(refresh_token_family::Column::Revoked.eq(false))
+            .all(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        for family in families {
+            let mut active: refresh_token_family::ActiveModel = family.into();
+            active.revoked = Set(true);
+            active.update(self.db.as_ref()).await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn associate_family_with_user(&self, family: &str, user_id: &str) -> Result<()> {
+        let uuid = Uuid::parse_str(user_id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+        let record = refresh_token_family::ActiveModel {
+            family: Set(family.to_string()),
+            user_id: Set(uuid),
+            generation: Set(0),
+            revoked: Set(false),
+            created_at: Set(Utc::now().into()),
+        };
+
+        record.insert(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(())
+    }
+}
+
+/// In-memory MFA token store (for development).
+#[derive(Clone, Default)]
+pub struct InMemoryMfaTokenStore;
+
+impl InMemoryMfaTokenStore {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+/// Token issuer that adds custom claims to access tokens.
+#[derive(Clone)]
+pub struct AppTokenIssuer {
+    jwt_issuer: Arc<JwtIssuer>,
+    user_store: DbUserStore,
+}
+
+impl AppTokenIssuer {
+    pub fn new(jwt_issuer: Arc<JwtIssuer>, user_store: DbUserStore) -> Self {
+        Self { jwt_issuer, user_store }
+    }
+}
+
+#[async_trait]
+impl TokenIssuer for AppTokenIssuer {
+    async fn issue_access_token(&self, user_id: &str, remember_me: bool) -> Result<String> {
+        let user = self.user_store.find_by_id(user_id).await?
+            .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+        let expires_in = if remember_me {
+            std::time::Duration::from_secs(30 * 24 * 60 * 60) // 30 days
+        } else {
+            std::time::Duration::from_secs(15 * 60) // 15 minutes
+        };
+
+        let mut extra_claims = std::collections::HashMap::new();
+        extra_claims.insert("email".to_string(), serde_json::Value::String(user.email.clone()));
+        if let Some(name) = &user.name {
+            extra_claims.insert("name".to_string(), serde_json::Value::String(name.clone()));
+        }
+        extra_claims.insert("is_admin".to_string(), serde_json::Value::Bool(user.is_platform_admin));
+        {{#if has_organizations}}
+        if let Some(org_id) = &user.organization_id {
+            extra_claims.insert("org_id".to_string(), serde_json::Value::String(org_id.clone()));
+        }
+        {{/if}}
+
+        self.jwt_issuer.issue_with_claims(user_id, expires_in, extra_claims)
+            .map_err(|e| TidewayError::Internal(e.to_string()))
+    }
+
+    async fn issue_refresh_token(&self, user_id: &str, _remember_me: bool) -> Result<(String, String)> {
+        // Generate a new token family for rotation
+        let family = uuid::Uuid::new_v4().to_string();
+        let token = self.jwt_issuer.issue_refresh_token(user_id, &family)
+            .map_err(|e| TidewayError::Internal(e.to_string()))?;
+        Ok((token, family))
+    }
+}

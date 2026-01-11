@@ -1,0 +1,596 @@
+//! Admin routes module.
+
+use axum::{
+    extract::{Extension, Path, Query},
+    routing::{get, patch, post},
+    Json, Router,
+};
+use sea_orm::{entity::*, ColumnTrait, DatabaseConnection, PaginatorTrait, QueryFilter, QueryOrder};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tideway::auth::{AccessTokenClaims, JwtIssuer, JwtVerifier, TokenSubject};
+use tideway::{AppContext, Result, RouteModule, TidewayError};
+use uuid::Uuid;
+use chrono::{Duration, Utc};
+
+use crate::entities::user;
+{{#if has_organizations}}
+use crate::entities::{membership, organization};
+{{/if}}
+
+/// Admin routes state.
+#[derive(Clone)]
+pub struct AdminState {
+    pub db: Arc<DatabaseConnection>,
+    pub jwt_verifier: JwtVerifier<AccessTokenClaims>,
+    pub jwt_issuer: Arc<JwtIssuer>,
+}
+
+/// Admin routes module.
+pub struct AdminModule {
+    state: AdminState,
+}
+
+impl AdminModule {
+    pub fn new(
+        db: Arc<DatabaseConnection>,
+        jwt_secret: String,
+        jwt_issuer: Arc<JwtIssuer>,
+    ) -> Self {
+        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret(jwt_secret.as_bytes());
+        Self {
+            state: AdminState {
+                db,
+                jwt_verifier,
+                jwt_issuer,
+            },
+        }
+    }
+}
+
+impl RouteModule for AdminModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/stats", get(get_stats))
+            .route("/users", get(list_users))
+            .route("/users/{user_id}", get(get_user))
+            .route("/users/{user_id}", patch(update_user))
+            .route("/users/{user_id}/impersonate", post(start_impersonation))
+            {{#if has_organizations}}
+            .route("/organizations", get(list_organizations))
+            .route("/organizations/{org_id}", get(get_organization))
+            {{/if}}
+            .route("/impersonation/end", post(end_impersonation))
+            .layer(Extension(self.state.clone()))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/admin")
+    }
+}
+
+// Request/Response types
+
+#[derive(Debug, Serialize)]
+pub struct PlatformStats {
+    pub total_users: u64,
+    {{#if has_organizations}}
+    pub total_organizations: u64,
+    {{/if}}
+    pub active_subscriptions: u64,
+    pub mrr_cents: u64,
+    pub recent_signups: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ListUsersQuery {
+    pub search: Option<String>,
+    #[serde(default = "default_page")]
+    pub page: u32,
+    #[serde(default = "default_per_page")]
+    pub per_page: u32,
+}
+
+fn default_page() -> u32 { 1 }
+fn default_per_page() -> u32 { 20 }
+
+#[derive(Debug, Serialize)]
+pub struct AdminUserResponse {
+    pub id: String,
+    pub email: String,
+    pub name: Option<String>,
+    pub mfa_enabled: bool,
+    pub email_verified: bool,
+    pub locked: bool,
+    pub is_platform_admin: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaginatedUsers {
+    pub items: Vec<AdminUserResponse>,
+    pub total: u64,
+    pub page: u32,
+    pub per_page: u32,
+    pub total_pages: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateUserBody {
+    pub name: Option<String>,
+    pub email_verified: Option<bool>,
+    pub locked: Option<bool>,
+    pub is_platform_admin: Option<bool>,
+}
+
+{{#if has_organizations}}
+#[derive(Debug, Deserialize)]
+pub struct ListOrgsQuery {
+    pub search: Option<String>,
+    #[serde(default = "default_page")]
+    pub page: u32,
+    #[serde(default = "default_per_page")]
+    pub per_page: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminOrgResponse {
+    pub id: String,
+    pub name: String,
+    pub slug: String,
+    pub owner_id: String,
+    pub contact_email: Option<String>,
+    pub subscription_status: Option<String>,
+    pub member_count: Option<u64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PaginatedOrgs {
+    pub items: Vec<AdminOrgResponse>,
+    pub total: u64,
+    pub page: u32,
+    pub per_page: u32,
+    pub total_pages: u32,
+}
+{{/if}}
+
+#[derive(Debug, Deserialize)]
+pub struct ImpersonateRequest {
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImpersonationResponse {
+    pub session_id: String,
+    pub target_user_id: String,
+    pub target_user_email: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_at: i64,
+}
+
+// Helper to extract and verify admin user
+async fn require_admin(
+    auth_header: &str,
+    state: &AdminState,
+) -> Result<user::Model> {
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
+
+    let token_data = state.jwt_verifier.verify(token).await?;
+
+    let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
+        .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
+
+    let user = user::Entity::find_by_id(user_id)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))?;
+
+    if !user.is_platform_admin {
+        return Err(TidewayError::Forbidden("Admin access required".into()));
+    }
+
+    Ok(user)
+}
+
+// Handlers
+
+async fn get_stats(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<PlatformStats>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    require_admin(auth_header, &state).await?;
+
+    let total_users = user::Entity::find()
+        .count(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    {{#if has_organizations}}
+    let total_organizations = organization::Entity::find()
+        .count(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+    {{/if}}
+
+    let thirty_days_ago = Utc::now() - Duration::days(30);
+    let recent_signups = user::Entity::find()
+        .filter(user::Column::CreatedAt.gte(thirty_days_ago))
+        .count(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    // TODO: Calculate from billing tables
+    let active_subscriptions = 0u64;
+    let mrr_cents = 0u64;
+
+    Ok(Json(PlatformStats {
+        total_users,
+        {{#if has_organizations}}
+        total_organizations,
+        {{/if}}
+        active_subscriptions,
+        mrr_cents,
+        recent_signups,
+    }))
+}
+
+async fn list_users(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<ListUsersQuery>,
+) -> Result<Json<PaginatedUsers>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    require_admin(auth_header, &state).await?;
+
+    let mut select = user::Entity::find();
+
+    if let Some(search) = &query.search {
+        select = select.filter(
+            user::Column::Email.contains(search)
+                .or(user::Column::Name.contains(search))
+        );
+    }
+
+    select = select.order_by_desc(user::Column::CreatedAt);
+
+    let per_page = query.per_page.min(100).max(1) as u64;
+    let page = query.page.max(1) as u64;
+
+    let paginator = select.paginate(state.db.as_ref(), per_page);
+    let total = paginator.num_items().await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let users = paginator.fetch_page(page - 1).await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let items: Vec<AdminUserResponse> = users
+        .into_iter()
+        .map(|u| {
+            AdminUserResponse {
+                id: u.id.to_string(),
+                email: u.email,
+                name: u.name,
+                mfa_enabled: false, // TODO: Check MFA status
+                email_verified: u.email_verified_at.is_some(),
+                locked: u.locked_until.map(|t| t > Utc::now()).unwrap_or(false),
+                is_platform_admin: u.is_platform_admin,
+                created_at: u.created_at.timestamp(),
+                updated_at: u.updated_at.timestamp(),
+            }
+        })
+        .collect();
+
+    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+
+    Ok(Json(PaginatedUsers {
+        items,
+        total,
+        page: query.page,
+        per_page: query.per_page,
+        total_pages,
+    }))
+}
+
+async fn get_user(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+    Path(user_id): Path<String>,
+) -> Result<Json<AdminUserResponse>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    require_admin(auth_header, &state).await?;
+
+    let target_uuid = Uuid::parse_str(&user_id)
+        .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+    let user = user::Entity::find_by_id(target_uuid)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+    Ok(Json(AdminUserResponse {
+        id: user.id.to_string(),
+        email: user.email,
+        name: user.name,
+        mfa_enabled: false, // TODO: Check MFA status
+        email_verified: user.email_verified_at.is_some(),
+        locked: user.locked_until.map(|t| t > Utc::now()).unwrap_or(false),
+        is_platform_admin: user.is_platform_admin,
+        created_at: user.created_at.timestamp(),
+        updated_at: user.updated_at.timestamp(),
+    }))
+}
+
+async fn update_user(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+    Path(user_id): Path<String>,
+    Json(body): Json<UpdateUserBody>,
+) -> Result<Json<serde_json::Value>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    require_admin(auth_header, &state).await?;
+
+    let target_uuid = Uuid::parse_str(&user_id)
+        .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+    let user = user::Entity::find_by_id(target_uuid)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+    let mut active: user::ActiveModel = user.into();
+
+    if let Some(name) = body.name {
+        active.name = Set(Some(name));
+    }
+
+    if let Some(verified) = body.email_verified {
+        if verified {
+            active.email_verified_at = Set(Some(Utc::now().into()));
+        } else {
+            active.email_verified_at = Set(None);
+        }
+    }
+
+    if let Some(locked) = body.locked {
+        if locked {
+            active.locked_until = Set(Some((Utc::now() + Duration::days(36500)).into()));
+        } else {
+            active.locked_until = Set(None);
+        }
+    }
+
+    if let Some(is_admin) = body.is_platform_admin {
+        active.is_platform_admin = Set(is_admin);
+    }
+
+    active.updated_at = Set(Utc::now().into());
+
+    active
+        .update(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "User updated"
+    })))
+}
+
+{{#if has_organizations}}
+async fn list_organizations(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+    Query(query): Query<ListOrgsQuery>,
+) -> Result<Json<PaginatedOrgs>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    require_admin(auth_header, &state).await?;
+
+    let mut select = organization::Entity::find();
+
+    if let Some(search) = &query.search {
+        select = select.filter(
+            organization::Column::Name.contains(search)
+                .or(organization::Column::Slug.contains(search))
+        );
+    }
+
+    select = select.order_by_desc(organization::Column::CreatedAt);
+
+    let per_page = query.per_page.min(100).max(1) as u64;
+    let page = query.page.max(1) as u64;
+
+    let paginator = select.paginate(state.db.as_ref(), per_page);
+    let total = paginator.num_items().await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let orgs = paginator.fetch_page(page - 1).await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let org_ids: Vec<String> = orgs.iter().map(|o| o.id.clone()).collect();
+
+    let member_counts = membership::Entity::find()
+        .filter(membership::Column::OrgId.is_in(org_ids.clone()))
+        .all(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let mut count_map: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for m in member_counts {
+        *count_map.entry(m.org_id).or_insert(0) += 1;
+    }
+
+    let items: Vec<AdminOrgResponse> = orgs
+        .into_iter()
+        .map(|o| {
+            let member_count = count_map.get(&o.id).copied();
+            AdminOrgResponse {
+                id: o.id,
+                name: o.name,
+                slug: o.slug,
+                owner_id: o.owner_id.to_string(),
+                contact_email: Some(o.contact_email),
+                subscription_status: None, // TODO: Fetch from billing
+                member_count,
+                created_at: o.created_at,
+                updated_at: o.updated_at,
+            }
+        })
+        .collect();
+
+    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+
+    Ok(Json(PaginatedOrgs {
+        items,
+        total,
+        page: query.page,
+        per_page: query.per_page,
+        total_pages,
+    }))
+}
+
+async fn get_organization(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<AdminOrgResponse>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    require_admin(auth_header, &state).await?;
+
+    let org = organization::Entity::find_by_id(&org_id)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    let member_count = membership::Entity::find()
+        .filter(membership::Column::OrgId.eq(&org_id))
+        .count(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    Ok(Json(AdminOrgResponse {
+        id: org.id,
+        name: org.name,
+        slug: org.slug,
+        owner_id: org.owner_id.to_string(),
+        contact_email: Some(org.contact_email),
+        subscription_status: None, // TODO: Fetch from billing
+        member_count: Some(member_count),
+        created_at: org.created_at,
+        updated_at: org.updated_at,
+    }))
+}
+{{/if}}
+
+async fn start_impersonation(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+    Path(user_id): Path<String>,
+    Json(body): Json<ImpersonateRequest>,
+) -> Result<Json<ImpersonationResponse>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let admin = require_admin(auth_header, &state).await?;
+
+    let target_uuid = Uuid::parse_str(&user_id)
+        .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+
+    let target_user = user::Entity::find_by_id(target_uuid)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+    tracing::info!(
+        admin_id = %admin.id,
+        admin_email = %admin.email,
+        target_id = %target_user.id,
+        target_email = %target_user.email,
+        reason = ?body.reason,
+        "Admin started impersonation"
+    );
+
+    let session_id = Uuid::new_v4().to_string();
+    let expires_at = (Utc::now() + Duration::hours(1)).timestamp();
+
+    let subject = TokenSubject {
+        user_id: &target_user.id.to_string(),
+        email: Some(&target_user.email),
+        name: target_user.name.as_deref(),
+        custom: None::<()>,
+    };
+    let tokens = state.jwt_issuer.issue(subject, false)
+        .map_err(|e| TidewayError::Internal(format!("Failed to issue token: {}", e)))?;
+
+    Ok(Json(ImpersonationResponse {
+        session_id,
+        target_user_id: target_user.id.to_string(),
+        target_user_email: target_user.email,
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at,
+    }))
+}
+
+async fn end_impersonation(
+    Extension(state): Extension<AdminState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<serde_json::Value>> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
+
+    let token_data = state.jwt_verifier.verify(token).await?;
+
+    tracing::info!(
+        user_id = %token_data.claims.standard.sub,
+        "Impersonation session ended"
+    );
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Impersonation ended"
+    })))
+}

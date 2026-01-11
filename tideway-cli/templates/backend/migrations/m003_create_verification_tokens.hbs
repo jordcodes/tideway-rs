@@ -1,0 +1,66 @@
+//! Create verification_tokens table.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(VerificationTokens::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(VerificationTokens::Id).uuid().not_null().primary_key())
+                    .col(ColumnDef::new(VerificationTokens::UserId).uuid().not_null())
+                    .col(ColumnDef::new(VerificationTokens::TokenHash).string().not_null())
+                    .col(ColumnDef::new(VerificationTokens::TokenType).string().not_null())
+                    .col(ColumnDef::new(VerificationTokens::ExpiresAt).timestamp_with_time_zone().not_null())
+                    .col(ColumnDef::new(VerificationTokens::UsedAt).timestamp_with_time_zone())
+                    .col(
+                        ColumnDef::new(VerificationTokens::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(VerificationTokens::Table, VerificationTokens::UserId)
+                            .to(super::m001_create_users::Users::Table, super::m001_create_users::Users::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_verification_tokens_hash")
+                    .table(VerificationTokens::Table)
+                    .col(VerificationTokens::TokenHash)
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(VerificationTokens::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum VerificationTokens {
+    Table,
+    Id,
+    UserId,
+    TokenHash,
+    TokenType,
+    ExpiresAt,
+    UsedAt,
+    CreatedAt,
+}

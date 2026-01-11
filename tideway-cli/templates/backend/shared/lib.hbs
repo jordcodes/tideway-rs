@@ -1,0 +1,11 @@
+//! {{project_name_pascal}} library exports.
+
+pub mod auth;
+pub mod billing;
+pub mod config;
+pub mod entities;
+pub mod error;
+{{#if has_organizations}}
+pub mod organizations;
+{{/if}}
+pub mod admin;

@@ -17,8 +17,46 @@ pub enum Commands {
     /// Generate frontend components
     Generate(GenerateArgs),
 
+    /// Generate backend scaffolding (routes, entities, migrations)
+    Backend(BackendArgs),
+
     /// List available templates
     Templates,
+}
+
+#[derive(Parser, Debug)]
+pub struct BackendArgs {
+    /// Preset: b2c (auth + billing + admin) or b2b (includes organizations)
+    #[arg(value_enum)]
+    pub preset: BackendPreset,
+
+    /// Project name (used for module naming)
+    #[arg(short, long, default_value = "my_app")]
+    pub name: String,
+
+    /// Output directory for generated source files
+    #[arg(short, long, default_value = "./src")]
+    pub output: String,
+
+    /// Output directory for migrations
+    #[arg(long, default_value = "./migration/src")]
+    pub migrations_output: String,
+
+    /// Overwrite existing files without prompting
+    #[arg(long, default_value = "false")]
+    pub force: bool,
+
+    /// Database type
+    #[arg(long, default_value = "postgres", value_parser = ["postgres", "sqlite"])]
+    pub database: String,
+}
+
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
+pub enum BackendPreset {
+    /// B2C: Auth + Billing + Admin (no organizations)
+    B2c,
+    /// B2B: Auth + Billing + Organizations + Admin
+    B2b,
 }
 
 #[derive(Parser, Debug)]
@@ -117,6 +155,15 @@ impl std::fmt::Display for Style {
             Style::Shadcn => write!(f, "shadcn"),
             Style::Tailwind => write!(f, "tailwind"),
             Style::Unstyled => write!(f, "unstyled"),
+        }
+    }
+}
+
+impl std::fmt::Display for BackendPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendPreset::B2c => write!(f, "b2c"),
+            BackendPreset::B2b => write!(f, "b2b"),
         }
     }
 }

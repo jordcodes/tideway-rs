@@ -1,0 +1,349 @@
+//! Billing routes for Stripe integration.
+
+use axum::{
+    body::Bytes,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    routing::{get, post},
+    Json, Router,
+};
+{{#if has_organizations}}
+use sea_orm::EntityTrait;
+{{/if}}
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tideway::billing::{
+    BillingStore, CheckoutManager, CheckoutRequest as TidewayCheckoutRequest, InvoiceManager,
+    PortalManager, WebhookHandler, WebhookOutcome,
+};
+use tideway::Result;
+
+{{#if has_organizations}}
+use crate::entities::organization;
+{{/if}}
+use crate::error::BillingState;
+
+/// Billing routes
+pub fn billing_routes() -> Router<Arc<BillingState>> {
+    Router::new()
+        .route("/checkout", post(create_checkout))
+        .route("/subscription", get(get_subscription))
+        .route("/invoices", get(list_invoices))
+        .route("/portal", post(create_portal))
+        .route("/webhook", post(handle_webhook))
+}
+
+// Request/Response types
+
+#[derive(Debug, Deserialize)]
+pub struct CheckoutRequest {
+    {{#if has_organizations}}
+    pub organization_id: String,
+    {{else}}
+    pub user_id: String,
+    {{/if}}
+    pub success_url: String,
+    pub cancel_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CheckoutResponse {
+    pub checkout_url: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SubscriptionRequest {
+    {{#if has_organizations}}
+    pub organization_id: String,
+    {{else}}
+    pub user_id: String,
+    {{/if}}
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubscriptionResponse {
+    pub has_subscription: bool,
+    pub status: Option<String>,
+    pub plan_id: Option<String>,
+    pub trial_days_remaining: Option<u32>,
+    pub cancel_at_period_end: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PortalRequest {
+    {{#if has_organizations}}
+    pub organization_id: String,
+    {{else}}
+    pub user_id: String,
+    {{/if}}
+    pub return_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PortalResponse {
+    pub portal_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InvoicesRequest {
+    {{#if has_organizations}}
+    pub organization_id: String,
+    {{else}}
+    pub user_id: String,
+    {{/if}}
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvoiceResponse {
+    pub id: String,
+    pub status: String,
+    pub amount_due: i64,
+    pub amount_paid: i64,
+    pub currency: String,
+    pub created: u64,
+    pub invoice_pdf: Option<String>,
+    pub hosted_invoice_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvoicesListResponse {
+    pub invoices: Vec<InvoiceResponse>,
+}
+
+// Handlers
+
+async fn create_checkout(
+    State(state): State<Arc<BillingState>>,
+    Json(body): Json<CheckoutRequest>,
+) -> Result<Json<CheckoutResponse>> {
+    {{#if has_organizations}}
+    let org = organization::Entity::find_by_id(&body.organization_id)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| tideway::TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| tideway::TidewayError::NotFound("Organization not found".to_string()))?;
+
+    let checkout_manager = CheckoutManager::new(
+        state.billing_store.clone(),
+        state.stripe_client.clone(),
+        state.plans.clone(),
+        state.checkout_config.clone(),
+    );
+
+    let request = TidewayCheckoutRequest::new(
+        "default",
+        body.success_url,
+        body.cancel_url,
+    );
+
+    let session = checkout_manager.create_checkout_session(&org, request).await?;
+    {{else}}
+    // For B2C, create a simple billable entity
+    let billable = SimpleBillable {
+        id: body.user_id.clone(),
+        email: "".to_string(), // Would be fetched from user
+    };
+
+    let checkout_manager = CheckoutManager::new(
+        state.billing_store.clone(),
+        state.stripe_client.clone(),
+        state.plans.clone(),
+        state.checkout_config.clone(),
+    );
+
+    let request = TidewayCheckoutRequest::new(
+        "default",
+        body.success_url,
+        body.cancel_url,
+    );
+
+    let session = checkout_manager.create_checkout_session(&billable, request).await?;
+    {{/if}}
+
+    Ok(Json(CheckoutResponse {
+        checkout_url: session.url,
+        session_id: session.id,
+    }))
+}
+
+async fn get_subscription(
+    State(state): State<Arc<BillingState>>,
+    axum::extract::Query(params): axum::extract::Query<SubscriptionRequest>,
+) -> Result<Json<SubscriptionResponse>> {
+    {{#if has_organizations}}
+    let billable_id = &params.organization_id;
+    {{else}}
+    let billable_id = &params.user_id;
+    {{/if}}
+
+    let subscription = state.billing_store
+        .get_subscription(billable_id)
+        .await?;
+
+    match subscription {
+        Some(sub) => {
+            Ok(Json(SubscriptionResponse {
+                has_subscription: true,
+                status: Some(sub.status.as_str().to_string()),
+                plan_id: Some(sub.plan_id.clone()),
+                trial_days_remaining: sub.trial_days_remaining(),
+                cancel_at_period_end: sub.cancel_at_period_end,
+            }))
+        }
+        None => {
+            Ok(Json(SubscriptionResponse {
+                has_subscription: false,
+                status: None,
+                plan_id: None,
+                trial_days_remaining: None,
+                cancel_at_period_end: false,
+            }))
+        }
+    }
+}
+
+async fn list_invoices(
+    State(state): State<Arc<BillingState>>,
+    axum::extract::Query(params): axum::extract::Query<InvoicesRequest>,
+) -> Result<Json<InvoicesListResponse>> {
+    {{#if has_organizations}}
+    let billable_id = &params.organization_id;
+    {{else}}
+    let billable_id = &params.user_id;
+    {{/if}}
+
+    let invoice_manager = InvoiceManager::new(
+        state.billing_store.clone(),
+        state.stripe_client.clone(),
+    );
+
+    let invoice_list = invoice_manager
+        .list_invoices(billable_id, Default::default())
+        .await?;
+
+    let invoices = invoice_list
+        .invoices
+        .into_iter()
+        .map(|inv| InvoiceResponse {
+            id: inv.id,
+            status: inv.status.as_str().to_string(),
+            amount_due: inv.amount_due,
+            amount_paid: inv.amount_paid,
+            currency: inv.currency,
+            created: inv.created,
+            invoice_pdf: inv.invoice_pdf,
+            hosted_invoice_url: inv.hosted_invoice_url,
+        })
+        .collect();
+
+    Ok(Json(InvoicesListResponse { invoices }))
+}
+
+async fn create_portal(
+    State(state): State<Arc<BillingState>>,
+    Json(body): Json<PortalRequest>,
+) -> Result<Json<PortalResponse>> {
+    {{#if has_organizations}}
+    let _org = organization::Entity::find_by_id(&body.organization_id)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| tideway::TidewayError::Database(e.to_string()))?
+        .ok_or_else(|| tideway::TidewayError::NotFound("Organization not found".to_string()))?;
+
+    let billable_id = &body.organization_id;
+    {{else}}
+    let billable_id = &body.user_id;
+    {{/if}}
+
+    let portal_manager = PortalManager::new(
+        state.billing_store.clone(),
+        state.stripe_client.clone(),
+        state.portal_config.clone(),
+    );
+
+    let session = portal_manager.create_portal_session(billable_id, &body.return_url).await?;
+
+    Ok(Json(PortalResponse {
+        portal_url: session.url,
+    }))
+}
+
+async fn handle_webhook(
+    State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> std::result::Result<StatusCode, (StatusCode, String)> {
+    let signature = headers
+        .get("stripe-signature")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| {
+            (StatusCode::BAD_REQUEST, "Missing Stripe-Signature header".to_string())
+        })?;
+
+    let webhook_handler = WebhookHandler::new(
+        state.billing_store.clone(),
+        state.webhook_secret.clone(),
+        state.plans.clone(),
+    );
+
+    let event = webhook_handler
+        .verify_signature(&body, signature)
+        .map_err(|e| {
+            tracing::warn!(error = %e, "Webhook signature verification failed");
+            (StatusCode::BAD_REQUEST, "Invalid signature".to_string())
+        })?;
+
+    tracing::info!(
+        event_type = %event.event_type,
+        event_id = %event.id,
+        "Processing Stripe webhook"
+    );
+
+    match webhook_handler.handle_event(event).await {
+        Ok(outcome) => {
+            match outcome {
+                WebhookOutcome::Processed => {
+                    tracing::info!("Webhook processed successfully");
+                }
+                WebhookOutcome::AlreadyProcessed => {
+                    tracing::info!("Webhook already processed");
+                }
+                WebhookOutcome::Ignored => {
+                    tracing::debug!("Webhook ignored");
+                }
+            }
+            Ok(StatusCode::OK)
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to process webhook");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "Processing failed".to_string()))
+        }
+    }
+}
+
+{{#unless has_organizations}}
+/// Simple billable entity for B2C billing.
+struct SimpleBillable {
+    id: String,
+    email: String,
+}
+
+impl tideway::billing::BillableEntity for SimpleBillable {
+    fn billable_id(&self) -> &str {
+        &self.id
+    }
+
+    fn billable_type(&self) -> &str {
+        "user"
+    }
+
+    fn email(&self) -> &str {
+        &self.email
+    }
+
+    fn name(&self) -> Option<&str> {
+        None
+    }
+}
+{{/unless}}

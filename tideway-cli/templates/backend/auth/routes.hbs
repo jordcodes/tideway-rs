@@ -1,0 +1,368 @@
+//! Auth routes module using tideway's RouteModule pattern.
+
+use axum::{
+    extract::Extension,
+    routing::post,
+    Json, Router,
+};
+{{#if has_organizations}}
+use sea_orm::{entity::*, ActiveModelTrait, DatabaseConnection};
+{{else}}
+use sea_orm::DatabaseConnection;
+{{/if}}
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tideway::auth::{
+    JwtIssuer, LoginFlow, LoginFlowConfig, LoginRequest, LoginResponse,
+    PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, RegisterRequest,
+    RegistrationFlow,
+};
+use tideway::{AppContext, Result, RouteModule};
+{{#if has_organizations}}
+use uuid::Uuid;
+{{/if}}
+
+use crate::auth::{AppTokenIssuer, DbRefreshTokenStore, DbUserStore, InMemoryMfaTokenStore};
+{{#if has_organizations}}
+use crate::entities::{membership, organization};
+{{/if}}
+
+/// Auth module state.
+#[derive(Clone)]
+pub struct AuthState {
+    pub db: Arc<DatabaseConnection>,
+    pub jwt_issuer: Arc<JwtIssuer>,
+    pub jwt_secret: String,
+    pub app_name: String,
+}
+
+/// Auth routes module implementing RouteModule pattern.
+pub struct AuthModule {
+    state: AuthState,
+}
+
+impl AuthModule {
+    pub fn new(
+        db: Arc<DatabaseConnection>,
+        jwt_issuer: Arc<JwtIssuer>,
+        jwt_secret: String,
+        app_name: String,
+    ) -> Self {
+        Self {
+            state: AuthState {
+                db,
+                jwt_issuer,
+                jwt_secret,
+                app_name,
+            },
+        }
+    }
+}
+
+impl RouteModule for AuthModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/register", post(register))
+            .route("/login", post(login))
+            .route("/logout", post(logout))
+            .route("/refresh", post(refresh))
+            .route("/password/reset", post(request_password_reset))
+            .route("/password/reset/complete", post(complete_password_reset))
+            .route("/mfa/verify", post(verify_mfa))
+            .layer(Extension(self.state.clone()))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/auth")
+    }
+}
+
+// Request/Response types
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterBody {
+    pub email: String,
+    pub password: String,
+    pub name: Option<String>,
+    {{#if has_organizations}}
+    pub organization_name: String,
+    {{/if}}
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegisterResponse {
+    pub success: bool,
+    pub message: String,
+    pub user_id: String,
+    {{#if has_organizations}}
+    pub organization_id: String,
+    {{/if}}
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginBody {
+    pub email: String,
+    pub password: String,
+    pub remember_me: Option<bool>,
+    pub mfa_code: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RefreshBody {
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RefreshResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: u64,
+    pub token_type: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogoutBody {
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordResetBody {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordResetCompleteBody {
+    pub token: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MfaVerifyBody {
+    pub mfa_token: String,
+    pub code: String,
+}
+
+// Handlers
+
+async fn register(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<RegisterBody>,
+) -> Result<Json<RegisterResponse>> {
+    let user_store = DbUserStore::new(state.db.clone());
+
+    let flow = RegistrationFlow::new(user_store);
+    let request = RegisterRequest {
+        email: body.email.clone(),
+        password: body.password,
+        name: body.name,
+    };
+
+    let user = flow.register(request).await?;
+    let user_id = user.id;
+
+    {{#if has_organizations}}
+    // Generate organization ID and slug
+    let org_id = format!(
+        "org_{}",
+        Uuid::new_v4().to_string().replace("-", "")[..12].to_string()
+    );
+    let slug = generate_slug(&body.organization_name);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    // Create the organization
+    let org = organization::ActiveModel {
+        id: Set(org_id.clone()),
+        name: Set(body.organization_name),
+        slug: Set(slug),
+        owner_id: Set(user_id),
+        contact_email: Set(body.email),
+        created_at: Set(now),
+        updated_at: Set(now),
+    };
+
+    org.insert(state.db.as_ref())
+        .await
+        .map_err(|e| tideway::TidewayError::Database(e.to_string()))?;
+
+    // Create membership
+    let membership = membership::ActiveModel {
+        org_id: Set(org_id.clone()),
+        user_id: Set(user_id),
+        role: Set("owner".to_string()),
+        joined_at: Set(now),
+    };
+
+    membership
+        .insert(state.db.as_ref())
+        .await
+        .map_err(|e| tideway::TidewayError::Database(e.to_string()))?;
+
+    Ok(Json(RegisterResponse {
+        success: true,
+        message: "Registration successful.".into(),
+        user_id: user_id.to_string(),
+        organization_id: org_id,
+    }))
+    {{else}}
+    Ok(Json(RegisterResponse {
+        success: true,
+        message: "Registration successful.".into(),
+        user_id: user_id.to_string(),
+    }))
+    {{/if}}
+}
+
+{{#if has_organizations}}
+fn generate_slug(name: &str) -> String {
+    let base_slug: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    let suffix = &Uuid::new_v4().to_string()[..8];
+    format!("{}-{}", base_slug, suffix)
+}
+{{/if}}
+
+async fn login(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<LoginBody>,
+) -> Result<Json<LoginResponse>> {
+    let user_store = DbUserStore::new(state.db.clone());
+    let mfa_store = InMemoryMfaTokenStore::new();
+    let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone(), user_store.clone());
+    let token_store = DbRefreshTokenStore::new(state.db.clone());
+
+    let flow = LoginFlow::new(
+        user_store,
+        mfa_store,
+        token_issuer,
+        LoginFlowConfig::new(&state.app_name),
+    )
+    .with_refresh_store(token_store);
+
+    let request = LoginRequest {
+        email: body.email,
+        password: body.password,
+        remember_me: body.remember_me.unwrap_or(false),
+        mfa_code: body.mfa_code,
+    };
+
+    let response = flow.login(request).await?;
+    Ok(Json(response))
+}
+
+async fn logout(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<LogoutBody>,
+) -> Result<Json<serde_json::Value>> {
+    let token_store = DbRefreshTokenStore::new(state.db.clone());
+    let user_store = DbUserStore::new(state.db.clone());
+
+    let refresh_flow = tideway::auth::TokenRefreshFlow::new(
+        state.jwt_issuer.as_ref().clone(),
+        token_store,
+        user_store,
+        state.jwt_secret.as_bytes(),
+    );
+
+    refresh_flow.revoke(&body.refresh_token).await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Logged out successfully"
+    })))
+}
+
+async fn refresh(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<RefreshBody>,
+) -> Result<Json<RefreshResponse>> {
+    let token_store = DbRefreshTokenStore::new(state.db.clone());
+    let user_store = DbUserStore::new(state.db.clone());
+
+    let refresh_flow = tideway::auth::TokenRefreshFlow::new(
+        state.jwt_issuer.as_ref().clone(),
+        token_store,
+        user_store,
+        state.jwt_secret.as_bytes(),
+    );
+
+    let token_pair = refresh_flow.refresh(&body.refresh_token).await?;
+
+    Ok(Json(RefreshResponse {
+        access_token: token_pair.access_token,
+        refresh_token: token_pair.refresh_token,
+        expires_in: token_pair.expires_in,
+        token_type: "Bearer",
+    }))
+}
+
+async fn request_password_reset(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<PasswordResetBody>,
+) -> Result<Json<serde_json::Value>> {
+    let user_store = DbUserStore::new(state.db.clone());
+
+    let flow = PasswordResetFlow::new(user_store);
+    let request = PasswordResetRequest { email: body.email };
+
+    let _ = flow.request_reset(request).await;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "If an account with that email exists, a password reset link has been sent."
+    })))
+}
+
+async fn complete_password_reset(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<PasswordResetCompleteBody>,
+) -> Result<Json<serde_json::Value>> {
+    let user_store = DbUserStore::new(state.db.clone());
+
+    let flow = PasswordResetFlow::new(user_store);
+    let request = PasswordResetComplete {
+        token: body.token,
+        new_password: body.new_password,
+    };
+
+    flow.complete_reset(request).await?;
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Password has been reset successfully."
+    })))
+}
+
+async fn verify_mfa(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<MfaVerifyBody>,
+) -> Result<Json<LoginResponse>> {
+    let user_store = DbUserStore::new(state.db.clone());
+    let mfa_store = InMemoryMfaTokenStore::new();
+    let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone(), user_store.clone());
+
+    let flow = LoginFlow::new(
+        user_store,
+        mfa_store,
+        token_issuer,
+        LoginFlowConfig::new(&state.app_name),
+    );
+
+    let request = tideway::auth::MfaVerifyRequest {
+        mfa_token: body.mfa_token,
+        code: body.code,
+    };
+
+    let response = flow.verify_mfa(request).await?;
+    Ok(Json(response))
+}

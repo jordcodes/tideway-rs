@@ -1,4 +1,4 @@
-//! Template engine for generating frontend components.
+//! Template engine for generating frontend and backend components.
 //!
 //! Uses Handlebars templates embedded at compile time.
 
@@ -7,7 +7,7 @@ use handlebars::Handlebars;
 use include_dir::{include_dir, Dir};
 use serde::Serialize;
 
-use crate::cli::Style;
+use crate::cli::{BackendPreset, Style};
 
 // Embed all templates at compile time
 static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
@@ -105,6 +105,67 @@ fn register_templates(
 
 // Make Style serializable for templates
 impl Serialize for Style {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+/// Context for backend template rendering
+#[derive(Serialize, Clone)]
+pub struct BackendTemplateContext {
+    /// Project name in snake_case (e.g., "my_app")
+    pub project_name: String,
+    /// Project name in PascalCase (e.g., "MyApp")
+    pub project_name_pascal: String,
+    /// Whether the preset includes organizations (B2B)
+    pub has_organizations: bool,
+    /// Database type ("postgres" or "sqlite")
+    pub database: String,
+}
+
+/// Template engine for backend scaffolding
+pub struct BackendTemplateEngine {
+    handlebars: Handlebars<'static>,
+    context: BackendTemplateContext,
+}
+
+impl BackendTemplateEngine {
+    /// Create a new backend template engine with the given context
+    pub fn new(context: BackendTemplateContext) -> Result<Self> {
+        let mut handlebars = Handlebars::new();
+        handlebars.set_strict_mode(true);
+
+        // Register all templates from embedded directory
+        register_templates(&mut handlebars, &TEMPLATES_DIR, "")?;
+
+        Ok(Self { handlebars, context })
+    }
+
+    /// Render a backend template by name
+    pub fn render(&self, template_name: &str) -> Result<String> {
+        let template_key = format!("backend/{}", template_name);
+
+        if !self.handlebars.has_template(&template_key) {
+            return Err(anyhow!("Backend template not found: {}", template_name));
+        }
+
+        self.handlebars
+            .render(&template_key, &self.context)
+            .map_err(|e| anyhow!("Failed to render template {}: {}", template_name, e))
+    }
+
+    /// Check if a template exists
+    pub fn has_template(&self, template_name: &str) -> bool {
+        let template_key = format!("backend/{}", template_name);
+        self.handlebars.has_template(&template_key)
+    }
+}
+
+// Make BackendPreset serializable for templates
+impl Serialize for BackendPreset {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::Serializer,

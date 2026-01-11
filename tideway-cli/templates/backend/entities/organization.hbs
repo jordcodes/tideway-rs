@@ -1,0 +1,52 @@
+//! Organization entity.
+
+use sea_orm::entity::prelude::*;
+use serde::{Deserialize, Serialize};
+use tideway::billing::BillableEntity;
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
+#[sea_orm(table_name = "organizations")]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: String,
+    pub name: String,
+    #[sea_orm(unique)]
+    pub slug: String,
+    pub owner_id: Uuid,
+    pub contact_email: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(has_many = "super::membership::Entity")]
+    Memberships,
+}
+
+impl Related<super::membership::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::Memberships.def()
+    }
+}
+
+impl ActiveModelBehavior for ActiveModel {}
+
+/// Implement BillableEntity for organizations to enable Stripe billing.
+impl BillableEntity for Model {
+    fn billable_id(&self) -> &str {
+        &self.id
+    }
+
+    fn billable_type(&self) -> &str {
+        "org"
+    }
+
+    fn email(&self) -> &str {
+        &self.contact_email
+    }
+
+    fn name(&self) -> Option<&str> {
+        Some(&self.name)
+    }
+}

@@ -1,0 +1,56 @@
+//! Create memberships table.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(Memberships::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(Memberships::OrgId).string().not_null())
+                    .col(ColumnDef::new(Memberships::UserId).uuid().not_null())
+                    .col(ColumnDef::new(Memberships::Role).string().not_null())
+                    .col(ColumnDef::new(Memberships::JoinedAt).big_integer().not_null())
+                    .primary_key(
+                        Index::create()
+                            .col(Memberships::OrgId)
+                            .col(Memberships::UserId),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(Memberships::Table, Memberships::OrgId)
+                            .to(super::m005_create_organizations::Organizations::Table, super::m005_create_organizations::Organizations::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(Memberships::Table, Memberships::UserId)
+                            .to(super::m001_create_users::Users::Table, super::m001_create_users::Users::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(Memberships::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum Memberships {
+    Table,
+    OrgId,
+    UserId,
+    Role,
+    JoinedAt,
+}

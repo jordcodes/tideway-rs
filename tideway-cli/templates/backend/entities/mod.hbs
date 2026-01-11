@@ -1,0 +1,11 @@
+//! Database entities.
+
+pub mod user;
+pub mod billing_customer;
+pub mod billing_subscription;
+pub mod refresh_token_family;
+pub mod verification_token;
+{{#if has_organizations}}
+pub mod organization;
+pub mod membership;
+{{/if}}

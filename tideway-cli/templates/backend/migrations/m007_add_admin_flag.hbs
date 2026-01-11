@@ -1,0 +1,55 @@
+//! Add is_platform_admin column to users table.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Users::Table)
+                    .add_column(
+                        ColumnDef::new(Users::IsPlatformAdmin)
+                            .boolean()
+                            .not_null()
+                            .default(false),
+                    )
+                    {{#if has_organizations}}
+                    .add_column(
+                        ColumnDef::new(Users::OrganizationId)
+                            .string()
+                            .null(),
+                    )
+                    {{/if}}
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Users::Table)
+                    .drop_column(Users::IsPlatformAdmin)
+                    {{#if has_organizations}}
+                    .drop_column(Users::OrganizationId)
+                    {{/if}}
+                    .to_owned(),
+            )
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum Users {
+    Table,
+    IsPlatformAdmin,
+    {{#if has_organizations}}
+    OrganizationId,
+    {{/if}}
+}

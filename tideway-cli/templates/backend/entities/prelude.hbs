@@ -1,0 +1,38 @@
+//! Entity prelude for convenient imports.
+
+pub use super::user::{
+    ActiveModel as UserActiveModel,
+    Column as UserColumn,
+    Entity as UserEntity,
+    Model as UserModel,
+};
+
+pub use super::refresh_token_family::{
+    ActiveModel as RefreshTokenFamilyActiveModel,
+    Column as RefreshTokenFamilyColumn,
+    Entity as RefreshTokenFamilyEntity,
+    Model as RefreshTokenFamilyModel,
+};
+
+pub use super::verification_token::{
+    ActiveModel as VerificationTokenActiveModel,
+    Column as VerificationTokenColumn,
+    Entity as VerificationTokenEntity,
+    Model as VerificationTokenModel,
+};
+
+{{#if has_organizations}}
+pub use super::organization::{
+    ActiveModel as OrganizationActiveModel,
+    Column as OrganizationColumn,
+    Entity as OrganizationEntity,
+    Model as OrganizationModel,
+};
+
+pub use super::membership::{
+    ActiveModel as MembershipActiveModel,
+    Column as MembershipColumn,
+    Entity as MembershipEntity,
+    Model as MembershipModel,
+};
+{{/if}}

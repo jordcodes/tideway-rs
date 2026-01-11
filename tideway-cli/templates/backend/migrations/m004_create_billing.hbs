@@ -1,0 +1,104 @@
+//! Create billing tables (customers and subscriptions).
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        // Create billing_customers table
+        manager
+            .create_table(
+                Table::create()
+                    .table(BillingCustomers::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(BillingCustomers::BillableId)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(BillingCustomers::StripeCustomerId).string().not_null().unique_key())
+                    .col(
+                        ColumnDef::new(BillingCustomers::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        // Create billing_subscriptions table
+        manager
+            .create_table(
+                Table::create()
+                    .table(BillingSubscriptions::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::BillableId)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(BillingSubscriptions::StripeSubscriptionId).string().not_null())
+                    .col(ColumnDef::new(BillingSubscriptions::StripeCustomerId).string().not_null())
+                    .col(ColumnDef::new(BillingSubscriptions::PlanId).string().not_null())
+                    .col(ColumnDef::new(BillingSubscriptions::Status).string().not_null())
+                    .col(ColumnDef::new(BillingSubscriptions::CurrentPeriodStart).big_integer().not_null())
+                    .col(ColumnDef::new(BillingSubscriptions::CurrentPeriodEnd).big_integer().not_null())
+                    .col(ColumnDef::new(BillingSubscriptions::ExtraSeats).integer().not_null().default(0))
+                    .col(ColumnDef::new(BillingSubscriptions::TrialEnd).big_integer())
+                    .col(ColumnDef::new(BillingSubscriptions::CancelAtPeriodEnd).boolean().not_null().default(false))
+                    .col(ColumnDef::new(BillingSubscriptions::BaseItemId).string())
+                    .col(ColumnDef::new(BillingSubscriptions::SeatItemId).string())
+                    .col(ColumnDef::new(BillingSubscriptions::UpdatedAt).big_integer().not_null())
+                    .col(
+                        ColumnDef::new(BillingSubscriptions::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(BillingSubscriptions::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(BillingCustomers::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum BillingCustomers {
+    Table,
+    BillableId,
+    StripeCustomerId,
+    CreatedAt,
+}
+
+#[derive(DeriveIden)]
+enum BillingSubscriptions {
+    Table,
+    BillableId,
+    StripeSubscriptionId,
+    StripeCustomerId,
+    PlanId,
+    Status,
+    CurrentPeriodStart,
+    CurrentPeriodEnd,
+    ExtraSeats,
+    TrialEnd,
+    CancelAtPeriodEnd,
+    BaseItemId,
+    SeatItemId,
+    UpdatedAt,
+    CreatedAt,
+}

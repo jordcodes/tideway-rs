@@ -1,0 +1,56 @@
+//! Create organizations table.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(Organizations::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(Organizations::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(Organizations::Name).string().not_null())
+                    .col(ColumnDef::new(Organizations::Slug).string().not_null().unique_key())
+                    .col(ColumnDef::new(Organizations::OwnerId).uuid().not_null())
+                    .col(ColumnDef::new(Organizations::ContactEmail).string().not_null())
+                    .col(ColumnDef::new(Organizations::CreatedAt).big_integer().not_null())
+                    .col(ColumnDef::new(Organizations::UpdatedAt).big_integer().not_null())
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(Organizations::Table, Organizations::OwnerId)
+                            .to(super::m001_create_users::Users::Table, super::m001_create_users::Users::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(Organizations::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+pub enum Organizations {
+    Table,
+    Id,
+    Name,
+    Slug,
+    OwnerId,
+    ContactEmail,
+    CreatedAt,
+    UpdatedAt,
+}
