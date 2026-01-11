@@ -409,33 +409,32 @@ fn update_app_vue() -> Result<()> {
 
     let content = fs::read_to_string(app_path)?;
 
-    // Check if Sonner already added
-    if content.contains("Sonner") {
-        print_info("Sonner already in App.vue");
+    // Check if Toaster already added
+    if content.contains("Toaster") {
+        print_info("Toaster already in App.vue");
         return Ok(());
     }
 
     let mut updated = content;
 
-    // Add Sonner import
+    // Add Toaster import (shadcn-vue exports Sonner component as Toaster)
     if updated.contains("<script setup") {
-        // Add import after script setup tag
         updated = updated.replace(
             "<script setup lang=\"ts\">",
-            "<script setup lang=\"ts\">\nimport { Sonner } from '@/components/ui/sonner'"
+            "<script setup lang=\"ts\">\nimport 'vue-sonner/style.css'\nimport { Toaster } from '@/components/ui/sonner'"
         );
     } else if updated.contains("<script setup>") {
         updated = updated.replace(
             "<script setup>",
-            "<script setup>\nimport { Sonner } from '@/components/ui/sonner'"
+            "<script setup>\nimport 'vue-sonner/style.css'\nimport { Toaster } from '@/components/ui/sonner'"
         );
     }
 
-    // Add Sonner component before </template>
+    // Add Toaster component before </template>
     if updated.contains("</template>") {
         updated = updated.replace(
             "</template>",
-            "  <Sonner />\n</template>"
+            "  <Toaster />\n</template>"
         );
     }
 
