@@ -9,22 +9,23 @@ use crate::{print_error, print_info, print_success, print_warning};
 
 /// Components required for tideway frontend
 const SHADCN_VUE_COMPONENTS: &[&str] = &[
-    "button",
-    "input",
-    "label",
-    "card",
-    "tabs",
     "alert",
-    "dialog",
-    "dropdown-menu",
     "avatar",
     "badge",
-    "table",
-    "select",
+    "button",
+    "card",
     "checkbox",
+    "dialog",
+    "dropdown-menu",
+    "input",
+    "label",
+    "select",
     "separator",
-    "toast",
+    "skeleton",
     "sonner",
+    "switch",
+    "table",
+    "tabs",
 ];
 
 /// Run the setup command
