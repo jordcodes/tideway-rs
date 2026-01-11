@@ -218,11 +218,18 @@ fn setup_tsconfig_alias() -> Result<()> {
             continue;
         }
 
-        // Add paths to compilerOptions
+        // Add paths to compilerOptions - handle both regular and references-style tsconfig
         let updated = if content.contains("\"compilerOptions\": {") {
+            // Regular tsconfig with existing compilerOptions
             content.replace(
                 "\"compilerOptions\": {",
                 "\"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": {\n      \"@/*\": [\"./src/*\"]\n    },"
+            )
+        } else if content.contains("\"files\":") || content.contains("\"references\":") {
+            // References-style tsconfig without compilerOptions - add it
+            content.replace(
+                "{",
+                "{\n  \"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": {\n      \"@/*\": [\"./src/*\"]\n    }\n  },"
             )
         } else {
             content
@@ -234,6 +241,28 @@ fn setup_tsconfig_alias() -> Result<()> {
 
     // Also update vite.config for path resolution
     setup_vite_path_resolution()?;
+
+    // Create tailwind.config.ts stub for shadcn-vue compatibility
+    setup_tailwind_config_stub()?;
+
+    Ok(())
+}
+
+fn setup_tailwind_config_stub() -> Result<()> {
+    // shadcn-vue requires a tailwind.config file even though Tailwind v4 doesn't need one
+    let config_exists = std::path::Path::new("tailwind.config.ts").exists()
+        || std::path::Path::new("tailwind.config.js").exists();
+
+    if config_exists {
+        return Ok(());
+    }
+
+    print_info("Creating tailwind.config.ts for shadcn-vue compatibility...");
+    std::fs::write(
+        "tailwind.config.ts",
+        "// Tailwind v4 uses CSS-based configuration, but shadcn-vue needs this file\nexport default {}\n"
+    )?;
+    print_success("Created tailwind.config.ts");
 
     Ok(())
 }
