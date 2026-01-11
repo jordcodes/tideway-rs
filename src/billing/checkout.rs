@@ -176,6 +176,9 @@ pub struct CheckoutConfig {
     /// Allowed domains for redirect URLs (empty = allow any HTTPS URL).
     /// This prevents open redirect vulnerabilities.
     pub allowed_redirect_domains: Vec<String>,
+    /// Allow HTTP for localhost URLs (development only).
+    /// This should NEVER be enabled in production.
+    pub allow_localhost_http: bool,
 }
 
 impl Default for CheckoutConfig {
@@ -185,6 +188,7 @@ impl Default for CheckoutConfig {
             collect_tax_id: false,
             collect_billing_address: false,
             allowed_redirect_domains: Vec::new(),
+            allow_localhost_http: false,
         }
     }
 }
@@ -244,19 +248,40 @@ impl CheckoutConfig {
         self
     }
 
+    /// Allow HTTP for localhost URLs (development only).
+    ///
+    /// # Warning
+    /// This should NEVER be enabled in production. It allows insecure HTTP
+    /// connections for localhost, 127.0.0.1, and [::1] addresses only.
+    #[must_use]
+    pub fn allow_localhost_http(mut self, allow: bool) -> Self {
+        self.allow_localhost_http = allow;
+        self
+    }
+
+    /// Check if a host is a localhost address.
+    fn is_localhost(host: &str) -> bool {
+        matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+    }
+
     /// Validate a redirect URL against the allowed domains.
     ///
     /// Returns an error if:
     /// - The URL is not valid
-    /// - The URL is not HTTPS
+    /// - The URL is not HTTPS (unless localhost HTTP is allowed)
     /// - The URL's domain is not in the allowed list (if list is non-empty)
     pub fn validate_redirect_url(&self, url: &str) -> Result<()> {
         let parsed = Url::parse(url).map_err(|e| {
             crate::error::TidewayError::BadRequest(format!("Invalid redirect URL: {}", e))
         })?;
 
-        // Must be HTTPS
-        if parsed.scheme() != "https" {
+        // Check scheme - must be HTTPS, unless localhost HTTP is allowed
+        let is_https = parsed.scheme() == "https";
+        let is_localhost_http = self.allow_localhost_http
+            && parsed.scheme() == "http"
+            && parsed.host_str().map(Self::is_localhost).unwrap_or(false);
+
+        if !is_https && !is_localhost_http {
             return Err(crate::error::TidewayError::BadRequest(
                 "Redirect URL must use HTTPS".to_string()
             ));
@@ -865,5 +890,25 @@ mod tests {
 
         let result = manager.create_checkout_session(&entity, request).await;
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_url_validation_localhost_http() {
+        // Without flag, HTTP localhost should fail
+        let config = CheckoutConfig::new();
+        assert!(config.validate_redirect_url("http://localhost:5173/success").is_err());
+        assert!(config.validate_redirect_url("http://127.0.0.1:3000/cancel").is_err());
+
+        // With flag enabled, HTTP localhost should pass
+        let config = CheckoutConfig::new().allow_localhost_http(true);
+        assert!(config.validate_redirect_url("http://localhost:5173/success").is_ok());
+        assert!(config.validate_redirect_url("http://127.0.0.1:3000/cancel").is_ok());
+        assert!(config.validate_redirect_url("http://[::1]:8080/success").is_ok());
+
+        // HTTP on non-localhost should still fail
+        assert!(config.validate_redirect_url("http://example.com/success").is_err());
+
+        // HTTPS should always work
+        assert!(config.validate_redirect_url("https://example.com/success").is_ok());
     }
 }
