@@ -200,38 +200,89 @@ fn setup_shadcn_vue() -> Result<()> {
 }
 
 fn setup_tsconfig_alias() -> Result<()> {
-    // Check for tsconfig.json or tsconfig.app.json
-    let tsconfig_path = if std::path::Path::new("tsconfig.app.json").exists() {
-        "tsconfig.app.json"
-    } else if std::path::Path::new("tsconfig.json").exists() {
-        "tsconfig.json"
+    // Need to update BOTH tsconfig.json and tsconfig.app.json for shadcn-vue
+    let configs = ["tsconfig.json", "tsconfig.app.json"];
+
+    for tsconfig_path in configs {
+        if !std::path::Path::new(tsconfig_path).exists() {
+            continue;
+        }
+
+        print_info(&format!("Checking {} for import alias...", tsconfig_path));
+
+        let content = std::fs::read_to_string(tsconfig_path)?;
+
+        // Check if paths already configured
+        if content.contains("\"@/*\"") || content.contains("'@/*'") {
+            print_info(&format!("{} already has import alias", tsconfig_path));
+            continue;
+        }
+
+        // Add paths to compilerOptions
+        let updated = if content.contains("\"compilerOptions\": {") {
+            content.replace(
+                "\"compilerOptions\": {",
+                "\"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": {\n      \"@/*\": [\"./src/*\"]\n    },"
+            )
+        } else {
+            content
+        };
+
+        std::fs::write(tsconfig_path, updated)?;
+        print_success(&format!("Added @ import alias to {}", tsconfig_path));
+    }
+
+    // Also update vite.config for path resolution
+    setup_vite_path_resolution()?;
+
+    Ok(())
+}
+
+fn setup_vite_path_resolution() -> Result<()> {
+    // Install @types/node if needed
+    print_info("Installing @types/node for path resolution...");
+    let _ = Command::new("npm")
+        .args(["install", "-D", "@types/node"])
+        .status();
+
+    // Update vite.config to add resolve.alias
+    let vite_config_path = if std::path::Path::new("vite.config.ts").exists() {
+        "vite.config.ts"
+    } else if std::path::Path::new("vite.config.js").exists() {
+        "vite.config.js"
     } else {
-        print_warning("No tsconfig.json found, skipping alias setup");
         return Ok(());
     };
 
-    print_info(&format!("Checking {} for import alias...", tsconfig_path));
+    let content = std::fs::read_to_string(vite_config_path)?;
 
-    let content = std::fs::read_to_string(tsconfig_path)?;
-
-    // Check if paths already configured
-    if content.contains("\"@/*\"") || content.contains("'@/*'") {
-        print_info("Import alias already configured");
+    // Check if already has path import and resolve.alias
+    if content.contains("fileURLToPath") && content.contains("resolve:") {
+        print_info("Vite path resolution already configured");
         return Ok(());
     }
 
-    // Add paths to compilerOptions
-    let updated = if content.contains("\"compilerOptions\"") {
-        content.replace(
-            "\"compilerOptions\": {",
-            "\"compilerOptions\": {\n    \"baseUrl\": \".\",\n    \"paths\": {\n      \"@/*\": [\"./src/*\"]\n    },"
-        )
-    } else {
-        content
-    };
+    // Add the import and resolve config
+    let mut updated = content;
 
-    std::fs::write(tsconfig_path, updated)?;
-    print_success(&format!("Added @ import alias to {}", tsconfig_path));
+    // Add import if not present
+    if !updated.contains("fileURLToPath") {
+        updated = format!(
+            "import {{ fileURLToPath, URL }} from 'node:url'\n{}",
+            updated
+        );
+    }
+
+    // Add resolve.alias if not present
+    if !updated.contains("resolve:") {
+        updated = updated.replace(
+            "plugins: [",
+            "resolve: {\n    alias: {\n      '@': fileURLToPath(new URL('./src', import.meta.url))\n    }\n  },\n  plugins: ["
+        );
+    }
+
+    std::fs::write(vite_config_path, updated)?;
+    print_success("Added path resolution to vite.config");
 
     Ok(())
 }
