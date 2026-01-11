@@ -201,6 +201,10 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
 
     if !args.no_database {
         imports.push("use sea_orm::Database;".to_string());
+        if !args.no_migrations {
+            imports.push("use migration::Migrator;".to_string());
+            imports.push("use sea_orm_migration::MigratorTrait;".to_string());
+        }
     }
 
     imports.push("use std::sync::Arc;".to_string());
@@ -243,6 +247,13 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
         body.push_str("        .expect(\"Failed to connect to database\");\n");
         body.push_str("    let db = Arc::new(db);\n\n");
         body.push_str("    tracing::info!(\"Connected to database\");\n\n");
+
+        if !args.no_migrations {
+            body.push_str("    // Run migrations\n");
+            body.push_str("    tracing::info!(\"Running migrations...\");\n");
+            body.push_str("    Migrator::up(&*db, None).await?;\n");
+            body.push_str("    tracing::info!(\"Migrations complete\");\n\n");
+        }
     }
 
     // JWT issuer
