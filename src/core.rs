@@ -3,6 +3,7 @@ use crate::{
     config::Config,
     compression::build_compression_layer,
     cors::build_cors_layer,
+    error::TidewayError,
     http::RouteModule,
     middleware::MakeRequestUuid,
     ratelimit::build_rate_limit_layer,
@@ -10,6 +11,9 @@ use crate::{
     security::build_security_headers_layer,
     timeout::build_timeout_layer,
 };
+
+#[cfg(feature = "database")]
+use sea_orm_migration::MigratorTrait;
 use axum::{extract::DefaultBodyLimit, Router};
 use std::time::Duration;
 use tokio::signal;
@@ -136,6 +140,64 @@ impl App {
             .route("/health", get(health::health_handler));
         self.router = self.router.merge(health_routes);
         self
+    }
+
+    /// Run database migrations if DATABASE_AUTO_MIGRATE=true
+    ///
+    /// This method checks the `DATABASE_AUTO_MIGRATE` environment variable and runs
+    /// pending migrations if set to "true". Call this before `serve()`.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use my_app::migration::Migrator;
+    ///
+    /// App::with_config(config)
+    ///     .with_context(context)
+    ///     .run_migrations::<Migrator>().await?
+    ///     .serve().await?;
+    /// ```
+    #[cfg(feature = "database")]
+    pub async fn run_migrations<M: MigratorTrait>(self) -> Result<Self, TidewayError> {
+        let auto_migrate = std::env::var("DATABASE_AUTO_MIGRATE")
+            .map(|v| v.parse::<bool>().unwrap_or(false))
+            .unwrap_or(false);
+
+        if auto_migrate {
+            if self.context.database.is_some() {
+                let conn = self.context.sea_orm_connection()?;
+                crate::database::migration::run_migrations::<M>(&conn).await?;
+            } else {
+                tracing::warn!("DATABASE_AUTO_MIGRATE is enabled but no database is configured");
+            }
+        }
+        Ok(self)
+    }
+
+    /// Always run database migrations
+    ///
+    /// Unlike `run_migrations`, this always runs migrations regardless of
+    /// the DATABASE_AUTO_MIGRATE environment variable.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use my_app::migration::Migrator;
+    ///
+    /// App::with_config(config)
+    ///     .with_context(context)
+    ///     .run_migrations_now::<Migrator>().await?
+    ///     .serve().await?;
+    /// ```
+    #[cfg(feature = "database")]
+    pub async fn run_migrations_now<M: MigratorTrait>(self) -> Result<Self, TidewayError> {
+        if self.context.database.is_some() {
+            let conn = self.context.sea_orm_connection()?;
+            crate::database::migration::run_migrations::<M>(&conn).await?;
+        } else {
+            return Err(TidewayError::internal("Cannot run migrations: no database configured"));
+        }
+        Ok(self)
     }
 
     /// Apply a layer to the main application router
