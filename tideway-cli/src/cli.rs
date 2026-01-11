@@ -20,8 +20,38 @@ pub enum Commands {
     /// Generate backend scaffolding (routes, entities, migrations)
     Backend(BackendArgs),
 
+    /// Initialize main.rs by scanning for modules and wiring them together
+    Init(InitArgs),
+
     /// List available templates
     Templates,
+}
+
+#[derive(Parser, Debug)]
+pub struct InitArgs {
+    /// Source directory to scan for modules
+    #[arg(short, long, default_value = "./src")]
+    pub src: String,
+
+    /// Project name (defaults to directory name or Cargo.toml package name)
+    #[arg(short, long)]
+    pub name: Option<String>,
+
+    /// Overwrite existing main.rs without prompting
+    #[arg(long, default_value = "false")]
+    pub force: bool,
+
+    /// Skip database setup
+    #[arg(long, default_value = "false")]
+    pub no_database: bool,
+
+    /// Skip migration setup
+    #[arg(long, default_value = "false")]
+    pub no_migrations: bool,
+
+    /// Generate .env.example file
+    #[arg(long, default_value = "true")]
+    pub env_example: bool,
 }
 
 #[derive(Parser, Debug)]
