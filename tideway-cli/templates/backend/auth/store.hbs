@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use tideway::auth::{
     JwtIssuer, RefreshTokenStore, TokenIssuer, UserCreator, UserLoader, UserStore,
     PasswordResetStore, VerificationStore,
@@ -511,12 +511,35 @@ impl RefreshTokenStore for DbRefreshTokenStore {
 }
 
 /// In-memory MFA token store (for development).
-#[derive(Clone, Default)]
-pub struct InMemoryMfaTokenStore;
+#[derive(Default)]
+pub struct InMemoryMfaTokenStore {
+    tokens: std::sync::RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>,
+}
 
 impl InMemoryMfaTokenStore {
     pub fn new() -> Self {
-        Self
+        Self {
+            tokens: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+#[async_trait]
+impl tideway::auth::MfaTokenStore for InMemoryMfaTokenStore {
+    async fn store(&self, token: &str, user_id: &str, ttl: std::time::Duration) -> Result<()> {
+        let expires_at = std::time::Instant::now() + ttl;
+        self.tokens.write().unwrap().insert(token.to_string(), (user_id.to_string(), expires_at));
+        Ok(())
+    }
+
+    async fn consume(&self, token: &str) -> Result<Option<String>> {
+        let mut tokens = self.tokens.write().unwrap();
+        if let Some((user_id, expires_at)) = tokens.remove(token) {
+            if std::time::Instant::now() < expires_at {
+                return Ok(Some(user_id));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -524,48 +547,57 @@ impl InMemoryMfaTokenStore {
 #[derive(Clone)]
 pub struct AppTokenIssuer {
     jwt_issuer: Arc<JwtIssuer>,
-    user_store: DbUserStore,
 }
 
 impl AppTokenIssuer {
-    pub fn new(jwt_issuer: Arc<JwtIssuer>, user_store: DbUserStore) -> Self {
-        Self { jwt_issuer, user_store }
+    pub fn new(jwt_issuer: Arc<JwtIssuer>) -> Self {
+        Self { jwt_issuer }
     }
 }
 
-#[async_trait]
 impl TokenIssuer for AppTokenIssuer {
-    async fn issue_access_token(&self, user_id: &str, remember_me: bool) -> Result<String> {
-        let user = self.user_store.find_by_id(user_id).await?
-            .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+    type User = user::Model;
 
-        let expires_in = if remember_me {
-            std::time::Duration::from_secs(30 * 24 * 60 * 60) // 30 days
-        } else {
-            std::time::Duration::from_secs(15 * 60) // 15 minutes
+    fn issue(&self, user: &Self::User, remember_me: bool) -> Result<tideway::auth::TokenIssuance> {
+        use tideway::auth::TokenSubject;
+
+        // Build custom claims
+        #[derive(serde::Serialize)]
+        struct CustomClaims {
+            is_admin: bool,
+            {{#if has_organizations}}
+            #[serde(skip_serializing_if = "Option::is_none")]
+            org_id: Option<String>,
+            {{/if}}
+        }
+
+        let custom = CustomClaims {
+            is_admin: user.is_platform_admin,
+            {{#if has_organizations}}
+            org_id: user.organization_id.clone(),
+            {{/if}}
         };
 
-        let mut extra_claims = std::collections::HashMap::new();
-        extra_claims.insert("email".to_string(), serde_json::Value::String(user.email.clone()));
-        if let Some(name) = &user.name {
-            extra_claims.insert("name".to_string(), serde_json::Value::String(name.clone()));
-        }
-        extra_claims.insert("is_admin".to_string(), serde_json::Value::Bool(user.is_platform_admin));
-        {{#if has_organizations}}
-        if let Some(org_id) = &user.organization_id {
-            extra_claims.insert("org_id".to_string(), serde_json::Value::String(org_id.clone()));
-        }
-        {{/if}}
+        // Create token subject with user info
+        let user_id = user.id.to_string();
+        let mut subject = TokenSubject::new(&user_id)
+            .with_email(&user.email)
+            .with_custom(custom);
 
-        self.jwt_issuer.issue_with_claims(user_id, expires_in, extra_claims)
-            .map_err(|e| TidewayError::Internal(e.to_string()))
-    }
+        // Add name if present
+        if let Some(ref name) = user.name {
+            subject = subject.with_name(name);
+        }
 
-    async fn issue_refresh_token(&self, user_id: &str, _remember_me: bool) -> Result<(String, String)> {
-        // Generate a new token family for rotation
-        let family = uuid::Uuid::new_v4().to_string();
-        let token = self.jwt_issuer.issue_refresh_token(user_id, &family)
+        // Issue tokens
+        let pair = self.jwt_issuer.issue(subject, remember_me)
             .map_err(|e| TidewayError::Internal(e.to_string()))?;
-        Ok((token, family))
+
+        Ok(tideway::auth::TokenIssuance {
+            access_token: pair.access_token,
+            refresh_token: pair.refresh_token,
+            expires_in: pair.expires_in,
+            family: pair.family,
+        })
     }
 }

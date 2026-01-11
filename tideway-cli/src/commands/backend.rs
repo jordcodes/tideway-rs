@@ -104,11 +104,15 @@ pub fn run(args: BackendArgs) -> Result<()> {
     // Print next steps
     println!("{}", "Next steps:".yellow().bold());
     println!("  1. Add dependencies to Cargo.toml:");
-    println!("     tideway = {{ path = \"../tideway-rs\" }}");
-    println!("     axum = \"0.8\"");
+    println!("     tideway = {{ version = \"0.7\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}");
+    println!("     axum = {{ version = \"0.8\", features = [\"macros\"] }}");
     println!("     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}");
     println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");
     println!("     serde = {{ version = \"1\", features = [\"derive\"] }}");
+    println!("     tracing = \"0.1\"");
+    println!("     async-trait = \"0.1\"");
+    println!("     chrono = {{ version = \"0.4\", features = [\"serde\"] }}");
+    println!("     uuid = {{ version = \"1\", features = [\"v4\", \"serde\"] }}");
     println!();
     println!("  2. Run migrations:");
     println!("     sea-orm-cli migrate up");
