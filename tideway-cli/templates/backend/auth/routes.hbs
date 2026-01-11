@@ -17,7 +17,7 @@ use tideway::auth::{
     PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, RegisterRequest,
     RegistrationFlow,
 };
-use tideway::{AppContext, Result, RouteModule};
+use tideway::{AppContext, MessageResponse, Result, RouteModule};
 {{#if has_organizations}}
 use uuid::Uuid;
 {{/if}}
@@ -238,7 +238,7 @@ async fn login(
 ) -> Result<Json<LoginResponse>> {
     let user_store = DbUserStore::new(state.db.clone());
     let mfa_store = InMemoryMfaTokenStore::new();
-    let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone(), user_store.clone());
+    let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone());
     let token_store = DbRefreshTokenStore::new(state.db.clone());
 
     let flow = LoginFlow::new(
@@ -263,7 +263,7 @@ async fn login(
 async fn logout(
     Extension(state): Extension<AuthState>,
     Json(body): Json<LogoutBody>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<MessageResponse> {
     let token_store = DbRefreshTokenStore::new(state.db.clone());
     let user_store = DbUserStore::new(state.db.clone());
 
@@ -276,10 +276,7 @@ async fn logout(
 
     refresh_flow.revoke(&body.refresh_token).await?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Logged out successfully"
-    })))
+    Ok(MessageResponse::success("Logged out successfully"))
 }
 
 async fn refresh(
@@ -309,7 +306,7 @@ async fn refresh(
 async fn request_password_reset(
     Extension(state): Extension<AuthState>,
     Json(body): Json<PasswordResetBody>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<MessageResponse> {
     let user_store = DbUserStore::new(state.db.clone());
 
     let flow = PasswordResetFlow::new(user_store);
@@ -317,16 +314,15 @@ async fn request_password_reset(
 
     let _ = flow.request_reset(request).await;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "If an account with that email exists, a password reset link has been sent."
-    })))
+    Ok(MessageResponse::success(
+        "If an account with that email exists, a password reset link has been sent.",
+    ))
 }
 
 async fn complete_password_reset(
     Extension(state): Extension<AuthState>,
     Json(body): Json<PasswordResetCompleteBody>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<MessageResponse> {
     let user_store = DbUserStore::new(state.db.clone());
 
     let flow = PasswordResetFlow::new(user_store);
@@ -337,10 +333,7 @@ async fn complete_password_reset(
 
     flow.complete_reset(request).await?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Password has been reset successfully."
-    })))
+    Ok(MessageResponse::success("Password has been reset successfully."))
 }
 
 async fn verify_mfa(
@@ -349,7 +342,7 @@ async fn verify_mfa(
 ) -> Result<Json<LoginResponse>> {
     let user_store = DbUserStore::new(state.db.clone());
     let mfa_store = InMemoryMfaTokenStore::new();
-    let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone(), user_store.clone());
+    let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone());
 
     let flow = LoginFlow::new(
         user_store,

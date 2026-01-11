@@ -94,8 +94,9 @@ pub use dev::{DevConfig, DevConfigBuilder};
 pub use error::{ErrorContext, ErrorInfo, ErrorResponse, ErrorWithContext, Result, TidewayError};
 pub use health::{ComponentHealth, HealthCheck, HealthChecker, HealthStatus};
 pub use http::{
-    ApiResponse, CreatedResponse, FileConfig, Form, JsonResponse, Multipart, NoContentResponse,
-    PaginatedData, PaginationMeta, PaginationQuery, PathParams, Query, RouteModule,
+    ApiResponse, CreatedResponse, FileConfig, Form, JsonResponse, MessageResponse, Multipart,
+    NoContentResponse, PaginatedData, PaginationMeta, PaginationQuery, PathParams, Query,
+    RouteModule,
 };
 #[cfg(feature = "metrics")]
 pub use metrics::{MetricsConfig, MetricsConfigBuilder, MetricsCollector};

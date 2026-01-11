@@ -133,6 +133,53 @@ impl IntoResponse for NoContentResponse {
     }
 }
 
+/// Simple message response for operations that don't return data.
+///
+/// Use this instead of `serde_json::json!({ "success": true, "message": "..." })`.
+///
+/// # Example
+/// ```ignore
+/// async fn logout() -> Result<MessageResponse> {
+///     // ... perform logout
+///     Ok(MessageResponse::success("Logged out successfully"))
+/// }
+/// ```
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct MessageResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+impl MessageResponse {
+    /// Create a success message response
+    pub fn success(message: impl Into<String>) -> Self {
+        Self {
+            success: true,
+            message: message.into(),
+        }
+    }
+
+    /// Create an error message response
+    pub fn error(message: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            message: message.into(),
+        }
+    }
+}
+
+impl IntoResponse for MessageResponse {
+    fn into_response(self) -> Response {
+        let status = if self.success {
+            StatusCode::OK
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        (status, Json(self)).into_response()
+    }
+}
+
 impl<T: Serialize> IntoResponse for ApiResponse<T> {
     fn into_response(self) -> Response {
         let status = if self.success {

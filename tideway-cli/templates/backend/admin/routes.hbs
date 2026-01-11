@@ -9,7 +9,7 @@ use sea_orm::{entity::*, ColumnTrait, DatabaseConnection, PaginatorTrait, QueryF
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tideway::auth::{AccessTokenClaims, JwtIssuer, JwtVerifier, TokenSubject};
-use tideway::{AppContext, Result, RouteModule, TidewayError};
+use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
 use uuid::Uuid;
 use chrono::{Duration, Utc};
 
@@ -346,7 +346,7 @@ async fn update_user(
     headers: axum::http::HeaderMap,
     Path(user_id): Path<String>,
     Json(body): Json<UpdateUserBody>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<MessageResponse> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -396,10 +396,7 @@ async fn update_user(
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "User updated"
-    })))
+    Ok(MessageResponse::success("User updated"))
 }
 
 {{#if has_organizations}}
@@ -572,7 +569,7 @@ async fn start_impersonation(
 async fn end_impersonation(
     Extension(state): Extension<AdminState>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<MessageResponse> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -589,8 +586,5 @@ async fn end_impersonation(
         "Impersonation session ended"
     );
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Impersonation ended"
-    })))
+    Ok(MessageResponse::success("Impersonation ended"))
 }

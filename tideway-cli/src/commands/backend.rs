@@ -109,6 +109,7 @@ pub fn run(args: BackendArgs) -> Result<()> {
     println!("     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}");
     println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");
     println!("     serde = {{ version = \"1\", features = [\"derive\"] }}");
+    println!("     serde_json = \"1\"");
     println!("     tracing = \"0.1\"");
     println!("     async-trait = \"0.1\"");
     println!("     chrono = {{ version = \"0.4\", features = [\"serde\"] }}");

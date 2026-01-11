@@ -13,6 +13,7 @@ pub use form::{FileConfig, Form, Multipart};
 pub use path::PathParams;
 pub use query::{PaginationQuery, Query};
 pub use response::{
-    ApiResponse, CreatedResponse, JsonResponse, NoContentResponse, PaginatedData, PaginationMeta,
+    ApiResponse, CreatedResponse, JsonResponse, MessageResponse, NoContentResponse, PaginatedData,
+    PaginationMeta,
 };
 pub use routes::RouteModule;

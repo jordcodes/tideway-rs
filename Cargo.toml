@@ -3,7 +3,7 @@ members = [".", "tideway-macros", "tideway-cli"]
 
 [package]
 name = "tideway"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2024"
 authors = ["JD"]
 description = "A batteries-included Rust web framework built on Axum for building SaaS applications quickly"

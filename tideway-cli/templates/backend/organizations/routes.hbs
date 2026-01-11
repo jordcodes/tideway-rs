@@ -9,7 +9,7 @@ use sea_orm::{entity::*, DatabaseConnection, QueryFilter, ColumnTrait};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tideway::auth::{AccessTokenClaims, JwtVerifier};
-use tideway::{AppContext, Result, RouteModule, TidewayError};
+use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
 use uuid::Uuid;
 
 use crate::entities::{membership, organization, user};
@@ -298,7 +298,7 @@ async fn update_member_role(
     headers: axum::http::HeaderMap,
     Path((org_id, target_user_id)): Path<(String, String)>,
     Json(body): Json<UpdateMemberRoleBody>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<MessageResponse> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -345,17 +345,14 @@ async fn update_member_role(
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Member role updated"
-    })))
+    Ok(MessageResponse::success("Member role updated"))
 }
 
 async fn remove_member(
     Extension(state): Extension<OrganizationState>,
     headers: axum::http::HeaderMap,
     Path((org_id, target_user_id)): Path<(String, String)>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<MessageResponse> {
     let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
@@ -399,8 +396,5 @@ async fn remove_member(
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Member removed"
-    })))
+    Ok(MessageResponse::success("Member removed"))
 }
