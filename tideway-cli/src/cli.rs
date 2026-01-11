@@ -46,6 +46,10 @@ pub struct GenerateArgs {
     /// Overwrite existing files without prompting
     #[arg(long, default_value = "false")]
     pub force: bool,
+
+    /// Skip generating shared files (useApi.ts, types/index.ts)
+    #[arg(long, default_value = "false")]
+    pub no_shared: bool,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]

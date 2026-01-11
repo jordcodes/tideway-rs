@@ -1,0 +1,157 @@
+<script setup lang="ts">
+import { ref, onMounted, watch } from 'vue'
+import { useAdmin } from './composables/useAdmin'
+import type { AdminOrganization } from '../types'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
+const props = defineProps<{
+  orgId: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'back'): void
+}>()
+
+const { isLoading, error, getOrganization } = useAdmin()
+
+const org = ref<AdminOrganization | null>(null)
+
+onMounted(() => {
+  fetchOrganization()
+})
+
+watch(() => props.orgId, () => {
+  fetchOrganization()
+})
+
+async function fetchOrganization() {
+  org.value = await getOrganization(props.orgId)
+}
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleString()
+}
+
+function getSubscriptionBadgeVariant(status?: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+  if (!status) return 'outline'
+  switch (status) {
+    case 'active':
+      return 'default'
+    case 'trialing':
+      return 'secondary'
+    case 'past_due':
+    case 'canceled':
+      return 'destructive'
+    default:
+      return 'outline'
+  }
+}
+</script>
+
+<template>
+  <div class="space-y-6">
+    <div class="flex items-center gap-4">
+      <Button variant="ghost" size="sm" @click="emit('back')">
+        <svg class="h-4 w-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+        </svg>
+        Back to Organizations
+      </Button>
+    </div>
+
+    <Alert v-if="error" variant="destructive">
+      <AlertDescription>\{{ error }}</AlertDescription>
+    </Alert>
+
+    <div v-if="isLoading && !org" class="space-y-4">
+      <Skeleton class="h-32 w-full" />
+      <Skeleton class="h-48 w-full" />
+    </div>
+
+    <template v-else-if="org">
+      <!-- Organization Header -->
+      <Card>
+        <CardHeader>
+          <div class="flex items-start justify-between">
+            <div>
+              <CardTitle class="text-2xl">\{{ org.name }}</CardTitle>
+              <CardDescription>\{{ org.slug }}</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div class="flex gap-2">
+            <Badge :variant="getSubscriptionBadgeVariant(org.subscription_status)">
+              \{{ org.subscription_status || 'No subscription' }}
+            </Badge>
+            <Badge v-if="org.member_count" variant="secondary">
+              \{{ org.member_count }} member\{{ org.member_count === 1 ? '' : 's' }}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Organization Details -->
+      <Card>
+        <CardHeader>
+          <CardTitle>Details</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <dl class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Organization ID</dt>
+              <dd class="font-mono text-sm">\{{ org.id }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Slug</dt>
+              <dd class="font-mono text-sm">\{{ org.slug }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Owner ID</dt>
+              <dd class="font-mono text-sm">\{{ org.owner_id }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Contact Email</dt>
+              <dd>\{{ org.contact_email || '—' }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Created</dt>
+              <dd>\{{ formatDate(org.created_at) }}</dd>
+            </div>
+            <div>
+              <dt class="text-sm font-medium text-muted-foreground">Last Updated</dt>
+              <dd>\{{ formatDate(org.updated_at) }}</dd>
+            </div>
+          </dl>
+        </CardContent>
+      </Card>
+
+      <!-- Subscription Info -->
+      <Card>
+        <CardHeader>
+          <CardTitle>Subscription</CardTitle>
+          <CardDescription>
+            Billing and subscription information
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div v-if="org.subscription_status" class="space-y-4">
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-medium">Status</span>
+              <Badge :variant="getSubscriptionBadgeVariant(org.subscription_status)">
+                \{{ org.subscription_status }}
+              </Badge>
+            </div>
+          </div>
+          <div v-else class="text-sm text-muted-foreground">
+            No active subscription
+          </div>
+        </CardContent>
+      </Card>
+    </template>
+  </div>
+</template>

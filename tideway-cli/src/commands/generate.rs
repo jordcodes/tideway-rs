@@ -60,8 +60,12 @@ pub fn run(args: GenerateArgs) -> Result<()> {
         }
     }
 
-    // Generate shared files (types, composables)
-    generate_shared(&engine, output_path, &args)?;
+    // Generate shared files (types, composables) unless --no-shared is set
+    if !args.no_shared {
+        generate_shared(&engine, output_path, &args)?;
+    } else {
+        print_info("Skipping shared files (--no-shared)");
+    }
 
     // Print shadcn component requirements if using shadcn style
     if args.style == Style::Shadcn && !shadcn_components.is_empty() {
@@ -243,6 +247,7 @@ fn generate_admin(
         ("UserList.vue", "admin/UserList"),
         ("UserDetail.vue", "admin/UserDetail"),
         ("OrganizationList.vue", "admin/OrganizationList"),
+        ("OrganizationDetail.vue", "admin/OrganizationDetail"),
         ("ImpersonationBanner.vue", "admin/ImpersonationBanner"),
     ];
 
