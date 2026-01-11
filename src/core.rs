@@ -215,12 +215,39 @@ impl App {
         self
     }
 
+    /// Convert the App into an axum Router.
+    ///
+    /// This applies the AppContext state to the router, making it ready to serve.
+    /// Use this when you want to manually serve the router with `axum::serve`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let app = App::new()
+    ///     .register_module(auth_module)
+    ///     .register_module(admin_module);
+    ///
+    /// let router = app.into_router();
+    /// let listener = TcpListener::bind("0.0.0.0:3000").await?;
+    /// axum::serve(listener, router).await?;
+    /// ```
+    pub fn into_router(self) -> Router {
+        let mut router = self.router.with_state(self.context);
+
+        // Merge any extra routers that don't need AppContext
+        for extra in self.extra_routers {
+            router = router.merge(extra);
+        }
+
+        router
+    }
+
     /// Get the router for testing purposes
     ///
     /// This method allows tests to extract the router with AppContext state applied.
     /// The returned router can be used with tideway::testing helpers.
+    #[deprecated(since = "0.7.4", note = "Use `into_router()` instead")]
     pub fn into_test_router(self) -> Router {
-        self.router.with_state(self.context)
+        self.into_router()
     }
 
     /// Apply middleware stack and prepare for serving
