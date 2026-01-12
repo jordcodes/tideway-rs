@@ -66,16 +66,20 @@ pub mod seats;
 pub mod storage;
 pub mod subscription;
 pub mod invoice;
+pub mod usage;
 pub mod validation;
 pub mod webhook;
 
 // Plan exports
-pub use plans::{LimitCheckResult, PlanBuilder, PlanConfig, PlanLimits, Plans, PlansBuilder};
+pub use plans::{
+    can_downgrade, compare_plans, LimitCheckResult, PlanBuilder, PlanChangeType, PlanComparison,
+    PlanConfig, PlanDowngradeError, PlanLimits, Plans, PlansBuilder,
+};
 
 // Storage exports
 pub use storage::{
-    BillableEntity, BillingStore, PlanInterval, PlanStore, StoredPlan, StoredSubscription,
-    SubscriptionStatus,
+    BillableEntity, BillingStore, CachedPlanStore, PlanInterval, PlanStore, StoredPlan,
+    StoredSubscription, SubscriptionStatus,
 };
 
 // Customer exports
@@ -114,6 +118,13 @@ pub use invoice::{
 
 // Seats exports
 pub use seats::{SeatChangeResult, SeatInfo, SeatManager};
+
+// Usage exports
+pub use usage::{
+    check_usage, StripeUsageClient, UsageAction, UsageCheckResult, UsageItemSummary,
+    UsageManager, UsageRecord, UsageRecordResult, UsageRecordSummary, UsageSummary,
+    UsageThreshold, UsageTracker,
+};
 
 // Payment exports
 pub use payment::{PaymentMethod, PaymentMethodList, PaymentMethodManager, StripePaymentMethodClient};
@@ -182,6 +193,9 @@ pub use payment::test::MockStripePaymentMethodClient;
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use refund::test::MockStripeRefundClient;
+
+#[cfg(any(test, feature = "test-billing"))]
+pub use usage::test::MockStripeUsageClient;
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use client::test::{ComprehensiveMockStripeClient, FullMockStripeClient};

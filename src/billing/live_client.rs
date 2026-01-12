@@ -32,6 +32,7 @@ use super::subscription::{
     ProrationBehavior, StripeSubscriptionClient, StripeSubscriptionData, SubscriptionMetadata,
     UpdateSubscriptionRequest,
 };
+use super::usage::{StripeUsageClient, UsageAction, UsageRecordResult, UsageRecordSummary};
 use super::validation::{StripePrice, StripePriceValidator};
 
 // ============================================================================
@@ -1978,6 +1979,192 @@ impl StripePriceValidator for LiveStripeClient {
                 Err(e)
             }
         }
+    }
+}
+
+// ============================================================================
+// Stripe Usage Client Implementation
+// ============================================================================
+
+#[async_trait::async_trait]
+impl StripeUsageClient for LiveStripeClient {
+    async fn create_usage_record(
+        &self,
+        subscription_item_id: &str,
+        quantity: u64,
+        timestamp: Option<i64>,
+        action: UsageAction,
+    ) -> Result<UsageRecordResult> {
+        use stripe::SubscriptionItemId;
+
+        // Validate subscription item ID
+        let _item_id: SubscriptionItemId = subscription_item_id.parse().map_err(|_| {
+            BillingError::StripeApiError {
+                operation: "create_usage_record".to_string(),
+                message: format!("Invalid subscription item ID: {}", subscription_item_id),
+                code: None,
+                http_status: Some(400),
+            }
+        })?;
+
+        let timestamp_val = timestamp.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        });
+
+        // Use Stripe's REST API directly for usage records
+        // The async-stripe crate doesn't fully expose usage record creation
+        let url = format!(
+            "https://api.stripe.com/v1/subscription_items/{}/usage_records",
+            subscription_item_id
+        );
+
+        let form = vec![
+            ("quantity", quantity.to_string()),
+            ("timestamp", timestamp_val.to_string()),
+            ("action", action.as_str().to_string()),
+        ];
+
+        let response: serde_json::Value = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "create_usage_record",
+            || {
+                let url = url.clone();
+                let form_data = form.clone();
+                let api_key = self.api_key.expose_secret().to_string();
+                async move {
+                    let client = reqwest::Client::new();
+                    let resp = client
+                        .post(&url)
+                        .basic_auth(&api_key, None::<&str>)
+                        .form(&form_data)
+                        .send()
+                        .await
+                        .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
+
+                    if !resp.status().is_success() {
+                        let status = resp.status().as_u16();
+                        let body = resp.text().await.unwrap_or_default();
+                        return Err(stripe::StripeError::ClientError(format!(
+                            "HTTP {}: {}",
+                            status, body
+                        )));
+                    }
+
+                    let body: serde_json::Value = resp.json().await.map_err(|e| {
+                        stripe::StripeError::ClientError(format!("JSON parse error: {}", e))
+                    })?;
+
+                    Ok(body)
+                }
+            },
+        )
+        .await?;
+
+        let id = response
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        Ok(UsageRecordResult {
+            id,
+            quantity,
+            timestamp: timestamp_val,
+            subscription_item_id: subscription_item_id.to_string(),
+        })
+    }
+
+    async fn list_usage_records(
+        &self,
+        subscription_item_id: &str,
+    ) -> Result<Vec<UsageRecordSummary>> {
+        use stripe::SubscriptionItemId;
+
+        // Validate subscription item ID
+        let _item_id: SubscriptionItemId = subscription_item_id.parse().map_err(|_| {
+            BillingError::StripeApiError {
+                operation: "list_usage_records".to_string(),
+                message: format!("Invalid subscription item ID: {}", subscription_item_id),
+                code: None,
+                http_status: Some(400),
+            }
+        })?;
+
+        // Use Stripe's REST API directly
+        let url = format!(
+            "https://api.stripe.com/v1/subscription_items/{}/usage_record_summaries",
+            subscription_item_id
+        );
+
+        let response: serde_json::Value = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "list_usage_records",
+            || {
+                let url = url.clone();
+                let api_key = self.api_key.expose_secret().to_string();
+                async move {
+                    let client = reqwest::Client::new();
+                    let resp = client
+                        .get(&url)
+                        .basic_auth(&api_key, None::<&str>)
+                        .send()
+                        .await
+                        .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
+
+                    if !resp.status().is_success() {
+                        let status = resp.status().as_u16();
+                        let body = resp.text().await.unwrap_or_default();
+                        return Err(stripe::StripeError::ClientError(format!(
+                            "HTTP {}: {}",
+                            status, body
+                        )));
+                    }
+
+                    let body: serde_json::Value = resp.json().await.map_err(|e| {
+                        stripe::StripeError::ClientError(format!("JSON parse error: {}", e))
+                    })?;
+
+                    Ok(body)
+                }
+            },
+        )
+        .await?;
+
+        let data = response
+            .get("data")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let summaries = data
+            .into_iter()
+            .filter_map(|item| {
+                let id = item.get("id")?.as_str()?.to_string();
+                let total_usage = item.get("total_usage")?.as_u64()?;
+                let period = item.get("period")?;
+                let period_start = period.get("start")?.as_i64().unwrap_or(0);
+                let period_end = period.get("end")?.as_i64().unwrap_or(0);
+                let invoice = item
+                    .get("invoice")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                Some(UsageRecordSummary {
+                    id,
+                    total_usage,
+                    period_start,
+                    period_end,
+                    invoice,
+                })
+            })
+            .collect();
+
+        Ok(summaries)
     }
 }
 

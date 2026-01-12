@@ -546,6 +546,314 @@ impl PlanBuilder {
     }
 }
 
+// =============================================================================
+// Plan Upgrade/Downgrade Helpers
+// =============================================================================
+
+/// Result of comparing two plans.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanChangeType {
+    /// Moving to a plan with more features/seats/limits.
+    Upgrade,
+    /// Moving to a plan with fewer features/seats/limits.
+    Downgrade,
+    /// Plans are equivalent (same tier).
+    Lateral,
+    /// Plans are the same.
+    NoChange,
+}
+
+impl std::fmt::Display for PlanChangeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Upgrade => write!(f, "upgrade"),
+            Self::Downgrade => write!(f, "downgrade"),
+            Self::Lateral => write!(f, "lateral"),
+            Self::NoChange => write!(f, "no_change"),
+        }
+    }
+}
+
+/// Detailed comparison between two plans.
+#[derive(Debug, Clone)]
+pub struct PlanComparison {
+    /// The type of change (upgrade, downgrade, etc.).
+    pub change_type: PlanChangeType,
+    /// Features gained by switching to the new plan.
+    pub features_gained: HashSet<String>,
+    /// Features lost by switching to the new plan.
+    pub features_lost: HashSet<String>,
+    /// Difference in included seats (positive = more seats).
+    pub seat_difference: i32,
+    /// Whether extra seats support changes.
+    pub extra_seats_support_changed: bool,
+    /// Warning messages (e.g., "Current extra seats exceed new plan's included seats").
+    pub warnings: Vec<String>,
+}
+
+impl PlanComparison {
+    /// Check if this change requires user confirmation.
+    ///
+    /// Returns true if features will be lost or warnings exist.
+    #[must_use]
+    pub fn requires_confirmation(&self) -> bool {
+        !self.features_lost.is_empty() || !self.warnings.is_empty()
+    }
+
+    /// Check if this is a safe change (no features lost, no warnings).
+    #[must_use]
+    pub fn is_safe(&self) -> bool {
+        self.features_lost.is_empty() && self.warnings.is_empty()
+    }
+}
+
+/// Compare two plans to determine upgrade/downgrade status.
+///
+/// This function analyzes the differences between plans based on:
+/// - Feature count
+/// - Included seats
+/// - Resource limits
+///
+/// # Arguments
+///
+/// * `from_plan` - The current plan
+/// * `to_plan` - The target plan
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::{compare_plans, PlanChangeType};
+///
+/// let comparison = compare_plans(current_plan, new_plan);
+/// match comparison.change_type {
+///     PlanChangeType::Upgrade => println!("Upgrading!"),
+///     PlanChangeType::Downgrade => {
+///         if !comparison.features_lost.is_empty() {
+///             println!("Warning: You will lose: {:?}", comparison.features_lost);
+///         }
+///     }
+///     _ => {}
+/// }
+/// ```
+#[must_use]
+pub fn compare_plans(from_plan: &PlanConfig, to_plan: &PlanConfig) -> PlanComparison {
+    // Check for no change
+    if from_plan.id == to_plan.id {
+        return PlanComparison {
+            change_type: PlanChangeType::NoChange,
+            features_gained: HashSet::new(),
+            features_lost: HashSet::new(),
+            seat_difference: 0,
+            extra_seats_support_changed: false,
+            warnings: vec![],
+        };
+    }
+
+    // Calculate feature differences
+    let features_gained: HashSet<String> = to_plan
+        .features
+        .difference(&from_plan.features)
+        .cloned()
+        .collect();
+    let features_lost: HashSet<String> = from_plan
+        .features
+        .difference(&to_plan.features)
+        .cloned()
+        .collect();
+
+    // Calculate seat difference
+    let seat_difference = to_plan.included_seats as i32 - from_plan.included_seats as i32;
+
+    // Check extra seats support change
+    let extra_seats_support_changed =
+        from_plan.supports_extra_seats() != to_plan.supports_extra_seats();
+
+    // Generate warnings
+    let mut warnings = vec![];
+    if extra_seats_support_changed && from_plan.supports_extra_seats() {
+        warnings.push(
+            "New plan does not support extra seats. Extra seats will be removed.".to_string(),
+        );
+    }
+    if seat_difference < 0 {
+        warnings.push(format!(
+            "New plan has {} fewer included seats.",
+            -seat_difference
+        ));
+    }
+
+    // Determine change type based on heuristics
+    let feature_score = features_gained.len() as i32 - features_lost.len() as i32;
+
+    let change_type = if feature_score > 0 || seat_difference > 0 {
+        PlanChangeType::Upgrade
+    } else if feature_score < 0 || seat_difference < 0 || !features_lost.is_empty() {
+        PlanChangeType::Downgrade
+    } else {
+        PlanChangeType::Lateral
+    };
+
+    PlanComparison {
+        change_type,
+        features_gained,
+        features_lost,
+        seat_difference,
+        extra_seats_support_changed,
+        warnings,
+    }
+}
+
+/// Check if a plan can be downgraded given current usage.
+///
+/// # Arguments
+///
+/// * `from_plan` - The current plan
+/// * `to_plan` - The target plan
+/// * `current_extra_seats` - Number of extra seats currently in use
+/// * `current_total_members` - Total members currently using the subscription
+///
+/// # Returns
+///
+/// Returns `Ok(())` if the downgrade is allowed, or `Err` with a reason if not.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::can_downgrade;
+///
+/// match can_downgrade(current_plan, new_plan, extra_seats, total_members) {
+///     Ok(()) => println!("Downgrade allowed"),
+///     Err(reason) => println!("Cannot downgrade: {}", reason),
+/// }
+/// ```
+pub fn can_downgrade(
+    from_plan: &PlanConfig,
+    to_plan: &PlanConfig,
+    current_extra_seats: u32,
+    current_total_members: u32,
+) -> Result<(), PlanDowngradeError> {
+    // Check if new plan has enough seats
+    let new_total_seats = if to_plan.supports_extra_seats() {
+        to_plan.included_seats + current_extra_seats
+    } else {
+        to_plan.included_seats
+    };
+
+    if current_total_members > new_total_seats {
+        return Err(PlanDowngradeError::InsufficientSeats {
+            current_members: current_total_members,
+            new_seats: new_total_seats,
+        });
+    }
+
+    // Check if extra seats are needed but not supported
+    if current_extra_seats > 0 && !to_plan.supports_extra_seats() {
+        let min_needed = current_total_members.saturating_sub(to_plan.included_seats);
+        if min_needed > 0 {
+            return Err(PlanDowngradeError::ExtraSeatsRequired {
+                extra_needed: min_needed,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Error type for plan downgrade validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanDowngradeError {
+    /// Not enough seats on the new plan.
+    InsufficientSeats {
+        current_members: u32,
+        new_seats: u32,
+    },
+    /// Extra seats are needed but the new plan doesn't support them.
+    ExtraSeatsRequired {
+        extra_needed: u32,
+    },
+}
+
+impl std::fmt::Display for PlanDowngradeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InsufficientSeats { current_members, new_seats } => {
+                write!(
+                    f,
+                    "Cannot downgrade: you have {} members but the new plan only supports {} seats",
+                    current_members, new_seats
+                )
+            }
+            Self::ExtraSeatsRequired { extra_needed } => {
+                write!(
+                    f,
+                    "Cannot downgrade: you need {} extra seats but the new plan doesn't support extra seats",
+                    extra_needed
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlanDowngradeError {}
+
+/// Get a list of suggested plans for an upgrade.
+///
+/// Returns plans that have more features than the current plan,
+/// sorted by feature count (most additional features first).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let suggestions = plans.suggest_upgrades(current_plan);
+/// for plan in suggestions {
+///     println!("Consider upgrading to: {}", plan.id);
+/// }
+/// ```
+impl Plans {
+    /// Suggest upgrade options from the current plan.
+    ///
+    /// Returns plans that have strictly more features, sorted by the number
+    /// of additional features (descending).
+    #[must_use]
+    pub fn suggest_upgrades(&self, current_plan: &PlanConfig) -> Vec<&PlanConfig> {
+        let mut upgrades: Vec<(&PlanConfig, usize)> = self
+            .plans
+            .values()
+            .filter(|p| {
+                // Different plan
+                p.id != current_plan.id
+                    // Has more features
+                    && p.features.is_superset(&current_plan.features)
+                    && p.features.len() > current_plan.features.len()
+            })
+            .map(|p| {
+                let additional = p.features.len() - current_plan.features.len();
+                (p, additional)
+            })
+            .collect();
+
+        // Sort by additional features (descending)
+        upgrades.sort_by(|a, b| b.1.cmp(&a.1));
+
+        upgrades.into_iter().map(|(p, _)| p).collect()
+    }
+
+    /// Find the next tier up from the current plan.
+    ///
+    /// Returns the upgrade with the fewest additional features (minimal upgrade).
+    #[must_use]
+    pub fn next_tier_up(&self, current_plan: &PlanConfig) -> Option<&PlanConfig> {
+        self.plans
+            .values()
+            .filter(|p| {
+                p.id != current_plan.id
+                    && p.features.is_superset(&current_plan.features)
+                    && p.features.len() > current_plan.features.len()
+            })
+            .min_by_key(|p| p.features.len())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,5 +1027,249 @@ mod tests {
 
         let pro = plans.get("pro").unwrap();
         assert_eq!(pro.trial_days, None);
+    }
+
+    #[test]
+    fn test_compare_plans_upgrade() {
+        let plans = Plans::builder()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .included_seats(3)
+            .features(["reports"])
+            .done()
+            .plan("pro")
+            .stripe_price("price_pro")
+            .included_seats(5)
+            .features(["reports", "api_access", "priority_support"])
+            .done()
+            .build();
+
+        let starter = plans.get("starter").unwrap();
+        let pro = plans.get("pro").unwrap();
+
+        let comparison = compare_plans(starter, pro);
+        assert_eq!(comparison.change_type, PlanChangeType::Upgrade);
+        assert!(comparison.features_gained.contains("api_access"));
+        assert!(comparison.features_gained.contains("priority_support"));
+        assert!(comparison.features_lost.is_empty());
+        assert_eq!(comparison.seat_difference, 2);
+        assert!(comparison.is_safe());
+    }
+
+    #[test]
+    fn test_compare_plans_downgrade() {
+        let plans = Plans::builder()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .included_seats(3)
+            .features(["reports"])
+            .done()
+            .plan("pro")
+            .stripe_price("price_pro")
+            .included_seats(5)
+            .features(["reports", "api_access"])
+            .done()
+            .build();
+
+        let starter = plans.get("starter").unwrap();
+        let pro = plans.get("pro").unwrap();
+
+        let comparison = compare_plans(pro, starter);
+        assert_eq!(comparison.change_type, PlanChangeType::Downgrade);
+        assert!(comparison.features_lost.contains("api_access"));
+        assert!(comparison.features_gained.is_empty());
+        assert_eq!(comparison.seat_difference, -2);
+        assert!(comparison.requires_confirmation());
+    }
+
+    #[test]
+    fn test_compare_plans_no_change() {
+        let plans = Plans::builder()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .features(["reports"])
+            .done()
+            .build();
+
+        let starter = plans.get("starter").unwrap();
+
+        let comparison = compare_plans(starter, starter);
+        assert_eq!(comparison.change_type, PlanChangeType::NoChange);
+    }
+
+    #[test]
+    fn test_compare_plans_lateral() {
+        let plans = Plans::builder()
+            .plan("monthly")
+            .stripe_price("price_monthly")
+            .included_seats(5)
+            .features(["reports", "api_access"])
+            .done()
+            .plan("yearly")
+            .stripe_price("price_yearly")
+            .included_seats(5)
+            .features(["reports", "api_access"])
+            .done()
+            .build();
+
+        let monthly = plans.get("monthly").unwrap();
+        let yearly = plans.get("yearly").unwrap();
+
+        let comparison = compare_plans(monthly, yearly);
+        assert_eq!(comparison.change_type, PlanChangeType::Lateral);
+    }
+
+    #[test]
+    fn test_can_downgrade_allowed() {
+        let plans = Plans::builder()
+            .plan("pro")
+            .stripe_price("price_pro")
+            .extra_seat_price("price_seat")
+            .included_seats(5)
+            .done()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .included_seats(3)
+            .done()
+            .build();
+
+        let pro = plans.get("pro").unwrap();
+        let starter = plans.get("starter").unwrap();
+
+        // 3 members, 0 extra seats - fits in starter's 3 included seats
+        assert!(can_downgrade(pro, starter, 0, 3).is_ok());
+    }
+
+    #[test]
+    fn test_can_downgrade_insufficient_seats() {
+        let plans = Plans::builder()
+            .plan("pro")
+            .stripe_price("price_pro")
+            .extra_seat_price("price_seat")
+            .included_seats(10)
+            .done()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .included_seats(3)
+            .done()
+            .build();
+
+        let pro = plans.get("pro").unwrap();
+        let starter = plans.get("starter").unwrap();
+
+        // 8 members won't fit in starter's 3 seats
+        let result = can_downgrade(pro, starter, 0, 8);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            PlanDowngradeError::InsufficientSeats { current_members: 8, new_seats: 3 }
+        ));
+    }
+
+    #[test]
+    fn test_can_downgrade_with_extra_seats_that_fit() {
+        let plans = Plans::builder()
+            .plan("pro")
+            .stripe_price("price_pro")
+            .extra_seat_price("price_seat")
+            .included_seats(5)
+            .done()
+            .plan("basic")
+            .stripe_price("price_basic")
+            .included_seats(10) // More included seats, but no extra seats support
+            .done()
+            .build();
+
+        let pro = plans.get("pro").unwrap();
+        let basic = plans.get("basic").unwrap();
+
+        // Currently on pro with 2 extra seats, 5 members
+        // Downgrading to basic (10 included) - 5 members easily fits
+        let result = can_downgrade(pro, basic, 2, 5);
+        assert!(result.is_ok());
+
+        // 10 members would also fit
+        let result = can_downgrade(pro, basic, 5, 10);
+        assert!(result.is_ok());
+
+        // 11 members wouldn't fit
+        let result = can_downgrade(pro, basic, 6, 11);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_suggest_upgrades() {
+        let plans = Plans::builder()
+            .plan("free")
+            .stripe_price("price_free")
+            .features(["basic"])
+            .done()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .features(["basic", "reports"])
+            .done()
+            .plan("pro")
+            .stripe_price("price_pro")
+            .features(["basic", "reports", "api_access"])
+            .done()
+            .plan("enterprise")
+            .stripe_price("price_enterprise")
+            .features(["basic", "reports", "api_access", "sso", "audit"])
+            .done()
+            .build();
+
+        let free = plans.get("free").unwrap();
+        let suggestions = plans.suggest_upgrades(free);
+
+        // All plans are supersets of free, sorted by feature count desc
+        assert_eq!(suggestions.len(), 3);
+        assert_eq!(suggestions[0].id, "enterprise"); // Most features
+        assert_eq!(suggestions[1].id, "pro");
+        assert_eq!(suggestions[2].id, "starter"); // Fewest additional features
+    }
+
+    #[test]
+    fn test_next_tier_up() {
+        let plans = Plans::builder()
+            .plan("free")
+            .stripe_price("price_free")
+            .features(["basic"])
+            .done()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .features(["basic", "reports"])
+            .done()
+            .plan("pro")
+            .stripe_price("price_pro")
+            .features(["basic", "reports", "api_access"])
+            .done()
+            .build();
+
+        let free = plans.get("free").unwrap();
+        let next = plans.next_tier_up(free);
+
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().id, "starter"); // Minimal upgrade
+    }
+
+    #[test]
+    fn test_plan_change_type_display() {
+        assert_eq!(PlanChangeType::Upgrade.to_string(), "upgrade");
+        assert_eq!(PlanChangeType::Downgrade.to_string(), "downgrade");
+        assert_eq!(PlanChangeType::Lateral.to_string(), "lateral");
+        assert_eq!(PlanChangeType::NoChange.to_string(), "no_change");
+    }
+
+    #[test]
+    fn test_plan_downgrade_error_display() {
+        let err = PlanDowngradeError::InsufficientSeats {
+            current_members: 10,
+            new_seats: 3,
+        };
+        assert!(err.to_string().contains("10 members"));
+        assert!(err.to_string().contains("3 seats"));
+
+        let err = PlanDowngradeError::ExtraSeatsRequired { extra_needed: 5 };
+        assert!(err.to_string().contains("5 extra seats"));
     }
 }

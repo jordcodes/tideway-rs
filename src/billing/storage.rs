@@ -734,6 +734,230 @@ pub mod test {
     }
 }
 
+// =============================================================================
+// Cached Plan Store
+// =============================================================================
+
+/// Cached plan store with TTL-based caching.
+///
+/// Wraps any `PlanStore` implementation and caches plan data to reduce database calls.
+/// Use this for high-traffic applications where plan data is read frequently.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::{CachedPlanStore, SeaOrmBillingStore};
+/// use std::time::Duration;
+///
+/// let inner = SeaOrmBillingStore::new(db);
+/// let cached = CachedPlanStore::new(inner, Duration::from_secs(300)); // 5 min cache
+///
+/// // First call hits database
+/// let plans = cached.list_plans().await?;
+///
+/// // Subsequent calls within 5 minutes use cache
+/// let plans = cached.list_plans().await?;
+///
+/// // Invalidate after plan changes
+/// cached.invalidate();
+/// ```
+pub struct CachedPlanStore<S: PlanStore> {
+    inner: S,
+    cache: std::sync::Arc<std::sync::RwLock<PlanCache>>,
+    ttl: std::time::Duration,
+}
+
+struct PlanCache {
+    /// Cache of individual plans by ID.
+    plans: std::collections::HashMap<String, CachedPlan>,
+    /// Cache of all active plans.
+    active_plans: Option<CachedPlanList>,
+    /// Cache of all plans (including inactive).
+    all_plans: Option<CachedPlanList>,
+}
+
+struct CachedPlan {
+    plan: Option<StoredPlan>,
+    expires_at: std::time::Instant,
+}
+
+struct CachedPlanList {
+    plans: Vec<StoredPlan>,
+    expires_at: std::time::Instant,
+}
+
+impl<S: PlanStore> CachedPlanStore<S> {
+    /// Create a new cached plan store.
+    ///
+    /// # Arguments
+    ///
+    /// * `inner` - The underlying plan store
+    /// * `ttl` - How long to cache plans (e.g., 5 minutes)
+    #[must_use]
+    pub fn new(inner: S, ttl: std::time::Duration) -> Self {
+        Self {
+            inner,
+            cache: std::sync::Arc::new(std::sync::RwLock::new(PlanCache {
+                plans: std::collections::HashMap::new(),
+                active_plans: None,
+                all_plans: None,
+            })),
+            ttl,
+        }
+    }
+
+    /// Invalidate all cached plan data.
+    ///
+    /// Call this after creating, updating, or deleting plans.
+    pub fn invalidate(&self) {
+        if let Ok(mut cache) = self.cache.write() {
+            cache.plans.clear();
+            cache.active_plans = None;
+            cache.all_plans = None;
+        }
+    }
+
+    /// Invalidate cache for a specific plan.
+    pub fn invalidate_plan(&self, plan_id: &str) {
+        if let Ok(mut cache) = self.cache.write() {
+            cache.plans.remove(plan_id);
+            // Also invalidate lists since they may contain this plan
+            cache.active_plans = None;
+            cache.all_plans = None;
+        }
+    }
+
+    /// Get the number of cached individual plans.
+    #[must_use]
+    pub fn cache_size(&self) -> usize {
+        self.cache.read().map(|c| c.plans.len()).unwrap_or(0)
+    }
+}
+
+#[async_trait::async_trait]
+impl<S: PlanStore + Send + Sync> PlanStore for CachedPlanStore<S> {
+    async fn list_plans(&self) -> Result<Vec<StoredPlan>> {
+        // Check cache
+        if let Ok(cache) = self.cache.read() {
+            if let Some(ref cached) = cache.active_plans {
+                if cached.expires_at > std::time::Instant::now() {
+                    return Ok(cached.plans.clone());
+                }
+            }
+        }
+
+        // Cache miss - fetch from store
+        let plans = self.inner.list_plans().await?;
+
+        // Update cache
+        if let Ok(mut cache) = self.cache.write() {
+            cache.active_plans = Some(CachedPlanList {
+                plans: plans.clone(),
+                expires_at: std::time::Instant::now() + self.ttl,
+            });
+        }
+
+        Ok(plans)
+    }
+
+    async fn list_all_plans(&self) -> Result<Vec<StoredPlan>> {
+        // Check cache
+        if let Ok(cache) = self.cache.read() {
+            if let Some(ref cached) = cache.all_plans {
+                if cached.expires_at > std::time::Instant::now() {
+                    return Ok(cached.plans.clone());
+                }
+            }
+        }
+
+        // Cache miss - fetch from store
+        let plans = self.inner.list_all_plans().await?;
+
+        // Update cache
+        if let Ok(mut cache) = self.cache.write() {
+            cache.all_plans = Some(CachedPlanList {
+                plans: plans.clone(),
+                expires_at: std::time::Instant::now() + self.ttl,
+            });
+        }
+
+        Ok(plans)
+    }
+
+    async fn get_plan(&self, plan_id: &str) -> Result<Option<StoredPlan>> {
+        // Check cache
+        if let Ok(cache) = self.cache.read() {
+            if let Some(cached) = cache.plans.get(plan_id) {
+                if cached.expires_at > std::time::Instant::now() {
+                    return Ok(cached.plan.clone());
+                }
+            }
+        }
+
+        // Cache miss - fetch from store
+        let plan = self.inner.get_plan(plan_id).await?;
+
+        // Update cache
+        if let Ok(mut cache) = self.cache.write() {
+            cache.plans.insert(
+                plan_id.to_string(),
+                CachedPlan {
+                    plan: plan.clone(),
+                    expires_at: std::time::Instant::now() + self.ttl,
+                },
+            );
+        }
+
+        Ok(plan)
+    }
+
+    async fn get_plan_by_stripe_price(&self, stripe_price_id: &str) -> Result<Option<StoredPlan>> {
+        // For price lookups, check all_plans cache first
+        if let Ok(cache) = self.cache.read() {
+            if let Some(ref cached) = cache.all_plans {
+                if cached.expires_at > std::time::Instant::now() {
+                    return Ok(cached.plans.iter().find(|p| p.stripe_price_id == stripe_price_id).cloned());
+                }
+            }
+        }
+
+        // Fall through to inner store
+        self.inner.get_plan_by_stripe_price(stripe_price_id).await
+    }
+
+    async fn create_plan(&self, plan: &StoredPlan) -> Result<()> {
+        let result = self.inner.create_plan(plan).await;
+        if result.is_ok() {
+            self.invalidate();
+        }
+        result
+    }
+
+    async fn update_plan(&self, plan: &StoredPlan) -> Result<()> {
+        let result = self.inner.update_plan(plan).await;
+        if result.is_ok() {
+            self.invalidate_plan(&plan.id);
+        }
+        result
+    }
+
+    async fn delete_plan(&self, plan_id: &str) -> Result<()> {
+        let result = self.inner.delete_plan(plan_id).await;
+        if result.is_ok() {
+            self.invalidate_plan(plan_id);
+        }
+        result
+    }
+
+    async fn set_plan_active(&self, plan_id: &str, is_active: bool) -> Result<()> {
+        let result = self.inner.set_plan_active(plan_id, is_active).await;
+        if result.is_ok() {
+            self.invalidate_plan(plan_id);
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1080,5 +1304,127 @@ mod tests {
         store.save_subscription("org_4", &sub4).await.unwrap();
         assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 2);
         assert_eq!(store.count_subscriptions_by_plan("pro").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_cached_plan_store_caches_results() {
+        use test::InMemoryBillingStore;
+        use std::time::Duration;
+
+        let inner = InMemoryBillingStore::new();
+
+        // Seed a plan
+        let starter = create_test_plan("starter", 999, true, 1);
+        inner.create_plan(&starter).await.unwrap();
+
+        // Create cached store with 1 second TTL
+        let cached = CachedPlanStore::new(inner.clone(), Duration::from_secs(1));
+
+        // First call should hit the store and cache
+        let plans = cached.list_plans().await.unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].id, "starter");
+
+        // Add another plan directly to inner store (bypassing cache)
+        let pro = create_test_plan("pro", 2999, true, 2);
+        inner.create_plan(&pro).await.unwrap();
+
+        // Should still return cached result
+        let plans = cached.list_plans().await.unwrap();
+        assert_eq!(plans.len(), 1); // Still 1 from cache
+
+        // After invalidation, should see new plan
+        cached.invalidate();
+        let plans = cached.list_plans().await.unwrap();
+        assert_eq!(plans.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cached_plan_store_get_plan() {
+        use test::InMemoryBillingStore;
+        use std::time::Duration;
+
+        let inner = InMemoryBillingStore::new();
+        let starter = create_test_plan("starter", 999, true, 1);
+        inner.create_plan(&starter).await.unwrap();
+
+        let cached = CachedPlanStore::new(inner.clone(), Duration::from_secs(60));
+
+        // First fetch should cache
+        let plan = cached.get_plan("starter").await.unwrap().unwrap();
+        assert_eq!(plan.price_cents, 999);
+        assert_eq!(cached.cache_size(), 1);
+
+        // Update directly in inner store
+        let mut updated = starter.clone();
+        updated.price_cents = 1499;
+        inner.update_plan(&updated).await.unwrap();
+
+        // Should still return cached version
+        let plan = cached.get_plan("starter").await.unwrap().unwrap();
+        assert_eq!(plan.price_cents, 999);
+
+        // Invalidate specific plan
+        cached.invalidate_plan("starter");
+        let plan = cached.get_plan("starter").await.unwrap().unwrap();
+        assert_eq!(plan.price_cents, 1499);
+    }
+
+    #[tokio::test]
+    async fn test_cached_plan_store_write_operations_invalidate() {
+        use test::InMemoryBillingStore;
+        use std::time::Duration;
+
+        let inner = InMemoryBillingStore::new();
+        let cached = CachedPlanStore::new(inner, Duration::from_secs(60));
+
+        // Create plan through cached store
+        let starter = create_test_plan("starter", 999, true, 1);
+        cached.create_plan(&starter).await.unwrap();
+
+        // Should be fetchable
+        let plans = cached.list_plans().await.unwrap();
+        assert_eq!(plans.len(), 1);
+
+        // Update through cached store should invalidate
+        let mut updated = starter.clone();
+        updated.price_cents = 1499;
+        cached.update_plan(&updated).await.unwrap();
+
+        let plan = cached.get_plan("starter").await.unwrap().unwrap();
+        assert_eq!(plan.price_cents, 1499);
+
+        // Delete through cached store should invalidate
+        cached.delete_plan("starter").await.unwrap();
+        assert!(cached.get_plan("starter").await.unwrap().is_none());
+        assert!(cached.list_plans().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cached_plan_store_set_active_invalidates() {
+        use test::InMemoryBillingStore;
+        use std::time::Duration;
+
+        let inner = InMemoryBillingStore::new();
+        let cached = CachedPlanStore::new(inner, Duration::from_secs(60));
+
+        let starter = create_test_plan("starter", 999, true, 1);
+        cached.create_plan(&starter).await.unwrap();
+
+        // Initially active
+        let plans = cached.list_plans().await.unwrap();
+        assert_eq!(plans.len(), 1);
+
+        // Deactivate
+        cached.set_plan_active("starter", false).await.unwrap();
+
+        // Should not appear in active plans
+        let active_plans = cached.list_plans().await.unwrap();
+        assert!(active_plans.is_empty());
+
+        // But should still exist
+        let all_plans = cached.list_all_plans().await.unwrap();
+        assert_eq!(all_plans.len(), 1);
+        assert!(!all_plans[0].is_active);
     }
 }
