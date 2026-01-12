@@ -1,0 +1,460 @@
+<script setup lang="ts">
+import { ref, computed, watch } from 'vue'
+import { usePlans, type Plan, type CreatePlanRequest, type UpdatePlanRequest } from './composables/usePlans'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { Switch } from '@/components/ui/switch'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Separator } from '@/components/ui/separator'
+
+const props = defineProps<{
+  plan?: Plan | null
+}>()
+
+const emit = defineEmits<{
+  (e: 'saved', plan: Plan): void
+  (e: 'cancel'): void
+}>()
+
+const { isLoading, error, createPlan, updatePlan } = usePlans()
+
+const isEditing = computed(() => !!props.plan?.id)
+const formTitle = computed(() => isEditing.value ? 'Edit Plan' : 'Create Plan')
+
+// Form state
+const form = ref({
+  id: '',
+  name: '',
+  description: '',
+  stripe_price_id: '',
+  stripe_seat_price_id: '',
+  price_cents: 0,
+  currency: 'usd',
+  interval: 'monthly' as 'monthly' | 'yearly' | 'one_time',
+  included_seats: 1,
+  trial_days: 0,
+  is_active: true,
+  sort_order: 0,
+  features: {} as Record<string, boolean>,
+  limits: {} as Record<string, number>,
+})
+
+// For managing feature/limit entries
+const newFeatureKey = ref('')
+const newLimitKey = ref('')
+const newLimitValue = ref(0)
+
+// Initialize form when plan prop changes
+watch(
+  () => props.plan,
+  (plan) => {
+    if (plan) {
+      form.value = {
+        id: plan.id,
+        name: plan.name,
+        description: plan.description || '',
+        stripe_price_id: plan.stripe_price_id,
+        stripe_seat_price_id: plan.stripe_seat_price_id || '',
+        price_cents: plan.price_cents,
+        currency: plan.currency,
+        interval: plan.interval,
+        included_seats: plan.included_seats,
+        trial_days: plan.trial_days || 0,
+        is_active: plan.is_active,
+        sort_order: plan.sort_order,
+        features: { ...plan.features },
+        limits: { ...plan.limits },
+      }
+    } else {
+      resetForm()
+    }
+  },
+  { immediate: true }
+)
+
+function resetForm() {
+  form.value = {
+    id: '',
+    name: '',
+    description: '',
+    stripe_price_id: '',
+    stripe_seat_price_id: '',
+    price_cents: 0,
+    currency: 'usd',
+    interval: 'monthly',
+    included_seats: 1,
+    trial_days: 0,
+    is_active: true,
+    sort_order: 0,
+    features: {},
+    limits: {},
+  }
+}
+
+function addFeature() {
+  if (newFeatureKey.value.trim()) {
+    form.value.features[newFeatureKey.value.trim()] = true
+    newFeatureKey.value = ''
+  }
+}
+
+function removeFeature(key: string) {
+  delete form.value.features[key]
+}
+
+function addLimit() {
+  if (newLimitKey.value.trim()) {
+    form.value.limits[newLimitKey.value.trim()] = newLimitValue.value
+    newLimitKey.value = ''
+    newLimitValue.value = 0
+  }
+}
+
+function removeLimit(key: string) {
+  delete form.value.limits[key]
+}
+
+// Convert display price (dollars) to cents
+const displayPrice = computed({
+  get: () => (form.value.price_cents / 100).toFixed(2),
+  set: (value: string) => {
+    form.value.price_cents = Math.round(parseFloat(value || '0') * 100)
+  }
+})
+
+async function handleSubmit() {
+  try {
+    let savedPlan: Plan | null
+
+    if (isEditing.value) {
+      const updateRequest: UpdatePlanRequest = {
+        name: form.value.name,
+        description: form.value.description || undefined,
+        stripe_price_id: form.value.stripe_price_id,
+        stripe_seat_price_id: form.value.stripe_seat_price_id || undefined,
+        price_cents: form.value.price_cents,
+        currency: form.value.currency,
+        interval: form.value.interval,
+        included_seats: form.value.included_seats,
+        trial_days: form.value.trial_days || undefined,
+        is_active: form.value.is_active,
+        sort_order: form.value.sort_order,
+        features: form.value.features,
+        limits: form.value.limits,
+      }
+      savedPlan = await updatePlan(props.plan!.id, updateRequest)
+    } else {
+      const createRequest: CreatePlanRequest = {
+        id: form.value.id,
+        name: form.value.name,
+        description: form.value.description || undefined,
+        stripe_price_id: form.value.stripe_price_id,
+        stripe_seat_price_id: form.value.stripe_seat_price_id || undefined,
+        price_cents: form.value.price_cents,
+        currency: form.value.currency,
+        interval: form.value.interval,
+        included_seats: form.value.included_seats,
+        trial_days: form.value.trial_days || undefined,
+        is_active: form.value.is_active,
+        sort_order: form.value.sort_order,
+        features: form.value.features,
+        limits: form.value.limits,
+      }
+      savedPlan = await createPlan(createRequest)
+    }
+
+    if (savedPlan) {
+      emit('saved', savedPlan)
+    }
+  } catch {
+    // Error is handled in composable
+  }
+}
+</script>
+
+<template>
+  <Card class="w-full max-w-2xl">
+    <CardHeader>
+      <CardTitle>\{{ formTitle }}</CardTitle>
+      <CardDescription>
+        \{{ isEditing ? 'Update the plan details below.' : 'Fill in the details to create a new plan.' }}
+      </CardDescription>
+    </CardHeader>
+    <form @submit.prevent="handleSubmit">
+      <CardContent class="space-y-6">
+        <Alert v-if="error" variant="destructive">
+          <AlertDescription>\{{ error }}</AlertDescription>
+        </Alert>
+
+        <!-- Basic Info -->
+        <div class="space-y-4">
+          <h3 class="font-medium">Basic Information</h3>
+
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="space-y-2">
+              <Label for="id">Plan ID</Label>
+              <Input
+                id="id"
+                v-model="form.id"
+                placeholder="e.g., starter, pro"
+                :disabled="isEditing"
+                required
+              />
+              <p class="text-xs text-muted-foreground">
+                Unique identifier, cannot be changed after creation
+              </p>
+            </div>
+
+            <div class="space-y-2">
+              <Label for="name">Display Name</Label>
+              <Input
+                id="name"
+                v-model="form.name"
+                placeholder="e.g., Starter Plan"
+                required
+              />
+            </div>
+          </div>
+
+          <div class="space-y-2">
+            <Label for="description">Description</Label>
+            <Textarea
+              id="description"
+              v-model="form.description"
+              placeholder="Brief description of the plan..."
+              rows="2"
+            />
+          </div>
+        </div>
+
+        <Separator />
+
+        <!-- Stripe Configuration -->
+        <div class="space-y-4">
+          <h3 class="font-medium">Stripe Configuration</h3>
+
+          <div class="grid gap-4 md:grid-cols-2">
+            <div class="space-y-2">
+              <Label for="stripe_price_id">Stripe Price ID</Label>
+              <Input
+                id="stripe_price_id"
+                v-model="form.stripe_price_id"
+                placeholder="price_xxx"
+                required
+              />
+            </div>
+
+            <div class="space-y-2">
+              <Label for="stripe_seat_price_id">Stripe Seat Price ID</Label>
+              <Input
+                id="stripe_seat_price_id"
+                v-model="form.stripe_seat_price_id"
+                placeholder="price_xxx (optional)"
+              />
+              <p class="text-xs text-muted-foreground">
+                For per-seat billing beyond included seats
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        <!-- Pricing -->
+        <div class="space-y-4">
+          <h3 class="font-medium">Pricing</h3>
+
+          <div class="grid gap-4 md:grid-cols-4">
+            <div class="space-y-2">
+              <Label for="price">Price</Label>
+              <Input
+                id="price"
+                v-model="displayPrice"
+                type="number"
+                step="0.01"
+                min="0"
+                required
+              />
+            </div>
+
+            <div class="space-y-2">
+              <Label for="currency">Currency</Label>
+              <Select v-model="form.currency">
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="usd">USD</SelectItem>
+                  <SelectItem value="eur">EUR</SelectItem>
+                  <SelectItem value="gbp">GBP</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div class="space-y-2">
+              <Label for="interval">Interval</Label>
+              <Select v-model="form.interval">
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                  <SelectItem value="yearly">Yearly</SelectItem>
+                  <SelectItem value="one_time">One-time</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div class="space-y-2">
+              <Label for="trial_days">Trial Days</Label>
+              <Input
+                id="trial_days"
+                v-model.number="form.trial_days"
+                type="number"
+                min="0"
+              />
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        <!-- Seats & Status -->
+        <div class="space-y-4">
+          <h3 class="font-medium">Seats & Status</h3>
+
+          <div class="grid gap-4 md:grid-cols-3">
+            <div class="space-y-2">
+              <Label for="included_seats">Included Seats</Label>
+              <Input
+                id="included_seats"
+                v-model.number="form.included_seats"
+                type="number"
+                min="1"
+                required
+              />
+            </div>
+
+            <div class="space-y-2">
+              <Label for="sort_order">Sort Order</Label>
+              <Input
+                id="sort_order"
+                v-model.number="form.sort_order"
+                type="number"
+                min="0"
+              />
+            </div>
+
+            <div class="flex items-center space-x-2 pt-6">
+              <Switch id="is_active" v-model:checked="form.is_active" />
+              <Label for="is_active">Active</Label>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        <!-- Features -->
+        <div class="space-y-4">
+          <h3 class="font-medium">Features</h3>
+          <p class="text-sm text-muted-foreground">
+            Boolean features that this plan includes
+          </p>
+
+          <div class="flex flex-wrap gap-2">
+            <div
+              v-for="(_, key) in form.features"
+              :key="key"
+              class="flex items-center gap-1 bg-muted px-2 py-1 rounded text-sm"
+            >
+              <span>\{{ key }}</span>
+              <button
+                type="button"
+                class="text-muted-foreground hover:text-destructive"
+                @click="removeFeature(key)"
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+
+          <div class="flex gap-2">
+            <Input
+              v-model="newFeatureKey"
+              placeholder="Feature name (e.g., api_access)"
+              @keyup.enter="addFeature"
+            />
+            <Button type="button" variant="outline" @click="addFeature">
+              Add
+            </Button>
+          </div>
+        </div>
+
+        <Separator />
+
+        <!-- Limits -->
+        <div class="space-y-4">
+          <h3 class="font-medium">Limits</h3>
+          <p class="text-sm text-muted-foreground">
+            Numeric limits for this plan
+          </p>
+
+          <div class="flex flex-wrap gap-2">
+            <div
+              v-for="(value, key) in form.limits"
+              :key="key"
+              class="flex items-center gap-1 bg-muted px-2 py-1 rounded text-sm"
+            >
+              <span>\{{ key }}: \{{ value }}</span>
+              <button
+                type="button"
+                class="text-muted-foreground hover:text-destructive"
+                @click="removeLimit(key as string)"
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+
+          <div class="flex gap-2">
+            <Input
+              v-model="newLimitKey"
+              placeholder="Limit name (e.g., projects)"
+              class="flex-1"
+            />
+            <Input
+              v-model.number="newLimitValue"
+              type="number"
+              min="0"
+              placeholder="Value"
+              class="w-24"
+              @keyup.enter="addLimit"
+            />
+            <Button type="button" variant="outline" @click="addLimit">
+              Add
+            </Button>
+          </div>
+        </div>
+      </CardContent>
+
+      <CardFooter class="flex justify-end gap-2">
+        <Button type="button" variant="outline" @click="emit('cancel')">
+          Cancel
+        </Button>
+        <Button type="submit" :disabled="isLoading">
+          \{{ isLoading ? 'Saving...' : (isEditing ? 'Update Plan' : 'Create Plan') }}
+        </Button>
+      </CardFooter>
+    </form>
+  </Card>
+</template>

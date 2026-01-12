@@ -1,0 +1,190 @@
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { usePlans, type Plan } from './composables/usePlans'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+
+const emit = defineEmits<{
+  (e: 'create'): void
+  (e: 'edit', plan: Plan): void
+  (e: 'delete', plan: Plan): void
+}>()
+
+const { plans, isLoading, error, fetchPlans, setActive, deletePlan } = usePlans()
+const deleteConfirmPlan = ref<Plan | null>(null)
+
+onMounted(() => {
+  fetchPlans(true) // Include inactive plans for admin view
+})
+
+function formatPrice(cents: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  }).format(cents / 100)
+}
+
+function formatInterval(interval: string): string {
+  switch (interval) {
+    case 'monthly': return '/mo'
+    case 'yearly': return '/yr'
+    case 'one_time': return 'one-time'
+    default: return ''
+  }
+}
+
+async function handleToggleActive(plan: Plan) {
+  await setActive(plan.id, !plan.is_active)
+}
+
+async function handleDelete(plan: Plan) {
+  try {
+    await deletePlan(plan.id)
+    deleteConfirmPlan.value = null
+  } catch {
+    // Error is handled in composable
+  }
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <div class="flex items-center justify-between">
+        <div>
+          <CardTitle>Billing Plans</CardTitle>
+          <CardDescription>
+            Manage subscription plans and pricing
+          </CardDescription>
+        </div>
+        <Button @click="emit('create')">
+          <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+          </svg>
+          Add Plan
+        </Button>
+      </div>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <!-- Loading state -->
+      <div v-if="isLoading && !plans.length" class="space-y-3">
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+        <Skeleton class="h-12 w-full" />
+      </div>
+
+      <!-- Table -->
+      <Table v-else>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Plan</TableHead>
+            <TableHead>Price</TableHead>
+            <TableHead>Seats</TableHead>
+            <TableHead>Trial</TableHead>
+            <TableHead>Status</TableHead>
+            <TableHead class="text-right">Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="plan in plans" :key="plan.id">
+            <TableCell>
+              <div>
+                <div class="font-medium">\{{ plan.name }}</div>
+                <div class="text-sm text-muted-foreground">\{{ plan.id }}</div>
+              </div>
+            </TableCell>
+            <TableCell>
+              <span class="font-medium">
+                \{{ formatPrice(plan.price_cents, plan.currency) }}
+              </span>
+              <span class="text-muted-foreground">
+                \{{ formatInterval(plan.interval) }}
+              </span>
+            </TableCell>
+            <TableCell>\{{ plan.included_seats }}</TableCell>
+            <TableCell>
+              <span v-if="plan.trial_days">\{{ plan.trial_days }} days</span>
+              <span v-else class="text-muted-foreground">—</span>
+            </TableCell>
+            <TableCell>
+              <Badge :variant="plan.is_active ? 'default' : 'secondary'">
+                \{{ plan.is_active ? 'Active' : 'Inactive' }}
+              </Badge>
+            </TableCell>
+            <TableCell class="text-right">
+              <DropdownMenu>
+                <DropdownMenuTrigger as-child>
+                  <Button variant="ghost" size="sm">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
+                    </svg>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem @click="emit('edit', plan)">
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem @click="handleToggleActive(plan)">
+                    \{{ plan.is_active ? 'Deactivate' : 'Activate' }}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    class="text-destructive"
+                    @click="deleteConfirmPlan = plan"
+                  >
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </TableCell>
+          </TableRow>
+          <TableRow v-if="!plans.length">
+            <TableCell colspan="6" class="text-center text-muted-foreground py-8">
+              No plans found. Create your first plan to get started.
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+
+      <!-- Delete Confirmation Dialog -->
+      <div
+        v-if="deleteConfirmPlan"
+        class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+        @click.self="deleteConfirmPlan = null"
+      >
+        <Card class="w-full max-w-md">
+          <CardHeader>
+            <CardTitle>Delete Plan</CardTitle>
+            <CardDescription>
+              Are you sure you want to delete the "\{{ deleteConfirmPlan.name }}" plan?
+              This action cannot be undone.
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="flex justify-end gap-2">
+            <Button variant="outline" @click="deleteConfirmPlan = null">
+              Cancel
+            </Button>
+            <Button variant="destructive" @click="handleDelete(deleteConfirmPlan)">
+              Delete
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    </CardContent>
+  </Card>
+</template>

@@ -1,0 +1,235 @@
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+import { usePlans, type Plan } from './composables/usePlans'
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Separator } from '@/components/ui/separator'
+import { Skeleton } from '@/components/ui/skeleton'
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from '@/components/ui/tabs'
+
+const props = defineProps<{
+  currentPlanId?: string
+  onSelectPlan?: (plan: Plan) => void
+  highlightPlanId?: string
+}>()
+
+const { plans, isLoading, fetchPlans } = usePlans()
+
+const billingInterval = ref<'monthly' | 'yearly'>('monthly')
+
+onMounted(() => {
+  fetchPlans(false) // Only fetch active plans
+})
+
+const filteredPlans = computed(() => {
+  return plans.value
+    .filter(plan => plan.interval === billingInterval.value || plan.interval === 'one_time')
+    .sort((a, b) => a.sort_order - b.sort_order)
+})
+
+function formatPrice(cents: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(cents / 100)
+}
+
+function formatInterval(interval: string): string {
+  switch (interval) {
+    case 'monthly': return '/month'
+    case 'yearly': return '/year'
+    case 'one_time': return ''
+    default: return ''
+  }
+}
+
+function getFeaturesList(features: Record<string, boolean>): string[] {
+  return Object.entries(features)
+    .filter(([_, enabled]) => enabled)
+    .map(([key]) => formatFeatureName(key))
+}
+
+function formatFeatureName(key: string): string {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function getLimitsList(limits: Record<string, number>): string[] {
+  return Object.entries(limits).map(([key, value]) => {
+    if (value === -1 || value === 0) return `Unlimited ${formatFeatureName(key)}`
+    return `${value} ${formatFeatureName(key)}`
+  })
+}
+
+function handleSelect(plan: Plan) {
+  props.onSelectPlan?.(plan)
+}
+</script>
+
+<template>
+  <div class="space-y-8">
+    <!-- Interval Toggle -->
+    <div class="flex justify-center">
+      <Tabs v-model="billingInterval" class="w-auto">
+        <TabsList>
+          <TabsTrigger value="monthly">Monthly</TabsTrigger>
+          <TabsTrigger value="yearly">
+            Yearly
+            <Badge variant="secondary" class="ml-2">Save 20%</Badge>
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+    </div>
+
+    <!-- Loading State -->
+    <div v-if="isLoading" class="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <Card v-for="i in 4" :key="i">
+        <CardHeader>
+          <Skeleton class="h-6 w-24" />
+          <Skeleton class="h-4 w-full mt-2" />
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <Skeleton class="h-10 w-32" />
+          <div class="space-y-2">
+            <Skeleton class="h-4 w-full" />
+            <Skeleton class="h-4 w-full" />
+            <Skeleton class="h-4 w-3/4" />
+          </div>
+        </CardContent>
+        <CardFooter>
+          <Skeleton class="h-10 w-full" />
+        </CardFooter>
+      </Card>
+    </div>
+
+    <!-- Plans Grid -->
+    <div v-else class="grid gap-6 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+      <Card
+        v-for="plan in filteredPlans"
+        :key="plan.id"
+        :class="[
+          'relative flex flex-col',
+          plan.id === highlightPlanId && 'border-primary ring-2 ring-primary'
+        ]"
+      >
+        <!-- Popular Badge -->
+        <div
+          v-if="plan.id === highlightPlanId"
+          class="absolute -top-3 left-1/2 -translate-x-1/2"
+        >
+          <Badge>Most Popular</Badge>
+        </div>
+
+        <CardHeader>
+          <CardTitle>\{{ plan.name }}</CardTitle>
+          <CardDescription>\{{ plan.description }}</CardDescription>
+        </CardHeader>
+
+        <CardContent class="flex-1 space-y-4">
+          <!-- Price -->
+          <div class="flex items-baseline gap-1">
+            <span class="text-4xl font-bold">
+              \{{ formatPrice(plan.price_cents, plan.currency) }}
+            </span>
+            <span class="text-muted-foreground">
+              \{{ formatInterval(plan.interval) }}
+            </span>
+          </div>
+
+          <!-- Trial -->
+          <div v-if="plan.trial_days" class="text-sm text-primary font-medium">
+            \{{ plan.trial_days }}-day free trial
+          </div>
+
+          <!-- Seats -->
+          <div class="text-sm text-muted-foreground">
+            <span v-if="plan.included_seats === 1">1 seat included</span>
+            <span v-else>\{{ plan.included_seats }} seats included</span>
+          </div>
+
+          <Separator />
+
+          <!-- Features -->
+          <ul class="space-y-3">
+            <li
+              v-for="feature in getFeaturesList(plan.features)"
+              :key="feature"
+              class="flex items-start gap-2 text-sm"
+            >
+              <svg
+                class="h-5 w-5 text-primary flex-shrink-0 mt-0.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+              <span>\{{ feature }}</span>
+            </li>
+            <li
+              v-for="limit in getLimitsList(plan.limits)"
+              :key="limit"
+              class="flex items-start gap-2 text-sm"
+            >
+              <svg
+                class="h-5 w-5 text-primary flex-shrink-0 mt-0.5"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M5 13l4 4L19 7"
+                />
+              </svg>
+              <span>\{{ limit }}</span>
+            </li>
+          </ul>
+        </CardContent>
+
+        <CardFooter>
+          <Button
+            class="w-full"
+            :variant="plan.id === currentPlanId ? 'outline' : (plan.id === highlightPlanId ? 'default' : 'outline')"
+            :disabled="plan.id === currentPlanId"
+            @click="handleSelect(plan)"
+          >
+            <template v-if="plan.id === currentPlanId">
+              Current Plan
+            </template>
+            <template v-else-if="plan.price_cents === 0">
+              Get Started Free
+            </template>
+            <template v-else>
+              Get Started
+            </template>
+          </Button>
+        </CardFooter>
+      </Card>
+    </div>
+
+    <!-- Empty State -->
+    <div
+      v-if="!isLoading && !filteredPlans.length"
+      class="text-center py-12 text-muted-foreground"
+    >
+      No pricing plans available at this time.
+    </div>
+  </div>
+</template>

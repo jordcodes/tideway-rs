@@ -1,0 +1,178 @@
+import { ref, readonly } from 'vue'
+import { useApi } from '../../composables/useApi'
+
+export interface Plan {
+  id: string
+  name: string
+  description?: string
+  stripe_price_id: string
+  stripe_seat_price_id?: string
+  price_cents: number
+  currency: string
+  interval: 'monthly' | 'yearly' | 'one_time'
+  included_seats: number
+  features: Record<string, boolean>
+  limits: Record<string, number>
+  trial_days?: number
+  is_active: boolean
+  sort_order: number
+  created_at: number
+  updated_at: number
+}
+
+export interface CreatePlanRequest {
+  id: string
+  name: string
+  description?: string
+  stripe_price_id: string
+  stripe_seat_price_id?: string
+  price_cents: number
+  currency: string
+  interval: 'monthly' | 'yearly' | 'one_time'
+  included_seats: number
+  features: Record<string, boolean>
+  limits: Record<string, number>
+  trial_days?: number
+  is_active?: boolean
+  sort_order?: number
+}
+
+export interface UpdatePlanRequest {
+  name?: string
+  description?: string
+  stripe_price_id?: string
+  stripe_seat_price_id?: string
+  price_cents?: number
+  currency?: string
+  interval?: 'monthly' | 'yearly' | 'one_time'
+  included_seats?: number
+  features?: Record<string, boolean>
+  limits?: Record<string, number>
+  trial_days?: number
+  is_active?: boolean
+  sort_order?: number
+}
+
+export function usePlans() {
+  const api = useApi()
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+  const plans = ref<Plan[]>([])
+  const currentPlan = ref<Plan | null>(null)
+
+  async function fetchPlans(includeInactive = false): Promise<Plan[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const endpoint = includeInactive ? '/admin/plans/all' : '/billing/plans'
+      const response = await api.get<{ plans: Plan[] }>(endpoint)
+      plans.value = response.plans
+      return response.plans
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch plans'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchPlan(planId: string): Promise<Plan | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<Plan>(`/admin/plans/${encodeURIComponent(planId)}`)
+      currentPlan.value = response
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch plan'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function createPlan(request: CreatePlanRequest): Promise<Plan | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<Plan>('/admin/plans', request)
+      // Refresh plans list
+      await fetchPlans(true)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to create plan'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function updatePlan(planId: string, request: UpdatePlanRequest): Promise<Plan | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.put<Plan>(`/admin/plans/${encodeURIComponent(planId)}`, request)
+      currentPlan.value = response
+      // Refresh plans list
+      await fetchPlans(true)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update plan'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function deletePlan(planId: string): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.delete(`/admin/plans/${encodeURIComponent(planId)}`)
+      // Refresh plans list
+      await fetchPlans(true)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to delete plan'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function setActive(planId: string, isActive: boolean): Promise<void> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      await api.post(`/admin/plans/${encodeURIComponent(planId)}/active`, { is_active: isActive })
+      // Refresh plans list
+      await fetchPlans(true)
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to update plan status'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  return {
+    // State
+    plans: readonly(plans),
+    currentPlan: readonly(currentPlan),
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+
+    // Actions
+    fetchPlans,
+    fetchPlan,
+    createPlan,
+    updatePlan,
+    deletePlan,
+    setActive,
+  }
+}

@@ -202,6 +202,9 @@ fn generate_billing(
         ("BillingPortalButton.vue", "billing/BillingPortalButton"),
         ("InvoiceHistory.vue", "billing/InvoiceHistory"),
         ("PlanSelector.vue", "billing/PlanSelector"),
+        ("PlanList.vue", "billing/PlanList"),
+        ("PlanForm.vue", "billing/PlanForm"),
+        ("PricingTable.vue", "billing/PricingTable"),
     ];
 
     for (filename, template_name) in components {
@@ -211,16 +214,22 @@ fn generate_billing(
         print_success(&format!("Generated billing/{}", filename));
     }
 
-    // Generate composable
+    // Generate composables
     let composable_content = engine.render("billing/composables/useBilling")?;
     let composable_path = composables_path.join("useBilling.ts");
     write_file(&composable_path, &composable_content, args.force)?;
     print_success("Generated billing/composables/useBilling.ts");
 
+    let plans_composable_content = engine.render("billing/composables/usePlans")?;
+    let plans_composable_path = composables_path.join("usePlans.ts");
+    write_file(&plans_composable_path, &plans_composable_content, args.force)?;
+    print_success("Generated billing/composables/usePlans.ts");
+
     // Track shadcn components needed for billing
     if args.style == Style::Shadcn {
         shadcn_components.extend(&[
             "button", "card", "badge", "table", "skeleton", "alert", "separator",
+            "dropdown-menu", "select", "switch", "textarea", "tabs", "input", "label",
         ]);
     }
 
