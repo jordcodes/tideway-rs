@@ -308,6 +308,34 @@ pub struct StoredPlan {
 }
 
 impl StoredPlan {
+    /// Create a new StoredPlan with minimal required fields.
+    #[must_use]
+    pub fn new(id: impl Into<String>, stripe_price_id: impl Into<String>) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        Self {
+            id: id.into(),
+            name: String::new(),
+            description: None,
+            stripe_price_id: stripe_price_id.into(),
+            stripe_seat_price_id: None,
+            price_cents: 0,
+            currency: "usd".to_string(),
+            interval: PlanInterval::Monthly,
+            included_seats: 1,
+            features: serde_json::json!({}),
+            limits: serde_json::json!({}),
+            trial_days: None,
+            is_active: true,
+            sort_order: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
     /// Check if this plan has a specific feature.
     #[must_use]
     pub fn has_feature(&self, feature: &str) -> bool {
@@ -454,6 +482,7 @@ pub mod test {
         customers: RwLock<HashMap<String, CustomerRecord>>,
         subscriptions: RwLock<HashMap<String, StoredSubscription>>,
         processed_events: RwLock<HashMap<String, u64>>,
+        plans: RwLock<HashMap<String, StoredPlan>>,
     }
 
     #[derive(Clone)]
@@ -483,6 +512,75 @@ pub mod test {
                 .keys()
                 .cloned()
                 .collect()
+        }
+
+        /// Get all plans (for testing).
+        pub fn get_all_plans(&self) -> HashMap<String, StoredPlan> {
+            self.inner.plans.read().unwrap().clone()
+        }
+
+        /// Seed plans for testing.
+        pub fn seed_plans(&self, plans: Vec<StoredPlan>) {
+            let mut store = self.inner.plans.write().unwrap();
+            for plan in plans {
+                store.insert(plan.id.clone(), plan);
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PlanStore for InMemoryBillingStore {
+        async fn list_plans(&self) -> Result<Vec<StoredPlan>> {
+            let plans = self.inner.plans.read().unwrap();
+            let mut active: Vec<StoredPlan> = plans
+                .values()
+                .filter(|p| p.is_active)
+                .cloned()
+                .collect();
+            active.sort_by_key(|p| p.sort_order);
+            Ok(active)
+        }
+
+        async fn list_all_plans(&self) -> Result<Vec<StoredPlan>> {
+            let plans = self.inner.plans.read().unwrap();
+            let mut all: Vec<StoredPlan> = plans.values().cloned().collect();
+            all.sort_by_key(|p| p.sort_order);
+            Ok(all)
+        }
+
+        async fn get_plan(&self, plan_id: &str) -> Result<Option<StoredPlan>> {
+            Ok(self.inner.plans.read().unwrap().get(plan_id).cloned())
+        }
+
+        async fn get_plan_by_stripe_price(&self, stripe_price_id: &str) -> Result<Option<StoredPlan>> {
+            let plans = self.inner.plans.read().unwrap();
+            Ok(plans.values().find(|p| p.stripe_price_id == stripe_price_id).cloned())
+        }
+
+        async fn create_plan(&self, plan: &StoredPlan) -> Result<()> {
+            self.inner.plans.write().unwrap().insert(plan.id.clone(), plan.clone());
+            Ok(())
+        }
+
+        async fn update_plan(&self, plan: &StoredPlan) -> Result<()> {
+            let mut plans = self.inner.plans.write().unwrap();
+            if plans.contains_key(&plan.id) {
+                plans.insert(plan.id.clone(), plan.clone());
+            }
+            Ok(())
+        }
+
+        async fn delete_plan(&self, plan_id: &str) -> Result<()> {
+            self.inner.plans.write().unwrap().remove(plan_id);
+            Ok(())
+        }
+
+        async fn set_plan_active(&self, plan_id: &str, is_active: bool) -> Result<()> {
+            let mut plans = self.inner.plans.write().unwrap();
+            if let Some(plan) = plans.get_mut(plan_id) {
+                plan.is_active = is_active;
+            }
+            Ok(())
         }
     }
 
@@ -744,5 +842,137 @@ mod tests {
         assert!(!store.is_event_processed("evt_123").await.unwrap());
         store.mark_event_processed("evt_123").await.unwrap();
         assert!(store.is_event_processed("evt_123").await.unwrap());
+    }
+
+    fn create_test_plan(id: &str, price_cents: i64, is_active: bool, sort_order: i32) -> StoredPlan {
+        StoredPlan {
+            id: id.to_string(),
+            name: format!("{} Plan", id),
+            description: Some(format!("Description for {}", id)),
+            stripe_price_id: format!("price_{}", id),
+            stripe_seat_price_id: None,
+            price_cents,
+            currency: "usd".to_string(),
+            interval: PlanInterval::Monthly,
+            included_seats: 1,
+            features: serde_json::json!({"basic": true}),
+            limits: serde_json::json!({"projects": 10}),
+            trial_days: Some(14),
+            is_active,
+            sort_order,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_plan_store() {
+        use test::InMemoryBillingStore;
+
+        let store = InMemoryBillingStore::new();
+
+        // Initially empty
+        assert!(store.list_plans().await.unwrap().is_empty());
+        assert!(store.list_all_plans().await.unwrap().is_empty());
+
+        // Create plans
+        let starter = create_test_plan("starter", 999, true, 1);
+        let pro = create_test_plan("pro", 2999, true, 2);
+        let inactive = create_test_plan("legacy", 499, false, 0);
+
+        store.create_plan(&starter).await.unwrap();
+        store.create_plan(&pro).await.unwrap();
+        store.create_plan(&inactive).await.unwrap();
+
+        // List active plans (should be sorted by sort_order)
+        let active = store.list_plans().await.unwrap();
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].id, "starter");
+        assert_eq!(active[1].id, "pro");
+
+        // List all plans
+        let all = store.list_all_plans().await.unwrap();
+        assert_eq!(all.len(), 3);
+
+        // Get by ID
+        let plan = store.get_plan("starter").await.unwrap().unwrap();
+        assert_eq!(plan.price_cents, 999);
+
+        // Get by Stripe price
+        let plan = store.get_plan_by_stripe_price("price_pro").await.unwrap().unwrap();
+        assert_eq!(plan.id, "pro");
+
+        // Update plan
+        let mut updated = starter.clone();
+        updated.price_cents = 1499;
+        store.update_plan(&updated).await.unwrap();
+        let plan = store.get_plan("starter").await.unwrap().unwrap();
+        assert_eq!(plan.price_cents, 1499);
+
+        // Set active status
+        store.set_plan_active("starter", false).await.unwrap();
+        let active = store.list_plans().await.unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].id, "pro");
+
+        // Delete plan
+        store.delete_plan("pro").await.unwrap();
+        assert!(store.get_plan("pro").await.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_stored_plan_helpers() {
+        let plan = StoredPlan {
+            id: "test".to_string(),
+            name: "Test".to_string(),
+            description: None,
+            stripe_price_id: "price_test".to_string(),
+            stripe_seat_price_id: None,
+            price_cents: 1999,
+            currency: "usd".to_string(),
+            interval: PlanInterval::Monthly,
+            included_seats: 5,
+            features: serde_json::json!({"api_access": true, "support": false}),
+            limits: serde_json::json!({"projects": 50, "storage_mb": 1000}),
+            trial_days: Some(14),
+            is_active: true,
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        // Test has_feature
+        assert!(plan.has_feature("api_access"));
+        assert!(!plan.has_feature("support"));
+        assert!(!plan.has_feature("nonexistent"));
+
+        // Test get_limit
+        assert_eq!(plan.get_limit("projects"), Some(50));
+        assert_eq!(plan.get_limit("storage_mb"), Some(1000));
+        assert_eq!(plan.get_limit("nonexistent"), None);
+
+        // Test check_limit
+        assert!(plan.check_limit("projects", 49)); // under limit
+        assert!(!plan.check_limit("projects", 50)); // at limit (not under)
+        assert!(plan.check_limit("nonexistent", 9999)); // no limit = unlimited
+
+        // Test formatted_price
+        assert_eq!(plan.formatted_price(), "$19.99");
+    }
+
+    #[test]
+    fn test_plan_interval() {
+        assert_eq!(PlanInterval::from_str("monthly"), PlanInterval::Monthly);
+        assert_eq!(PlanInterval::from_str("month"), PlanInterval::Monthly);
+        assert_eq!(PlanInterval::from_str("yearly"), PlanInterval::Yearly);
+        assert_eq!(PlanInterval::from_str("year"), PlanInterval::Yearly);
+        assert_eq!(PlanInterval::from_str("annual"), PlanInterval::Yearly);
+        assert_eq!(PlanInterval::from_str("one_time"), PlanInterval::OneTime);
+        assert_eq!(PlanInterval::from_str("lifetime"), PlanInterval::OneTime);
+        assert_eq!(PlanInterval::from_str("unknown"), PlanInterval::Monthly); // default
+
+        assert_eq!(PlanInterval::Monthly.as_str(), "monthly");
+        assert_eq!(PlanInterval::Yearly.as_str(), "yearly");
+        assert_eq!(PlanInterval::OneTime.as_str(), "one_time");
     }
 }

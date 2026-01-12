@@ -1,10 +1,11 @@
 //! Input validation for billing operations.
 //!
-//! Provides validation functions for billable IDs and other inputs
+//! Provides validation functions for billable IDs, plan data, and other inputs
 //! to prevent injection attacks and ensure data integrity.
 
 use crate::error::Result;
 use super::error::BillingError;
+use super::storage::StoredPlan;
 
 /// Maximum length for billable IDs.
 const MAX_BILLABLE_ID_LENGTH: usize = 256;
@@ -92,6 +93,136 @@ pub fn validate_plan_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Valid ISO 4217 currency codes (lowercase).
+const VALID_CURRENCIES: &[&str] = &[
+    "usd", "eur", "gbp", "cad", "aud", "jpy", "chf", "sek", "nok", "dkk",
+    "nzd", "sgd", "hkd", "inr", "brl", "mxn", "pln", "czk", "huf", "ron",
+];
+
+/// Maximum length for plan name.
+const MAX_PLAN_NAME_LENGTH: usize = 128;
+
+/// Maximum length for plan description.
+const MAX_PLAN_DESCRIPTION_LENGTH: usize = 1024;
+
+/// Maximum length for Stripe price ID.
+const MAX_STRIPE_PRICE_ID_LENGTH: usize = 256;
+
+/// Validate a complete StoredPlan.
+///
+/// Validates all fields including:
+/// - Plan ID format
+/// - Name length
+/// - Description length
+/// - Stripe price ID format
+/// - Price (non-negative)
+/// - Currency (valid ISO code)
+/// - Included seats (at least 1)
+///
+/// # Errors
+///
+/// Returns `BillingError::InvalidPlanId` with details if validation fails.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::{validate_plan, StoredPlan};
+///
+/// let plan = StoredPlan::new("starter", "price_abc123");
+/// validate_plan(&plan)?;
+/// ```
+pub fn validate_plan(plan: &StoredPlan) -> Result<()> {
+    // Validate plan ID
+    validate_plan_id(&plan.id)?;
+
+    // Validate name
+    if plan.name.is_empty() {
+        return Err(BillingError::InvalidPlanId {
+            id: plan.id.clone(),
+            reason: "plan name cannot be empty".to_string(),
+        }.into());
+    }
+
+    if plan.name.len() > MAX_PLAN_NAME_LENGTH {
+        return Err(BillingError::InvalidPlanId {
+            id: plan.id.clone(),
+            reason: format!("plan name exceeds maximum length of {}", MAX_PLAN_NAME_LENGTH),
+        }.into());
+    }
+
+    // Validate description length
+    if let Some(ref desc) = plan.description {
+        if desc.len() > MAX_PLAN_DESCRIPTION_LENGTH {
+            return Err(BillingError::InvalidPlanId {
+                id: plan.id.clone(),
+                reason: format!("plan description exceeds maximum length of {}", MAX_PLAN_DESCRIPTION_LENGTH),
+            }.into());
+        }
+    }
+
+    // Validate Stripe price ID
+    validate_stripe_price_id(&plan.stripe_price_id, &plan.id)?;
+
+    // Validate seat price ID if present
+    if let Some(ref seat_price_id) = plan.stripe_seat_price_id {
+        validate_stripe_price_id(seat_price_id, &plan.id)?;
+    }
+
+    // Validate price (non-negative)
+    if plan.price_cents < 0 {
+        return Err(BillingError::InvalidPlanId {
+            id: plan.id.clone(),
+            reason: "price_cents cannot be negative".to_string(),
+        }.into());
+    }
+
+    // Validate currency
+    let currency_lower = plan.currency.to_lowercase();
+    if !VALID_CURRENCIES.contains(&currency_lower.as_str()) {
+        return Err(BillingError::InvalidPlanId {
+            id: plan.id.clone(),
+            reason: format!("invalid currency '{}', must be a valid ISO 4217 code", plan.currency),
+        }.into());
+    }
+
+    // Validate included seats
+    if plan.included_seats == 0 {
+        return Err(BillingError::InvalidPlanId {
+            id: plan.id.clone(),
+            reason: "included_seats must be at least 1".to_string(),
+        }.into());
+    }
+
+    Ok(())
+}
+
+/// Validate a Stripe price ID.
+fn validate_stripe_price_id(price_id: &str, plan_id: &str) -> Result<()> {
+    if price_id.is_empty() {
+        return Err(BillingError::InvalidPlanId {
+            id: plan_id.to_string(),
+            reason: "stripe_price_id cannot be empty".to_string(),
+        }.into());
+    }
+
+    if price_id.len() > MAX_STRIPE_PRICE_ID_LENGTH {
+        return Err(BillingError::InvalidPlanId {
+            id: plan_id.to_string(),
+            reason: format!("stripe_price_id exceeds maximum length of {}", MAX_STRIPE_PRICE_ID_LENGTH),
+        }.into());
+    }
+
+    // Stripe price IDs should start with "price_"
+    if !price_id.starts_with("price_") {
+        return Err(BillingError::InvalidPlanId {
+            id: plan_id.to_string(),
+            reason: "stripe_price_id should start with 'price_'".to_string(),
+        }.into());
+    }
+
+    Ok(())
+}
+
 /// Truncate a string for error messages to prevent log flooding.
 fn truncate_for_error(s: &str) -> String {
     if s.len() <= 50 {
@@ -173,5 +304,90 @@ mod tests {
         let result = sanitize_for_error(&long);
         assert!(result.ends_with("..."));
         assert!(result.len() <= 53); // 50 chars + "..."
+    }
+
+    use super::super::storage::PlanInterval;
+
+    fn make_valid_plan() -> StoredPlan {
+        StoredPlan {
+            id: "starter".to_string(),
+            name: "Starter Plan".to_string(),
+            description: Some("A great starter plan".to_string()),
+            stripe_price_id: "price_abc123".to_string(),
+            stripe_seat_price_id: None,
+            price_cents: 999,
+            currency: "usd".to_string(),
+            interval: PlanInterval::Monthly,
+            included_seats: 1,
+            features: serde_json::json!({}),
+            limits: serde_json::json!({}),
+            trial_days: Some(14),
+            is_active: true,
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[test]
+    fn test_validate_plan_valid() {
+        let plan = make_valid_plan();
+        assert!(validate_plan(&plan).is_ok());
+    }
+
+    #[test]
+    fn test_validate_plan_empty_name() {
+        let mut plan = make_valid_plan();
+        plan.name = "".to_string();
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn test_validate_plan_invalid_id() {
+        let mut plan = make_valid_plan();
+        plan.id = "plan with spaces".to_string();
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn test_validate_plan_invalid_stripe_price() {
+        let mut plan = make_valid_plan();
+        plan.stripe_price_id = "invalid".to_string();
+        assert!(validate_plan(&plan).is_err());
+
+        plan.stripe_price_id = "".to_string();
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn test_validate_plan_negative_price() {
+        let mut plan = make_valid_plan();
+        plan.price_cents = -100;
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn test_validate_plan_invalid_currency() {
+        let mut plan = make_valid_plan();
+        plan.currency = "xyz".to_string();
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn test_validate_plan_zero_seats() {
+        let mut plan = make_valid_plan();
+        plan.included_seats = 0;
+        assert!(validate_plan(&plan).is_err());
+    }
+
+    #[test]
+    fn test_validate_plan_currencies() {
+        let mut plan = make_valid_plan();
+
+        // Test valid currencies
+        for currency in &["usd", "EUR", "GBP", "cad", "aud"] {
+            plan.currency = currency.to_string();
+            assert!(validate_plan(&plan).is_ok(), "Currency {} should be valid", currency);
+        }
     }
 }

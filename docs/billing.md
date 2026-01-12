@@ -102,9 +102,18 @@ let invoice_client = MockStripeInvoiceClient::with_currency("eur");
 let refund_client = MockStripeRefundClient::with_currency("gbp");
 ```
 
-## Plans Configuration
+## Plan Management
 
-Define your subscription plans with the builder pattern:
+Tideway supports two approaches to plan management:
+
+1. **Static Plans** - Code-configured, defined at compile time
+2. **Dynamic Plans** - Database-backed, admin-editable at runtime
+
+You can use either approach or combine them for a hybrid setup.
+
+### Static Plans (Code-Configured)
+
+Define plans using the builder pattern. Best for simple setups where plans rarely change:
 
 ```rust
 use tideway::billing::Plans;
@@ -121,22 +130,457 @@ let plans = Plans::builder()
         .included_seats(3)
         .features(["basic", "reports"])
         .trial_days(14)
-        .limits(|l| l
-            .max_projects(10)
-            .max_storage_gb(5)
-            .custom("api_calls", 1000))
+        .max_projects(10)
+        .max_storage_mb(5000)
+        .custom_limit("api_calls", 1000)
         .done()
     .plan("pro")
         .stripe_price("price_pro")
         .extra_seat_price("price_seat")
         .included_seats(10)
         .features(["basic", "reports", "api", "priority_support"])
-        .limits(|l| l
-            .max_projects(100)
-            .max_storage_gb(50)
-            .custom("api_calls", 100_000))
+        .max_projects(100)
+        .max_storage_mb(50000)
+        .custom_limit("api_calls", 100_000)
         .done()
     .build();
+```
+
+### Dynamic Plans (Database-Backed)
+
+For admin-managed plans that can be created, updated, or disabled without code changes.
+
+#### The StoredPlan Type
+
+```rust
+use tideway::billing::{StoredPlan, PlanInterval};
+
+let plan = StoredPlan {
+    id: "starter".to_string(),
+    name: "Starter Plan".to_string(),
+    description: Some("Perfect for small teams".to_string()),
+    stripe_price_id: "price_starter_monthly".to_string(),
+    stripe_seat_price_id: Some("price_seat".to_string()),
+    price_cents: 999,  // $9.99
+    currency: "usd".to_string(),
+    interval: PlanInterval::Monthly,
+    included_seats: 3,
+    features: serde_json::json!({
+        "basic": true,
+        "reports": true,
+        "api_access": false
+    }),
+    limits: serde_json::json!({
+        "projects": 10,
+        "storage_mb": 5000,
+        "api_calls": 1000
+    }),
+    trial_days: Some(14),
+    is_active: true,
+    sort_order: 1,
+    created_at: 0,  // Unix timestamp
+    updated_at: 0,
+};
+```
+
+#### The PlanStore Trait
+
+```rust
+use tideway::billing::{PlanStore, StoredPlan};
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait PlanStore: Send + Sync {
+    /// List active plans (for public pricing pages).
+    async fn list_plans(&self) -> Result<Vec<StoredPlan>>;
+
+    /// List all plans including inactive (for admin).
+    async fn list_all_plans(&self) -> Result<Vec<StoredPlan>>;
+
+    /// Get a plan by ID.
+    async fn get_plan(&self, plan_id: &str) -> Result<Option<StoredPlan>>;
+
+    /// Get a plan by its Stripe price ID.
+    async fn get_plan_by_stripe_price(&self, stripe_price_id: &str) -> Result<Option<StoredPlan>>;
+
+    /// Create a new plan.
+    async fn create_plan(&self, plan: &StoredPlan) -> Result<()>;
+
+    /// Update an existing plan.
+    async fn update_plan(&self, plan: &StoredPlan) -> Result<()>;
+
+    /// Delete a plan.
+    async fn delete_plan(&self, plan_id: &str) -> Result<()>;
+
+    /// Set a plan's active status.
+    async fn set_plan_active(&self, plan_id: &str, is_active: bool) -> Result<()>;
+}
+```
+
+#### SeaORM Implementation
+
+Enable the `billing-seaorm` feature for a ready-to-use implementation:
+
+```toml
+[dependencies]
+tideway = { version = "0.2", features = ["billing", "billing-seaorm"] }
+```
+
+```rust
+use tideway::billing::SeaOrmBillingStore;
+
+let store = SeaOrmBillingStore::new(db_connection);
+
+// List plans for pricing page
+let active_plans = store.list_plans().await?;
+
+// Admin: list all plans
+let all_plans = store.list_all_plans().await?;
+
+// Create a new plan
+store.create_plan(&plan).await?;
+
+// Deactivate a plan (soft delete)
+store.set_plan_active("legacy_plan", false).await?;
+```
+
+### Hybrid Approach: Combining Static and Dynamic Plans
+
+Load plans from the database and merge with code-defined defaults:
+
+```rust
+use tideway::billing::{Plans, PlanStore};
+
+// Load from database
+let stored_plans = store.list_plans().await?;
+let mut plans = Plans::from_stored(stored_plans);
+
+// Merge with code-defined fallbacks
+let defaults = Plans::builder()
+    .plan("free")
+        .stripe_price("price_free")
+        .included_seats(1)
+        .features(["basic"])
+        .done()
+    .build();
+
+plans.merge(defaults);  // Database plans take precedence
+```
+
+### Converting Between Plan Types
+
+Database plans can be converted to the code-configured `PlanConfig` type:
+
+```rust
+use tideway::billing::{Plans, PlanConfig, StoredPlan};
+
+// Single plan conversion
+let stored: StoredPlan = store.get_plan("starter").await?.unwrap();
+let config: PlanConfig = stored.into();
+
+// Batch conversion
+let stored_plans = store.list_plans().await?;
+let plans = Plans::from_stored(stored_plans);
+
+// Use with existing managers
+let checkout_manager = CheckoutManager::new(store, client, plans, config);
+```
+
+### Plan Validation
+
+Validate plans before saving to the database:
+
+```rust
+use tideway::billing::{validate_plan, validate_plan_id, StoredPlan};
+
+// Validate just the plan ID
+validate_plan_id("starter")?;      // Ok
+validate_plan_id("plan with spaces")?;  // Error
+
+// Validate a complete plan
+let plan = StoredPlan::new("starter", "price_abc123");
+validate_plan(&plan)?;
+```
+
+Validation checks:
+- **Plan ID**: Non-empty, max 64 chars, alphanumeric/underscore/hyphen only
+- **Name**: Non-empty, max 128 chars
+- **Description**: Max 1024 chars
+- **Stripe Price ID**: Non-empty, must start with `price_`
+- **Price**: Non-negative
+- **Currency**: Valid ISO 4217 code (usd, eur, gbp, etc.)
+- **Included Seats**: At least 1
+
+### Database Migration
+
+Add the billing_plans table with the provided migration template:
+
+```rust
+// migration/src/m008_create_billing_plans.rs
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager.create_table(
+            Table::create()
+                .table(BillingPlans::Table)
+                .col(ColumnDef::new(BillingPlans::Id).string().not_null().primary_key())
+                .col(ColumnDef::new(BillingPlans::Name).string().not_null())
+                .col(ColumnDef::new(BillingPlans::Description).string())
+                .col(ColumnDef::new(BillingPlans::StripePriceId).string().not_null())
+                .col(ColumnDef::new(BillingPlans::StripeSeatPriceId).string())
+                .col(ColumnDef::new(BillingPlans::PriceCents).big_integer().not_null())
+                .col(ColumnDef::new(BillingPlans::Currency).string().not_null().default("usd"))
+                .col(ColumnDef::new(BillingPlans::Interval).string().not_null().default("monthly"))
+                .col(ColumnDef::new(BillingPlans::IncludedSeats).integer().not_null().default(1))
+                .col(ColumnDef::new(BillingPlans::Features).json_binary().not_null().default("{}"))
+                .col(ColumnDef::new(BillingPlans::Limits).json_binary().not_null().default("{}"))
+                .col(ColumnDef::new(BillingPlans::TrialDays).integer())
+                .col(ColumnDef::new(BillingPlans::IsActive).boolean().not_null().default(true))
+                .col(ColumnDef::new(BillingPlans::SortOrder).integer().not_null().default(0))
+                .col(ColumnDef::new(BillingPlans::CreatedAt).timestamp_with_time_zone().not_null())
+                .col(ColumnDef::new(BillingPlans::UpdatedAt).timestamp_with_time_zone().not_null())
+                .to_owned(),
+        ).await?;
+
+        // Create indexes...
+        Ok(())
+    }
+}
+```
+
+### API Routes for Plan Management
+
+The `tideway generate backend` command creates these routes:
+
+#### Public Routes (for pricing pages)
+
+```
+GET /billing/plans    → List active plans
+```
+
+#### Admin Routes (protected)
+
+```
+GET    /admin/plans           → List all plans (including inactive)
+POST   /admin/plans           → Create a new plan
+GET    /admin/plans/:id       → Get a single plan
+PUT    /admin/plans/:id       → Update a plan
+DELETE /admin/plans/:id       → Delete a plan
+POST   /admin/plans/:id/active → Toggle active status
+```
+
+#### Example: Create Plan Request
+
+```json
+POST /admin/plans
+{
+  "id": "starter",
+  "name": "Starter Plan",
+  "description": "Perfect for small teams",
+  "stripe_price_id": "price_starter_monthly",
+  "price_cents": 999,
+  "currency": "usd",
+  "interval": "monthly",
+  "included_seats": 3,
+  "features": {
+    "basic": true,
+    "reports": true
+  },
+  "limits": {
+    "projects": 10,
+    "storage_mb": 5000
+  },
+  "trial_days": 14,
+  "is_active": true,
+  "sort_order": 1
+}
+```
+
+#### Example: Plan Response
+
+```json
+{
+  "id": "starter",
+  "name": "Starter Plan",
+  "description": "Perfect for small teams",
+  "stripe_price_id": "price_starter_monthly",
+  "stripe_seat_price_id": null,
+  "price_cents": 999,
+  "currency": "usd",
+  "interval": "monthly",
+  "included_seats": 3,
+  "features": {"basic": true, "reports": true},
+  "limits": {"projects": 10, "storage_mb": 5000},
+  "trial_days": 14,
+  "is_active": true,
+  "sort_order": 1,
+  "created_at": 1704067200,
+  "updated_at": 1704067200
+}
+```
+
+### Frontend Components (Vue + shadcn-vue)
+
+The `tideway generate billing` command creates Vue components for plan management:
+
+#### usePlans Composable
+
+```typescript
+import { usePlans } from '@/components/tideway/billing/composables/usePlans'
+
+const {
+  plans,
+  isLoading,
+  error,
+  fetchPlans,
+  createPlan,
+  updatePlan,
+  deletePlan,
+  setActive
+} = usePlans()
+
+// Load plans
+await fetchPlans()           // Active plans only
+await fetchPlans(true)       // All plans (admin)
+
+// Create a plan
+await createPlan({
+  id: 'starter',
+  name: 'Starter Plan',
+  stripe_price_id: 'price_abc123',
+  price_cents: 999,
+  // ...
+})
+
+// Toggle active status
+await setActive('starter', false)
+```
+
+#### PlanList Component (Admin)
+
+```vue
+<template>
+  <PlanList
+    @create="showCreateForm = true"
+    @edit="editPlan"
+    @delete="confirmDelete"
+  />
+</template>
+```
+
+Features:
+- Table view of all plans (active and inactive)
+- Actions dropdown: Edit, Activate/Deactivate, Delete
+- Delete confirmation dialog
+- Loading and error states
+
+#### PlanForm Component (Admin)
+
+```vue
+<template>
+  <PlanForm
+    :plan="selectedPlan"
+    @saved="handleSaved"
+    @cancel="closeForm"
+  />
+</template>
+```
+
+Features:
+- Create and edit modes
+- All plan fields with validation
+- Features list (add/remove boolean features)
+- Limits list (add/remove numeric limits)
+- Price input with currency conversion
+
+#### PricingTable Component (Public)
+
+```vue
+<template>
+  <PricingTable
+    :current-plan-id="subscription?.plan_id"
+    :highlight-plan-id="'pro'"
+    @select-plan="handleSelectPlan"
+  />
+</template>
+```
+
+Features:
+- Monthly/Yearly billing toggle
+- Feature comparison across plans
+- "Most Popular" badge
+- Current plan indicator
+- Trial days display
+
+### Testing Plan Management
+
+Use `InMemoryBillingStore` for testing:
+
+```rust
+use tideway::billing::{InMemoryBillingStore, StoredPlan, PlanStore, PlanInterval};
+
+#[tokio::test]
+async fn test_plan_crud() {
+    let store = InMemoryBillingStore::new();
+
+    // Create a plan
+    let plan = StoredPlan {
+        id: "test".to_string(),
+        name: "Test Plan".to_string(),
+        stripe_price_id: "price_test".to_string(),
+        price_cents: 999,
+        currency: "usd".to_string(),
+        interval: PlanInterval::Monthly,
+        included_seats: 1,
+        is_active: true,
+        // ... other fields
+    };
+    store.create_plan(&plan).await.unwrap();
+
+    // Verify
+    let loaded = store.get_plan("test").await.unwrap().unwrap();
+    assert_eq!(loaded.price_cents, 999);
+
+    // List active plans
+    let active = store.list_plans().await.unwrap();
+    assert_eq!(active.len(), 1);
+
+    // Deactivate
+    store.set_plan_active("test", false).await.unwrap();
+    let active = store.list_plans().await.unwrap();
+    assert_eq!(active.len(), 0);  // Not in active list
+
+    // Still in all plans
+    let all = store.list_all_plans().await.unwrap();
+    assert_eq!(all.len(), 1);
+}
+```
+
+### StoredPlan Helper Methods
+
+```rust
+let plan = store.get_plan("starter").await?.unwrap();
+
+// Check if a feature is enabled
+if plan.has_feature("api_access") {
+    // ...
+}
+
+// Get a limit value
+let max_projects = plan.get_limit("projects");  // Option<i64>
+
+// Check if under a limit
+if plan.check_limit("projects", current_count) {
+    // Under limit, allow creation
+}
+
+// Format price for display
+let display = plan.formatted_price();  // "$9.99"
 ```
 
 ## Checkout Sessions

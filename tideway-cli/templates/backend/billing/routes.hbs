@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tideway::billing::{
     BillingStore, CheckoutManager, CheckoutRequest as TidewayCheckoutRequest, InvoiceManager,
-    PortalManager, WebhookHandler, WebhookOutcome,
+    PlanStore, PortalManager, StoredPlan, WebhookHandler, WebhookOutcome,
 };
 use tideway::Result;
 
@@ -26,6 +26,7 @@ use crate::error::BillingState;
 /// Billing routes
 pub fn billing_routes() -> Router<Arc<BillingState>> {
     Router::new()
+        .route("/plans", get(list_plans))
         .route("/checkout", post(create_checkout))
         .route("/subscription", get(get_subscription))
         .route("/invoices", get(list_invoices))
@@ -111,7 +112,52 @@ pub struct InvoicesListResponse {
     pub invoices: Vec<InvoiceResponse>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct PlanResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub price_cents: i64,
+    pub currency: String,
+    pub interval: String,
+    pub included_seats: u32,
+    pub features: serde_json::Value,
+    pub limits: serde_json::Value,
+    pub trial_days: Option<u32>,
+}
+
+impl From<StoredPlan> for PlanResponse {
+    fn from(plan: StoredPlan) -> Self {
+        Self {
+            id: plan.id,
+            name: plan.name,
+            description: plan.description,
+            price_cents: plan.price_cents,
+            currency: plan.currency,
+            interval: plan.interval.as_str().to_string(),
+            included_seats: plan.included_seats,
+            features: plan.features,
+            limits: plan.limits,
+            trial_days: plan.trial_days,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct PlansListResponse {
+    pub plans: Vec<PlanResponse>,
+}
+
 // Handlers
+
+/// List available plans (public endpoint for pricing pages).
+async fn list_plans(
+    State(state): State<Arc<BillingState>>,
+) -> Result<Json<PlansListResponse>> {
+    let plans = state.billing_store.list_plans().await?;
+    let plans = plans.into_iter().map(PlanResponse::from).collect();
+    Ok(Json(PlansListResponse { plans }))
+}
 
 async fn create_checkout(
     State(state): State<Arc<BillingState>>,
@@ -347,3 +393,261 @@ impl tideway::billing::BillableEntity for SimpleBillable {
     }
 }
 {{/unless}}
+
+// =============================================================================
+// Admin Plan Management Routes
+// =============================================================================
+
+use axum::routing::{delete, put};
+use tideway::billing::PlanInterval;
+
+/// Admin plan management routes (requires admin authentication).
+pub fn admin_plan_routes() -> Router<Arc<BillingState>> {
+    Router::new()
+        .route("/plans", get(admin_list_plans))
+        .route("/plans", post(admin_create_plan))
+        .route("/plans/{plan_id}", get(admin_get_plan))
+        .route("/plans/{plan_id}", put(admin_update_plan))
+        .route("/plans/{plan_id}", delete(admin_delete_plan))
+        .route("/plans/{plan_id}/active", post(admin_set_plan_active))
+}
+
+// Admin Plan Request/Response Types
+
+#[derive(Debug, Serialize)]
+pub struct AdminPlanResponse {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub stripe_price_id: String,
+    pub stripe_seat_price_id: Option<String>,
+    pub price_cents: i64,
+    pub currency: String,
+    pub interval: String,
+    pub included_seats: u32,
+    pub features: serde_json::Value,
+    pub limits: serde_json::Value,
+    pub trial_days: Option<u32>,
+    pub is_active: bool,
+    pub sort_order: i32,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+impl From<StoredPlan> for AdminPlanResponse {
+    fn from(plan: StoredPlan) -> Self {
+        Self {
+            id: plan.id,
+            name: plan.name,
+            description: plan.description,
+            stripe_price_id: plan.stripe_price_id,
+            stripe_seat_price_id: plan.stripe_seat_price_id,
+            price_cents: plan.price_cents,
+            currency: plan.currency,
+            interval: plan.interval.as_str().to_string(),
+            included_seats: plan.included_seats,
+            features: plan.features,
+            limits: plan.limits,
+            trial_days: plan.trial_days,
+            is_active: plan.is_active,
+            sort_order: plan.sort_order,
+            created_at: plan.created_at,
+            updated_at: plan.updated_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct AdminPlansListResponse {
+    pub plans: Vec<AdminPlanResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreatePlanRequest {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub stripe_price_id: String,
+    #[serde(default)]
+    pub stripe_seat_price_id: Option<String>,
+    pub price_cents: i64,
+    #[serde(default = "default_currency")]
+    pub currency: String,
+    #[serde(default = "default_interval")]
+    pub interval: String,
+    #[serde(default = "default_included_seats")]
+    pub included_seats: u32,
+    #[serde(default = "default_features")]
+    pub features: serde_json::Value,
+    #[serde(default = "default_limits")]
+    pub limits: serde_json::Value,
+    #[serde(default)]
+    pub trial_days: Option<u32>,
+    #[serde(default = "default_is_active")]
+    pub is_active: bool,
+    #[serde(default)]
+    pub sort_order: i32,
+}
+
+fn default_currency() -> String { "usd".to_string() }
+fn default_interval() -> String { "monthly".to_string() }
+fn default_included_seats() -> u32 { 1 }
+fn default_features() -> serde_json::Value { serde_json::json!({}) }
+fn default_limits() -> serde_json::Value { serde_json::json!({}) }
+fn default_is_active() -> bool { true }
+
+#[derive(Debug, Deserialize)]
+pub struct UpdatePlanRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub stripe_price_id: Option<String>,
+    pub stripe_seat_price_id: Option<String>,
+    pub price_cents: Option<i64>,
+    pub currency: Option<String>,
+    pub interval: Option<String>,
+    pub included_seats: Option<u32>,
+    pub features: Option<serde_json::Value>,
+    pub limits: Option<serde_json::Value>,
+    pub trial_days: Option<u32>,
+    pub is_active: Option<bool>,
+    pub sort_order: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetPlanActiveRequest {
+    pub is_active: bool,
+}
+
+// Admin Plan Handlers
+
+/// List all plans (including inactive) for admin.
+async fn admin_list_plans(
+    State(state): State<Arc<BillingState>>,
+) -> Result<Json<AdminPlansListResponse>> {
+    let plans = state.billing_store.list_all_plans().await?;
+    let plans = plans.into_iter().map(AdminPlanResponse::from).collect();
+    Ok(Json(AdminPlansListResponse { plans }))
+}
+
+/// Get a single plan by ID.
+async fn admin_get_plan(
+    State(state): State<Arc<BillingState>>,
+    axum::extract::Path(plan_id): axum::extract::Path<String>,
+) -> Result<Json<AdminPlanResponse>> {
+    let plan = state.billing_store
+        .get_plan(&plan_id)
+        .await?
+        .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
+    Ok(Json(AdminPlanResponse::from(plan)))
+}
+
+/// Create a new plan.
+async fn admin_create_plan(
+    State(state): State<Arc<BillingState>>,
+    Json(body): Json<CreatePlanRequest>,
+) -> Result<Json<AdminPlanResponse>> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let plan = StoredPlan {
+        id: body.id,
+        name: body.name,
+        description: body.description,
+        stripe_price_id: body.stripe_price_id,
+        stripe_seat_price_id: body.stripe_seat_price_id,
+        price_cents: body.price_cents,
+        currency: body.currency,
+        interval: PlanInterval::from_str(&body.interval),
+        included_seats: body.included_seats,
+        features: body.features,
+        limits: body.limits,
+        trial_days: body.trial_days,
+        is_active: body.is_active,
+        sort_order: body.sort_order,
+        created_at: now,
+        updated_at: now,
+    };
+
+    state.billing_store.create_plan(&plan).await?;
+
+    tracing::info!(plan_id = %plan.id, "Created billing plan");
+    Ok(Json(AdminPlanResponse::from(plan)))
+}
+
+/// Update an existing plan.
+async fn admin_update_plan(
+    State(state): State<Arc<BillingState>>,
+    axum::extract::Path(plan_id): axum::extract::Path<String>,
+    Json(body): Json<UpdatePlanRequest>,
+) -> Result<Json<AdminPlanResponse>> {
+    let mut plan = state.billing_store
+        .get_plan(&plan_id)
+        .await?
+        .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
+
+    // Apply updates
+    if let Some(name) = body.name { plan.name = name; }
+    if let Some(desc) = body.description { plan.description = Some(desc); }
+    if let Some(price_id) = body.stripe_price_id { plan.stripe_price_id = price_id; }
+    if let Some(seat_price_id) = body.stripe_seat_price_id { plan.stripe_seat_price_id = Some(seat_price_id); }
+    if let Some(price) = body.price_cents { plan.price_cents = price; }
+    if let Some(currency) = body.currency { plan.currency = currency; }
+    if let Some(interval) = body.interval { plan.interval = PlanInterval::from_str(&interval); }
+    if let Some(seats) = body.included_seats { plan.included_seats = seats; }
+    if let Some(features) = body.features { plan.features = features; }
+    if let Some(limits) = body.limits { plan.limits = limits; }
+    if let Some(trial) = body.trial_days { plan.trial_days = Some(trial); }
+    if let Some(active) = body.is_active { plan.is_active = active; }
+    if let Some(order) = body.sort_order { plan.sort_order = order; }
+
+    plan.updated_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    state.billing_store.update_plan(&plan).await?;
+
+    tracing::info!(plan_id = %plan.id, "Updated billing plan");
+    Ok(Json(AdminPlanResponse::from(plan)))
+}
+
+/// Delete a plan.
+async fn admin_delete_plan(
+    State(state): State<Arc<BillingState>>,
+    axum::extract::Path(plan_id): axum::extract::Path<String>,
+) -> Result<Json<tideway::MessageResponse>> {
+    // Check plan exists
+    let _ = state.billing_store
+        .get_plan(&plan_id)
+        .await?
+        .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
+
+    state.billing_store.delete_plan(&plan_id).await?;
+
+    tracing::info!(plan_id = %plan_id, "Deleted billing plan");
+    Ok(Json(tideway::MessageResponse::new("Plan deleted successfully")))
+}
+
+/// Set plan active/inactive status.
+async fn admin_set_plan_active(
+    State(state): State<Arc<BillingState>>,
+    axum::extract::Path(plan_id): axum::extract::Path<String>,
+    Json(body): Json<SetPlanActiveRequest>,
+) -> Result<Json<AdminPlanResponse>> {
+    // Check plan exists
+    let _ = state.billing_store
+        .get_plan(&plan_id)
+        .await?
+        .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
+
+    state.billing_store.set_plan_active(&plan_id, body.is_active).await?;
+
+    // Fetch updated plan
+    let plan = state.billing_store.get_plan(&plan_id).await?.unwrap();
+
+    tracing::info!(plan_id = %plan_id, is_active = body.is_active, "Updated plan active status");
+    Ok(Json(AdminPlanResponse::from(plan)))
+}

@@ -2,7 +2,9 @@
 //!
 //! Define your subscription plans with features, seat limits, and pricing.
 //!
-//! # Example
+//! # Static Plans (Code-configured)
+//!
+//! Use the builder pattern for plans defined in code:
 //!
 //! ```rust,ignore
 //! use tideway::billing::{Plans, PlanLimits};
@@ -23,8 +25,22 @@
 //!         .done()
 //!     .build();
 //! ```
+//!
+//! # Dynamic Plans (Database-backed)
+//!
+//! Use [`PlanStore`](super::storage::PlanStore) for admin-managed plans:
+//!
+//! ```rust,ignore
+//! use tideway::billing::{Plans, PlanStore, StoredPlan};
+//!
+//! // Load plans from database
+//! let stored_plans = store.list_plans().await?;
+//! let plans = Plans::from_stored(stored_plans);
+//! ```
 
 use std::collections::{HashMap, HashSet};
+
+use super::storage::StoredPlan;
 
 /// A collection of plan configurations.
 #[derive(Clone, Debug, Default)]
@@ -43,6 +59,41 @@ impl Plans {
     #[must_use]
     pub fn builder() -> PlansBuilder {
         PlansBuilder::new()
+    }
+
+    /// Create a Plans collection from database-stored plans.
+    ///
+    /// This allows database-managed plans to be used with the existing
+    /// code-configured plan system.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let stored_plans = store.list_plans().await?;
+    /// let plans = Plans::from_stored(stored_plans);
+    /// ```
+    #[must_use]
+    pub fn from_stored(stored: Vec<StoredPlan>) -> Self {
+        let plans = stored
+            .into_iter()
+            .map(|sp| {
+                let config = PlanConfig::from(sp);
+                (config.id.clone(), config)
+            })
+            .collect();
+        Self { plans }
+    }
+
+    /// Merge plans from another Plans collection.
+    ///
+    /// Plans from `other` will overwrite plans with the same ID.
+    pub fn merge(&mut self, other: Plans) {
+        self.plans.extend(other.plans);
+    }
+
+    /// Add a single plan config.
+    pub fn add(&mut self, config: PlanConfig) {
+        self.plans.insert(config.id.clone(), config);
     }
 
     /// Get a plan by ID.
@@ -161,6 +212,43 @@ impl PlanConfig {
     }
 }
 
+impl From<StoredPlan> for PlanConfig {
+    fn from(stored: StoredPlan) -> Self {
+        // Convert features JSON to HashSet<String>
+        let features = stored
+            .features
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| {
+                        if v.as_bool().unwrap_or(false) {
+                            Some(k.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Convert limits JSON to PlanLimits
+        let limits = PlanLimits::from_json(&stored.limits);
+
+        Self {
+            id: stored.id,
+            stripe_price_id: stored.stripe_price_id,
+            extra_seat_price_id: stored.stripe_seat_price_id,
+            included_seats: stored.included_seats,
+            features,
+            limits,
+            trial_days: stored.trial_days,
+            display_name: Some(stored.name),
+            description: stored.description,
+            currency: Some(stored.currency),
+        }
+    }
+}
+
 /// Resource limits for a plan.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanLimits {
@@ -179,6 +267,39 @@ impl PlanLimits {
     #[must_use]
     pub fn unlimited() -> Self {
         Self::default()
+    }
+
+    /// Create PlanLimits from a JSON value.
+    ///
+    /// Recognizes keys: "projects", "storage_mb", "api_calls", and any custom keys.
+    #[must_use]
+    pub fn from_json(json: &serde_json::Value) -> Self {
+        let obj = match json.as_object() {
+            Some(o) => o,
+            None => return Self::default(),
+        };
+
+        let mut limits = Self::default();
+        let mut custom = HashMap::new();
+
+        for (key, value) in obj {
+            let num = value.as_i64().or_else(|| value.as_u64().map(|n| n as i64));
+            if let Some(n) = num {
+                match key.as_str() {
+                    "projects" | "max_projects" => limits.max_projects = Some(n as u32),
+                    "storage_mb" | "max_storage_mb" => limits.max_storage_mb = Some(n as u64),
+                    "api_calls" | "max_api_calls" | "max_api_calls_monthly" => {
+                        limits.max_api_calls_monthly = Some(n as u32)
+                    }
+                    _ => {
+                        custom.insert(key.clone(), n as u64);
+                    }
+                }
+            }
+        }
+
+        limits.custom = custom;
+        limits
     }
 
     /// Check if a resource usage is within limits.
