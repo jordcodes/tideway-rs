@@ -66,14 +66,113 @@ pub fn run(args: SetupArgs) -> Result<()> {
 }
 
 fn setup_vue(args: &SetupArgs) -> Result<()> {
-    // Step 1: Install Tailwind if needed
+    // Step 1: Clean up default Vue starter files
+    cleanup_vue_starter()?;
+
+    // Step 2: Install Tailwind if needed
     if !args.no_tailwind && args.style != Style::Unstyled {
         setup_tailwind()?;
     }
 
-    // Step 2: Install shadcn-vue if using shadcn style
+    // Step 3: Install shadcn-vue if using shadcn style
     if args.style == Style::Shadcn && !args.no_components {
         setup_shadcn_vue()?;
+    }
+
+    Ok(())
+}
+
+fn cleanup_vue_starter() -> Result<()> {
+    print_info("Cleaning up default Vue starter files...");
+
+    // Remove default components
+    let default_files = [
+        "src/components/HelloWorld.vue",
+        "src/components/TheWelcome.vue",
+        "src/components/WelcomeItem.vue",
+        "src/components/icons/IconCommunity.vue",
+        "src/components/icons/IconDocumentation.vue",
+        "src/components/icons/IconEcosystem.vue",
+        "src/components/icons/IconSupport.vue",
+        "src/components/icons/IconTooling.vue",
+    ];
+
+    for file in default_files {
+        if std::path::Path::new(file).exists() {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+
+    // Remove icons directory if empty
+    if std::path::Path::new("src/components/icons").exists() {
+        let _ = std::fs::remove_dir("src/components/icons");
+    }
+
+    // Replace HomeView with a simple redirect
+    if std::path::Path::new("src/views/HomeView.vue").exists() {
+        std::fs::write(
+            "src/views/HomeView.vue",
+            r#"<script setup lang="ts">
+import { onMounted } from 'vue'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
+
+onMounted(() => {
+  router.push('/login')
+})
+</script>
+
+<template>
+  <div class="min-h-screen flex items-center justify-center">
+    <p class="text-muted-foreground">Redirecting...</p>
+  </div>
+</template>
+"#,
+        )?;
+        print_success("Replaced HomeView.vue with login redirect");
+    }
+
+    // Remove AboutView if it exists
+    if std::path::Path::new("src/views/AboutView.vue").exists() {
+        let _ = std::fs::remove_file("src/views/AboutView.vue");
+    }
+
+    // Clean up App.vue
+    if std::path::Path::new("src/App.vue").exists() {
+        std::fs::write(
+            "src/App.vue",
+            r#"<script setup lang="ts">
+import { RouterView } from 'vue-router'
+</script>
+
+<template>
+  <RouterView />
+</template>
+"#,
+        )?;
+        print_success("Cleaned up App.vue");
+    }
+
+    // Clean up main.css - remove default styles but keep imports
+    if std::path::Path::new("src/assets/main.css").exists() {
+        let content = std::fs::read_to_string("src/assets/main.css")?;
+        // Keep only the @import lines
+        let imports: Vec<&str> = content
+            .lines()
+            .filter(|line| line.trim().starts_with("@import"))
+            .collect();
+
+        if !imports.is_empty() {
+            std::fs::write("src/assets/main.css", imports.join("\n") + "\n")?;
+            print_success("Cleaned up main.css");
+        }
+    }
+
+    // Remove base.css if it exists (default Vue styles)
+    if std::path::Path::new("src/assets/base.css").exists() {
+        let _ = std::fs::remove_file("src/assets/base.css");
+        print_success("Removed base.css");
     }
 
     Ok(())
