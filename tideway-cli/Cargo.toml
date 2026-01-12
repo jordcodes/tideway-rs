@@ -1,6 +1,6 @@
 [package]
 name = "tideway-cli"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2024"
 authors = ["JD"]
 description = "CLI for scaffolding Tideway SaaS applications - backend modules, frontend components, and more"

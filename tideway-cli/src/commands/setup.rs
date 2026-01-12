@@ -154,13 +154,16 @@ import { RouterView } from 'vue-router'
         print_success("Cleaned up App.vue");
     }
 
-    // Clean up main.css - remove default styles but keep imports
+    // Clean up main.css - remove default styles and base.css import
     if std::path::Path::new("src/assets/main.css").exists() {
         let content = std::fs::read_to_string("src/assets/main.css")?;
-        // Keep only the @import lines
+        // Keep only @import lines that are NOT base.css
         let imports: Vec<&str> = content
             .lines()
-            .filter(|line| line.trim().starts_with("@import"))
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("@import") && !trimmed.contains("base.css")
+            })
             .collect();
 
         if !imports.is_empty() {
@@ -174,6 +177,56 @@ import { RouterView } from 'vue-router'
         let _ = std::fs::remove_file("src/assets/base.css");
         print_success("Removed base.css");
     }
+
+    // Clean up router - remove default Home and About routes
+    cleanup_router()?;
+
+    Ok(())
+}
+
+fn cleanup_router() -> Result<()> {
+    let router_path = std::path::Path::new("src/router/index.ts");
+    if !router_path.exists() {
+        return Ok(());
+    }
+
+    let content = std::fs::read_to_string(router_path)?;
+
+    // Remove HomeView and AboutView imports
+    let mut updated = content
+        .lines()
+        .filter(|line| {
+            !line.contains("HomeView") && !line.contains("AboutView")
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    // Replace routes array with empty array (tideway generate will add routes)
+    if updated.contains("routes: [") {
+        // Find and replace the routes array content
+        if let Some(start) = updated.find("routes: [") {
+            if let Some(end) = updated[start..].find("]") {
+                let before = &updated[..start];
+                let after = &updated[start + end + 1..];
+                updated = format!("{}routes: []{}", before, after);
+            }
+        }
+    } else if updated.contains("const routes") {
+        // Handle const routes = [...] pattern
+        if let Some(start) = updated.find("const routes") {
+            if let Some(bracket_start) = updated[start..].find('[') {
+                let abs_bracket_start = start + bracket_start;
+                if let Some(bracket_end) = updated[abs_bracket_start..].find(']') {
+                    let before = &updated[..abs_bracket_start];
+                    let after = &updated[abs_bracket_start + bracket_end + 1..];
+                    updated = format!("{}[]{}", before, after);
+                }
+            }
+        }
+    }
+
+    std::fs::write(router_path, updated)?;
+    print_success("Cleaned up router (removed default routes)");
 
     Ok(())
 }
