@@ -73,7 +73,10 @@ pub mod webhook;
 pub use plans::{LimitCheckResult, PlanBuilder, PlanConfig, PlanLimits, Plans, PlansBuilder};
 
 // Storage exports
-pub use storage::{BillableEntity, BillingStore, StoredSubscription, SubscriptionStatus};
+pub use storage::{
+    BillableEntity, BillingStore, PlanInterval, PlanStore, StoredPlan, StoredSubscription,
+    SubscriptionStatus,
+};
 
 // Customer exports
 pub use customer::{

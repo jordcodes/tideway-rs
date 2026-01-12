@@ -13,6 +13,7 @@ mod m007_add_admin_flag;
 {{else}}
 mod m005_add_admin_flag;
 {{/if}}
+mod m008_create_billing_plans;
 
 pub struct Migrator;
 
@@ -31,6 +32,7 @@ impl MigratorTrait for Migrator {
             {{else}}
             Box::new(m005_add_admin_flag::Migration),
             {{/if}}
+            Box::new(m008_create_billing_plans::Migration),
         ]
     }
 }

@@ -264,6 +264,159 @@ impl std::fmt::Display for SubscriptionStatus {
     }
 }
 
+// =============================================================================
+// Plan Storage
+// =============================================================================
+
+/// A plan stored in the database.
+///
+/// This represents a subscription plan that can be managed through the admin UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StoredPlan {
+    /// Unique plan identifier (e.g., "starter", "pro", "enterprise").
+    pub id: String,
+    /// Display name shown to users.
+    pub name: String,
+    /// Description of the plan.
+    pub description: Option<String>,
+    /// Stripe Price ID for the subscription.
+    pub stripe_price_id: String,
+    /// Stripe Price ID for additional seats (optional).
+    pub stripe_seat_price_id: Option<String>,
+    /// Price in cents (for display purposes).
+    pub price_cents: i64,
+    /// Currency code (e.g., "usd", "gbp", "eur").
+    pub currency: String,
+    /// Billing interval.
+    pub interval: PlanInterval,
+    /// Number of seats included in the base price.
+    pub included_seats: u32,
+    /// Features available on this plan (JSON object).
+    pub features: serde_json::Value,
+    /// Resource limits for this plan (JSON object).
+    pub limits: serde_json::Value,
+    /// Trial period in days (None = no trial).
+    pub trial_days: Option<u32>,
+    /// Whether the plan is active and available for purchase.
+    pub is_active: bool,
+    /// Sort order for display.
+    pub sort_order: i32,
+    /// Created timestamp.
+    pub created_at: u64,
+    /// Updated timestamp.
+    pub updated_at: u64,
+}
+
+impl StoredPlan {
+    /// Check if this plan has a specific feature.
+    #[must_use]
+    pub fn has_feature(&self, feature: &str) -> bool {
+        self.features
+            .get(feature)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
+    /// Get a feature limit value.
+    #[must_use]
+    pub fn get_limit(&self, limit: &str) -> Option<i64> {
+        self.limits.get(limit).and_then(|v| v.as_i64())
+    }
+
+    /// Check if a resource usage is within limits.
+    #[must_use]
+    pub fn check_limit(&self, resource: &str, current: i64) -> bool {
+        match self.get_limit(resource) {
+            None => true, // No limit = unlimited
+            Some(max) => current < max,
+        }
+    }
+
+    /// Get the price formatted for display (e.g., "$9.99").
+    #[must_use]
+    pub fn formatted_price(&self) -> String {
+        let symbol = match self.currency.as_str() {
+            "usd" => "$",
+            "gbp" => "£",
+            "eur" => "€",
+            _ => &self.currency,
+        };
+        let dollars = self.price_cents as f64 / 100.0;
+        format!("{}{:.2}", symbol, dollars)
+    }
+}
+
+/// Billing interval for a plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanInterval {
+    /// Billed monthly.
+    Monthly,
+    /// Billed yearly.
+    Yearly,
+    /// One-time payment (lifetime).
+    OneTime,
+}
+
+impl PlanInterval {
+    /// Convert from string.
+    #[must_use]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "monthly" | "month" => Self::Monthly,
+            "yearly" | "year" | "annual" => Self::Yearly,
+            "one_time" | "onetime" | "lifetime" => Self::OneTime,
+            _ => Self::Monthly,
+        }
+    }
+
+    /// Convert to string.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Monthly => "monthly",
+            Self::Yearly => "yearly",
+            Self::OneTime => "one_time",
+        }
+    }
+}
+
+impl std::fmt::Display for PlanInterval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Trait for storing plan data.
+///
+/// Implement this trait to persist plans to your database.
+#[async_trait]
+pub trait PlanStore: Send + Sync {
+    /// Get all active plans, ordered by sort_order.
+    async fn list_plans(&self) -> Result<Vec<StoredPlan>>;
+
+    /// Get all plans (including inactive), ordered by sort_order.
+    async fn list_all_plans(&self) -> Result<Vec<StoredPlan>>;
+
+    /// Get a plan by ID.
+    async fn get_plan(&self, plan_id: &str) -> Result<Option<StoredPlan>>;
+
+    /// Get a plan by Stripe price ID.
+    async fn get_plan_by_stripe_price(&self, stripe_price_id: &str) -> Result<Option<StoredPlan>>;
+
+    /// Create a new plan.
+    async fn create_plan(&self, plan: &StoredPlan) -> Result<()>;
+
+    /// Update an existing plan.
+    async fn update_plan(&self, plan: &StoredPlan) -> Result<()>;
+
+    /// Delete a plan by ID.
+    async fn delete_plan(&self, plan_id: &str) -> Result<()>;
+
+    /// Activate or deactivate a plan.
+    async fn set_plan_active(&self, plan_id: &str, is_active: bool) -> Result<()>;
+}
+
 /// Information about a billable entity.
 ///
 /// Implement this trait for your User or Organization types.

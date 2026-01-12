@@ -17,10 +17,10 @@
 use async_trait::async_trait;
 use sea_orm::{
     entity::prelude::*, sea_query::OnConflict, ActiveModelTrait, ColumnTrait, DatabaseConnection,
-    EntityTrait, QueryFilter, QuerySelect, Set, TransactionTrait,
+    EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
 };
 
-use super::storage::{BillingStore, StoredSubscription, SubscriptionStatus};
+use super::storage::{BillingStore, PlanInterval, PlanStore, StoredPlan, StoredSubscription, SubscriptionStatus};
 use crate::error::Result;
 use crate::TidewayError;
 
@@ -89,6 +89,42 @@ mod entity {
     }
 
     // -------------------------------------------------------------------------
+    // Billing Plan Entity
+    // -------------------------------------------------------------------------
+    pub mod billing_plan {
+        use super::*;
+
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+        #[sea_orm(table_name = "billing_plans")]
+        pub struct Model {
+            #[sea_orm(primary_key, auto_increment = false)]
+            pub id: String,
+            pub name: String,
+            pub description: Option<String>,
+            pub stripe_price_id: String,
+            pub stripe_seat_price_id: Option<String>,
+            pub price_cents: i64,
+            pub currency: String,
+            pub interval: String,
+            pub included_seats: i32,
+            #[sea_orm(column_type = "JsonBinary")]
+            pub features: serde_json::Value,
+            #[sea_orm(column_type = "JsonBinary")]
+            pub limits: serde_json::Value,
+            pub trial_days: Option<i32>,
+            pub is_active: bool,
+            pub sort_order: i32,
+            pub created_at: DateTimeWithTimeZone,
+            pub updated_at: DateTimeWithTimeZone,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    // -------------------------------------------------------------------------
     // Billing Processed Event Entity
     // -------------------------------------------------------------------------
     pub mod billing_processed_event {
@@ -109,7 +145,7 @@ mod entity {
     }
 }
 
-use entity::{billing_customer, billing_processed_event, billing_subscription};
+use entity::{billing_customer, billing_plan, billing_processed_event, billing_subscription};
 
 // =============================================================================
 // Helper Functions
@@ -186,6 +222,51 @@ fn subscription_to_active_model(
         seat_item_id: Set(subscription.seat_item_id.clone()),
         updated_at: Set(u64_to_i64(subscription.updated_at)),
         created_at: Set(created_at),
+    }
+}
+
+/// Convert a database model to a StoredPlan.
+fn model_to_stored_plan(model: billing_plan::Model) -> StoredPlan {
+    StoredPlan {
+        id: model.id,
+        name: model.name,
+        description: model.description,
+        stripe_price_id: model.stripe_price_id,
+        stripe_seat_price_id: model.stripe_seat_price_id,
+        price_cents: model.price_cents,
+        currency: model.currency,
+        interval: PlanInterval::from_str(&model.interval),
+        included_seats: i32_to_u32(model.included_seats),
+        features: model.features,
+        limits: model.limits,
+        trial_days: model.trial_days.map(|d| i32_to_u32(d)),
+        is_active: model.is_active,
+        sort_order: model.sort_order,
+        created_at: model.created_at.timestamp() as u64,
+        updated_at: model.updated_at.timestamp() as u64,
+    }
+}
+
+/// Create an ActiveModel from a StoredPlan for inserts.
+fn plan_to_active_model(plan: &StoredPlan) -> billing_plan::ActiveModel {
+    let now = chrono::Utc::now().fixed_offset();
+    billing_plan::ActiveModel {
+        id: Set(plan.id.clone()),
+        name: Set(plan.name.clone()),
+        description: Set(plan.description.clone()),
+        stripe_price_id: Set(plan.stripe_price_id.clone()),
+        stripe_seat_price_id: Set(plan.stripe_seat_price_id.clone()),
+        price_cents: Set(plan.price_cents),
+        currency: Set(plan.currency.clone()),
+        interval: Set(plan.interval.as_str().to_string()),
+        included_seats: Set(u32_to_i32(plan.included_seats)),
+        features: Set(plan.features.clone()),
+        limits: Set(plan.limits.clone()),
+        trial_days: Set(plan.trial_days.map(|d| u32_to_i32(d))),
+        is_active: Set(plan.is_active),
+        sort_order: Set(plan.sort_order),
+        created_at: Set(now),
+        updated_at: Set(now),
     }
 }
 
@@ -561,6 +642,129 @@ impl BillingStore for SeaOrmBillingStore {
 
     async fn cleanup_old_events(&self, older_than_days: u32) -> Result<usize> {
         self.cleanup_old_events_batched(older_than_days, None).await
+    }
+}
+
+// =============================================================================
+// PlanStore Implementation
+// =============================================================================
+
+#[async_trait]
+impl PlanStore for SeaOrmBillingStore {
+    async fn list_plans(&self) -> Result<Vec<StoredPlan>> {
+        tracing::debug!("listing active plans");
+
+        let plans = billing_plan::Entity::find()
+            .filter(billing_plan::Column::IsActive.eq(true))
+            .order_by_asc(billing_plan::Column::SortOrder)
+            .all(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(plans.into_iter().map(model_to_stored_plan).collect())
+    }
+
+    async fn list_all_plans(&self) -> Result<Vec<StoredPlan>> {
+        tracing::debug!("listing all plans");
+
+        let plans = billing_plan::Entity::find()
+            .order_by_asc(billing_plan::Column::SortOrder)
+            .all(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(plans.into_iter().map(model_to_stored_plan).collect())
+    }
+
+    async fn get_plan(&self, plan_id: &str) -> Result<Option<StoredPlan>> {
+        tracing::debug!(plan_id = %plan_id, "fetching plan");
+
+        let plan = billing_plan::Entity::find_by_id(plan_id)
+            .one(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(plan.map(model_to_stored_plan))
+    }
+
+    async fn get_plan_by_stripe_price(&self, stripe_price_id: &str) -> Result<Option<StoredPlan>> {
+        tracing::debug!(stripe_price_id = %stripe_price_id, "fetching plan by stripe price");
+
+        let plan = billing_plan::Entity::find()
+            .filter(billing_plan::Column::StripePriceId.eq(stripe_price_id))
+            .one(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(plan.map(model_to_stored_plan))
+    }
+
+    async fn create_plan(&self, plan: &StoredPlan) -> Result<()> {
+        tracing::debug!(plan_id = %plan.id, "creating plan");
+
+        let active_model = plan_to_active_model(plan);
+
+        billing_plan::Entity::insert(active_model)
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn update_plan(&self, plan: &StoredPlan) -> Result<()> {
+        tracing::debug!(plan_id = %plan.id, "updating plan");
+
+        let now = chrono::Utc::now().fixed_offset();
+
+        billing_plan::Entity::update_many()
+            .col_expr(billing_plan::Column::Name, Expr::value(&plan.name))
+            .col_expr(billing_plan::Column::Description, Expr::value(plan.description.clone()))
+            .col_expr(billing_plan::Column::StripePriceId, Expr::value(&plan.stripe_price_id))
+            .col_expr(billing_plan::Column::StripeSeatPriceId, Expr::value(plan.stripe_seat_price_id.clone()))
+            .col_expr(billing_plan::Column::PriceCents, Expr::value(plan.price_cents))
+            .col_expr(billing_plan::Column::Currency, Expr::value(&plan.currency))
+            .col_expr(billing_plan::Column::Interval, Expr::value(plan.interval.as_str()))
+            .col_expr(billing_plan::Column::IncludedSeats, Expr::value(u32_to_i32(plan.included_seats)))
+            .col_expr(billing_plan::Column::Features, Expr::value(plan.features.clone()))
+            .col_expr(billing_plan::Column::Limits, Expr::value(plan.limits.clone()))
+            .col_expr(billing_plan::Column::TrialDays, Expr::value(plan.trial_days.map(|d| u32_to_i32(d))))
+            .col_expr(billing_plan::Column::IsActive, Expr::value(plan.is_active))
+            .col_expr(billing_plan::Column::SortOrder, Expr::value(plan.sort_order))
+            .col_expr(billing_plan::Column::UpdatedAt, Expr::value(now))
+            .filter(billing_plan::Column::Id.eq(&plan.id))
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn delete_plan(&self, plan_id: &str) -> Result<()> {
+        tracing::debug!(plan_id = %plan_id, "deleting plan");
+
+        billing_plan::Entity::delete_by_id(plan_id)
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn set_plan_active(&self, plan_id: &str, is_active: bool) -> Result<()> {
+        tracing::debug!(plan_id = %plan_id, is_active = is_active, "setting plan active status");
+
+        let now = chrono::Utc::now().fixed_offset();
+
+        billing_plan::Entity::update_many()
+            .col_expr(billing_plan::Column::IsActive, Expr::value(is_active))
+            .col_expr(billing_plan::Column::UpdatedAt, Expr::value(now))
+            .filter(billing_plan::Column::Id.eq(plan_id))
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(())
     }
 }
 

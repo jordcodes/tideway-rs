@@ -1,0 +1,185 @@
+//! Create billing_plans table for storing subscription plans.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(BillingPlans::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(BillingPlans::Id)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(BillingPlans::Name).string().not_null())
+                    .col(ColumnDef::new(BillingPlans::Description).string())
+                    .col(ColumnDef::new(BillingPlans::StripePriceId).string().not_null())
+                    .col(ColumnDef::new(BillingPlans::StripeSeatPriceId).string())
+                    .col(ColumnDef::new(BillingPlans::PriceCents).big_integer().not_null())
+                    .col(ColumnDef::new(BillingPlans::Currency).string().not_null().default("usd"))
+                    .col(ColumnDef::new(BillingPlans::Interval).string().not_null().default("monthly"))
+                    .col(ColumnDef::new(BillingPlans::IncludedSeats).integer().not_null().default(1))
+                    .col(ColumnDef::new(BillingPlans::Features).json_binary().not_null().default("{}"))
+                    .col(ColumnDef::new(BillingPlans::Limits).json_binary().not_null().default("{}"))
+                    .col(ColumnDef::new(BillingPlans::TrialDays).integer())
+                    .col(ColumnDef::new(BillingPlans::IsActive).boolean().not_null().default(true))
+                    .col(ColumnDef::new(BillingPlans::SortOrder).integer().not_null().default(0))
+                    .col(
+                        ColumnDef::new(BillingPlans::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .col(
+                        ColumnDef::new(BillingPlans::UpdatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        // Create index on stripe_price_id for lookups
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_billing_plans_stripe_price_id")
+                    .table(BillingPlans::Table)
+                    .col(BillingPlans::StripePriceId)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Create index on is_active and sort_order for listing
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_billing_plans_active_sort")
+                    .table(BillingPlans::Table)
+                    .col(BillingPlans::IsActive)
+                    .col(BillingPlans::SortOrder)
+                    .to_owned(),
+            )
+            .await?;
+
+        // Seed default plans
+        let insert = Query::insert()
+            .into_table(BillingPlans::Table)
+            .columns([
+                BillingPlans::Id,
+                BillingPlans::Name,
+                BillingPlans::Description,
+                BillingPlans::StripePriceId,
+                BillingPlans::PriceCents,
+                BillingPlans::Currency,
+                BillingPlans::Interval,
+                BillingPlans::IncludedSeats,
+                BillingPlans::Features,
+                BillingPlans::Limits,
+                BillingPlans::TrialDays,
+                BillingPlans::IsActive,
+                BillingPlans::SortOrder,
+            ])
+            .values_panic([
+                "free".into(),
+                "Free".into(),
+                "Get started for free".into(),
+                "price_free".into(), // Replace with your Stripe price ID
+                0i64.into(),
+                "usd".into(),
+                "monthly".into(),
+                1i32.into(),
+                r#"{"basic_features": true}"#.into(),
+                r#"{"projects": 3, "storage_mb": 100}"#.into(),
+                Option::<i32>::None.into(),
+                true.into(),
+                0i32.into(),
+            ])
+            .values_panic([
+                "starter".into(),
+                "Starter".into(),
+                "For small teams getting started".into(),
+                "price_starter_monthly".into(), // Replace with your Stripe price ID
+                999i64.into(),
+                "usd".into(),
+                "monthly".into(),
+                3i32.into(),
+                r#"{"basic_features": true, "api_access": true}"#.into(),
+                r#"{"projects": 10, "storage_mb": 1000}"#.into(),
+                14i32.into(),
+                true.into(),
+                1i32.into(),
+            ])
+            .values_panic([
+                "pro".into(),
+                "Pro".into(),
+                "For growing teams".into(),
+                "price_pro_monthly".into(), // Replace with your Stripe price ID
+                2999i64.into(),
+                "usd".into(),
+                "monthly".into(),
+                5i32.into(),
+                r#"{"basic_features": true, "api_access": true, "priority_support": true, "advanced_analytics": true}"#.into(),
+                r#"{"projects": 50, "storage_mb": 10000}"#.into(),
+                14i32.into(),
+                true.into(),
+                2i32.into(),
+            ])
+            .values_panic([
+                "enterprise".into(),
+                "Enterprise".into(),
+                "For large organizations".into(),
+                "price_enterprise_monthly".into(), // Replace with your Stripe price ID
+                9999i64.into(),
+                "usd".into(),
+                "monthly".into(),
+                10i32.into(),
+                r#"{"basic_features": true, "api_access": true, "priority_support": true, "advanced_analytics": true, "sso": true, "custom_integrations": true}"#.into(),
+                r#"{}"#.into(), // Unlimited
+                Option::<i32>::None.into(),
+                true.into(),
+                3i32.into(),
+            ])
+            .to_owned();
+
+        manager.exec_stmt(insert).await?;
+
+        Ok(())
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(BillingPlans::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum BillingPlans {
+    Table,
+    Id,
+    Name,
+    Description,
+    StripePriceId,
+    StripeSeatPriceId,
+    PriceCents,
+    Currency,
+    Interval,
+    IncludedSeats,
+    Features,
+    Limits,
+    TrialDays,
+    IsActive,
+    SortOrder,
+    CreatedAt,
+    UpdatedAt,
+}
