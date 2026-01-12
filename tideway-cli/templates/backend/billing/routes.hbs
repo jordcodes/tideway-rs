@@ -348,6 +348,11 @@ async fn handle_webhook(
         "Processing Stripe webhook"
     );
 
+    // Handle price events for plan sync
+    if event.event_type.starts_with("price.") {
+        return handle_price_webhook(&state, &event).await;
+    }
+
     match webhook_handler.handle_event(event).await {
         Ok(outcome) => {
             match outcome {
@@ -366,6 +371,84 @@ async fn handle_webhook(
         Err(e) => {
             tracing::error!(error = %e, "Failed to process webhook");
             Err((StatusCode::INTERNAL_SERVER_ERROR, "Processing failed".to_string()))
+        }
+    }
+}
+
+/// Handle Stripe price events to sync plan status.
+///
+/// When a price is archived or deleted in Stripe, deactivates any plans using that price.
+async fn handle_price_webhook(
+    state: &Arc<BillingState>,
+    event: &tideway::billing::WebhookEvent,
+) -> std::result::Result<StatusCode, (StatusCode, String)> {
+    let price_id = event.data.object.get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let is_active = event.data.object.get("active")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    match event.event_type.as_str() {
+        "price.updated" if !is_active => {
+            // Price was archived - deactivate plans using it
+            tracing::warn!(
+                price_id = %price_id,
+                "Stripe price was archived, checking for affected plans"
+            );
+            deactivate_plans_with_price(state, price_id).await;
+        }
+        "price.deleted" => {
+            // Price was deleted - deactivate plans using it
+            tracing::warn!(
+                price_id = %price_id,
+                "Stripe price was deleted, checking for affected plans"
+            );
+            deactivate_plans_with_price(state, price_id).await;
+        }
+        _ => {
+            tracing::debug!(event_type = %event.event_type, "Price event ignored");
+        }
+    }
+
+    Ok(StatusCode::OK)
+}
+
+/// Deactivate plans that use a specific Stripe price.
+async fn deactivate_plans_with_price(state: &Arc<BillingState>, price_id: &str) {
+    // Find plans using this price
+    match state.billing_store.list_all_plans().await {
+        Ok(plans) => {
+            for plan in plans {
+                let uses_price = plan.stripe_price_id == price_id
+                    || plan.stripe_seat_price_id.as_deref() == Some(price_id);
+
+                if uses_price && plan.is_active {
+                    tracing::warn!(
+                        plan_id = %plan.id,
+                        price_id = %price_id,
+                        "Deactivating plan due to archived/deleted Stripe price"
+                    );
+
+                    if let Err(e) = state.billing_store.set_plan_active(&plan.id, false).await {
+                        tracing::error!(
+                            plan_id = %plan.id,
+                            error = %e,
+                            "Failed to deactivate plan"
+                        );
+                    } else {
+                        // Audit log
+                        state.audit_logger.log(BillingAuditEvent::PlanDeactivated {
+                            plan_id: plan.id.clone(),
+                            admin_id: Some("stripe_webhook".to_string()),
+                        }).await;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to list plans for price sync");
         }
     }
 }
@@ -408,6 +491,8 @@ pub fn admin_plan_routes() -> Router<Arc<BillingState>> {
     Router::new()
         .route("/plans", get(admin_list_plans))
         .route("/plans", post(admin_create_plan))
+        .route("/plans/export", get(admin_export_plans))
+        .route("/plans/import", post(admin_import_plans))
         .route("/plans/{plan_id}", get(admin_get_plan))
         .route("/plans/{plan_id}", put(admin_update_plan))
         .route("/plans/{plan_id}", delete(admin_delete_plan))
@@ -524,6 +609,83 @@ pub struct SetPlanActiveRequest {
     pub is_active: bool,
 }
 
+/// Plan export format.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PlanExport {
+    pub version: String,
+    pub exported_at: u64,
+    pub plans: Vec<ExportedPlan>,
+}
+
+/// Exported plan format (excludes timestamps, includes all config).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExportedPlan {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub stripe_price_id: String,
+    pub stripe_seat_price_id: Option<String>,
+    pub price_cents: i64,
+    pub currency: String,
+    pub interval: String,
+    pub included_seats: u32,
+    pub features: serde_json::Value,
+    pub limits: serde_json::Value,
+    pub trial_days: Option<u32>,
+    pub is_active: bool,
+    pub sort_order: i32,
+}
+
+impl From<StoredPlan> for ExportedPlan {
+    fn from(plan: StoredPlan) -> Self {
+        Self {
+            id: plan.id,
+            name: plan.name,
+            description: plan.description,
+            stripe_price_id: plan.stripe_price_id,
+            stripe_seat_price_id: plan.stripe_seat_price_id,
+            price_cents: plan.price_cents,
+            currency: plan.currency,
+            interval: plan.interval.as_str().to_string(),
+            included_seats: plan.included_seats,
+            features: plan.features,
+            limits: plan.limits,
+            trial_days: plan.trial_days,
+            is_active: plan.is_active,
+            sort_order: plan.sort_order,
+        }
+    }
+}
+
+/// Import plan request with conflict resolution strategy.
+#[derive(Debug, Deserialize)]
+pub struct ImportPlansRequest {
+    pub plans: Vec<ExportedPlan>,
+    /// How to handle existing plans: "skip", "update", or "error" (default)
+    #[serde(default = "default_conflict_strategy")]
+    pub on_conflict: String,
+    /// Whether to validate Stripe prices
+    #[serde(default)]
+    pub validate_stripe: bool,
+}
+
+fn default_conflict_strategy() -> String { "error".to_string() }
+
+/// Import result.
+#[derive(Debug, Serialize)]
+pub struct ImportPlansResponse {
+    pub created: u32,
+    pub updated: u32,
+    pub skipped: u32,
+    pub errors: Vec<ImportError>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImportError {
+    pub plan_id: String,
+    pub error: String,
+}
+
 // Admin Plan Handlers
 
 /// List all plans (including inactive) for admin.
@@ -551,10 +713,27 @@ async fn admin_get_plan(
 ///
 /// If `validate_stripe` is true in the request, validates that the Stripe price ID
 /// exists and is active before creating the plan.
+///
+/// This endpoint is idempotent: if a plan with the same ID already exists and
+/// has matching stripe_price_id, returns the existing plan. If the plan exists
+/// but has different configuration, returns 409 Conflict.
 async fn admin_create_plan(
     State(state): State<Arc<BillingState>>,
     Json(body): Json<CreatePlanRequest>,
 ) -> Result<Json<AdminPlanResponse>> {
+    // Idempotency check: if plan already exists with same ID
+    if let Some(existing) = state.billing_store.get_plan(&body.id).await? {
+        // If stripe_price_id matches, this is likely a retry - return existing
+        if existing.stripe_price_id == body.stripe_price_id {
+            tracing::info!(plan_id = %body.id, "Plan already exists (idempotent retry)");
+            return Ok(Json(AdminPlanResponse::from(existing)));
+        }
+        // Different configuration = conflict
+        return Err(tideway::TidewayError::Conflict(
+            format!("Plan '{}' already exists with different configuration", body.id)
+        ));
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -763,4 +942,158 @@ async fn admin_set_plan_active(
 
     tracing::info!(plan_id = %plan_id, is_active = body.is_active, "Updated plan active status");
     Ok(Json(AdminPlanResponse::from(plan)))
+}
+
+/// Export all plans as JSON.
+///
+/// Returns plans in a format suitable for importing into another environment.
+async fn admin_export_plans(
+    State(state): State<Arc<BillingState>>,
+) -> Result<Json<PlanExport>> {
+    let plans = state.billing_store.list_all_plans().await?;
+    let exported: Vec<ExportedPlan> = plans.into_iter().map(ExportedPlan::from).collect();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    tracing::info!(count = exported.len(), "Exported billing plans");
+
+    Ok(Json(PlanExport {
+        version: "1.0".to_string(),
+        exported_at: now,
+        plans: exported,
+    }))
+}
+
+/// Import plans from JSON.
+///
+/// Supports three conflict resolution strategies:
+/// - "error" (default): Fail if any plan already exists
+/// - "skip": Skip plans that already exist
+/// - "update": Update existing plans with imported data
+async fn admin_import_plans(
+    State(state): State<Arc<BillingState>>,
+    Json(body): Json<ImportPlansRequest>,
+) -> Result<Json<ImportPlansResponse>> {
+    let mut created = 0u32;
+    let mut updated = 0u32;
+    let mut skipped = 0u32;
+    let mut errors: Vec<ImportError> = Vec::new();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    for exported in body.plans {
+        let plan_id = exported.id.clone();
+
+        // Convert to StoredPlan
+        let plan = StoredPlan {
+            id: exported.id,
+            name: exported.name,
+            description: exported.description,
+            stripe_price_id: exported.stripe_price_id,
+            stripe_seat_price_id: exported.stripe_seat_price_id,
+            price_cents: exported.price_cents,
+            currency: exported.currency,
+            interval: PlanInterval::from_str(&exported.interval),
+            included_seats: exported.included_seats,
+            features: exported.features,
+            limits: exported.limits,
+            trial_days: exported.trial_days,
+            is_active: exported.is_active,
+            sort_order: exported.sort_order,
+            created_at: now,
+            updated_at: now,
+        };
+
+        // Validate
+        if let Err(e) = validate_plan(&plan) {
+            errors.push(ImportError {
+                plan_id: plan_id.clone(),
+                error: format!("Validation failed: {}", e),
+            });
+            continue;
+        }
+
+        // Optional Stripe validation
+        if body.validate_stripe {
+            if let Err(e) = validate_plan_with_stripe(&plan, state.stripe_client.as_ref()).await {
+                errors.push(ImportError {
+                    plan_id: plan_id.clone(),
+                    error: format!("Stripe validation failed: {}", e),
+                });
+                continue;
+            }
+        }
+
+        // Check if exists
+        let existing = state.billing_store.get_plan(&plan_id).await?;
+
+        match (existing, body.on_conflict.as_str()) {
+            (Some(_), "error") => {
+                errors.push(ImportError {
+                    plan_id: plan_id.clone(),
+                    error: "Plan already exists".to_string(),
+                });
+            }
+            (Some(_), "skip") => {
+                skipped += 1;
+            }
+            (Some(_), "update") => {
+                if let Err(e) = state.billing_store.update_plan(&plan).await {
+                    errors.push(ImportError {
+                        plan_id: plan_id.clone(),
+                        error: format!("Update failed: {}", e),
+                    });
+                } else {
+                    updated += 1;
+                    state.audit_logger.log(BillingAuditEvent::PlanUpdated {
+                        plan_id: plan_id.clone(),
+                        admin_id: None,
+                        changes: vec!["imported".to_string()],
+                    }).await;
+                }
+            }
+            (None, _) => {
+                if let Err(e) = state.billing_store.create_plan(&plan).await {
+                    errors.push(ImportError {
+                        plan_id: plan_id.clone(),
+                        error: format!("Create failed: {}", e),
+                    });
+                } else {
+                    created += 1;
+                    state.audit_logger.log(BillingAuditEvent::PlanCreated {
+                        plan_id: plan_id.clone(),
+                        name: plan.name.clone(),
+                        admin_id: None,
+                    }).await;
+                }
+            }
+            (Some(_), strategy) => {
+                errors.push(ImportError {
+                    plan_id: plan_id.clone(),
+                    error: format!("Unknown conflict strategy: {}", strategy),
+                });
+            }
+        }
+    }
+
+    tracing::info!(
+        created = created,
+        updated = updated,
+        skipped = skipped,
+        errors = errors.len(),
+        "Imported billing plans"
+    );
+
+    Ok(Json(ImportPlansResponse {
+        created,
+        updated,
+        skipped,
+        errors,
+    }))
 }
