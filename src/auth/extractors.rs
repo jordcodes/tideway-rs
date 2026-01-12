@@ -3,6 +3,24 @@ use crate::error::TidewayError;
 use axum::{extract::FromRequestParts, http::request::Parts};
 use std::future::Future;
 
+/// Trait for users that can be administrators.
+///
+/// Implement this trait on your user type to enable admin-only route protection.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// impl AdminUser for User {
+///     fn is_admin(&self) -> bool {
+///         self.is_platform_admin
+///     }
+/// }
+/// ```
+pub trait AdminUser {
+    /// Returns true if this user has administrator privileges.
+    fn is_admin(&self) -> bool;
+}
+
 /// Axum extractor for authenticated users
 ///
 /// Use this in your handler to require authentication.
@@ -182,6 +200,84 @@ where
             let claims = provider.verify_token(&token).await?;
 
             Ok(Claims(claims))
+        })
+    }
+}
+
+/// Axum extractor for admin-only routes.
+///
+/// Use this in your handler to require admin privileges.
+/// The request will be rejected with 401 if not authenticated,
+/// or 403 if authenticated but not an admin.
+///
+/// Requires your user type to implement the [`AdminUser`] trait.
+///
+/// # Type Parameters
+///
+/// * `P` - The AuthProvider type (user type must implement AdminUser)
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::auth::{RequireAdmin, AdminUser};
+///
+/// impl AdminUser for User {
+///     fn is_admin(&self) -> bool {
+///         self.is_platform_admin
+///     }
+/// }
+///
+/// async fn admin_only_handler(
+///     RequireAdmin(user): RequireAdmin<MyAuthProvider>
+/// ) -> Json<AdminData> {
+///     // Only admins can reach here
+///     Json(AdminData { ... })
+/// }
+/// ```
+pub struct RequireAdmin<P: AuthProvider>(pub P::User)
+where
+    P::User: AdminUser;
+
+impl<P, S> FromRequestParts<S> for RequireAdmin<P>
+where
+    P: AuthProvider,
+    P::User: AdminUser,
+    S: Send + Sync,
+{
+    type Rejection = TidewayError;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        Box::pin(async move {
+            // Extract the auth provider from the app state
+            let provider = parts
+                .extensions
+                .get::<P>()
+                .ok_or_else(|| {
+                    TidewayError::internal("Auth provider not found in request extensions")
+                })?
+                .clone();
+
+            // Extract token from Authorization header
+            let token = TokenExtractor::from_header(parts)?;
+
+            // Verify token and get claims
+            let claims = provider.verify_token(&token).await?;
+
+            // Load user from claims
+            let user = provider.load_user(&claims).await?;
+
+            // Validate user (optional business logic)
+            provider.validate_user(&user).await?;
+
+            // Check admin privileges
+            if !user.is_admin() {
+                return Err(TidewayError::forbidden("Admin privileges required"));
+            }
+
+            Ok(RequireAdmin(user))
         })
     }
 }

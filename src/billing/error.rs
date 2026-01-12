@@ -24,6 +24,10 @@ pub enum BillingError {
     PlanDoesNotSupportSeats { plan_id: String },
     /// The requested feature is not available on this plan.
     FeatureNotIncluded { feature: String, plan_id: String },
+    /// Cannot delete a plan that has active subscriptions.
+    PlanHasActiveSubscriptions { plan_id: String, subscription_count: u32 },
+    /// The Stripe price ID is invalid or does not exist.
+    InvalidStripePrice { price_id: String, reason: String },
 
     // Subscription errors
     /// No subscription found for the billable entity.
@@ -120,6 +124,12 @@ impl fmt::Display for BillingError {
             }
             Self::FeatureNotIncluded { feature, plan_id } => {
                 write!(f, "Feature '{}' is not included in plan '{}'", feature, plan_id)
+            }
+            Self::PlanHasActiveSubscriptions { plan_id, subscription_count } => {
+                write!(f, "Cannot delete plan '{}': {} active subscription(s) exist", plan_id, subscription_count)
+            }
+            Self::InvalidStripePrice { price_id, reason } => {
+                write!(f, "Invalid Stripe price '{}': {}", price_id, reason)
             }
             Self::NoSubscription { billable_id } => {
                 write!(f, "No subscription found for '{}'", billable_id)
@@ -232,6 +242,8 @@ impl From<BillingError> for crate::error::TidewayError {
             BillingError::InvalidBillableId { .. }
             | BillingError::InvalidPlanId { .. }
             | BillingError::PlanDoesNotSupportSeats { .. }
+            | BillingError::PlanHasActiveSubscriptions { .. }
+            | BillingError::InvalidStripePrice { .. }
             | BillingError::InsufficientSeats { .. }
             | BillingError::InvalidSeatCount { .. }
             | BillingError::InvalidRedirectUrl { .. }
@@ -283,6 +295,8 @@ impl BillingError {
             | Self::SubscriptionCancelling { .. }
             | Self::FeatureNotIncluded { .. }
             | Self::PlanDoesNotSupportSeats { .. }
+            | Self::PlanHasActiveSubscriptions { .. }
+            | Self::InvalidStripePrice { .. }
             | Self::InsufficientSeats { .. }
             | Self::InvalidSeatCount { .. }
             | Self::InvalidRedirectUrl { .. }

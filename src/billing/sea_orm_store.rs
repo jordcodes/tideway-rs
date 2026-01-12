@@ -643,6 +643,22 @@ impl BillingStore for SeaOrmBillingStore {
     async fn cleanup_old_events(&self, older_than_days: u32) -> Result<usize> {
         self.cleanup_old_events_batched(older_than_days, None).await
     }
+
+    async fn count_subscriptions_by_plan(&self, plan_id: &str) -> Result<u32> {
+        tracing::debug!(plan_id = %plan_id, "counting active subscriptions for plan");
+
+        let count = billing_subscription::Entity::find()
+            .filter(billing_subscription::Column::PlanId.eq(plan_id))
+            .filter(
+                billing_subscription::Column::Status
+                    .is_in(["active", "trialing"]),
+            )
+            .count(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(count as u32)
+    }
 }
 
 // =============================================================================

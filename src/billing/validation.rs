@@ -2,8 +2,23 @@
 //!
 //! Provides validation functions for billable IDs, plan data, and other inputs
 //! to prevent injection attacks and ensure data integrity.
+//!
+//! # Stripe Price Validation
+//!
+//! For production deployments, validate that Stripe price IDs exist before creating plans:
+//!
+//! ```rust,ignore
+//! use tideway::billing::{validate_plan_with_stripe, StripePriceValidator, LiveStripeClient};
+//!
+//! let client = LiveStripeClient::new(config)?;
+//! let plan = StoredPlan::new("starter", "price_abc123");
+//!
+//! // Validates format AND checks price exists in Stripe
+//! validate_plan_with_stripe(&plan, &client).await?;
+//! ```
 
 use crate::error::Result;
+use async_trait::async_trait;
 use super::error::BillingError;
 use super::storage::StoredPlan;
 
@@ -247,6 +262,200 @@ fn sanitize_for_error(s: &str) -> String {
     }
 }
 
+// =============================================================================
+// Stripe Price Validation
+// =============================================================================
+
+/// Information about a Stripe price.
+///
+/// Represents the response from Stripe's price API.
+#[derive(Debug, Clone)]
+pub struct StripePrice {
+    /// The Stripe price ID.
+    pub id: String,
+    /// Whether the price is active.
+    pub active: bool,
+    /// The currency of the price (lowercase ISO code).
+    pub currency: String,
+    /// Price amount in the smallest currency unit (e.g., cents).
+    pub unit_amount: Option<i64>,
+    /// Billing interval (e.g., "month", "year").
+    pub interval: Option<String>,
+    /// The product this price belongs to.
+    pub product_id: String,
+}
+
+/// Trait for validating Stripe prices.
+///
+/// Implement this trait to enable price validation against your Stripe account.
+/// The live client implementation will make API calls to Stripe.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::{StripePriceValidator, StripePrice};
+///
+/// struct MyStripeClient { /* ... */ }
+///
+/// #[async_trait]
+/// impl StripePriceValidator for MyStripeClient {
+///     async fn get_price(&self, price_id: &str) -> Result<Option<StripePrice>> {
+///         // Call Stripe API to fetch price
+///     }
+/// }
+/// ```
+#[async_trait]
+pub trait StripePriceValidator: Send + Sync {
+    /// Fetch a price from Stripe by ID.
+    ///
+    /// Returns `None` if the price does not exist.
+    /// Returns `Err` if there was an API error.
+    async fn get_price(&self, price_id: &str) -> Result<Option<StripePrice>>;
+}
+
+/// Validate a plan including Stripe price existence.
+///
+/// This performs all the validations from `validate_plan`, plus:
+/// - Verifies the base Stripe price ID exists and is active
+/// - Verifies the seat Stripe price ID exists and is active (if configured)
+/// - Validates currency matches the Stripe price currency
+///
+/// Use this for production deployments to ensure prices are correctly configured.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use tideway::billing::{validate_plan_with_stripe, StoredPlan, LiveStripeClient};
+///
+/// let client = LiveStripeClient::new(config)?;
+/// let plan = StoredPlan::new("starter", "price_abc123");
+/// plan.name = "Starter Plan".to_string();
+/// plan.price_cents = 999;
+/// plan.currency = "usd".to_string();
+///
+/// validate_plan_with_stripe(&plan, &client).await?;
+/// ```
+pub async fn validate_plan_with_stripe<V: StripePriceValidator>(
+    plan: &StoredPlan,
+    validator: &V,
+) -> Result<()> {
+    // First, run all local validations
+    validate_plan(plan)?;
+
+    // Validate base price exists in Stripe
+    let price = validator.get_price(&plan.stripe_price_id).await?;
+    match price {
+        None => {
+            return Err(BillingError::InvalidStripePrice {
+                price_id: plan.stripe_price_id.clone(),
+                reason: "price does not exist in Stripe".to_string(),
+            }.into());
+        }
+        Some(stripe_price) => {
+            // Check price is active
+            if !stripe_price.active {
+                return Err(BillingError::InvalidStripePrice {
+                    price_id: plan.stripe_price_id.clone(),
+                    reason: "price is not active in Stripe".to_string(),
+                }.into());
+            }
+
+            // Validate currency matches
+            if stripe_price.currency.to_lowercase() != plan.currency.to_lowercase() {
+                return Err(BillingError::InvalidStripePrice {
+                    price_id: plan.stripe_price_id.clone(),
+                    reason: format!(
+                        "currency mismatch: plan has '{}' but Stripe price has '{}'",
+                        plan.currency, stripe_price.currency
+                    ),
+                }.into());
+            }
+        }
+    }
+
+    // Validate seat price if configured
+    if let Some(ref seat_price_id) = plan.stripe_seat_price_id {
+        let seat_price = validator.get_price(seat_price_id).await?;
+        match seat_price {
+            None => {
+                return Err(BillingError::InvalidStripePrice {
+                    price_id: seat_price_id.clone(),
+                    reason: "seat price does not exist in Stripe".to_string(),
+                }.into());
+            }
+            Some(stripe_price) => {
+                if !stripe_price.active {
+                    return Err(BillingError::InvalidStripePrice {
+                        price_id: seat_price_id.clone(),
+                        reason: "seat price is not active in Stripe".to_string(),
+                    }.into());
+                }
+
+                // Seat price should use the same currency
+                if stripe_price.currency.to_lowercase() != plan.currency.to_lowercase() {
+                    return Err(BillingError::InvalidStripePrice {
+                        price_id: seat_price_id.clone(),
+                        reason: format!(
+                            "seat price currency mismatch: plan has '{}' but Stripe price has '{}'",
+                            plan.currency, stripe_price.currency
+                        ),
+                    }.into());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Mock price validator for testing.
+///
+/// Returns pre-configured prices for testing purposes.
+#[cfg(any(test, feature = "test-billing"))]
+pub mod test {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::RwLock;
+
+    /// Mock implementation of StripePriceValidator for testing.
+    #[derive(Default)]
+    pub struct MockPriceValidator {
+        prices: RwLock<HashMap<String, StripePrice>>,
+    }
+
+    impl MockPriceValidator {
+        /// Create a new mock validator.
+        #[must_use]
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Add a price to the mock.
+        pub fn add_price(&self, price: StripePrice) {
+            self.prices.write().unwrap().insert(price.id.clone(), price);
+        }
+
+        /// Add a simple active price.
+        pub fn add_active_price(&self, price_id: &str, currency: &str, amount: i64) {
+            self.add_price(StripePrice {
+                id: price_id.to_string(),
+                active: true,
+                currency: currency.to_string(),
+                unit_amount: Some(amount),
+                interval: Some("month".to_string()),
+                product_id: format!("prod_{}", price_id.replace("price_", "")),
+            });
+        }
+    }
+
+    #[async_trait]
+    impl StripePriceValidator for MockPriceValidator {
+        async fn get_price(&self, price_id: &str) -> Result<Option<StripePrice>> {
+            Ok(self.prices.read().unwrap().get(price_id).cloned())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,5 +598,102 @@ mod tests {
             plan.currency = currency.to_string();
             assert!(validate_plan(&plan).is_ok(), "Currency {} should be valid", currency);
         }
+    }
+
+    // Stripe validation tests
+    use super::test::MockPriceValidator;
+
+    #[tokio::test]
+    async fn test_validate_plan_with_stripe_success() {
+        let validator = MockPriceValidator::new();
+        validator.add_active_price("price_abc123", "usd", 999);
+
+        let plan = make_valid_plan();
+        assert!(validate_plan_with_stripe(&plan, &validator).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_plan_with_stripe_price_not_found() {
+        let validator = MockPriceValidator::new();
+        // Don't add any prices
+
+        let plan = make_valid_plan();
+        let result = validate_plan_with_stripe(&plan, &validator).await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("does not exist"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_plan_with_stripe_price_inactive() {
+        let validator = MockPriceValidator::new();
+        validator.add_price(StripePrice {
+            id: "price_abc123".to_string(),
+            active: false,
+            currency: "usd".to_string(),
+            unit_amount: Some(999),
+            interval: Some("month".to_string()),
+            product_id: "prod_abc123".to_string(),
+        });
+
+        let plan = make_valid_plan();
+        let result = validate_plan_with_stripe(&plan, &validator).await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("not active"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_plan_with_stripe_currency_mismatch() {
+        let validator = MockPriceValidator::new();
+        validator.add_active_price("price_abc123", "eur", 999); // EUR, not USD
+
+        let plan = make_valid_plan(); // uses USD
+        let result = validate_plan_with_stripe(&plan, &validator).await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("currency mismatch"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_plan_with_stripe_seat_price() {
+        let validator = MockPriceValidator::new();
+        validator.add_active_price("price_abc123", "usd", 999);
+        validator.add_active_price("price_seat123", "usd", 500);
+
+        let mut plan = make_valid_plan();
+        plan.stripe_seat_price_id = Some("price_seat123".to_string());
+
+        assert!(validate_plan_with_stripe(&plan, &validator).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_validate_plan_with_stripe_seat_price_not_found() {
+        let validator = MockPriceValidator::new();
+        validator.add_active_price("price_abc123", "usd", 999);
+        // Don't add seat price
+
+        let mut plan = make_valid_plan();
+        plan.stripe_seat_price_id = Some("price_seat123".to_string());
+
+        let result = validate_plan_with_stripe(&plan, &validator).await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("seat price does not exist"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_plan_with_stripe_seat_price_currency_mismatch() {
+        let validator = MockPriceValidator::new();
+        validator.add_active_price("price_abc123", "usd", 999);
+        validator.add_active_price("price_seat123", "eur", 500); // Different currency
+
+        let mut plan = make_valid_plan();
+        plan.stripe_seat_price_id = Some("price_seat123".to_string());
+
+        let result = validate_plan_with_stripe(&plan, &validator).await;
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(err_str.contains("seat price currency mismatch"));
     }
 }

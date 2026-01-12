@@ -150,7 +150,13 @@ pub use live_client::{
 pub use sea_orm_store::SeaOrmBillingStore;
 
 // Validation exports
-pub use validation::{validate_billable_id, validate_plan, validate_plan_id};
+pub use validation::{
+    validate_billable_id, validate_plan, validate_plan_id, validate_plan_with_stripe,
+    StripePrice, StripePriceValidator,
+};
+
+#[cfg(any(test, feature = "test-billing"))]
+pub use validation::test::MockPriceValidator;
 
 // Test exports
 #[cfg(any(test, feature = "test-billing"))]

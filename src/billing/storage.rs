@@ -118,6 +118,14 @@ pub trait BillingStore: Send + Sync {
     async fn cleanup_old_events(&self, _older_than_days: u32) -> Result<usize> {
         Ok(0)
     }
+
+    // Plan-subscription relationship
+
+    /// Count active subscriptions using a specific plan.
+    ///
+    /// Used to prevent deleting plans that have active subscriptions.
+    /// Returns the count of subscriptions with status Active or Trialing.
+    async fn count_subscriptions_by_plan(&self, plan_id: &str) -> Result<u32>;
 }
 
 /// Cached subscription state.
@@ -708,6 +716,21 @@ pub mod test {
             events.retain(|_, &mut timestamp| timestamp >= cutoff);
             Ok(initial_len - events.len())
         }
+
+        async fn count_subscriptions_by_plan(&self, plan_id: &str) -> Result<u32> {
+            let subs = self.inner.subscriptions.read().unwrap();
+            let count = subs
+                .values()
+                .filter(|s| {
+                    s.plan_id == plan_id
+                        && matches!(
+                            s.status,
+                            SubscriptionStatus::Active | SubscriptionStatus::Trialing
+                        )
+                })
+                .count();
+            Ok(count as u32)
+        }
     }
 }
 
@@ -974,5 +997,88 @@ mod tests {
         assert_eq!(PlanInterval::Monthly.as_str(), "monthly");
         assert_eq!(PlanInterval::Yearly.as_str(), "yearly");
         assert_eq!(PlanInterval::OneTime.as_str(), "one_time");
+    }
+
+    #[tokio::test]
+    async fn test_count_subscriptions_by_plan() {
+        use test::InMemoryBillingStore;
+
+        let store = InMemoryBillingStore::new();
+
+        // Initially no subscriptions
+        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 0);
+
+        // Add an active subscription on starter plan
+        let sub1 = StoredSubscription {
+            stripe_subscription_id: "sub_1".to_string(),
+            stripe_customer_id: "cus_1".to_string(),
+            plan_id: "starter".to_string(),
+            status: SubscriptionStatus::Active,
+            current_period_start: 0,
+            current_period_end: 0,
+            extra_seats: 0,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: None,
+            seat_item_id: None,
+            updated_at: 0,
+        };
+        store.save_subscription("org_1", &sub1).await.unwrap();
+        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 1);
+
+        // Add a trialing subscription on starter plan
+        let sub2 = StoredSubscription {
+            stripe_subscription_id: "sub_2".to_string(),
+            stripe_customer_id: "cus_2".to_string(),
+            plan_id: "starter".to_string(),
+            status: SubscriptionStatus::Trialing,
+            current_period_start: 0,
+            current_period_end: 0,
+            extra_seats: 0,
+            trial_end: Some(99999999),
+            cancel_at_period_end: false,
+            base_item_id: None,
+            seat_item_id: None,
+            updated_at: 0,
+        };
+        store.save_subscription("org_2", &sub2).await.unwrap();
+        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 2);
+
+        // Add a canceled subscription on starter plan (should not count)
+        let sub3 = StoredSubscription {
+            stripe_subscription_id: "sub_3".to_string(),
+            stripe_customer_id: "cus_3".to_string(),
+            plan_id: "starter".to_string(),
+            status: SubscriptionStatus::Canceled,
+            current_period_start: 0,
+            current_period_end: 0,
+            extra_seats: 0,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: None,
+            seat_item_id: None,
+            updated_at: 0,
+        };
+        store.save_subscription("org_3", &sub3).await.unwrap();
+        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 2);
+
+        // Add an active subscription on pro plan (should not affect starter count)
+        let sub4 = StoredSubscription {
+            stripe_subscription_id: "sub_4".to_string(),
+            stripe_customer_id: "cus_4".to_string(),
+            plan_id: "pro".to_string(),
+            status: SubscriptionStatus::Active,
+            current_period_start: 0,
+            current_period_end: 0,
+            extra_seats: 0,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: None,
+            seat_item_id: None,
+            updated_at: 0,
+        };
+        store.save_subscription("org_4", &sub4).await.unwrap();
+        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 2);
+        assert_eq!(store.count_subscriptions_by_plan("pro").await.unwrap(), 1);
     }
 }

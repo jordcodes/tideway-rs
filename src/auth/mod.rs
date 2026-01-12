@@ -51,7 +51,7 @@ pub mod storage;
 pub mod trusted_device;
 
 // Existing re-exports
-pub use extractors::{AuthUser, OptionalAuth};
+pub use extractors::{AdminUser, AuthUser, OptionalAuth, RequireAdmin};
 pub use jwt::{JwkSet, JwtVerifier};
 pub use middleware::RequireAuth;
 pub use provider::AuthProvider;
