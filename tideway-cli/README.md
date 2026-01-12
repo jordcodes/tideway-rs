@@ -91,32 +91,68 @@ Options:
 
 ```bash
 # Create a new B2B SaaS backend
-mkdir my-saas && cd my-saas
+mkdir my-saas-api && cd my-saas-api
 cargo init
 tideway backend b2b --name my_saas
 tideway init
 
 # Set up environment
 cp .env.example .env
-# Edit .env with your database URL and secrets
+# Edit .env with your database URL and JWT secret
 
-# Run (migrations run automatically)
+# Run (migrations run automatically on startup)
 cargo run
 ```
+
+Your API will be running at `http://localhost:3000` with routes:
+- `POST /auth/register`, `POST /auth/login`, `GET /auth/me`
+- `GET /organizations`, `POST /organizations`
+- `GET /admin/users`, `GET /admin/organizations`
 
 ### Frontend
 
 ```bash
-# Create Vue project
-npm create vue@latest my-saas-web
+# Create Vue project with TypeScript, Router, and Pinia
+npm create vue@latest my-saas-web -- --typescript --router --pinia
 cd my-saas-web
+npm install
 
-# Set up dependencies and generate components
+# Set up Tailwind + shadcn-vue + all components
 tideway setup
+
+# Generate components, views, and configure router
 tideway generate all --with-views
 
 # Run
 npm run dev
+```
+
+Your frontend will be at `http://localhost:5173` with pages:
+- `/login`, `/register`, `/forgot-password`, `/reset-password`
+- `/billing`
+- `/settings/organization`, `/settings/members`
+- `/admin`, `/admin/users`, `/admin/organizations`
+
+### CORS Setup
+
+If your frontend and backend are on different ports, add CORS to your backend `main.rs`:
+
+```rust
+use axum::http::{header, Method};
+use tower_http::cors::CorsLayer;
+
+// In main():
+let cors = CorsLayer::new()
+    .allow_origin(["http://localhost:5173".parse().unwrap()])
+    .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+    .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+
+let router = app.into_router().layer(cors);
+```
+
+Add `tower-http` to your `Cargo.toml`:
+```bash
+cargo add tower-http --features cors
 ```
 
 ## Generated Structure
