@@ -15,6 +15,8 @@ use std::sync::Arc;
 use tideway::billing::{
     BillingStore, CheckoutManager, CheckoutRequest as TidewayCheckoutRequest, InvoiceManager,
     PlanStore, PortalManager, StoredPlan, WebhookHandler, WebhookOutcome,
+    validate_plan, validate_plan_with_stripe, StripePriceValidator,
+    BillingAuditEvent, BillingAuditLogger,
 };
 use tideway::Result;
 
@@ -488,6 +490,9 @@ pub struct CreatePlanRequest {
     pub is_active: bool,
     #[serde(default)]
     pub sort_order: i32,
+    /// If true, validate that the Stripe price ID exists before creating.
+    #[serde(default)]
+    pub validate_stripe: bool,
 }
 
 fn default_currency() -> String { "usd".to_string() }
@@ -543,6 +548,9 @@ async fn admin_get_plan(
 }
 
 /// Create a new plan.
+///
+/// If `validate_stripe` is true in the request, validates that the Stripe price ID
+/// exists and is active before creating the plan.
 async fn admin_create_plan(
     State(state): State<Arc<BillingState>>,
     Json(body): Json<CreatePlanRequest>,
@@ -571,7 +579,22 @@ async fn admin_create_plan(
         updated_at: now,
     };
 
+    // Validate plan data (format, required fields, etc.)
+    validate_plan(&plan)?;
+
+    // Optionally validate against Stripe API
+    if body.validate_stripe {
+        validate_plan_with_stripe(&plan, state.stripe_client.as_ref()).await?;
+    }
+
     state.billing_store.create_plan(&plan).await?;
+
+    // Audit log
+    state.audit_logger.log(BillingAuditEvent::PlanCreated {
+        plan_id: plan.id.clone(),
+        name: plan.name.clone(),
+        admin_id: None, // TODO: Extract from auth context
+    }).await;
 
     tracing::info!(plan_id = %plan.id, "Created billing plan");
     Ok(Json(AdminPlanResponse::from(plan)))
@@ -588,20 +611,62 @@ async fn admin_update_plan(
         .await?
         .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
 
+    // Track changes for audit
+    let mut changes = Vec::new();
+
     // Apply updates
-    if let Some(name) = body.name { plan.name = name; }
-    if let Some(desc) = body.description { plan.description = Some(desc); }
-    if let Some(price_id) = body.stripe_price_id { plan.stripe_price_id = price_id; }
-    if let Some(seat_price_id) = body.stripe_seat_price_id { plan.stripe_seat_price_id = Some(seat_price_id); }
-    if let Some(price) = body.price_cents { plan.price_cents = price; }
-    if let Some(currency) = body.currency { plan.currency = currency; }
-    if let Some(interval) = body.interval { plan.interval = PlanInterval::from_str(&interval); }
-    if let Some(seats) = body.included_seats { plan.included_seats = seats; }
-    if let Some(features) = body.features { plan.features = features; }
-    if let Some(limits) = body.limits { plan.limits = limits; }
-    if let Some(trial) = body.trial_days { plan.trial_days = Some(trial); }
-    if let Some(active) = body.is_active { plan.is_active = active; }
-    if let Some(order) = body.sort_order { plan.sort_order = order; }
+    if let Some(name) = body.name {
+        changes.push(format!("name: {} -> {}", plan.name, name));
+        plan.name = name;
+    }
+    if let Some(desc) = body.description {
+        changes.push("description".to_string());
+        plan.description = Some(desc);
+    }
+    if let Some(price_id) = body.stripe_price_id {
+        changes.push(format!("stripe_price_id: {} -> {}", plan.stripe_price_id, price_id));
+        plan.stripe_price_id = price_id;
+    }
+    if let Some(seat_price_id) = body.stripe_seat_price_id {
+        changes.push("stripe_seat_price_id".to_string());
+        plan.stripe_seat_price_id = Some(seat_price_id);
+    }
+    if let Some(price) = body.price_cents {
+        changes.push(format!("price_cents: {} -> {}", plan.price_cents, price));
+        plan.price_cents = price;
+    }
+    if let Some(currency) = body.currency {
+        changes.push(format!("currency: {} -> {}", plan.currency, currency));
+        plan.currency = currency;
+    }
+    if let Some(interval) = body.interval {
+        changes.push("interval".to_string());
+        plan.interval = PlanInterval::from_str(&interval);
+    }
+    if let Some(seats) = body.included_seats {
+        changes.push(format!("included_seats: {} -> {}", plan.included_seats, seats));
+        plan.included_seats = seats;
+    }
+    if let Some(features) = body.features {
+        changes.push("features".to_string());
+        plan.features = features;
+    }
+    if let Some(limits) = body.limits {
+        changes.push("limits".to_string());
+        plan.limits = limits;
+    }
+    if let Some(trial) = body.trial_days {
+        changes.push("trial_days".to_string());
+        plan.trial_days = Some(trial);
+    }
+    if let Some(active) = body.is_active {
+        changes.push(format!("is_active: {} -> {}", plan.is_active, active));
+        plan.is_active = active;
+    }
+    if let Some(order) = body.sort_order {
+        changes.push(format!("sort_order: {} -> {}", plan.sort_order, order));
+        plan.sort_order = order;
+    }
 
     plan.updated_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -610,11 +675,21 @@ async fn admin_update_plan(
 
     state.billing_store.update_plan(&plan).await?;
 
+    // Audit log
+    state.audit_logger.log(BillingAuditEvent::PlanUpdated {
+        plan_id: plan.id.clone(),
+        admin_id: None, // TODO: Extract from auth context
+        changes,
+    }).await;
+
     tracing::info!(plan_id = %plan.id, "Updated billing plan");
     Ok(Json(AdminPlanResponse::from(plan)))
 }
 
 /// Delete a plan.
+///
+/// This will fail if there are active subscriptions using this plan.
+/// Consider using `set_plan_active(false)` to deactivate instead.
 async fn admin_delete_plan(
     State(state): State<Arc<BillingState>>,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
@@ -625,7 +700,32 @@ async fn admin_delete_plan(
         .await?
         .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
 
+    // Check for active subscriptions using this plan
+    let subscription_count = state.billing_store
+        .count_subscriptions_by_plan(&plan_id)
+        .await?;
+
+    if subscription_count > 0 {
+        // Audit log the blocked deletion attempt
+        state.audit_logger.log(BillingAuditEvent::PlanDeletionBlocked {
+            plan_id: plan_id.clone(),
+            subscription_count,
+            admin_id: None, // TODO: Extract from auth context
+        }).await;
+
+        return Err(tideway::billing::BillingError::PlanHasActiveSubscriptions {
+            plan_id: plan_id.clone(),
+            subscription_count,
+        }.into());
+    }
+
     state.billing_store.delete_plan(&plan_id).await?;
+
+    // Audit log
+    state.audit_logger.log(BillingAuditEvent::PlanDeleted {
+        plan_id: plan_id.clone(),
+        admin_id: None, // TODO: Extract from auth context
+    }).await;
 
     tracing::info!(plan_id = %plan_id, "Deleted billing plan");
     Ok(Json(tideway::MessageResponse::new("Plan deleted successfully")))
@@ -644,6 +744,19 @@ async fn admin_set_plan_active(
         .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
 
     state.billing_store.set_plan_active(&plan_id, body.is_active).await?;
+
+    // Audit log
+    if body.is_active {
+        state.audit_logger.log(BillingAuditEvent::PlanActivated {
+            plan_id: plan_id.clone(),
+            admin_id: None, // TODO: Extract from auth context
+        }).await;
+    } else {
+        state.audit_logger.log(BillingAuditEvent::PlanDeactivated {
+            plan_id: plan_id.clone(),
+            admin_id: None, // TODO: Extract from auth context
+        }).await;
+    }
 
     // Fetch updated plan
     let plan = state.billing_store.get_plan(&plan_id).await?.unwrap();

@@ -32,6 +32,7 @@ use super::subscription::{
     ProrationBehavior, StripeSubscriptionClient, StripeSubscriptionData, SubscriptionMetadata,
     UpdateSubscriptionRequest,
 };
+use super::validation::{StripePrice, StripePriceValidator};
 
 // ============================================================================
 // Constants
@@ -1908,6 +1909,75 @@ fn map_stripe_line_item(item: stripe::InvoiceLineItem) -> InvoiceLineItem {
         price_id,
         period_start,
         period_end,
+    }
+}
+
+// ============================================================================
+// StripePriceValidator Implementation
+// ============================================================================
+
+/// Parse a price ID string into a Stripe PriceId.
+#[inline]
+fn parse_price_id(id: &str) -> Result<stripe::PriceId> {
+    id.parse().map_err(|_| {
+        crate::error::TidewayError::BadRequest(format!("Invalid price ID: {}", id))
+    })
+}
+
+#[async_trait::async_trait]
+impl StripePriceValidator for LiveStripeClient {
+    async fn get_price(&self, price_id: &str) -> Result<Option<StripePrice>> {
+        let price_id = match parse_price_id(price_id) {
+            Ok(id) => id,
+            Err(_) => return Ok(None), // Invalid format = not found
+        };
+
+        let result = with_retry_cb(&self.config, &self.circuit_breaker, "get_price", || {
+            let client = self.client.clone();
+            let price_id = price_id.clone();
+            async move { stripe::Price::retrieve(&client, &price_id, &[]).await }
+        })
+        .await;
+
+        match result {
+            Ok(price) => {
+                // Extract product ID
+                let product_id = match &price.product {
+                    Some(stripe::Expandable::Id(id)) => id.to_string(),
+                    Some(stripe::Expandable::Object(product)) => product.id.to_string(),
+                    None => String::new(),
+                };
+
+                // Extract interval if recurring
+                let interval = price.recurring.as_ref().map(|r| {
+                    match r.interval {
+                        stripe::RecurringInterval::Day => "day",
+                        stripe::RecurringInterval::Week => "week",
+                        stripe::RecurringInterval::Month => "month",
+                        stripe::RecurringInterval::Year => "year",
+                    }
+                    .to_string()
+                });
+
+                Ok(Some(StripePrice {
+                    id: price.id.to_string(),
+                    active: price.active.unwrap_or(true),
+                    currency: price.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
+                    unit_amount: price.unit_amount,
+                    interval,
+                    product_id,
+                }))
+            }
+            Err(e) => {
+                // Check if it's a "not found" error (404)
+                // The error string will contain "404" for not found errors
+                let error_str = e.to_string();
+                if error_str.contains("404") || error_str.contains("No such price") {
+                    return Ok(None);
+                }
+                Err(e)
+            }
+        }
     }
 }
 

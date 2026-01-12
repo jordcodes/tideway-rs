@@ -76,6 +76,40 @@ pub enum BillingAuditEvent {
         billable_id: String,
         customer_id: String,
     },
+    // Plan management events
+    /// Plan created.
+    PlanCreated {
+        plan_id: String,
+        name: String,
+        admin_id: Option<String>,
+    },
+    /// Plan updated.
+    PlanUpdated {
+        plan_id: String,
+        admin_id: Option<String>,
+        changes: Vec<String>,
+    },
+    /// Plan deleted.
+    PlanDeleted {
+        plan_id: String,
+        admin_id: Option<String>,
+    },
+    /// Plan activated.
+    PlanActivated {
+        plan_id: String,
+        admin_id: Option<String>,
+    },
+    /// Plan deactivated.
+    PlanDeactivated {
+        plan_id: String,
+        admin_id: Option<String>,
+    },
+    /// Plan deletion blocked due to active subscriptions.
+    PlanDeletionBlocked {
+        plan_id: String,
+        subscription_count: u32,
+        admin_id: Option<String>,
+    },
 }
 
 impl fmt::Display for BillingAuditEvent {
@@ -116,6 +150,24 @@ impl fmt::Display for BillingAuditEvent {
             }
             Self::CustomerCreated { billable_id, customer_id } => {
                 write!(f, "Customer created: billable={}, customer={}", billable_id, customer_id)
+            }
+            Self::PlanCreated { plan_id, name, admin_id } => {
+                write!(f, "Plan created: plan={}, name={}, admin={}", plan_id, name, admin_id.as_deref().unwrap_or("system"))
+            }
+            Self::PlanUpdated { plan_id, admin_id, changes } => {
+                write!(f, "Plan updated: plan={}, admin={}, changes=[{}]", plan_id, admin_id.as_deref().unwrap_or("system"), changes.join(", "))
+            }
+            Self::PlanDeleted { plan_id, admin_id } => {
+                write!(f, "Plan deleted: plan={}, admin={}", plan_id, admin_id.as_deref().unwrap_or("system"))
+            }
+            Self::PlanActivated { plan_id, admin_id } => {
+                write!(f, "Plan activated: plan={}, admin={}", plan_id, admin_id.as_deref().unwrap_or("system"))
+            }
+            Self::PlanDeactivated { plan_id, admin_id } => {
+                write!(f, "Plan deactivated: plan={}, admin={}", plan_id, admin_id.as_deref().unwrap_or("system"))
+            }
+            Self::PlanDeletionBlocked { plan_id, subscription_count, admin_id } => {
+                write!(f, "Plan deletion blocked: plan={}, active_subscriptions={}, admin={}", plan_id, subscription_count, admin_id.as_deref().unwrap_or("system"))
             }
         }
     }
@@ -177,6 +229,12 @@ fn event_kind(event: &BillingAuditEvent) -> &'static str {
         BillingAuditEvent::WebhookReceived { .. } => "webhook_received",
         BillingAuditEvent::WebhookProcessed { .. } => "webhook_processed",
         BillingAuditEvent::CustomerCreated { .. } => "customer_created",
+        BillingAuditEvent::PlanCreated { .. } => "plan_created",
+        BillingAuditEvent::PlanUpdated { .. } => "plan_updated",
+        BillingAuditEvent::PlanDeleted { .. } => "plan_deleted",
+        BillingAuditEvent::PlanActivated { .. } => "plan_activated",
+        BillingAuditEvent::PlanDeactivated { .. } => "plan_deactivated",
+        BillingAuditEvent::PlanDeletionBlocked { .. } => "plan_deletion_blocked",
     }
 }
 

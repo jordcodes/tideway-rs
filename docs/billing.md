@@ -583,6 +583,206 @@ if plan.check_limit("projects", current_count) {
 let display = plan.formatted_price();  // "$9.99"
 ```
 
+### Admin Authorization for Plan Routes
+
+Protect plan management routes with the `RequireAdmin` extractor:
+
+```rust
+use tideway::auth::{AdminUser, RequireAdmin, AuthProvider};
+
+// Implement AdminUser for your user type
+impl AdminUser for User {
+    fn is_admin(&self) -> bool {
+        self.is_platform_admin
+    }
+}
+
+// Use RequireAdmin in handlers
+async fn admin_create_plan(
+    RequireAdmin(admin): RequireAdmin<MyAuthProvider>,
+    State(state): State<Arc<BillingState>>,
+    Json(body): Json<CreatePlanRequest>,
+) -> Result<Json<AdminPlanResponse>> {
+    // Only admins can reach this handler
+    // Non-admins receive 403 Forbidden
+    // ...
+}
+```
+
+The `RequireAdmin` extractor:
+- First verifies the user is authenticated (401 if not)
+- Then checks `is_admin()` returns true (403 if not)
+- Provides access to the authenticated admin user
+
+### Plan Deletion Constraints
+
+Plans with active subscriptions cannot be deleted. This prevents orphaned subscriptions and billing inconsistencies.
+
+```rust
+use tideway::billing::{BillingStore, BillingError};
+
+// Check subscription count before deletion
+let count = store.count_subscriptions_by_plan("starter").await?;
+if count > 0 {
+    // Returns error with plan_id and subscription_count
+    return Err(BillingError::PlanHasActiveSubscriptions {
+        plan_id: "starter".to_string(),
+        subscription_count: count,
+    }.into());
+}
+
+// Safe to delete
+store.delete_plan("starter").await?;
+```
+
+The `count_subscriptions_by_plan` method counts subscriptions with status `Active` or `Trialing`. Canceled or expired subscriptions don't block deletion.
+
+**Best Practice**: Instead of deleting plans, deactivate them:
+
+```rust
+// Deactivate instead of delete
+store.set_plan_active("legacy_plan", false).await?;
+
+// Inactive plans:
+// - Not shown in list_plans() (public pricing page)
+// - Still visible in list_all_plans() (admin)
+// - Existing subscriptions continue working
+```
+
+### Stripe Price Validation
+
+Validate that Stripe price IDs exist and are correctly configured before creating plans:
+
+```rust
+use tideway::billing::{
+    validate_plan, validate_plan_with_stripe,
+    StripePriceValidator, StripePrice, LiveStripeClient,
+};
+
+// Basic validation (format only)
+validate_plan(&plan)?;
+
+// Full validation including Stripe API check
+let client = LiveStripeClient::new(api_key, config)?;
+validate_plan_with_stripe(&plan, &client).await?;
+```
+
+The `validate_plan_with_stripe` function checks:
+- All `validate_plan` checks (format, required fields)
+- Base price exists in Stripe
+- Base price is active (not archived)
+- Currency matches between plan and Stripe price
+- Seat price exists and is active (if configured)
+- Seat price currency matches
+
+#### StripePriceValidator Trait
+
+For testing, use `MockPriceValidator`:
+
+```rust
+use tideway::billing::MockPriceValidator;
+
+let validator = MockPriceValidator::new();
+validator.add_active_price("price_starter", "usd", 999);
+validator.add_active_price("price_seat", "usd", 500);
+
+// Now validation will pass
+validate_plan_with_stripe(&plan, &validator).await?;
+```
+
+#### API Integration
+
+The admin create plan endpoint supports optional Stripe validation:
+
+```json
+POST /admin/plans
+{
+  "id": "starter",
+  "name": "Starter Plan",
+  "stripe_price_id": "price_starter_monthly",
+  "price_cents": 999,
+  "currency": "usd",
+  "validate_stripe": true  // Validates against Stripe API
+}
+```
+
+When `validate_stripe` is true:
+- API call to Stripe verifies price exists
+- Returns 400 if price not found or inactive
+- Returns 400 if currency doesn't match
+
+### Audit Logging for Plan Operations
+
+Track all plan changes for compliance and debugging:
+
+```rust
+use tideway::billing::{BillingAuditEvent, BillingAuditLogger, TracingAuditLogger};
+
+// Use the built-in tracing logger
+let audit_logger = TracingAuditLogger;
+
+// Log plan creation
+audit_logger.log(BillingAuditEvent::PlanCreated {
+    plan_id: "starter".to_string(),
+    name: "Starter Plan".to_string(),
+    admin_id: Some("user_123".to_string()),
+}).await;
+
+// Log plan update with changes
+audit_logger.log(BillingAuditEvent::PlanUpdated {
+    plan_id: "starter".to_string(),
+    admin_id: Some("user_123".to_string()),
+    changes: vec![
+        "price_cents: 999 -> 1499".to_string(),
+        "included_seats: 3 -> 5".to_string(),
+    ],
+}).await;
+
+// Log blocked deletion attempt
+audit_logger.log(BillingAuditEvent::PlanDeletionBlocked {
+    plan_id: "starter".to_string(),
+    subscription_count: 42,
+    admin_id: Some("user_123".to_string()),
+}).await;
+```
+
+#### Plan Audit Events
+
+| Event | Description |
+|-------|-------------|
+| `PlanCreated` | New plan created |
+| `PlanUpdated` | Plan fields modified (includes list of changes) |
+| `PlanDeleted` | Plan permanently deleted |
+| `PlanActivated` | Plan set to active |
+| `PlanDeactivated` | Plan set to inactive |
+| `PlanDeletionBlocked` | Deletion attempted but blocked due to subscriptions |
+
+#### Custom Audit Logger
+
+Implement `BillingAuditLogger` to send events to your audit system:
+
+```rust
+use tideway::billing::{BillingAuditLogger, BillingAuditEvent};
+use async_trait::async_trait;
+
+struct DatabaseAuditLogger {
+    db: DatabasePool,
+}
+
+#[async_trait]
+impl BillingAuditLogger for DatabaseAuditLogger {
+    async fn log(&self, event: BillingAuditEvent) {
+        // Insert into audit_log table
+        sqlx::query("INSERT INTO audit_log (event_type, payload, created_at) VALUES ($1, $2, NOW())")
+            .bind(event.event_type())
+            .bind(serde_json::to_value(&event).unwrap())
+            .execute(&self.db)
+            .await
+            .ok(); // Don't fail billing operations on audit errors
+    }
+}
+```
+
 ## Checkout Sessions
 
 Create Stripe Checkout sessions for new subscriptions:
