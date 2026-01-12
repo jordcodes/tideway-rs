@@ -190,42 +190,19 @@ fn cleanup_router() -> Result<()> {
         return Ok(());
     }
 
-    let content = std::fs::read_to_string(router_path)?;
+    // Replace with a clean router template - tideway generate will add routes
+    std::fs::write(
+        router_path,
+        r#"import { createRouter, createWebHistory } from 'vue-router'
 
-    // Remove HomeView and AboutView imports
-    let mut updated = content
-        .lines()
-        .filter(|line| {
-            !line.contains("HomeView") && !line.contains("AboutView")
-        })
-        .collect::<Vec<&str>>()
-        .join("\n");
+const router = createRouter({
+  history: createWebHistory(import.meta.env.BASE_URL),
+  routes: [],
+})
 
-    // Replace routes array with empty array (tideway generate will add routes)
-    if updated.contains("routes: [") {
-        // Find and replace the routes array content
-        if let Some(start) = updated.find("routes: [") {
-            if let Some(end) = updated[start..].find("]") {
-                let before = &updated[..start];
-                let after = &updated[start + end + 1..];
-                updated = format!("{}routes: []{}", before, after);
-            }
-        }
-    } else if updated.contains("const routes") {
-        // Handle const routes = [...] pattern
-        if let Some(start) = updated.find("const routes") {
-            if let Some(bracket_start) = updated[start..].find('[') {
-                let abs_bracket_start = start + bracket_start;
-                if let Some(bracket_end) = updated[abs_bracket_start..].find(']') {
-                    let before = &updated[..abs_bracket_start];
-                    let after = &updated[abs_bracket_start + bracket_end + 1..];
-                    updated = format!("{}[]{}", before, after);
-                }
-            }
-        }
-    }
-
-    std::fs::write(router_path, updated)?;
+export default router
+"#,
+    )?;
     print_success("Cleaned up router (removed default routes)");
 
     Ok(())
