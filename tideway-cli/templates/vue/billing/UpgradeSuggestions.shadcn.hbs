@@ -1,0 +1,131 @@
+<script setup lang="ts">
+import { onMounted } from 'vue'
+import { usePlanComparison, type UpgradeSuggestion } from './composables/usePlanComparison'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { ArrowUp, Sparkles, Users, CheckCircle2 } from 'lucide-vue-next'
+
+const props = defineProps<{
+  currentPlanId: string
+}>()
+
+const emit = defineEmits<{
+  select: [suggestion: UpgradeSuggestion]
+}>()
+
+const { upgradeSuggestions, isLoading, error, fetchUpgradeSuggestions } = usePlanComparison()
+
+onMounted(() => {
+  fetchUpgradeSuggestions(props.currentPlanId)
+})
+
+function formatPrice(cents: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  }).format(cents / 100)
+}
+
+function formatFeatureName(feature: string): string {
+  return feature
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <CardTitle class="flex items-center gap-2">
+        <Sparkles class="h-5 w-5 text-yellow-500" />
+        Upgrade Options
+      </CardTitle>
+      <CardDescription>
+        Plans with more features than your current plan
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <div v-if="isLoading" class="space-y-4">
+        <Skeleton v-for="i in 2" :key="i" class="h-32 w-full" />
+      </div>
+
+      <div v-else-if="upgradeSuggestions.length === 0" class="text-center py-8">
+        <CheckCircle2 class="h-12 w-12 text-green-500 mx-auto mb-4" />
+        <p class="text-muted-foreground">You're on our best plan!</p>
+        <p class="text-sm text-muted-foreground mt-1">
+          You have access to all available features
+        </p>
+      </div>
+
+      <div v-else class="space-y-4">
+        <div
+          v-for="suggestion in upgradeSuggestions"
+          :key="suggestion.plan.id"
+          class="border rounded-lg p-4 hover:border-primary transition-colors"
+        >
+          <div class="flex items-start justify-between">
+            <div class="space-y-1">
+              <div class="flex items-center gap-2">
+                <h3 class="font-semibold">\{{ suggestion.plan.name }}</h3>
+                <Badge variant="secondary">
+                  <ArrowUp class="h-3 w-3 mr-1" />
+                  Upgrade
+                </Badge>
+              </div>
+              <p class="text-sm text-muted-foreground">
+                \{{ suggestion.plan.description || 'Enhanced features and capabilities' }}
+              </p>
+              <p class="font-medium">
+                \{{ formatPrice(suggestion.plan.price_cents, suggestion.plan.currency) }}
+                <span class="text-sm text-muted-foreground">/\{{ suggestion.plan.interval }}</span>
+              </p>
+            </div>
+            <Button @click="emit('select', suggestion)">
+              Select
+            </Button>
+          </div>
+
+          <!-- Benefits -->
+          <div class="mt-4 grid gap-4 sm:grid-cols-2">
+            <!-- Additional Features -->
+            <div v-if="suggestion.additional_features.length > 0" class="space-y-2">
+              <p class="text-sm font-medium text-green-600">Additional Features</p>
+              <ul class="space-y-1">
+                <li
+                  v-for="feature in suggestion.additional_features.slice(0, 4)"
+                  :key="feature"
+                  class="text-sm flex items-center gap-2"
+                >
+                  <CheckCircle2 class="h-3 w-3 text-green-500" />
+                  \{{ formatFeatureName(feature) }}
+                </li>
+                <li
+                  v-if="suggestion.additional_features.length > 4"
+                  class="text-sm text-muted-foreground"
+                >
+                  +\{{ suggestion.additional_features.length - 4 }} more features
+                </li>
+              </ul>
+            </div>
+
+            <!-- Seat Increase -->
+            <div v-if="suggestion.seat_increase > 0" class="space-y-2">
+              <p class="text-sm font-medium text-blue-600">More Seats</p>
+              <div class="flex items-center gap-2 text-sm">
+                <Users class="h-4 w-4 text-blue-500" />
+                <span>+\{{ suggestion.seat_increase }} included seats</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </CardContent>
+  </Card>
+</template>

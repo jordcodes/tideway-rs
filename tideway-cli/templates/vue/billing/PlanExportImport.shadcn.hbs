@@ -1,0 +1,323 @@
+<script setup lang="ts">
+import { ref, computed } from 'vue'
+import { usePlans, type PlanExport, type ImportConflictStrategy, type ImportResult } from './composables/usePlans'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Separator } from '@/components/ui/separator'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import {
+  Download,
+  Upload,
+  FileJson,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  RefreshCw,
+} from 'lucide-vue-next'
+
+const { exportPlans, importPlans, downloadExport, isLoading, error } = usePlans()
+
+const fileInput = ref<HTMLInputElement | null>(null)
+const importData = ref<PlanExport | null>(null)
+const importError = ref<string | null>(null)
+const conflictStrategy = ref<ImportConflictStrategy>('skip')
+const importResult = ref<ImportResult | null>(null)
+const showResultDialog = ref(false)
+
+const hasValidImport = computed(() => {
+  return importData.value !== null && importData.value.plans.length > 0
+})
+
+async function handleExport() {
+  const data = await exportPlans()
+  if (data) {
+    downloadExport(data)
+  }
+}
+
+function handleFileSelect(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+
+  importError.value = null
+  importData.value = null
+
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const content = e.target?.result as string
+      const parsed = JSON.parse(content) as PlanExport
+
+      // Validate structure
+      if (!parsed.version || !parsed.plans || !Array.isArray(parsed.plans)) {
+        throw new Error('Invalid export file format')
+      }
+
+      importData.value = parsed
+    } catch (err) {
+      importError.value = err instanceof Error ? err.message : 'Failed to parse file'
+    }
+  }
+  reader.onerror = () => {
+    importError.value = 'Failed to read file'
+  }
+  reader.readAsText(file)
+}
+
+async function handleImport() {
+  if (!importData.value) return
+
+  try {
+    const result = await importPlans({
+      plans: importData.value.plans,
+      conflict_strategy: conflictStrategy.value,
+    })
+    if (result) {
+      importResult.value = result
+      showResultDialog.value = true
+      // Clear import data on success
+      importData.value = null
+      if (fileInput.value) {
+        fileInput.value.value = ''
+      }
+    }
+  } catch (err) {
+    // Error is handled by the composable
+  }
+}
+
+function clearImport() {
+  importData.value = null
+  importError.value = null
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
+}
+
+function formatDate(dateString: string): string {
+  return new Date(dateString).toLocaleString()
+}
+</script>
+
+<template>
+  <div class="space-y-6">
+    <!-- Export Section -->
+    <Card>
+      <CardHeader>
+        <CardTitle class="flex items-center gap-2">
+          <Download class="h-5 w-5" />
+          Export Plans
+        </CardTitle>
+        <CardDescription>
+          Download all plans as a JSON file for backup or migration
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Button @click="handleExport" :disabled="isLoading">
+          <Download class="h-4 w-4 mr-2" />
+          Export All Plans
+        </Button>
+      </CardContent>
+    </Card>
+
+    <!-- Import Section -->
+    <Card>
+      <CardHeader>
+        <CardTitle class="flex items-center gap-2">
+          <Upload class="h-5 w-5" />
+          Import Plans
+        </CardTitle>
+        <CardDescription>
+          Import plans from a previously exported JSON file
+        </CardDescription>
+      </CardHeader>
+      <CardContent class="space-y-6">
+        <!-- File Selection -->
+        <div class="space-y-2">
+          <Label for="import-file">Select Export File</Label>
+          <div class="flex gap-2">
+            <Input
+              id="import-file"
+              ref="fileInput"
+              type="file"
+              accept=".json"
+              @change="handleFileSelect"
+              class="flex-1"
+            />
+            <Button
+              v-if="importData"
+              variant="outline"
+              size="icon"
+              @click="clearImport"
+            >
+              <XCircle class="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <!-- Parse Error -->
+        <Alert v-if="importError" variant="destructive">
+          <XCircle class="h-4 w-4" />
+          <AlertTitle>Invalid File</AlertTitle>
+          <AlertDescription>\{{ importError }}</AlertDescription>
+        </Alert>
+
+        <!-- API Error -->
+        <Alert v-if="error" variant="destructive">
+          <AlertDescription>\{{ error }}</AlertDescription>
+        </Alert>
+
+        <!-- Import Preview -->
+        <div v-if="importData" class="space-y-4">
+          <Separator />
+
+          <div class="rounded-lg border p-4 space-y-3">
+            <div class="flex items-center gap-2">
+              <FileJson class="h-5 w-5 text-muted-foreground" />
+              <span class="font-medium">Import Preview</span>
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <span class="text-muted-foreground">Version:</span>
+                <span class="ml-2">\{{ importData.version }}</span>
+              </div>
+              <div>
+                <span class="text-muted-foreground">Exported:</span>
+                <span class="ml-2">\{{ formatDate(importData.exported_at) }}</span>
+              </div>
+              <div>
+                <span class="text-muted-foreground">Plans:</span>
+                <Badge variant="secondary" class="ml-2">
+                  \{{ importData.plans.length }}
+                </Badge>
+              </div>
+            </div>
+
+            <!-- Plan List Preview -->
+            <div class="mt-4">
+              <p class="text-sm text-muted-foreground mb-2">Plans to import:</p>
+              <div class="flex flex-wrap gap-2">
+                <Badge
+                  v-for="plan in importData.plans.slice(0, 10)"
+                  :key="plan.id"
+                  variant="outline"
+                >
+                  \{{ plan.name }}
+                </Badge>
+                <Badge
+                  v-if="importData.plans.length > 10"
+                  variant="secondary"
+                >
+                  +\{{ importData.plans.length - 10 }} more
+                </Badge>
+              </div>
+            </div>
+          </div>
+
+          <!-- Conflict Strategy -->
+          <div class="space-y-3">
+            <Label>If a plan with the same ID already exists:</Label>
+            <RadioGroup v-model="conflictStrategy" class="space-y-2">
+              <div class="flex items-center space-x-2">
+                <RadioGroupItem value="skip" id="conflict-skip" />
+                <Label for="conflict-skip" class="font-normal">
+                  <span class="font-medium">Skip</span>
+                  <span class="text-muted-foreground ml-1">- Keep existing plan, ignore imported one</span>
+                </Label>
+              </div>
+              <div class="flex items-center space-x-2">
+                <RadioGroupItem value="update" id="conflict-update" />
+                <Label for="conflict-update" class="font-normal">
+                  <span class="font-medium">Update</span>
+                  <span class="text-muted-foreground ml-1">- Overwrite existing plan with imported data</span>
+                </Label>
+              </div>
+              <div class="flex items-center space-x-2">
+                <RadioGroupItem value="error" id="conflict-error" />
+                <Label for="conflict-error" class="font-normal">
+                  <span class="font-medium">Error</span>
+                  <span class="text-muted-foreground ml-1">- Stop import if any conflicts found</span>
+                </Label>
+              </div>
+            </RadioGroup>
+          </div>
+
+          <!-- Import Button -->
+          <Button
+            @click="handleImport"
+            :disabled="!hasValidImport || isLoading"
+            class="w-full"
+          >
+            <Upload v-if="!isLoading" class="h-4 w-4 mr-2" />
+            <RefreshCw v-else class="h-4 w-4 mr-2 animate-spin" />
+            Import \{{ importData.plans.length }} Plans
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+
+    <!-- Result Dialog -->
+    <Dialog v-model:open="showResultDialog">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle class="flex items-center gap-2">
+            <CheckCircle2 class="h-5 w-5 text-green-500" />
+            Import Complete
+          </DialogTitle>
+          <DialogDescription>
+            The import has finished processing
+          </DialogDescription>
+        </DialogHeader>
+
+        <div v-if="importResult" class="space-y-4 py-4">
+          <div class="grid grid-cols-3 gap-4 text-center">
+            <div class="rounded-lg bg-green-50 dark:bg-green-950 p-3">
+              <p class="text-2xl font-bold text-green-600">\{{ importResult.created }}</p>
+              <p class="text-sm text-muted-foreground">Created</p>
+            </div>
+            <div class="rounded-lg bg-blue-50 dark:bg-blue-950 p-3">
+              <p class="text-2xl font-bold text-blue-600">\{{ importResult.updated }}</p>
+              <p class="text-sm text-muted-foreground">Updated</p>
+            </div>
+            <div class="rounded-lg bg-gray-50 dark:bg-gray-900 p-3">
+              <p class="text-2xl font-bold text-gray-600">\{{ importResult.skipped }}</p>
+              <p class="text-sm text-muted-foreground">Skipped</p>
+            </div>
+          </div>
+
+          <Alert v-if="importResult.errors.length > 0" variant="destructive">
+            <AlertTriangle class="h-4 w-4" />
+            <AlertTitle>Some plans failed to import</AlertTitle>
+            <AlertDescription>
+              <ul class="list-disc list-inside mt-2">
+                <li v-for="(err, index) in importResult.errors" :key="index">
+                  \{{ err }}
+                </li>
+              </ul>
+            </AlertDescription>
+          </Alert>
+        </div>
+
+        <DialogFooter>
+          <Button @click="showResultDialog = false">
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  </div>
+</template>

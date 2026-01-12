@@ -1,0 +1,189 @@
+<script setup lang="ts">
+import { ref, watch } from 'vue'
+import { usePlanComparison } from './composables/usePlanComparison'
+import type { Plan } from './composables/usePlans'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Label } from '@/components/ui/label'
+import { Skeleton } from '@/components/ui/skeleton'
+import { AlertTriangle, XCircle, Users, Minus } from 'lucide-vue-next'
+
+const props = defineProps<{
+  open: boolean
+  organizationId: string
+  currentPlan: Plan
+  targetPlan: Plan
+}>()
+
+const emit = defineEmits<{
+  'update:open': [value: boolean]
+  confirm: []
+  cancel: []
+}>()
+
+const { downgradeValidation, isLoading, error, validateDowngrade, compareLocally } = usePlanComparison()
+
+const acknowledged = ref(false)
+
+// Validate downgrade when dialog opens
+watch(
+  () => props.open,
+  async (isOpen) => {
+    if (isOpen) {
+      acknowledged.value = false
+      await validateDowngrade(props.organizationId, props.targetPlan.id)
+    }
+  }
+)
+
+const comparison = compareLocally(props.currentPlan, props.targetPlan)
+
+function formatFeatureName(feature: string): string {
+  return feature
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+function handleConfirm() {
+  if (acknowledged.value || (downgradeValidation.value?.allowed && comparison.features_lost.length === 0)) {
+    emit('confirm')
+  }
+}
+
+function handleCancel() {
+  emit('cancel')
+  emit('update:open', false)
+}
+</script>
+
+<template>
+  <Dialog :open="open" @update:open="emit('update:open', $event)">
+    <DialogContent class="sm:max-w-[500px]">
+      <DialogHeader>
+        <DialogTitle class="flex items-center gap-2">
+          <AlertTriangle class="h-5 w-5 text-yellow-500" />
+          Confirm Downgrade
+        </DialogTitle>
+        <DialogDescription>
+          You're about to downgrade from \{{ currentPlan.name }} to \{{ targetPlan.name }}
+        </DialogDescription>
+      </DialogHeader>
+
+      <div class="space-y-4 py-4">
+        <div v-if="isLoading" class="space-y-3">
+          <Skeleton class="h-16 w-full" />
+          <Skeleton class="h-16 w-full" />
+        </div>
+
+        <template v-else>
+          <!-- Validation Error -->
+          <Alert v-if="downgradeValidation && !downgradeValidation.allowed" variant="destructive">
+            <XCircle class="h-4 w-4" />
+            <AlertTitle>Cannot Downgrade</AlertTitle>
+            <AlertDescription>
+              \{{ downgradeValidation.error }}
+              <div v-if="downgradeValidation.current_members > downgradeValidation.new_seats" class="mt-2">
+                <p class="text-sm">
+                  You currently have <strong>\{{ downgradeValidation.current_members }}</strong> members,
+                  but the new plan only supports <strong>\{{ downgradeValidation.new_seats }}</strong> seats.
+                </p>
+                <p class="text-sm mt-1">
+                  Please remove \{{ downgradeValidation.current_members - downgradeValidation.new_seats }} member(s)
+                  before downgrading.
+                </p>
+              </div>
+            </AlertDescription>
+          </Alert>
+
+          <!-- API Error -->
+          <Alert v-if="error" variant="destructive">
+            <AlertDescription>\{{ error }}</AlertDescription>
+          </Alert>
+
+          <!-- Warnings -->
+          <template v-if="downgradeValidation?.allowed !== false">
+            <!-- Seat Warning -->
+            <Alert v-if="comparison.seat_difference < 0" class="border-yellow-500 bg-yellow-50 dark:bg-yellow-950">
+              <Users class="h-4 w-4 text-yellow-500" />
+              <AlertTitle class="text-yellow-700 dark:text-yellow-400">Fewer Seats</AlertTitle>
+              <AlertDescription class="text-yellow-600 dark:text-yellow-300">
+                The new plan has \{{ Math.abs(comparison.seat_difference) }} fewer included seats.
+                Make sure your team fits within the new limit.
+              </AlertDescription>
+            </Alert>
+
+            <!-- Features Lost -->
+            <div v-if="comparison.features_lost.length > 0" class="space-y-2">
+              <h4 class="font-medium flex items-center gap-2 text-destructive">
+                <Minus class="h-4 w-4" />
+                Features You'll Lose
+              </h4>
+              <ul class="space-y-1 text-sm">
+                <li
+                  v-for="feature in comparison.features_lost"
+                  :key="feature"
+                  class="flex items-center gap-2"
+                >
+                  <XCircle class="h-4 w-4 text-destructive" />
+                  \{{ formatFeatureName(feature) }}
+                </li>
+              </ul>
+            </div>
+
+            <!-- Extra Seats Warning -->
+            <Alert v-if="comparison.extra_seats_support_changed" variant="destructive">
+              <AlertTriangle class="h-4 w-4" />
+              <AlertTitle>Extra Seats Not Supported</AlertTitle>
+              <AlertDescription>
+                The new plan doesn't support purchasing extra seats.
+                Any additional seats will be removed at the end of your billing period.
+              </AlertDescription>
+            </Alert>
+
+            <!-- Acknowledgment Checkbox -->
+            <div
+              v-if="comparison.features_lost.length > 0 || comparison.warnings.length > 0"
+              class="flex items-start space-x-2 pt-4 border-t"
+            >
+              <Checkbox
+                id="acknowledge"
+                v-model:checked="acknowledged"
+              />
+              <div class="grid gap-1.5 leading-none">
+                <Label for="acknowledge" class="text-sm font-medium leading-relaxed">
+                  I understand that I will lose access to the features listed above and accept the changes.
+                </Label>
+              </div>
+            </div>
+          </template>
+        </template>
+      </div>
+
+      <DialogFooter>
+        <Button variant="outline" @click="handleCancel">
+          Cancel
+        </Button>
+        <Button
+          variant="destructive"
+          :disabled="
+            isLoading ||
+            (downgradeValidation && !downgradeValidation.allowed) ||
+            ((comparison.features_lost.length > 0 || comparison.warnings.length > 0) && !acknowledged)
+          "
+          @click="handleConfirm"
+        >
+          Confirm Downgrade
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>
+</template>

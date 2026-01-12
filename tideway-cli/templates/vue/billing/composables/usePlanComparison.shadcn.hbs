@@ -1,0 +1,186 @@
+import { ref, readonly, computed } from 'vue'
+import { useApi } from '../../composables/useApi'
+import type { Plan } from './usePlans'
+
+export type PlanChangeType = 'upgrade' | 'downgrade' | 'lateral' | 'no_change'
+
+export interface PlanComparison {
+  change_type: PlanChangeType
+  features_gained: string[]
+  features_lost: string[]
+  seat_difference: number
+  extra_seats_support_changed: boolean
+  warnings: string[]
+}
+
+export interface DowngradeValidation {
+  allowed: boolean
+  error?: string
+  current_members: number
+  new_seats: number
+}
+
+export interface UpgradeSuggestion {
+  plan: Plan
+  additional_features: string[]
+  seat_increase: number
+}
+
+export function usePlanComparison() {
+  const api = useApi()
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+  const comparison = ref<PlanComparison | null>(null)
+  const downgradeValidation = ref<DowngradeValidation | null>(null)
+  const upgradeSuggestions = ref<UpgradeSuggestion[]>([])
+
+  async function comparePlans(
+    fromPlanId: string,
+    toPlanId: string
+  ): Promise<PlanComparison | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<PlanComparison>(
+        `/billing/plans/compare?from=${encodeURIComponent(fromPlanId)}&to=${encodeURIComponent(toPlanId)}`
+      )
+      comparison.value = response
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to compare plans'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function validateDowngrade(
+    organizationId: string,
+    toPlanId: string
+  ): Promise<DowngradeValidation | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<DowngradeValidation>('/billing/plans/validate-downgrade', {
+        organization_id: organizationId,
+        plan_id: toPlanId,
+      })
+      downgradeValidation.value = response
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to validate downgrade'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchUpgradeSuggestions(
+    currentPlanId: string
+  ): Promise<UpgradeSuggestion[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ suggestions: UpgradeSuggestion[] }>(
+        `/billing/plans/upgrades?current=${encodeURIComponent(currentPlanId)}`
+      )
+      upgradeSuggestions.value = response.suggestions
+      return response.suggestions
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch upgrade suggestions'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  // Client-side plan comparison (for when plans are already loaded)
+  function compareLocally(fromPlan: Plan, toPlan: Plan): PlanComparison {
+    if (fromPlan.id === toPlan.id) {
+      return {
+        change_type: 'no_change',
+        features_gained: [],
+        features_lost: [],
+        seat_difference: 0,
+        extra_seats_support_changed: false,
+        warnings: [],
+      }
+    }
+
+    const fromFeatures = new Set(
+      Object.entries(fromPlan.features)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+    )
+    const toFeatures = new Set(
+      Object.entries(toPlan.features)
+        .filter(([, v]) => v)
+        .map(([k]) => k)
+    )
+
+    const features_gained = [...toFeatures].filter((f) => !fromFeatures.has(f))
+    const features_lost = [...fromFeatures].filter((f) => !toFeatures.has(f))
+    const seat_difference = toPlan.included_seats - fromPlan.included_seats
+
+    const fromHasSeats = !!fromPlan.stripe_seat_price_id
+    const toHasSeats = !!toPlan.stripe_seat_price_id
+    const extra_seats_support_changed = fromHasSeats !== toHasSeats
+
+    const warnings: string[] = []
+    if (extra_seats_support_changed && fromHasSeats) {
+      warnings.push('New plan does not support extra seats. Extra seats will be removed.')
+    }
+    if (seat_difference < 0) {
+      warnings.push(`New plan has ${Math.abs(seat_difference)} fewer included seats.`)
+    }
+
+    const feature_score = features_gained.length - features_lost.length
+
+    let change_type: PlanChangeType
+    if (feature_score > 0 || seat_difference > 0) {
+      change_type = 'upgrade'
+    } else if (feature_score < 0 || seat_difference < 0 || features_lost.length > 0) {
+      change_type = 'downgrade'
+    } else {
+      change_type = 'lateral'
+    }
+
+    return {
+      change_type,
+      features_gained,
+      features_lost,
+      seat_difference,
+      extra_seats_support_changed,
+      warnings,
+    }
+  }
+
+  const isUpgrade = computed(() => comparison.value?.change_type === 'upgrade')
+  const isDowngrade = computed(() => comparison.value?.change_type === 'downgrade')
+  const requiresConfirmation = computed(
+    () =>
+      comparison.value &&
+      (comparison.value.features_lost.length > 0 || comparison.value.warnings.length > 0)
+  )
+
+  return {
+    // State
+    comparison: readonly(comparison),
+    downgradeValidation: readonly(downgradeValidation),
+    upgradeSuggestions: readonly(upgradeSuggestions),
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+    isUpgrade,
+    isDowngrade,
+    requiresConfirmation,
+
+    // Actions
+    comparePlans,
+    validateDowngrade,
+    fetchUpgradeSuggestions,
+    compareLocally,
+  }
+}

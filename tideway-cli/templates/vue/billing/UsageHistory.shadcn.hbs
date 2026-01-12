@@ -1,0 +1,140 @@
+<script setup lang="ts">
+import { ref, onMounted, computed } from 'vue'
+import { useUsage, type UsageSummary } from './composables/useUsage'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { BarChart3 } from 'lucide-vue-next'
+
+const props = defineProps<{
+  subscriptionItemId: string
+  label?: string
+}>()
+
+const { usageSummaries, isLoading, error, fetchUsageSummary } = useUsage()
+
+const viewMode = ref<'chart' | 'table'>('chart')
+
+onMounted(() => {
+  fetchUsageSummary(props.subscriptionItemId)
+})
+
+function formatDate(timestamp: number): string {
+  return new Date(timestamp * 1000).toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  })
+}
+
+function formatDateRange(start: number, end: number): string {
+  return `${formatDate(start)} - ${formatDate(end)}`
+}
+
+function formatNumber(num: number): string {
+  return new Intl.NumberFormat().format(num)
+}
+
+// Calculate max usage for chart scaling
+const maxUsage = computed(() => {
+  if (usageSummaries.value.length === 0) return 100
+  return Math.max(...usageSummaries.value.map((s) => s.total_usage), 1)
+})
+
+function getBarHeight(usage: number): string {
+  const percentage = (usage / maxUsage.value) * 100
+  return `${Math.max(percentage, 2)}%`
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <div class="flex items-center justify-between">
+        <div>
+          <CardTitle>Usage History</CardTitle>
+          <CardDescription>
+            \{{ label || 'Historical usage by billing period' }}
+          </CardDescription>
+        </div>
+        <Select v-model="viewMode">
+          <SelectTrigger class="w-[120px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="chart">Chart</SelectItem>
+            <SelectItem value="table">Table</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <div v-if="isLoading" class="space-y-4">
+        <Skeleton class="h-[200px] w-full" />
+      </div>
+
+      <div v-else-if="usageSummaries.length === 0" class="text-center py-12">
+        <BarChart3 class="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+        <p class="text-muted-foreground">No usage data yet</p>
+        <p class="text-sm text-muted-foreground mt-1">
+          Usage will appear here once you start using metered features
+        </p>
+      </div>
+
+      <!-- Chart View -->
+      <div v-else-if="viewMode === 'chart'" class="space-y-4">
+        <div class="flex items-end gap-2 h-[200px] border-b border-l p-4">
+          <div
+            v-for="summary in usageSummaries.slice(-12)"
+            :key="summary.id"
+            class="flex-1 flex flex-col items-center gap-1"
+          >
+            <div
+              class="w-full bg-primary rounded-t transition-all hover:bg-primary/80"
+              :style="{ height: getBarHeight(summary.total_usage) }"
+              :title="`${formatNumber(summary.total_usage)} usage`"
+            />
+            <span class="text-xs text-muted-foreground rotate-45 origin-left whitespace-nowrap">
+              \{{ formatDate(summary.period_start) }}
+            </span>
+          </div>
+        </div>
+        <div class="flex justify-between text-sm text-muted-foreground">
+          <span>Oldest</span>
+          <span>Most Recent</span>
+        </div>
+      </div>
+
+      <!-- Table View -->
+      <Table v-else>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Period</TableHead>
+            <TableHead class="text-right">Usage</TableHead>
+            <TableHead>Invoice</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          <TableRow v-for="summary in usageSummaries" :key="summary.id">
+            <TableCell>\{{ formatDateRange(summary.period_start, summary.period_end) }}</TableCell>
+            <TableCell class="text-right font-mono">
+              \{{ formatNumber(summary.total_usage) }}
+            </TableCell>
+            <TableCell>
+              <span v-if="summary.invoice" class="text-xs text-muted-foreground">
+                \{{ summary.invoice }}
+              </span>
+              <span v-else class="text-xs text-muted-foreground">-</span>
+            </TableCell>
+          </TableRow>
+        </TableBody>
+      </Table>
+    </CardContent>
+  </Card>
+</template>

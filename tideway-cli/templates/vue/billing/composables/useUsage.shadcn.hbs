@@ -1,0 +1,166 @@
+import { ref, readonly, computed } from 'vue'
+import { useApi } from '../../composables/useApi'
+
+export interface UsageRecord {
+  subscription_item_id: string
+  quantity: number
+  timestamp?: number
+  action: 'increment' | 'set'
+}
+
+export interface UsageRecordResult {
+  id: string
+  quantity: number
+  timestamp: number
+  subscription_item_id: string
+}
+
+export interface UsageSummary {
+  id: string
+  total_usage: number
+  period_start: number
+  period_end: number
+  invoice?: string
+}
+
+export interface UsageThreshold {
+  subscription_item_id: string
+  label: string
+  current: number
+  warning_threshold?: number
+  hard_limit?: number
+}
+
+export interface UsageCheckResult {
+  status: 'ok' | 'warning' | 'exceeded'
+  current: number
+  threshold?: number
+  limit?: number
+}
+
+export function useUsage() {
+  const api = useApi()
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+  const usageSummaries = ref<UsageSummary[]>([])
+  const thresholds = ref<UsageThreshold[]>([])
+
+  async function reportUsage(record: UsageRecord): Promise<UsageRecordResult | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<UsageRecordResult>('/billing/usage', record)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to report usage'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function reportUsageBatch(records: UsageRecord[]): Promise<UsageRecordResult[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<{ results: UsageRecordResult[] }>('/billing/usage/batch', { records })
+      return response.results
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to report usage batch'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchUsageSummary(subscriptionItemId: string): Promise<UsageSummary[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ summaries: UsageSummary[] }>(
+        `/billing/usage/${encodeURIComponent(subscriptionItemId)}`
+      )
+      usageSummaries.value = response.summaries
+      return response.summaries
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch usage summary'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function fetchThresholds(organizationId: string): Promise<UsageThreshold[]> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<{ thresholds: UsageThreshold[] }>(
+        `/billing/usage/thresholds?organization_id=${encodeURIComponent(organizationId)}`
+      )
+      thresholds.value = response.thresholds
+      return response.thresholds
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to fetch usage thresholds'
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function checkUsage(threshold: UsageThreshold): UsageCheckResult {
+    if (threshold.hard_limit && threshold.current >= threshold.hard_limit) {
+      return {
+        status: 'exceeded',
+        current: threshold.current,
+        limit: threshold.hard_limit,
+      }
+    }
+    if (threshold.warning_threshold && threshold.current >= threshold.warning_threshold) {
+      return {
+        status: 'warning',
+        current: threshold.current,
+        threshold: threshold.warning_threshold,
+      }
+    }
+    return {
+      status: 'ok',
+      current: threshold.current,
+    }
+  }
+
+  function getUsagePercentage(threshold: UsageThreshold): number {
+    const limit = threshold.hard_limit || threshold.warning_threshold
+    if (!limit) return 0
+    return Math.min(100, Math.round((threshold.current / limit) * 100))
+  }
+
+  const hasWarnings = computed(() =>
+    thresholds.value.some((t) => checkUsage(t).status === 'warning')
+  )
+
+  const hasExceeded = computed(() =>
+    thresholds.value.some((t) => checkUsage(t).status === 'exceeded')
+  )
+
+  return {
+    // State
+    usageSummaries: readonly(usageSummaries),
+    thresholds: readonly(thresholds),
+    isLoading: readonly(isLoading),
+    error: readonly(error),
+    hasWarnings,
+    hasExceeded,
+
+    // Actions
+    reportUsage,
+    reportUsageBatch,
+    fetchUsageSummary,
+    fetchThresholds,
+    checkUsage,
+    getUsagePercentage,
+  }
+}

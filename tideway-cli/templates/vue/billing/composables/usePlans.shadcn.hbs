@@ -53,6 +53,26 @@ export interface UpdatePlanRequest {
   sort_order?: number
 }
 
+export interface PlanExport {
+  version: string
+  exported_at: string
+  plans: Plan[]
+}
+
+export type ImportConflictStrategy = 'error' | 'skip' | 'update'
+
+export interface ImportPlanRequest {
+  plans: Plan[]
+  conflict_strategy: ImportConflictStrategy
+}
+
+export interface ImportResult {
+  created: number
+  updated: number
+  skipped: number
+  errors: string[]
+}
+
 export function usePlans() {
   const api = useApi()
   const isLoading = ref(false)
@@ -160,6 +180,50 @@ export function usePlans() {
     }
   }
 
+  async function exportPlans(): Promise<PlanExport | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.get<PlanExport>('/admin/plans/export')
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to export plans'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function importPlans(request: ImportPlanRequest): Promise<ImportResult | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<ImportResult>('/admin/plans/import', request)
+      // Refresh plans list after import
+      await fetchPlans(true)
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to import plans'
+      throw e
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  function downloadExport(exportData: PlanExport): void {
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `plans-export-${new Date().toISOString().split('T')[0]}.json`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+  }
+
   return {
     // State
     plans: readonly(plans),
@@ -174,5 +238,8 @@ export function usePlans() {
     updatePlan,
     deletePlan,
     setActive,
+    exportPlans,
+    importPlans,
+    downloadExport,
   }
 }

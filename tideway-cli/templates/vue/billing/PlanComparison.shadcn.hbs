@@ -1,0 +1,240 @@
+<script setup lang="ts">
+import { computed, watch } from 'vue'
+import { usePlanComparison, type PlanComparison } from './composables/usePlanComparison'
+import type { Plan } from './composables/usePlans'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Skeleton } from '@/components/ui/skeleton'
+import {
+  ArrowUp,
+  ArrowDown,
+  ArrowRight,
+  Plus,
+  Minus,
+  AlertTriangle,
+  Users,
+  CheckCircle2,
+  XCircle,
+} from 'lucide-vue-next'
+
+const props = defineProps<{
+  fromPlan: Plan
+  toPlan: Plan
+  useApi?: boolean // If true, fetch comparison from API; otherwise use local comparison
+}>()
+
+const emit = defineEmits<{
+  compared: [comparison: PlanComparison]
+}>()
+
+const { comparison, isLoading, error, comparePlans, compareLocally } = usePlanComparison()
+
+// Compute comparison either from API or locally
+const activeComparison = computed(() => {
+  if (props.useApi) {
+    return comparison.value
+  }
+  return compareLocally(props.fromPlan, props.toPlan)
+})
+
+// Fetch from API if useApi is true
+watch(
+  () => [props.fromPlan.id, props.toPlan.id, props.useApi],
+  async () => {
+    if (props.useApi && props.fromPlan.id !== props.toPlan.id) {
+      const result = await comparePlans(props.fromPlan.id, props.toPlan.id)
+      if (result) {
+        emit('compared', result)
+      }
+    }
+  },
+  { immediate: true }
+)
+
+// Emit local comparison
+watch(
+  activeComparison,
+  (comp) => {
+    if (comp && !props.useApi) {
+      emit('compared', comp)
+    }
+  },
+  { immediate: true }
+)
+
+const changeIcon = computed(() => {
+  switch (activeComparison.value?.change_type) {
+    case 'upgrade':
+      return ArrowUp
+    case 'downgrade':
+      return ArrowDown
+    case 'lateral':
+      return ArrowRight
+    default:
+      return null
+  }
+})
+
+const changeColor = computed(() => {
+  switch (activeComparison.value?.change_type) {
+    case 'upgrade':
+      return 'text-green-500'
+    case 'downgrade':
+      return 'text-destructive'
+    case 'lateral':
+      return 'text-blue-500'
+    default:
+      return 'text-muted-foreground'
+  }
+})
+
+const changeBadgeVariant = computed(() => {
+  switch (activeComparison.value?.change_type) {
+    case 'upgrade':
+      return 'default'
+    case 'downgrade':
+      return 'destructive'
+    default:
+      return 'secondary'
+  }
+})
+
+function formatPrice(cents: number, currency: string): string {
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: currency.toUpperCase(),
+  }).format(cents / 100)
+}
+
+function formatFeatureName(feature: string): string {
+  return feature
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+</script>
+
+<template>
+  <Card>
+    <CardHeader>
+      <CardTitle class="flex items-center gap-2">
+        Plan Comparison
+        <Badge v-if="activeComparison" :variant="changeBadgeVariant">
+          <component :is="changeIcon" class="h-3 w-3 mr-1" />
+          \{{ activeComparison.change_type === 'no_change' ? 'Same Plan' : activeComparison.change_type }}
+        </Badge>
+      </CardTitle>
+      <CardDescription>
+        Comparing \{{ fromPlan.name }} to \{{ toPlan.name }}
+      </CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Alert v-if="error" variant="destructive" class="mb-4">
+        <AlertDescription>\{{ error }}</AlertDescription>
+      </Alert>
+
+      <div v-if="isLoading && useApi" class="space-y-4">
+        <Skeleton class="h-20 w-full" />
+        <Skeleton class="h-20 w-full" />
+      </div>
+
+      <div v-else-if="activeComparison?.change_type === 'no_change'" class="text-center py-8">
+        <CheckCircle2 class="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+        <p class="text-muted-foreground">You're already on this plan</p>
+      </div>
+
+      <div v-else-if="activeComparison" class="space-y-6">
+        <!-- Plan Summary -->
+        <div class="grid grid-cols-3 gap-4 text-center">
+          <div class="space-y-1">
+            <p class="text-sm text-muted-foreground">Current</p>
+            <p class="font-semibold">\{{ fromPlan.name }}</p>
+            <p class="text-sm">\{{ formatPrice(fromPlan.price_cents, fromPlan.currency) }}/\{{ fromPlan.interval }}</p>
+          </div>
+          <div class="flex items-center justify-center">
+            <component :is="changeIcon" class="h-8 w-8" :class="changeColor" />
+          </div>
+          <div class="space-y-1">
+            <p class="text-sm text-muted-foreground">New</p>
+            <p class="font-semibold">\{{ toPlan.name }}</p>
+            <p class="text-sm">\{{ formatPrice(toPlan.price_cents, toPlan.currency) }}/\{{ toPlan.interval }}</p>
+          </div>
+        </div>
+
+        <!-- Warnings -->
+        <Alert v-if="activeComparison.warnings.length > 0" class="border-yellow-500 bg-yellow-50 dark:bg-yellow-950">
+          <AlertTriangle class="h-4 w-4 text-yellow-500" />
+          <AlertTitle class="text-yellow-700 dark:text-yellow-400">Please Note</AlertTitle>
+          <AlertDescription>
+            <ul class="list-disc list-inside text-yellow-600 dark:text-yellow-300">
+              <li v-for="warning in activeComparison.warnings" :key="warning">
+                \{{ warning }}
+              </li>
+            </ul>
+          </AlertDescription>
+        </Alert>
+
+        <!-- Seat Difference -->
+        <div v-if="activeComparison.seat_difference !== 0" class="flex items-center gap-3 p-3 rounded-lg bg-muted">
+          <Users class="h-5 w-5 text-muted-foreground" />
+          <div>
+            <p class="font-medium">Included Seats</p>
+            <p class="text-sm text-muted-foreground">
+              <span v-if="activeComparison.seat_difference > 0" class="text-green-500">
+                +\{{ activeComparison.seat_difference }} more seats
+              </span>
+              <span v-else class="text-destructive">
+                \{{ activeComparison.seat_difference }} fewer seats
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <!-- Features Gained -->
+        <div v-if="activeComparison.features_gained.length > 0" class="space-y-2">
+          <h4 class="font-medium flex items-center gap-2 text-green-600">
+            <Plus class="h-4 w-4" />
+            Features You'll Gain
+          </h4>
+          <ul class="space-y-1">
+            <li
+              v-for="feature in activeComparison.features_gained"
+              :key="feature"
+              class="flex items-center gap-2 text-sm"
+            >
+              <CheckCircle2 class="h-4 w-4 text-green-500" />
+              \{{ formatFeatureName(feature) }}
+            </li>
+          </ul>
+        </div>
+
+        <!-- Features Lost -->
+        <div v-if="activeComparison.features_lost.length > 0" class="space-y-2">
+          <h4 class="font-medium flex items-center gap-2 text-destructive">
+            <Minus class="h-4 w-4" />
+            Features You'll Lose
+          </h4>
+          <ul class="space-y-1">
+            <li
+              v-for="feature in activeComparison.features_lost"
+              :key="feature"
+              class="flex items-center gap-2 text-sm"
+            >
+              <XCircle class="h-4 w-4 text-destructive" />
+              \{{ formatFeatureName(feature) }}
+            </li>
+          </ul>
+        </div>
+
+        <!-- Extra Seats Support Change -->
+        <Alert v-if="activeComparison.extra_seats_support_changed" variant="destructive">
+          <AlertTriangle class="h-4 w-4" />
+          <AlertTitle>Extra Seats Support Changed</AlertTitle>
+          <AlertDescription>
+            The new plan has different extra seats support. Any additional seats you've purchased may be affected.
+          </AlertDescription>
+        </Alert>
+      </div>
+    </CardContent>
+  </Card>
+</template>
