@@ -68,6 +68,7 @@ mod types;
 pub use error::AdminError;
 pub use storage::AdminStore;
 pub use types::{
-    AuditEntry, AuditLogParams, ListOrgsParams, ListUsersParams, PaginatedResult, PlatformStats,
-    SortOrder, UpdateUser,
+    AuditEntry, AuditLogParams, CreatePlatformInvite, ListOrgsParams, ListPlatformInvitesParams,
+    ListUsersParams, PaginatedResult, PlatformInvite, PlatformInviteConsumption,
+    PlatformInviteStatus, PlatformStats, SortOrder, UpdateUser,
 };

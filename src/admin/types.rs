@@ -172,6 +172,94 @@ pub struct AuditEntry {
     pub created_at: DateTime<Utc>,
 }
 
+// =============================================================================
+// Platform Invitations
+// =============================================================================
+
+/// Status of a platform invitation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformInviteStatus {
+    /// Invitation is pending acceptance.
+    Pending,
+    /// Invitation was accepted and user signed up.
+    Accepted,
+    /// Invitation was revoked by an admin.
+    Revoked,
+    /// Invitation expired without being accepted.
+    Expired,
+}
+
+impl Default for PlatformInviteStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+/// A platform invitation for new users to sign up.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformInvite {
+    /// Unique ID of the invitation.
+    pub id: String,
+    /// Email address the invitation was sent to.
+    pub email: String,
+    /// Optional plan ID to assign upon signup.
+    pub plan_id: Option<String>,
+    /// Number of trial days to grant (0 = use default).
+    pub trial_days: Option<u32>,
+    /// Current status of the invitation.
+    pub status: PlatformInviteStatus,
+    /// Admin user who created the invitation.
+    pub invited_by: String,
+    /// When the invitation expires.
+    pub expires_at: DateTime<Utc>,
+    /// When the invitation was created.
+    pub created_at: DateTime<Utc>,
+    /// When the invitation was accepted (if accepted).
+    pub accepted_at: Option<DateTime<Utc>>,
+    /// User ID of the user who accepted (if accepted).
+    pub accepted_by_user_id: Option<String>,
+}
+
+/// Request to create a platform invitation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePlatformInvite {
+    /// Email address to invite.
+    pub email: String,
+    /// Optional plan ID to assign upon signup.
+    pub plan_id: Option<String>,
+    /// Number of trial days to grant (None = use default).
+    pub trial_days: Option<u32>,
+    /// Custom message to include in the invitation email.
+    pub message: Option<String>,
+}
+
+/// Parameters for listing platform invitations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListPlatformInvitesParams {
+    /// Filter by status.
+    pub status: Option<PlatformInviteStatus>,
+    /// Optional search term (matches email).
+    pub search: Option<String>,
+    /// Page number (1-indexed).
+    #[serde(default = "default_page")]
+    pub page: u32,
+    /// Number of items per page.
+    #[serde(default = "default_per_page")]
+    pub per_page: u32,
+}
+
+/// Result of consuming a platform invite during signup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformInviteConsumption {
+    /// The invitation that was consumed.
+    pub invite: PlatformInvite,
+    /// Plan ID to apply to the new user/org.
+    pub plan_id: Option<String>,
+    /// Trial days to grant.
+    pub trial_days: Option<u32>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

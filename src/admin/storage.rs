@@ -7,7 +7,8 @@ use async_trait::async_trait;
 
 use super::error::AdminError;
 use super::types::{
-    AuditEntry, AuditLogParams, ListOrgsParams, ListUsersParams, PaginatedResult, PlatformStats,
+    AuditEntry, AuditLogParams, CreatePlatformInvite, ListOrgsParams, ListPlatformInvitesParams,
+    ListUsersParams, PaginatedResult, PlatformInvite, PlatformInviteConsumption, PlatformStats,
     UpdateUser,
 };
 
@@ -126,5 +127,89 @@ pub trait AdminStore: Send + Sync {
         _ip_address: Option<&str>,
     ) -> Result<(), AdminError> {
         Ok(())
+    }
+
+    // === Platform Invitations ===
+
+    /// Create a platform invitation.
+    ///
+    /// This creates an invitation record and returns the token that should
+    /// be included in the invitation email. The token is used during signup
+    /// to validate the invitation.
+    ///
+    /// Default implementation returns an error indicating invitations are not supported.
+    async fn create_platform_invite(
+        &self,
+        _admin_user_id: &str,
+        _invite: CreatePlatformInvite,
+    ) -> Result<PlatformInvite, AdminError> {
+        Err(AdminError::NotSupported(
+            "Platform invitations not implemented".into(),
+        ))
+    }
+
+    /// List platform invitations with pagination.
+    ///
+    /// Default implementation returns an empty list.
+    async fn list_platform_invites(
+        &self,
+        _params: ListPlatformInvitesParams,
+    ) -> Result<PaginatedResult<PlatformInvite>, AdminError> {
+        Ok(PaginatedResult::new(vec![], 0, 1, 20))
+    }
+
+    /// Get a platform invitation by ID.
+    ///
+    /// Default implementation returns None.
+    async fn get_platform_invite(&self, _invite_id: &str) -> Result<Option<PlatformInvite>, AdminError> {
+        Ok(None)
+    }
+
+    /// Revoke a platform invitation.
+    ///
+    /// This marks the invitation as revoked so it can no longer be used.
+    ///
+    /// Default implementation returns an error.
+    async fn revoke_platform_invite(&self, _invite_id: &str) -> Result<(), AdminError> {
+        Err(AdminError::NotSupported(
+            "Platform invitations not implemented".into(),
+        ))
+    }
+
+    /// Resend a platform invitation email.
+    ///
+    /// This resets the expiration and sends a new email.
+    ///
+    /// Default implementation returns an error.
+    async fn resend_platform_invite(&self, _invite_id: &str) -> Result<PlatformInvite, AdminError> {
+        Err(AdminError::NotSupported(
+            "Platform invitations not implemented".into(),
+        ))
+    }
+
+    /// Validate and consume a platform invitation token during signup.
+    ///
+    /// This is called during user registration to validate an invite token.
+    /// If valid, it returns the invitation details and marks it as consumed.
+    ///
+    /// Default implementation returns None (no valid invite).
+    async fn consume_platform_invite(
+        &self,
+        _token: &str,
+        _user_id: &str,
+    ) -> Result<Option<PlatformInviteConsumption>, AdminError> {
+        Ok(None)
+    }
+
+    /// Get a platform invitation by token (without consuming it).
+    ///
+    /// Used to validate tokens and pre-fill signup forms.
+    ///
+    /// Default implementation returns None.
+    async fn get_platform_invite_by_token(
+        &self,
+        _token: &str,
+    ) -> Result<Option<PlatformInvite>, AdminError> {
+        Ok(None)
     }
 }
