@@ -110,57 +110,19 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
     }
 
     /// Create a checkout session for adding seats to an existing subscription.
+    ///
+    /// Deprecated: use `SeatManager::add_seats` to update the existing
+    /// subscription with Stripe proration.
+    #[deprecated(note = "Use SeatManager::add_seats to update subscriptions with proration.")]
     pub async fn create_seat_checkout_session(
         &self,
         entity: &impl BillableEntity,
         request: SeatCheckoutRequest,
     ) -> Result<CheckoutSession> {
-        // Validate redirect URLs
-        self.config.validate_redirect_url(&request.success_url)?;
-        self.config.validate_redirect_url(&request.cancel_url)?;
-
-        // Get existing subscription to validate plan
-        let sub = self.customer_manager
-            .get_customer_id(entity.billable_id())
-            .await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No customer found".to_string()
-            ))?;
-
-        let plan = self.plans.get(&request.plan_id)
-            .ok_or_else(|| crate::error::TidewayError::BadRequest(
-                format!("Unknown plan: {}", request.plan_id)
-            ))?;
-
-        let seat_price = plan.extra_seat_price_id.as_ref()
-            .ok_or_else(|| crate::error::TidewayError::BadRequest(
-                "Plan does not support extra seats".to_string()
-            ))?;
-
-        let session = self.client.create_checkout_session(CreateCheckoutSessionRequest {
-            customer_id: sub,
-            line_items: vec![
-                CheckoutLineItem {
-                    price_id: seat_price.clone(),
-                    quantity: request.seats,
-                }
-            ],
-            success_url: request.success_url,
-            cancel_url: request.cancel_url,
-            mode: CheckoutMode::Subscription,
-            allow_promotion_codes: false,
-            trial_period_days: None,
-            metadata: CheckoutMetadata {
-                billable_id: entity.billable_id().to_string(),
-                billable_type: entity.billable_type().to_string(),
-                plan_id: request.plan_id,
-            },
-            tax_id_collection: false,
-            billing_address_collection: false,
-            coupon: None,
-        }).await?;
-
-        Ok(session)
+        let _ = (entity, request);
+        Err(crate::error::TidewayError::BadRequest(
+            "Seat add-ons via Checkout are not supported. Use SeatManager::add_seats instead.".to_string()
+        ))
     }
 }
 
