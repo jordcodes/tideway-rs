@@ -115,6 +115,8 @@ governor = "0.10"
 
 [features]
 default = ["database", "openapi", "macros"]
+feature-gate-errors = []
+feature-gate-warnings = []
 # Proc macros for handler definitions with OpenAPI integration
 macros = ["tideway-macros", "openapi"]
 # Database support with SeaORM

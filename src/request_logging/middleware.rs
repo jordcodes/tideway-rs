@@ -1,6 +1,6 @@
 use super::config::{LogLevel, RequestLoggingConfig};
 use axum::{
-    extract::Request,
+    extract::{MatchedPath, Request},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
@@ -67,7 +67,11 @@ where
         let start = Instant::now();
         let method = req.method().clone();
         let uri = req.uri().clone();
-        let path = uri.path().to_string();
+        let matched_path = req
+            .extensions()
+            .get::<MatchedPath>()
+            .map(|p| p.as_str().to_string());
+        let path = matched_path.unwrap_or_else(|| uri.path().to_string());
         let query = uri.query().map(|q| q.to_string());
 
         // Extract request ID if present
@@ -77,8 +81,12 @@ where
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
+        let any_logging_enabled = is_log_level_enabled(config.success_level)
+            || is_log_level_enabled(config.client_error_level)
+            || is_log_level_enabled(config.server_error_level);
+
         // Extract headers if configured
-        let headers = if config.include_headers {
+        let headers = if config.include_headers && any_logging_enabled {
             Some(req.headers().clone())
         } else {
             None
@@ -91,13 +99,6 @@ where
             let status = response.status();
             let duration = start.elapsed();
 
-            // Extract response headers if configured
-            let response_headers = if config.include_response_headers {
-                Some(response.headers().clone())
-            } else {
-                None
-            };
-
             // Determine log level based on status code
             let log_level = if status.is_success() {
                 config.success_level
@@ -105,6 +106,17 @@ where
                 config.client_error_level
             } else {
                 config.server_error_level
+            };
+
+            if !is_log_level_enabled(log_level) {
+                return Ok(response);
+            }
+
+            // Extract response headers if configured
+            let response_headers = if config.include_response_headers {
+                Some(response.headers().clone())
+            } else {
+                None
             };
 
             // Log the request/response (move owned values to avoid Send issues)
@@ -251,9 +263,21 @@ fn log_request_response(
     }
 }
 
+fn is_log_level_enabled(level: LogLevel) -> bool {
+    match level {
+        LogLevel::Trace => tracing::enabled!(tracing::Level::TRACE),
+        LogLevel::Debug => tracing::enabled!(tracing::Level::DEBUG),
+        LogLevel::Info => tracing::enabled!(tracing::Level::INFO),
+        LogLevel::Warn => tracing::enabled!(tracing::Level::WARN),
+        LogLevel::Error => tracing::enabled!(tracing::Level::ERROR),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::Level;
+    use tracing_subscriber::fmt::Subscriber;
 
     #[test]
     fn test_disabled_logging() {
@@ -301,5 +325,17 @@ mod tests {
             config.server_error_level
         };
         assert_eq!(level, LogLevel::Error);
+    }
+
+    #[test]
+    fn test_log_level_enabled_guard() {
+        let subscriber = Subscriber::builder()
+            .with_max_level(Level::INFO)
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        tracing::dispatcher::with_default(&dispatch, || {
+            assert!(!is_log_level_enabled(LogLevel::Debug));
+            assert!(is_log_level_enabled(LogLevel::Info));
+        });
     }
 }

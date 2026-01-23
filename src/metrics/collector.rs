@@ -75,8 +75,12 @@ impl MetricsCollector {
         status: u16,
         duration: std::time::Duration,
     ) {
-        // Normalize path (remove IDs, etc.)
-        let normalized_path = normalize_path(path);
+        // Prefer route templates (MatchedPath) when available; otherwise normalize.
+        let normalized_path = if path.contains(':') || path.contains('{') {
+            path.to_string()
+        } else {
+            normalize_path(path)
+        };
 
         // Increment request counter
         self.http_requests_total

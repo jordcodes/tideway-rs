@@ -23,6 +23,40 @@
 - **Production Ready**: Graceful shutdown, request IDs, and structured logging out of the box
 - **Developer Friendly**: Simple, intuitive API with sensible defaults
 
+## Feature Matrix
+
+Feature flags are opt-in unless marked Default.
+
+| Feature | Module | Docs | Example | Notes |
+| --- | --- | --- | --- | --- |
+| `feature-gate-errors` | — | — | — | Optional compile-time errors for missing features |
+| `feature-gate-warnings` | — | — | — | Optional warnings for missing features |
+| `macros` | `tideway-macros` / `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
+| `database` | `database` | `docs/database_traits.md` | `examples/custom_database.rs` | Default (SeaORM) |
+| `database-sqlx` | `database` | `docs/database_traits.md` | — | WIP |
+| `openapi` | `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
+| `validation` | `validation` | `docs/validation.md` | `examples/validation_example.rs` | — |
+| `metrics` | `metrics` | `README.md#built-in-middleware` | `tests/metrics_integration_test.rs` | — |
+| `cache` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
+| `cache-redis` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
+| `sessions` | `session` | `docs/sessions.md` | `examples/sessions_example.rs` | — |
+| `jobs` | `jobs` | `docs/background_jobs.md` | `examples/background_jobs.rs` | — |
+| `jobs-redis` | `jobs` | `docs/background_jobs.md` | — | — |
+| `websocket` | `websocket` | `docs/websockets.md` | `examples/websocket_chat.rs` | — |
+| `email` | `email` | `docs/email.md` | `examples/email_example.rs` | — |
+| `auth` | `auth` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
+| `auth-mfa` | `auth::mfa` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
+| `auth-breach` | `auth::breach` | `docs/auth.md` | — | — |
+| `test-auth-bypass` | `auth` | `docs/auth.md` | `tests/auth_integration_test.rs` | Tests only |
+| `billing` | `billing` | `docs/billing.md` | — | — |
+| `billing-seaorm` | `billing` | `docs/billing.md` | — | — |
+| `test-billing` | `billing` | `docs/billing.md` | `tests/` | Tests only |
+| `organizations` | `organizations` | — | — | Docs TBD |
+| `organizations-seaorm` | `organizations` | — | — | Docs TBD |
+| `organizations-billing` | `organizations` | — | — | Docs TBD |
+| `test-organizations` | `organizations` | — | `tests/` | Tests only |
+| `admin` | `admin` | — | — | Docs TBD |
+
 ## Quick Start
 
 ### Installation
@@ -31,7 +65,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.4"
+tideway = "0.7.7"
 tokio = { version = "1.48", features = ["full"] }
 ```
 
@@ -573,7 +607,7 @@ All requests automatically include:
 8. **Security Headers**: HSTS, CSP, X-Frame-Options, and more
 9. **Timeout**: Configurable request timeouts
 10. **Request Logging**: Structured request/response logging
-11. **Metrics**: Prometheus metrics collection (optional)
+11. **Metrics**: Prometheus metrics collection (optional, uses route templates when available)
 
 ## Dependency Injection
 
