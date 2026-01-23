@@ -16,6 +16,7 @@ use crate::auth::storage::token::{MfaTokenStore, RefreshTokenStore};
 use crate::auth::storage::UserStore;
 use crate::error::{Result, TidewayError};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime};
 
 use super::rate_limit::{LoginRateLimiter, OptionalRateLimiter, WithRateLimiter};
@@ -403,9 +404,10 @@ where
     /// Second step: verify MFA code with MFA token.
     pub async fn verify_mfa(&self, req: MfaVerifyRequest) -> Result<LoginResponse> {
         // Consume MFA token (one-time use)
+        let token_hash = hash_mfa_token(&req.mfa_token);
         let user_id = self
             .mfa_store
-            .consume(&req.mfa_token)
+            .consume(&token_hash)
             .await?
             .ok_or_else(|| TidewayError::Unauthorized("Invalid or expired MFA token".into()))?;
 
@@ -518,10 +520,11 @@ where
 
     async fn generate_mfa_token(&self, user: &U::User) -> Result<String> {
         let token = generate_secure_token();
+        let token_hash = hash_mfa_token(&token);
         let user_id = self.user_store.user_id(user);
 
         self.mfa_store
-            .store(&token, &user_id, self.config.mfa_token_ttl)
+            .store(&token_hash, &user_id, self.config.mfa_token_ttl)
             .await?;
 
         Ok(token)
@@ -534,6 +537,13 @@ fn generate_secure_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn hash_mfa_token(token: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let result = hasher.finalize();
+    URL_SAFE_NO_PAD.encode(result)
 }
 
 #[cfg(test)]

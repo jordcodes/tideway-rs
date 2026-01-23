@@ -150,7 +150,9 @@ impl<S: PasswordResetStore> PasswordResetFlow<S> {
 
 /// Generate a secure reset token.
 fn generate_reset_token() -> String {
-    let bytes: [u8; 32] = std::array::from_fn(|_| fastrand::u8(..));
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 

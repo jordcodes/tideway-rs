@@ -110,7 +110,9 @@ impl<S: VerificationStore> EmailVerificationFlow<S> {
 
 /// Generate a secure verification token.
 fn generate_verification_token() -> String {
-    let bytes: [u8; 32] = std::array::from_fn(|_| fastrand::u8(..));
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 

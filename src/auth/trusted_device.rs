@@ -320,20 +320,28 @@ impl<S: TrustedDeviceStore> TrustedDeviceManager<S> {
 
         // Optionally validate fingerprint
         if self.config.validate_fingerprint {
-            if let Some(ref fp) = fingerprint {
-                let stored_fp = DeviceFingerprint {
-                    ip_address: device.ip_address.clone(),
-                    user_agent: device.user_agent.clone(),
-                };
-                if !stored_fp.matches(fp) {
-                    tracing::warn!(
-                        target: "auth.trusted_device.fingerprint_mismatch",
-                        user_id = %user_id,
-                        device_id = %device.id,
-                        "Trust token fingerprint mismatch"
-                    );
-                    return Ok(false);
-                }
+            let Some(ref fp) = fingerprint else {
+                tracing::warn!(
+                    target: "auth.trusted_device.fingerprint_missing",
+                    user_id = %user_id,
+                    device_id = %device.id,
+                    "Trust token rejected: fingerprint required"
+                );
+                return Ok(false);
+            };
+
+            let stored_fp = DeviceFingerprint {
+                ip_address: device.ip_address.clone(),
+                user_agent: device.user_agent.clone(),
+            };
+            if !stored_fp.matches(fp) {
+                tracing::warn!(
+                    target: "auth.trusted_device.fingerprint_mismatch",
+                    user_id = %user_id,
+                    device_id = %device.id,
+                    "Trust token fingerprint mismatch"
+                );
+                return Ok(false);
             }
         }
 
@@ -371,14 +379,22 @@ impl<S: TrustedDeviceStore> TrustedDeviceManager<S> {
         }
 
         if self.config.validate_fingerprint {
-            if let Some(ref fp) = fingerprint {
-                let stored_fp = DeviceFingerprint {
-                    ip_address: device.ip_address.clone(),
-                    user_agent: device.user_agent.clone(),
-                };
-                if !stored_fp.matches(fp) {
-                    return Ok(None);
-                }
+            let Some(ref fp) = fingerprint else {
+                tracing::warn!(
+                    target: "auth.trusted_device.fingerprint_missing",
+                    user_id = %user_id,
+                    device_id = %device.id,
+                    "Trust token rejected: fingerprint required"
+                );
+                return Ok(None);
+            };
+
+            let stored_fp = DeviceFingerprint {
+                ip_address: device.ip_address.clone(),
+                user_agent: device.user_agent.clone(),
+            };
+            if !stored_fp.matches(fp) {
+                return Ok(None);
             }
         }
 

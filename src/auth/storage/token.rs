@@ -68,6 +68,8 @@ pub trait RefreshTokenStore: Send + Sync {
 pub trait MfaTokenStore: Send + Sync {
     /// Store an MFA token with the associated user ID.
     ///
+    /// The token provided by the flow is already hashed; store it as-is.
+    ///
     /// The token should expire after a short time (e.g., 5 minutes).
     async fn store(&self, token: &str, user_id: &str, ttl: std::time::Duration) -> Result<()>;
 

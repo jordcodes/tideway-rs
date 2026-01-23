@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-01-23
+
+### Security
+
+- Password reset and email verification tokens now use OS CSPRNG for generation.
+- MFA tokens are hashed before storage and consumption in the login flow.
+- Trusted-device verification now rejects missing fingerprints when fingerprint validation is enabled.
+
 ## [0.7.1] - 2025-12-12
 
 ### Fixed
