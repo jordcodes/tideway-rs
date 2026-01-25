@@ -212,10 +212,12 @@ impl App {
         self
     }
 
-    /// Convert the App into an axum Router.
+    /// Convert the App into an axum Router without applying middleware.
     ///
     /// This applies the AppContext state to the router, making it ready to serve.
-    /// Use this when you want to manually serve the router with `axum::serve`.
+    /// Use this when you want to manually serve the router with `axum::serve`
+    /// and you plan to add your own middleware stack. If you want Tideway's
+    /// default middleware, use `into_router_with_middleware()`.
     ///
     /// # Example
     /// ```ignore
@@ -233,6 +235,25 @@ impl App {
         // Merge any extra routers that don't need AppContext
         for extra in self.extra_routers {
             router = router.merge(extra);
+        }
+
+        router
+    }
+
+    /// Convert the App into an axum Router with Tideway's middleware stack applied.
+    ///
+    /// This matches the middleware behavior of `serve()` and is the recommended
+    /// choice when you want to manually serve the router without losing defaults.
+    pub fn into_router_with_middleware(self) -> Router {
+        let mut app = self.with_middleware();
+        let mut router = app.router.with_state(app.context);
+
+        for extra in app.extra_routers {
+            router = router.merge(extra);
+        }
+
+        if let Some(cors_layer) = crate::cors::build_cors_layer(&app.config.cors) {
+            router = router.layer(cors_layer);
         }
 
         router
