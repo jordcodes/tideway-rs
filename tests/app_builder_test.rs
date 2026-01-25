@@ -53,7 +53,7 @@ async fn test_app_builder_respects_module_prefix() {
     let app = App::builder()
         .register_module(PrefixedModule)
         .build()
-        .into_test_router();
+        .into_router();
 
     // Should be accessible at /api/v1/hello
     test_get(app.clone(), "/api/v1/hello")
@@ -73,7 +73,7 @@ async fn test_app_builder_unprefixed_module() {
     let app = App::builder()
         .register_module(UnprefixedModule)
         .build()
-        .into_test_router();
+        .into_router();
 
     // Should be accessible at root /status
     test_get(app, "/status")
@@ -89,7 +89,7 @@ async fn test_app_builder_multiple_modules_with_different_prefixes() {
         .register_module(AdminModule)
         .register_module(UnprefixedModule)
         .build()
-        .into_test_router();
+        .into_router();
 
     // PrefixedModule routes at /api/v1/*
     test_get(app.clone(), "/api/v1/hello")
@@ -138,11 +138,11 @@ async fn test_app_register_module_matches_builder_behavior() {
     let app_via_builder = App::builder()
         .register_module(PrefixedModule)
         .build()
-        .into_test_router();
+        .into_router();
 
     let app_via_direct = App::new()
         .register_module(PrefixedModule)
-        .into_test_router();
+        .into_router();
 
     // Both should have routes at /api/v1/hello
     test_get(app_via_builder.clone(), "/api/v1/hello")
@@ -165,4 +165,26 @@ async fn test_app_register_module_matches_builder_behavior() {
         .execute()
         .await
         .assert_not_found();
+}
+
+#[tokio::test]
+async fn test_health_route_available_on_default_app() {
+    let app = App::new().into_router();
+
+    test_get(app, "/health")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
+async fn test_health_route_available_on_builder() {
+    let app = App::builder()
+        .build()
+        .into_router();
+
+    test_get(app, "/health")
+        .execute()
+        .await
+        .assert_ok();
 }

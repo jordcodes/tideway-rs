@@ -36,7 +36,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let app = App::with_config(config).into_test_router();
+        let app = App::with_config(config).into_router();
 
         let response = test_get(app, "/metrics")
             .execute()
@@ -59,7 +59,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let app = App::with_config(config).into_test_router();
+        let app = App::with_config(config).into_router();
 
         // Should be available at custom path
         test_get(app.clone(), "/custom/metrics")
@@ -72,6 +72,26 @@ mod tests {
             .execute()
             .await
             .assert_not_found();
+    }
+
+    #[tokio::test]
+    async fn test_metrics_endpoint_with_app_builder() {
+        use tideway::MetricsConfig;
+
+        let config = ConfigBuilder::new()
+            .with_metrics(MetricsConfig::builder().enabled(true).path("/metrics").build())
+            .build()
+            .unwrap();
+
+        let app = App::builder()
+            .with_config(config)
+            .build()
+            .into_router();
+
+        test_get(app, "/metrics")
+            .execute()
+            .await
+            .assert_ok();
     }
 
     #[tokio::test]

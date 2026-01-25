@@ -2,7 +2,6 @@ use crate::{
     app::AppContext,
     config::Config,
     compression::build_compression_layer,
-    cors::build_cors_layer,
     error::TidewayError,
     http::RouteModule,
     middleware::MakeRequestUuid,
@@ -103,7 +102,11 @@ impl App {
     }
 
     fn build_router(_config: &Config) -> Router<AppContext> {
+        use axum::routing::get;
+        use crate::health;
+
         Router::<AppContext>::new()
+            .route("/health", get(health::health_handler))
     }
 
     /// Register a route module with the application
@@ -133,12 +136,6 @@ impl App {
     /// Set the application context
     pub fn with_context(mut self, context: AppContext) -> Self {
         self.context = context;
-        // Add health routes to the existing router
-        use axum::routing::get;
-        use crate::health;
-        let health_routes = Router::<AppContext>::new()
-            .route("/health", get(health::health_handler));
-        self.router = self.router.merge(health_routes);
         self
     }
 
@@ -288,20 +285,15 @@ impl App {
             router = router.layer(rate_limit_layer);
         }
 
-        // 7. CORS - handle cross-origin requests
-        if let Some(cors_layer) = build_cors_layer(&self.config.cors) {
-            router = router.layer(cors_layer);
-        }
-
-        // 8. Request ID - add request IDs for tracing
+        // 7. Request ID - add request IDs for tracing
         router = router
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
             .layer(PropagateRequestIdLayer::x_request_id());
 
-        // 9. Trace layer - HTTP tracing
+        // 8. Trace layer - HTTP tracing
         router = router.layer(TraceLayer::new_for_http());
 
-        // 10. Request logging - log requests/responses (innermost of logging layers)
+        // 9. Request logging - log requests/responses (innermost of logging layers)
         if let Some(logging_layer) = build_request_logging_layer(&self.config.request_logging) {
             router = router.layer(logging_layer);
         }
@@ -440,7 +432,9 @@ impl AppBuilder {
 
         #[cfg(feature = "metrics")]
         {
-            app.metrics_collector = self.metrics_collector;
+            if let Some(ref collector) = app.metrics_collector {
+                app.context.metrics = Some(collector.clone());
+            }
         }
 
         for (module_router, prefix) in self.modules {

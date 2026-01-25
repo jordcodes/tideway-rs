@@ -1,5 +1,5 @@
 use tideway::{
-    ErrorContext, ErrorWithContext, TidewayError, ConfigBuilder,
+    ErrorContext, TidewayError, ConfigBuilder,
 };
 use axum::response::IntoResponse;
 
@@ -104,7 +104,7 @@ async fn test_config_validation_failures() {
 
 #[tokio::test]
 async fn test_config_validation_timeout() {
-    use tideway::{TimeoutConfig, TimeoutConfigBuilder};
+    use tideway::TimeoutConfigBuilder;
 
     // Test zero timeout when enabled
     let result = TimeoutConfigBuilder::new()
@@ -122,7 +122,7 @@ async fn test_config_validation_timeout() {
 
 #[tokio::test]
 async fn test_config_validation_rate_limit() {
-    use tideway::{RateLimitConfig, RateLimitConfigBuilder};
+    use tideway::RateLimitConfigBuilder;
 
     // Test zero max_requests when enabled
     let rate_limit = RateLimitConfigBuilder::new()
@@ -262,6 +262,7 @@ async fn test_from_serde_json_error() {
 
     // Missing field (data error) -> BadRequest
     #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
     struct Test { field: String }
     let json_err = serde_json::from_str::<Test>("{}").unwrap_err();
     let error: TidewayError = json_err.into();
