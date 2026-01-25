@@ -113,6 +113,17 @@ cargo run
 
 Visit `http://localhost:8000/health` to see the built-in health check.
 
+### CLI (Fastest Start)
+
+Use the CLI to scaffold a minimal Tideway app:
+
+```bash
+cargo install tideway-cli
+tideway new my_app
+cd my_app
+cargo run
+```
+
 ## Core Concepts
 
 ### 1. Application Structure
