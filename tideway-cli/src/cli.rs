@@ -17,6 +17,9 @@ pub enum Commands {
     /// Create a new Tideway starter app
     New(NewArgs),
 
+    /// Diagnose feature and project setup issues
+    Doctor(DoctorArgs),
+
     /// Generate frontend components
     Generate(GenerateArgs),
 
@@ -45,6 +48,13 @@ pub struct NewArgs {
     /// Overwrite existing files without prompting
     #[arg(long, default_value = "false")]
     pub force: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct DoctorArgs {
+    /// Project directory to analyze
+    #[arg(short, long, default_value = ".")]
+    pub path: String,
 }
 
 #[derive(Parser, Debug)]

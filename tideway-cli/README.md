@@ -22,6 +22,17 @@ Options:
 - `--path` - Output directory (default: project name)
 - `--force` - Overwrite existing files
 
+### `tideway doctor`
+
+Diagnose missing Tideway feature flags based on detected modules.
+
+```bash
+tideway doctor
+```
+
+Options:
+- `--path` - Project directory to analyze (default: current directory)
+
 ### `tideway backend`
 
 Generate backend scaffolding with auth, billing, organizations, and admin modules.

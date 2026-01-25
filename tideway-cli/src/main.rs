@@ -15,6 +15,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::New(args) => tideway_cli::commands::new::run(args)?,
+        Commands::Doctor(args) => tideway_cli::commands::doctor::run(args)?,
         Commands::Generate(args) => tideway_cli::commands::generate::run(args)?,
         Commands::Backend(args) => tideway_cli::commands::backend::run(args)?,
         Commands::Init(args) => tideway_cli::commands::init::run(args)?,

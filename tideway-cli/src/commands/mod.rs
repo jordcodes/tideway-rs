@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod generate;
 pub mod init;
+pub mod doctor;
 pub mod new;
 pub mod setup;
 pub mod templates;
