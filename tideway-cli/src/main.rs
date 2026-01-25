@@ -6,45 +6,21 @@
 //!   tideway generate organizations --framework vue
 //!   tideway generate all --framework vue --output ./src/components
 
-mod cli;
-mod commands;
-mod templates;
-
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Commands};
-use colored::Colorize;
+use tideway_cli::cli::{Cli, Commands};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate(args) => commands::generate::run(args)?,
-        Commands::Backend(args) => commands::backend::run(args)?,
-        Commands::Init(args) => commands::init::run(args)?,
-        Commands::Setup(args) => commands::setup::run(args)?,
-        Commands::Templates => commands::templates::run()?,
+        Commands::New(args) => tideway_cli::commands::new::run(args)?,
+        Commands::Generate(args) => tideway_cli::commands::generate::run(args)?,
+        Commands::Backend(args) => tideway_cli::commands::backend::run(args)?,
+        Commands::Init(args) => tideway_cli::commands::init::run(args)?,
+        Commands::Setup(args) => tideway_cli::commands::setup::run(args)?,
+        Commands::Templates => tideway_cli::commands::templates::run()?,
     }
 
     Ok(())
-}
-
-/// Print a success message
-pub fn print_success(message: &str) {
-    println!("{} {}", "✓".green().bold(), message);
-}
-
-/// Print an info message
-pub fn print_info(message: &str) {
-    println!("{} {}", "→".blue(), message);
-}
-
-/// Print a warning message
-pub fn print_warning(message: &str) {
-    println!("{} {}", "!".yellow().bold(), message);
-}
-
-/// Print an error message
-pub fn print_error(message: &str) {
-    println!("{} {}", "✗".red().bold(), message);
 }

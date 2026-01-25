@@ -10,6 +10,18 @@ cargo install tideway-cli
 
 ## Commands
 
+### `tideway new`
+
+Create a minimal Tideway app with a starter route and sensible defaults.
+
+```bash
+tideway new my_app
+```
+
+Options:
+- `--path` - Output directory (default: project name)
+- `--force` - Overwrite existing files
+
 ### `tideway backend`
 
 Generate backend scaffolding with auth, billing, organizations, and admin modules.

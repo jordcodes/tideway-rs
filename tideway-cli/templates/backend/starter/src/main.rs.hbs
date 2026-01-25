@@ -1,0 +1,15 @@
+//! {{project_name_pascal}} API server.
+
+use tideway::{init_tracing, App};
+
+mod routes;
+
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
+    init_tracing();
+
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    app.serve().await
+}

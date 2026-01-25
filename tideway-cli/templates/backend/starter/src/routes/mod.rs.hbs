@@ -1,0 +1,18 @@
+use axum::{routing::get, Router};
+use tideway::{AppContext, MessageResponse, RouteModule};
+
+pub struct ApiModule;
+
+impl RouteModule for ApiModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route("/", get(root))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api")
+    }
+}
+
+async fn root() -> MessageResponse {
+    MessageResponse::success("Tideway is running")
+}

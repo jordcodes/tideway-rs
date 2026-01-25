@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(name = "tideway")]
 #[command(author = "JD")]
 #[command(version)]
-#[command(about = "Generate frontend components for tideway applications", long_about = None)]
+#[command(about = "Scaffold Tideway apps and generate components", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -14,6 +14,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Create a new Tideway starter app
+    New(NewArgs),
+
     /// Generate frontend components
     Generate(GenerateArgs),
 
@@ -28,6 +31,20 @@ pub enum Commands {
 
     /// List available templates
     Templates,
+}
+
+#[derive(Parser, Debug)]
+pub struct NewArgs {
+    /// Project name (used for Cargo.toml)
+    pub name: String,
+
+    /// Output directory (defaults to the project name)
+    #[arg(short, long)]
+    pub path: Option<String>,
+
+    /// Overwrite existing files without prompting
+    #[arg(long, default_value = "false")]
+    pub force: bool,
 }
 
 #[derive(Parser, Debug)]
