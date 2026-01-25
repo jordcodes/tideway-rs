@@ -101,6 +101,10 @@ pub struct InitArgs {
     /// Generate .env.example file
     #[arg(long, default_value = "true")]
     pub env_example: bool,
+
+    /// Generate a minimal app entrypoint and sample route
+    #[arg(long, default_value = "false")]
+    pub minimal: bool,
 }
 
 #[derive(Parser, Debug)]

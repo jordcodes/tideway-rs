@@ -70,6 +70,7 @@ Options:
 - `--force` - Overwrite existing files
 - `--no-database` - Skip database setup
 - `--no-migrations` - Skip auto-migration on startup
+- `--minimal` - Generate a minimal main.rs + sample routes module
 
 ### `tideway setup`
 

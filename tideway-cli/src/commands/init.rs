@@ -27,6 +27,10 @@ impl DetectedModules {
 pub fn run(args: InitArgs) -> Result<()> {
     let src_path = Path::new(&args.src);
 
+    if args.minimal {
+        return run_minimal(src_path, &args);
+    }
+
     println!(
         "\n{} Scanning {} for modules...\n",
         "tideway".cyan().bold(),
@@ -109,6 +113,40 @@ pub fn run(args: InitArgs) -> Result<()> {
     }
     println!("  4. Start the server:");
     println!("     cargo run");
+    println!();
+
+    Ok(())
+}
+
+fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
+    println!(
+        "\n{} Generating minimal app...\n",
+        "tideway".cyan().bold()
+    );
+
+    let project_name = detect_project_name(args)?;
+    let project_name_pascal = to_pascal_case(&project_name);
+
+    print_info(&format!("Project name: {}", project_name.green()));
+
+    let main_rs = generate_minimal_main_rs(&project_name_pascal);
+    let routes_rs = generate_minimal_routes_rs();
+
+    let main_path = src_path.join("main.rs");
+    write_file(&main_path, &main_rs, args.force)?;
+    print_success("Generated main.rs");
+
+    let routes_path = src_path.join("routes").join("mod.rs");
+    write_file(&routes_path, &routes_rs, args.force)?;
+    print_success("Generated routes/mod.rs");
+
+    println!(
+        "\n{} Initialization complete!\n",
+        "✓".green().bold()
+    );
+
+    println!("{}", "Next steps:".yellow().bold());
+    println!("  1. cargo run");
     println!();
 
     Ok(())
@@ -340,6 +378,51 @@ async fn main() -> anyhow::Result<()> {{
     )
 }
 
+fn generate_minimal_main_rs(project_name_pascal: &str) -> String {
+    format!(
+        "//! {} API server.\n\
+\n\
+use tideway::{{init_tracing, App}};\n\
+\n\
+mod routes;\n\
+\n\
+#[tokio::main]\n\
+async fn main() -> Result<(), std::io::Error> {{\n\
+    init_tracing();\n\
+\n\
+    let app = App::new()\n\
+        .register_module(routes::ApiModule);\n\
+\n\
+    app.serve().await\n\
+}}\n",
+        project_name_pascal
+    )
+}
+
+fn generate_minimal_routes_rs() -> String {
+    "//! Minimal API routes.\n\
+\n\
+use axum::{routing::get, Router};\n\
+use tideway::{AppContext, MessageResponse, RouteModule};\n\
+\n\
+pub struct ApiModule;\n\
+\n\
+impl RouteModule for ApiModule {\n\
+    fn routes(&self) -> Router<AppContext> {\n\
+        Router::new().route(\"/\", get(root))\n\
+    }\n\
+\n\
+    fn prefix(&self) -> Option<&str> {\n\
+        Some(\"/api\")\n\
+    }\n\
+}\n\
+\n\
+async fn root() -> MessageResponse {\n\
+    MessageResponse::success(\"Tideway is running\")\n\
+}\n"
+        .to_string()
+}
+
 /// Generate config.rs content
 fn generate_config_rs(modules: &DetectedModules, args: &InitArgs) -> String {
     let mut fields = vec![
@@ -450,6 +533,10 @@ fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
             path.display()
         ));
         return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
