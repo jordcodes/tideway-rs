@@ -247,7 +247,10 @@ fn normalize_features(features: &[String]) -> BTreeSet<String> {
 
 fn needs_env_from_args(args: &NewArgs) -> bool {
     let features = normalize_features(&args.features);
-    features.contains("auth") || features.contains("database") || args.with_config
+    features.contains("auth")
+        || features.contains("database")
+        || args.with_config
+        || args.with_env
 }
 
 fn to_pascal_case(s: &str) -> String {

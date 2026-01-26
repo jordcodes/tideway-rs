@@ -15,6 +15,7 @@ fn test_new_command_generates_starter_files() {
         with_ci: false,
         no_prompt: true,
         summary: true,
+        with_env: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -41,6 +42,7 @@ fn test_new_command_includes_features_and_env() {
         with_ci: false,
         no_prompt: true,
         summary: true,
+        with_env: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -75,6 +77,7 @@ fn test_new_command_compiles_with_features_smoke() {
         with_ci: false,
         no_prompt: true,
         summary: true,
+        with_env: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -106,6 +109,7 @@ fn test_new_command_with_config() {
         with_ci: false,
         no_prompt: true,
         summary: true,
+        with_env: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -130,6 +134,7 @@ fn test_new_command_with_docker() {
         with_ci: false,
         no_prompt: true,
         summary: true,
+        with_env: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -152,6 +157,7 @@ fn test_new_command_with_ci() {
         with_ci: true,
         no_prompt: true,
         summary: true,
+        with_env: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -174,6 +180,7 @@ fn test_new_command_prints_summary() {
         with_ci: false,
         no_prompt: true,
         summary: true,
+        with_env: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -186,6 +193,29 @@ fn test_new_command_prints_summary() {
         "expected src/main.rs in file list, got {:?}",
         files
     );
+}
+
+#[test]
+fn test_new_command_with_env() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: "my_app".to_string(),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: true,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    assert!(project_dir.join(".env.example").exists());
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

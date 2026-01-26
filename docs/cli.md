@@ -44,6 +44,12 @@ Hide the generated file summary:
 tideway new my_app --summary false
 ```
 
+Always generate `.env.example`:
+
+```bash
+tideway new my_app --with-env
+```
+
 ### `tideway init`
 
 Scan your existing project and generate `main.rs` wiring.

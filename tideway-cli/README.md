@@ -27,6 +27,7 @@ Options:
 - `--with-ci` - Generate GitHub Actions CI workflow
 - `--no-prompt` - Skip interactive prompts
 - `--summary` - Print generated file summary
+- `--with-env` - Always generate .env.example
 - `--path` - Output directory (default: project name)
 - `--force` - Overwrite existing files
 

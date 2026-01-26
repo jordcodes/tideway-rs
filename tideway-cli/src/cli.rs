@@ -65,6 +65,10 @@ pub struct NewArgs {
     #[arg(long, default_value = "true")]
     pub summary: bool,
 
+    /// Always generate .env.example
+    #[arg(long, default_value = "false")]
+    pub with_env: bool,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,
