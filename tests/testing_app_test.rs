@@ -86,3 +86,24 @@ async fn test_auth_test_app_sets_bearer() {
         .assert_ok()
         .assert_header("x-auth", "Bearer test-token");
 }
+
+#[tokio::test]
+async fn test_post_json_helper() {
+    async fn echo(
+        axum::Json(payload): axum::Json<serde_json::Value>,
+    ) -> axum::Json<serde_json::Value> {
+        axum::Json(payload)
+    }
+
+    let app = App::new().merge_router(Router::new().route("/echo", axum::routing::post(echo)));
+    let test_app = TestApp::new(app);
+
+    let response = test_app
+        .post_json("/echo", &serde_json::json!({"ok": true}))
+        .send()
+        .await
+        .assert_json_ok();
+
+    let body = response.json_value().await;
+    assert_eq!(body["ok"], serde_json::json!(true));
+}

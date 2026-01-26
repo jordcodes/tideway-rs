@@ -56,6 +56,13 @@
 //! let api = test_app.auth("token");
 //! api.get("/api/me").send().await.assert_ok();
 //! ```
+//!
+//! JSON helper:
+//!
+//! ```rust,ignore
+//! let api = test_app.auth("token");
+//! api.post_json("/api/items", &payload).send().await.assert_json_ok();
+//! ```
 
 #[cfg(feature = "database")]
 mod database;

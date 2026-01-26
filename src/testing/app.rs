@@ -51,6 +51,10 @@ impl TestApp {
         Scenario::new(self.router.clone()).method(Method::POST).uri(uri)
     }
 
+    pub fn post_json<T: serde::Serialize>(&self, uri: &str, body: &T) -> Scenario {
+        self.post(uri).json(body)
+    }
+
     pub fn put(&self, uri: &str) -> Scenario {
         Scenario::new(self.router.clone()).method(Method::PUT).uri(uri)
     }
@@ -77,6 +81,10 @@ impl AuthTestApp {
             .method(Method::POST)
             .uri(uri)
             .with_auth(&self.token)
+    }
+
+    pub fn post_json<T: serde::Serialize>(&self, uri: &str, body: &T) -> Scenario {
+        self.post(uri).json(body)
     }
 
     pub fn put(&self, uri: &str) -> Scenario {
