@@ -66,6 +66,18 @@ mod tests {
     use super::*;
     use utoipa::OpenApi;
 
+    mod merge_docs {
+        use utoipa::OpenApi;
+
+        #[derive(OpenApi)]
+        #[openapi(paths())]
+        pub struct DocOne;
+
+        #[derive(OpenApi)]
+        #[openapi(paths())]
+        pub struct DocTwo;
+    }
+
     #[derive(utoipa::ToSchema)]
     struct DummySchema;
 
@@ -104,6 +116,12 @@ mod tests {
     #[test]
     fn test_openapi_components_macro() {
         let openapi = ComponentsDoc::openapi();
+        assert!(!openapi.info.title.is_empty());
+    }
+
+    #[test]
+    fn test_openapi_merge_module_macro() {
+        let openapi = crate::openapi_merge_module!(merge_docs, DocOne, DocTwo);
         assert!(!openapi.info.title.is_empty());
     }
 }
@@ -202,4 +220,21 @@ macro_rules! openapi_merge {
         $(doc.merge(<$rest as utoipa::OpenApi>::openapi());)+
         doc
     }};
+}
+
+/// Merge multiple docs from the same module without repeating the module path.
+///
+/// # Example
+/// ```ignore
+/// let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc, BillingDoc);
+/// ```
+#[cfg(feature = "openapi")]
+#[macro_export]
+macro_rules! openapi_merge_module {
+    ($module:ident, $first:ident $(, $rest:ident)* $(,)?) => {
+        $crate::openapi_merge!(
+            $module::$first
+            $(, $module::$rest)*
+        )
+    };
 }

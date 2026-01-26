@@ -138,6 +138,12 @@ If you already have `OpenApi` values, you can merge them directly:
 let openapi = tideway::openapi::merge_openapi(vec![doc_a, doc_b]);
 ```
 
+To reduce repetition, you can merge docs from the same module with:
+
+```rust
+let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc, BillingDoc);
+```
+
 ## Adding Documentation to Your Endpoints
 
 ### 1. Add Schema Derives to Your Types
