@@ -19,8 +19,14 @@ tideway new my_app
 ```
 
 Options:
+- `--features` - Tideway features to enable (comma-separated)
 - `--path` - Output directory (default: project name)
 - `--force` - Overwrite existing files
+
+Example:
+```bash
+tideway new my_app --features auth,database
+```
 
 ### `tideway doctor`
 

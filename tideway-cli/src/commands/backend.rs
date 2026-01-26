@@ -68,6 +68,10 @@ pub fn run(args: BackendArgs) -> Result<()> {
         project_name_pascal: to_pascal_case(&args.name),
         has_organizations,
         database: args.database.clone(),
+        tideway_features: Vec::new(),
+        has_tideway_features: false,
+        has_auth_feature: false,
+        has_database_feature: false,
     };
 
     // Initialize template engine

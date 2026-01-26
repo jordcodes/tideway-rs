@@ -41,6 +41,10 @@ pub struct NewArgs {
     /// Project name (used for Cargo.toml)
     pub name: String,
 
+    /// Tideway features to enable (comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    pub features: Vec<String>,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,

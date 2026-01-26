@@ -1,0 +1,14 @@
+# Server
+TIDEWAY_HOST=0.0.0.0
+TIDEWAY_PORT=8000
+
+{{#if has_database_feature}}
+# Database
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/my_app
+
+{{/if}}
+{{#if has_auth_feature}}
+# Auth
+JWT_SECRET=your-super-secret-jwt-key-change-in-production
+
+{{/if}}
