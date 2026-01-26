@@ -264,6 +264,21 @@ async fn test_register_modules_macro_with_optional() {
 }
 
 #[tokio::test]
+async fn test_register_optional_modules_macro() {
+    let optional_module = Some(OptionalModule);
+    let app = tideway::register_optional_modules!(
+        App::new(),
+        optional_module
+    )
+    .into_router();
+
+    test_get(app, "/api/optional")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
 async fn test_register_modules_iter_on_app() {
     let modules = vec![
         IterableModule {

@@ -236,6 +236,25 @@ macro_rules! register_modules {
         app
     }};
 }
+
+/// Register optional modules with a Tideway `App`.
+///
+/// # Example
+/// ```ignore
+/// let app = tideway::register_optional_modules!(
+///     App::new(),
+///     optional_module,
+///     another_optional,
+/// );
+/// ```
+#[macro_export]
+macro_rules! register_optional_modules {
+    ($app:expr, $($optional:expr),+ $(,)?) => {{
+        let mut app = $app;
+        $(app = app.register_optional_module($optional);)+
+        app
+    }};
+}
 #[cfg(feature = "database")]
 pub use traits::database::{DatabaseConnection, DatabasePool};
 #[cfg(feature = "database")]

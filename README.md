@@ -222,6 +222,15 @@ let app = tideway::register_modules!(
 If you already have a homogeneous list of modules (same type), you can also use
 `App::register_modules(modules)` with any iterator.
 
+For optional-only modules, you can use the helper macro:
+
+```rust
+let app = tideway::register_optional_modules!(
+    App::new(),
+    optional_module,
+);
+```
+
 ### 4. Error Handling
 
 Use `TidewayError` for consistent error responses:

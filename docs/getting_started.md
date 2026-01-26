@@ -81,6 +81,15 @@ let app = tideway::register_modules!(
 );
 ```
 
+For optional-only modules:
+
+```rust
+let app = tideway::register_optional_modules!(
+    App::new(),
+    optional_module
+);
+```
+
 ## 4) Add database access (optional)
 
 If you enabled `database`, wire a SeaORM pool into the app context:
