@@ -270,8 +270,91 @@ macro_rules! register_optional_modules {
 ///     ]
 /// );
 /// ```
+///
+/// You can also group multiple methods for the same path:
+/// ```ignore
+/// tideway::module!(
+///     UsersModule,
+///     prefix = "/api",
+///     routes = [
+///         ("/users", get => list_users, post => create_user),
+///     ]
+/// );
+/// ```
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tideway_method_router {
+    ($method:ident => $handler:expr $(, $more_method:ident => $more_handler:expr)* $(,)?) => {{
+        let router = axum::routing::$method($handler);
+        $(let router = router.$more_method($more_handler);)*
+        router
+    }};
+}
+
 #[macro_export]
 macro_rules! module {
+    ($(#[$attr:meta])*, $name:ident, prefix = $prefix:expr, routes = [ $(($path:expr, $( $method:ident => $handler:expr ),+ $(,)?)),+ $(,)? ]) => {
+        $(#[$attr])*
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, $crate::__tideway_method_router!($($method => $handler),+));
+                )+
+                router
+            }
+
+            fn prefix(&self) -> Option<&str> {
+                Some($prefix)
+            }
+        }
+    };
+    ($name:ident, prefix = $prefix:expr, routes = [ $(($path:expr, $( $method:ident => $handler:expr ),+ $(,)?)),+ $(,)? ]) => {
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, $crate::__tideway_method_router!($($method => $handler),+));
+                )+
+                router
+            }
+
+            fn prefix(&self) -> Option<&str> {
+                Some($prefix)
+            }
+        }
+    };
+    ($(#[$attr:meta])*, $name:ident, routes = [ $(($path:expr, $( $method:ident => $handler:expr ),+ $(,)?)),+ $(,)? ]) => {
+        $(#[$attr])*
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, $crate::__tideway_method_router!($($method => $handler),+));
+                )+
+                router
+            }
+        }
+    };
+    ($name:ident, routes = [ $(($path:expr, $( $method:ident => $handler:expr ),+ $(,)?)),+ $(,)? ]) => {
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, $crate::__tideway_method_router!($($method => $handler),+));
+                )+
+                router
+            }
+        }
+    };
     ($(#[$attr:meta])*, $name:ident, prefix = $prefix:expr, routes = [ $(($method:ident, $path:expr, $handler:expr)),+ $(,)? ]) => {
         $(#[$attr])*
         pub struct $name;

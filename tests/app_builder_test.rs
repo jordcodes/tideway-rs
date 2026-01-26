@@ -3,7 +3,7 @@
 use axum::{routing::get, Json, Router};
 use serde_json::json;
 use tideway::{App, AppContext, RouteModule};
-use tideway::testing::get as test_get;
+use tideway::testing::{get as test_get, post as test_post};
 use axum::http::HeaderValue;
 
 // A module with a prefix
@@ -83,6 +83,14 @@ async fn module_hello() -> Json<serde_json::Value> {
     Json(json!({"message": "hello"}))
 }
 
+async fn module_multi_get() -> Json<serde_json::Value> {
+    Json(json!({"message": "multi get"}))
+}
+
+async fn module_multi_post() -> Json<serde_json::Value> {
+    Json(json!({"message": "multi post"}))
+}
+
 tideway::module!(
     MacroModule,
     prefix = "/api",
@@ -91,6 +99,13 @@ tideway::module!(
     ]
 );
 
+tideway::module!(
+    MacroGroupedModule,
+    prefix = "/api",
+    routes = [
+        ("/multi", get => module_multi_get, post => module_multi_post),
+    ]
+);
 #[tokio::test]
 async fn test_app_builder_respects_module_prefix() {
     let app = App::builder()
@@ -261,6 +276,23 @@ async fn test_module_macro() {
         .into_router();
 
     test_get(app, "/api/macro")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
+async fn test_module_macro_grouped_routes() {
+    let app = App::new()
+        .register_module(MacroGroupedModule)
+        .into_router();
+
+    test_get(app.clone(), "/api/multi")
+        .execute()
+        .await
+        .assert_ok();
+
+    test_post(app, "/api/multi")
         .execute()
         .await
         .assert_ok();
