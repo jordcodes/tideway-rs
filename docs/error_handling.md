@@ -33,6 +33,36 @@ async fn validate_input(data: &str) -> Result<()> {
 }
 ```
 
+### Guarding Preconditions with `ensure!`
+
+Use `ensure!` for concise, readable guards. It returns early when the condition
+is false, like `return Err(...)`.
+
+```rust
+use tideway::{ensure, Result, TidewayError};
+
+async fn delete_user(current_user: &User, target_id: uuid::Uuid) -> Result<()> {
+    // Fast guard with a default 400 Bad Request.
+    ensure!(current_user.id != target_id, "Cannot delete your own account");
+    Ok(())
+}
+```
+
+For auth/permission checks, pass an explicit error:
+
+```rust
+use tideway::{ensure, Result, TidewayError};
+
+fn require_admin(user: &User) -> Result<()> {
+    ensure!(user.is_admin, TidewayError::forbidden("Admin access required"));
+    Ok(())
+}
+```
+
+**Why two forms?**
+- `ensure!(condition, "message")` returns `TidewayError::bad_request(...)`
+- `ensure!(condition, error_expr)` returns `error_expr.into()`
+
 ### Error Types
 
 ```rust

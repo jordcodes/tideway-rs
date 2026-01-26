@@ -281,6 +281,16 @@ async fn get_user(id: u64) -> Result<Json<User>> {
 - `TidewayError::internal(msg)` - 500 Internal Server Error
 - `TidewayError::service_unavailable(msg)` - 503 Service Unavailable
 
+**Quick Guards with `ensure!`:**
+```rust
+use tideway::{ensure, Result, TidewayError};
+
+fn require_admin(user: &User) -> Result<()> {
+    ensure!(user.is_admin, TidewayError::forbidden("Admin access required"));
+    Ok(())
+}
+```
+
 **Enhanced Error Responses:**
 All errors automatically return JSON responses with:
 - Error message

@@ -156,6 +156,7 @@ pub mod traits;
 pub use testing::{TestFactory, TestUser, fake};
 pub mod dev;
 mod utils;
+pub use utils::ensure;
 #[cfg(feature = "validation")]
 pub mod validation;
 #[cfg(all(not(feature = "validation"), feature = "feature-gate-errors"))]
