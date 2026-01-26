@@ -18,11 +18,14 @@ Create a minimal Tideway app with a starter route and sensible defaults.
 tideway new my_app
 ```
 
+If you run it without extra flags, it will prompt for common options.
+
 Options:
 - `--features` - Tideway features to enable (comma-separated)
 - `--with-config` - Generate config.rs and error.rs starter files
 - `--with-docker` - Generate docker-compose.yml for local Postgres
 - `--with-ci` - Generate GitHub Actions CI workflow
+- `--no-prompt` - Skip interactive prompts
 - `--path` - Output directory (default: project name)
 - `--force` - Overwrite existing files
 

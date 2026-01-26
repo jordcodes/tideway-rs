@@ -18,6 +18,8 @@ Create a new starter project.
 tideway new my_app
 ```
 
+If you run it without extra flags, it will prompt for options.
+
 With features and local Postgres:
 
 ```bash
@@ -28,6 +30,12 @@ With config scaffolding and CI:
 
 ```bash
 tideway new my_app --with-config --with-ci
+```
+
+Skip prompts in CI:
+
+```bash
+tideway new my_app --no-prompt
 ```
 
 ### `tideway init`

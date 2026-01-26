@@ -2,6 +2,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
+use dialoguer::{console::Term, theme::ColorfulTheme, Confirm, MultiSelect};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,11 @@ use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{print_info, print_success, print_warning};
 
 /// Run the new command
-pub fn run(args: NewArgs) -> Result<()> {
+pub fn run(mut args: NewArgs) -> Result<()> {
+    if should_prompt(&args) {
+        prompt_for_options(&mut args)?;
+    }
+
     let dir_name = args.path.clone().unwrap_or_else(|| args.name.clone());
     let project_name = normalize_project_name(&args.name);
     let project_name_pascal = to_pascal_case(&project_name);
@@ -254,4 +259,61 @@ fn to_pascal_case(s: &str) -> String {
             }
         })
         .collect()
+}
+
+fn should_prompt(args: &NewArgs) -> bool {
+    args.features.is_empty()
+        && !args.with_config
+        && !args.with_docker
+        && !args.with_ci
+        && !args.no_prompt
+        && Term::stdout().is_term()
+}
+
+fn prompt_for_options(args: &mut NewArgs) -> Result<()> {
+    let theme = ColorfulTheme::default();
+
+    let options = [
+        "auth",
+        "database",
+        "cache",
+        "sessions",
+        "jobs",
+        "email",
+        "websocket",
+        "metrics",
+        "validation",
+        "openapi",
+    ];
+
+    let selections = MultiSelect::with_theme(&theme)
+        .with_prompt("Select Tideway features (space to select)")
+        .items(&options)
+        .interact()
+        .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+    args.features = selections
+        .iter()
+        .map(|idx| options[*idx].to_string())
+        .collect();
+
+    args.with_config = Confirm::with_theme(&theme)
+        .with_prompt("Generate config.rs and error.rs?")
+        .default(false)
+        .interact()
+        .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+    args.with_docker = Confirm::with_theme(&theme)
+        .with_prompt("Generate docker-compose.yml for Postgres?")
+        .default(false)
+        .interact()
+        .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+    args.with_ci = Confirm::with_theme(&theme)
+        .with_prompt("Generate GitHub Actions CI workflow?")
+        .default(false)
+        .interact()
+        .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+    Ok(())
 }

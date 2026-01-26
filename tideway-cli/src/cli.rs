@@ -57,6 +57,10 @@ pub struct NewArgs {
     #[arg(long, default_value = "false")]
     pub with_ci: bool,
 
+    /// Skip interactive prompts (use flags instead)
+    #[arg(long, default_value = "false")]
+    pub no_prompt: bool,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,
