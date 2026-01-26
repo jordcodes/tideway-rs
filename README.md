@@ -158,6 +158,19 @@ When using Tideway as a dependency, import from the `tideway` crate:
 use tideway::{App, ConfigBuilder, RouteModule, Result, TidewayError};
 ```
 
+You can define modules with less boilerplate using the `module!` macro:
+
+```rust
+tideway::module!(
+    UsersModule,
+    prefix = "/api",
+    routes = [
+        (get, "/users", list_users),
+        (post, "/users", create_user),
+    ]
+);
+```
+
 ### 2. Configuration
 
 Configure your application with environment variables or code:

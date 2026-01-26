@@ -53,6 +53,19 @@ async fn list_users() -> MessageResponse {
 }
 ```
 
+If you prefer less boilerplate, you can use the `module!` macro:
+
+```rust
+tideway::module!(
+    UsersModule,
+    prefix = "/api",
+    routes = [
+        (get, "/users", list_users),
+        (get, "/users/:id", get_user),
+    ]
+);
+```
+
 Wire it in `src/main.rs`:
 
 ```rust
