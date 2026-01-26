@@ -801,26 +801,28 @@ See [`docs/database_traits.md`](docs/database_traits.md), [`docs/caching.md`](do
 
 ## Testing
 
-Tideway applications are easy to test:
+Tideway applications are easy to test, and include Alba-style helpers:
 
 ```rust
-use axum::{body::Body, http::Request};
-use tower::ServiceExt;
+use tideway::testing::{get, post};
+use tideway::testing::fake;
 
 #[tokio::test]
-async fn test_health_endpoint() {
-    let app = Router::new().merge(health::health_routes());
+async fn test_create_user() {
+    let app = create_app();
 
-    let response = app.oneshot(
-        Request::builder()
-            .uri("/health")
-            .body(Body::empty())
-            .unwrap(),
-    ).await.unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
+    post(app, "/api/users")
+        .with_json(&serde_json::json!({
+            "email": fake::email(),
+            "name": fake::name(),
+        }))
+        .execute()
+        .await
+        .assert_status(201);
 }
 ```
+
+See [`docs/testing.md`](docs/testing.md) and [`examples/testing_example.rs`](examples/testing_example.rs) for more patterns.
 
 Run tests:
 
