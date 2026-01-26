@@ -65,6 +65,12 @@ where
                 })?
                 .clone();
 
+            // Reuse cached user if already loaded by middleware
+            if let Some(user) = parts.extensions.get::<P::User>().cloned() {
+                provider.validate_user(&user).await?;
+                return Ok(AuthUser(user));
+            }
+
             // Test bypass: Check for X-Test-User header
             #[cfg(feature = "test-auth-bypass")]
             {
@@ -134,6 +140,14 @@ where
                 Some(p) => p.clone(),
                 None => return Ok(OptionalAuth(None)),
             };
+
+            // Reuse cached user if already loaded by middleware
+            if let Some(user) = parts.extensions.get::<P::User>().cloned() {
+                if provider.validate_user(&user).await.is_ok() {
+                    return Ok(OptionalAuth(Some(user)));
+                }
+                return Ok(OptionalAuth(None));
+            }
 
             // Try to extract token
             let token = match TokenExtractor::from_header(parts) {
@@ -259,6 +273,15 @@ where
                     TidewayError::internal("Auth provider not found in request extensions")
                 })?
                 .clone();
+
+            // Reuse cached user if already loaded by middleware
+            if let Some(user) = parts.extensions.get::<P::User>().cloned() {
+                provider.validate_user(&user).await?;
+                if !user.is_admin() {
+                    return Err(TidewayError::forbidden("Admin privileges required"));
+                }
+                return Ok(RequireAdmin(user));
+            }
 
             // Extract token from Authorization header
             let token = TokenExtractor::from_header(parts)?;
