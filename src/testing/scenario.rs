@@ -203,9 +203,30 @@ impl ScenarioAssert {
             .headers()
             .get(key)
             .unwrap_or_else(|| panic!("Header '{}' not found", key))
-            .to_str()
-            .unwrap();
+        .to_str()
+        .unwrap();
         assert_eq!(value, expected, "Header '{}' value mismatch", key);
+        self
+    }
+
+    /// Assert a header exists
+    pub fn assert_header_exists(self, key: &str) -> Self {
+        self.response
+            .headers()
+            .get(key)
+            .unwrap_or_else(|| panic!("Header '{}' not found", key));
+        self
+    }
+
+    /// Assert status is one of the expected codes
+    pub fn assert_status_any(self, expected: &[StatusCode]) -> Self {
+        let status = self.response.status();
+        assert!(
+            expected.contains(&status),
+            "Expected status in {:?}, got {}",
+            expected,
+            status
+        );
         self
     }
 
@@ -472,5 +493,25 @@ mod tests {
         response
             .assert_contains("Hello")
             .await;
+    }
+
+    #[tokio::test]
+    async fn test_assert_status_any_and_header_exists() {
+        async fn handler() -> axum::response::Response {
+            let mut response = axum::response::Response::new(Body::from("ok"));
+            response
+                .headers_mut()
+                .insert("x-test", "1".parse().unwrap());
+            *response.status_mut() = StatusCode::OK;
+            response
+        }
+
+        let app = Router::new().route("/test", axum::routing::get(handler));
+
+        get(app, "/test")
+            .send()
+            .await
+            .assert_status_any(&[StatusCode::OK, StatusCode::CREATED])
+            .assert_header_exists("x-test");
     }
 }
