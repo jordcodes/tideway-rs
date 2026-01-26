@@ -47,11 +47,53 @@ tideway = { version = "0.7", features = ["auth"] }
 "#;
 
     fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    fs::write(
+        project_dir.join(".env"),
+        "JWT_SECRET=dev-secret\n",
+    )
+    .expect("write env");
 
     let report = analyze_project(project_dir).expect("analyze project");
     assert!(
         report.warnings.is_empty(),
         "expected no warnings, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn test_doctor_env_checks() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/auth")).expect("create src/auth");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["auth", "database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    std::fs::write(
+        project_dir.join(".env.example"),
+        "DATABASE_URL=postgres://localhost/my_app\n",
+    )
+    .expect("write env example");
+
+    let report = analyze_project(project_dir).expect("analyze project");
+    assert!(
+        report.warnings.iter().any(|w| w.contains("JWT_SECRET")),
+        "expected JWT_SECRET warning, got {:?}",
+        report.warnings
+    );
+    assert!(
+        report.warnings.iter().any(|w| w.contains("DATABASE_URL")),
+        "expected DATABASE_URL warning, got {:?}",
         report.warnings
     );
 }

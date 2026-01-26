@@ -68,6 +68,10 @@ pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
         }
     }
 
+    if !tideway_dependency_present(&cargo_toml) {
+        report.warnings.push("Cargo.toml is missing a tideway dependency".to_string());
+    }
+
     if !tideway_features.is_empty() && cargo_toml_path.exists() {
         report.info.push(format!(
             "Tideway features enabled: {}",
@@ -77,6 +81,36 @@ pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+
+    let env_file = project_dir.join(".env");
+    let env_example_file = project_dir.join(".env.example");
+    let env_vars = read_env_vars(&env_file).unwrap_or_default();
+    let env_example_vars = read_env_vars(&env_example_file).unwrap_or_default();
+
+    let needs_database = tideway_features.contains("database") || detected.contains("database");
+    let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
+
+    if needs_database {
+        check_env_var(
+            "DATABASE_URL",
+            &env_file,
+            &env_example_file,
+            &env_vars,
+            &env_example_vars,
+            &mut report,
+        );
+    }
+
+    if needs_auth {
+        check_env_var(
+            "JWT_SECRET",
+            &env_file,
+            &env_example_file,
+            &env_vars,
+            &env_example_vars,
+            &mut report,
+        );
     }
 
     Ok(report)
@@ -115,6 +149,13 @@ fn tideway_features(cargo_toml: &toml::Value) -> BTreeSet<String> {
     features
 }
 
+fn tideway_dependency_present(cargo_toml: &toml::Value) -> bool {
+    cargo_toml
+        .get("dependencies")
+        .and_then(|deps| deps.get("tideway"))
+        .is_some()
+}
+
 fn detect_modules(src_dir: &Path) -> BTreeSet<String> {
     let mut modules = BTreeSet::new();
 
@@ -148,4 +189,61 @@ fn module_to_feature(module: &str) -> &str {
         "session" => "sessions",
         other => other,
     }
+}
+
+fn read_env_vars(path: &Path) -> Result<BTreeSet<String>> {
+    let contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    Ok(parse_env_vars(&contents))
+}
+
+fn parse_env_vars(contents: &str) -> BTreeSet<String> {
+    let mut vars = BTreeSet::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, _)) = trimmed.split_once('=') {
+            let key = key.trim();
+            if !key.is_empty() {
+                vars.insert(key.to_string());
+            }
+        }
+    }
+    vars
+}
+
+fn check_env_var(
+    key: &str,
+    env_path: &Path,
+    env_example_path: &Path,
+    env_vars: &BTreeSet<String>,
+    env_example_vars: &BTreeSet<String>,
+    report: &mut DoctorReport,
+) {
+    if env_vars.contains(key) {
+        return;
+    }
+
+    if env_example_vars.contains(key) {
+        report.warnings.push(format!(
+            "{} missing in .env (found in .env.example) - copy .env.example and fill values",
+            key
+        ));
+        return;
+    }
+
+    if env_path.exists() || env_example_path.exists() {
+        report.warnings.push(format!(
+            "{} missing in .env and .env.example",
+            key
+        ));
+        return;
+    }
+
+    report.warnings.push(format!(
+        "{} missing - create .env.example (and .env) for local setup",
+        key
+    ));
 }
