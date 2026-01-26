@@ -14,6 +14,7 @@ fn test_new_command_generates_starter_files() {
         with_docker: false,
         with_ci: false,
         no_prompt: true,
+        summary: true,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -39,6 +40,7 @@ fn test_new_command_includes_features_and_env() {
         with_docker: false,
         with_ci: false,
         no_prompt: true,
+        summary: true,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -72,6 +74,7 @@ fn test_new_command_compiles_with_features_smoke() {
         with_docker: false,
         with_ci: false,
         no_prompt: true,
+        summary: true,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -102,6 +105,7 @@ fn test_new_command_with_config() {
         with_docker: false,
         with_ci: false,
         no_prompt: true,
+        summary: true,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -125,6 +129,7 @@ fn test_new_command_with_docker() {
         with_docker: true,
         with_ci: false,
         no_prompt: true,
+        summary: true,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -146,6 +151,7 @@ fn test_new_command_with_ci() {
         with_docker: false,
         with_ci: true,
         no_prompt: true,
+        summary: true,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -167,9 +173,12 @@ fn test_new_command_prints_summary() {
         with_docker: false,
         with_ci: false,
         no_prompt: true,
+        summary: true,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
+
+    assert!(args.summary);
 
     let files = tideway_cli::commands::new::expected_files(&args);
     assert!(

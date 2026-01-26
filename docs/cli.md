@@ -38,6 +38,12 @@ Skip prompts in CI:
 tideway new my_app --no-prompt
 ```
 
+Hide the generated file summary:
+
+```bash
+tideway new my_app --summary false
+```
+
 ### `tideway init`
 
 Scan your existing project and generate `main.rs` wiring.

@@ -81,9 +81,11 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         ));
     }
 
-    println!("\n{}", "Generated files:".yellow().bold());
-    for path in &created {
-        println!("  - {}", path);
+    if args.summary {
+        println!("\n{}", "Generated files:".yellow().bold());
+        for path in &created {
+            println!("  - {}", path);
+        }
     }
 
     println!("\n{}", "Next steps:".yellow().bold());

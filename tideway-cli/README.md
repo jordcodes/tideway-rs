@@ -26,6 +26,7 @@ Options:
 - `--with-docker` - Generate docker-compose.yml for local Postgres
 - `--with-ci` - Generate GitHub Actions CI workflow
 - `--no-prompt` - Skip interactive prompts
+- `--summary` - Print generated file summary
 - `--path` - Output directory (default: project name)
 - `--force` - Overwrite existing files
 

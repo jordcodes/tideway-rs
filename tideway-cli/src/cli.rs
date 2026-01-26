@@ -61,6 +61,10 @@ pub struct NewArgs {
     #[arg(long, default_value = "false")]
     pub no_prompt: bool,
 
+    /// Print a summary of generated files
+    #[arg(long, default_value = "true")]
+    pub summary: bool,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,
