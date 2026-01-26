@@ -37,6 +37,7 @@ pub fn run(args: NewArgs) -> Result<()> {
     fs::create_dir_all(&target_dir)
         .with_context(|| format!("Failed to create {}", target_dir.display()))?;
 
+    let needs_arc = has_auth_feature || has_database_feature;
     let context = BackendTemplateContext {
         project_name: project_name.clone(),
         project_name_pascal,
@@ -46,6 +47,7 @@ pub fn run(args: NewArgs) -> Result<()> {
         has_tideway_features,
         has_auth_feature,
         has_database_feature,
+        needs_arc,
     };
     let engine = BackendTemplateEngine::new(context)?;
 

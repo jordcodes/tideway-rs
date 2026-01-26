@@ -1,6 +1,15 @@
 //! {{project_name_pascal}} API server.
 
 use tideway::{init_tracing, App};
+{{#if needs_arc}}
+use std::sync::Arc;
+{{/if}}
+{{#if has_database_feature}}
+use tideway::{AppContext, SeaOrmPool};
+{{/if}}
+{{#if has_auth_feature}}
+use tideway::auth::{JwtIssuer, JwtIssuerConfig};
+{{/if}}
 
 mod routes;
 
@@ -8,7 +17,29 @@ mod routes;
 async fn main() -> Result<(), std::io::Error> {
     init_tracing();
 
+{{#if has_database_feature}}
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");
+    let db = sea_orm::Database::connect(&database_url)
+        .await
+        .expect("Failed to connect to database");
+{{/if}}
+
+{{#if has_auth_feature}}
+    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is not set");
+    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(
+        &jwt_secret,
+        "{{project_name}}",
+    )).expect("Failed to create JWT issuer"));
+{{/if}}
+
     let app = App::new()
+{{#if has_database_feature}}
+        .with_context(
+            AppContext::builder()
+                .with_database(Arc::new(SeaOrmPool::new(db, database_url)))
+                .build()
+        )
+{{/if}}
         .register_module(routes::ApiModule);
 
     app.serve().await

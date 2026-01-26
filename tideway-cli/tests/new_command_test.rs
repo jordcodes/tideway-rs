@@ -42,8 +42,11 @@ fn test_new_command_includes_features_and_env() {
         &project_dir.join("Cargo.toml"),
         "features = [\"auth\", \"database\"]",
     );
+    assert_file_contains(&project_dir.join("Cargo.toml"), "sea-orm");
     assert_file_contains(&project_dir.join(".env.example"), "DATABASE_URL=");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_SECRET=");
+    assert_file_contains(&project_dir.join("src/main.rs"), "DATABASE_URL");
+    assert_file_contains(&project_dir.join("src/main.rs"), "JwtIssuer");
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

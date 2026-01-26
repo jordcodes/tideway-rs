@@ -132,6 +132,8 @@ pub struct BackendTemplateContext {
     pub has_auth_feature: bool,
     /// Whether database is requested (starter templates)
     pub has_database_feature: bool,
+    /// Whether starter templates need Arc
+    pub needs_arc: bool,
 }
 
 /// Template engine for backend scaffolding
