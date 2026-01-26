@@ -298,6 +298,25 @@ impl ScenarioAssert {
         }
     }
 
+    /// Assert JSON contains the expected subset
+    pub async fn assert_json_contains(self, expected: serde_json::Value) -> Self {
+        let bytes = axum::body::to_bytes(self.response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(
+            json_contains(&json, &expected),
+            "Expected JSON to contain {:?}, got {:?}",
+            expected,
+            json
+        );
+
+        Self {
+            response: axum::response::Response::new(Body::from(bytes)),
+        }
+    }
+
     /// Alias for assert_json_field - assert JSON path equals expected value
     pub async fn assert_json_path(self, path: &str, expected: serde_json::Value) -> Self {
         self.assert_json_field(path, expected).await
@@ -367,6 +386,25 @@ fn json_path_get<'a>(json: &'a serde_json::Value, path: &str) -> Option<&'a serd
     }
 
     Some(current)
+}
+
+fn json_contains(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    match (actual, expected) {
+        (serde_json::Value::Object(actual_map), serde_json::Value::Object(expected_map)) => {
+            expected_map.iter().all(|(key, expected_value)| {
+                actual_map
+                    .get(key)
+                    .map(|actual_value| json_contains(actual_value, expected_value))
+                    .unwrap_or(false)
+            })
+        }
+        (serde_json::Value::Array(actual_array), serde_json::Value::Array(expected_array)) => {
+            expected_array.iter().all(|expected_value| {
+                actual_array.iter().any(|actual_value| json_contains(actual_value, expected_value))
+            })
+        }
+        _ => actual == expected,
+    }
 }
 
 /// Convenience function to create a GET request scenario
@@ -492,6 +530,18 @@ mod tests {
 
         response
             .assert_contains("Hello")
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_assert_json_contains() {
+        let app = Router::new().route("/hello", axum_get(hello_handler));
+
+        get(app, "/hello")
+            .send()
+            .await
+            .assert_json_ok()
+            .assert_json_contains(json!({"message": "Hello, World!"}))
             .await;
     }
 
