@@ -7,12 +7,16 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::NewArgs;
+use crate::cli::{NewArgs, NewPreset};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{print_info, print_success, print_warning};
 
 /// Run the new command
 pub fn run(mut args: NewArgs) -> Result<()> {
+    if let Some(preset) = args.preset {
+        apply_preset(preset, &mut args);
+    }
+
     if should_prompt(&args) {
         prompt_for_options(&mut args)?;
     }
@@ -69,6 +73,9 @@ pub fn run(mut args: NewArgs) -> Result<()> {
 
     print_info(&format!("Project name: {}", project_name.green()));
     print_info(&format!("Location: {}", target_dir.display().to_string().yellow()));
+    if let Some(preset) = args.preset {
+        print_info(&format!("Preset: {}", preset_label(preset).green()));
+    }
     if has_tideway_features {
         print_info(&format!(
             "Tideway features: {}",
@@ -245,6 +252,33 @@ fn normalize_features(features: &[String]) -> BTreeSet<String> {
     normalized
 }
 
+fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
+    let preset_features: &[&str] = match preset {
+        NewPreset::Minimal => &[],
+        NewPreset::Api => &["auth", "database", "openapi", "validation"],
+    };
+
+    for feature in preset_features {
+        if !args.features.iter().any(|item| item.eq_ignore_ascii_case(feature)) {
+            args.features.push(feature.to_string());
+        }
+    }
+
+    if preset == NewPreset::Api {
+        args.with_config = true;
+        args.with_docker = true;
+        args.with_ci = true;
+        args.with_env = true;
+    }
+}
+
+fn preset_label(preset: NewPreset) -> &'static str {
+    match preset {
+        NewPreset::Minimal => "minimal",
+        NewPreset::Api => "api",
+    }
+}
+
 fn needs_env_from_args(args: &NewArgs) -> bool {
     let features = normalize_features(&args.features);
     features.contains("auth")
@@ -268,6 +302,7 @@ fn to_pascal_case(s: &str) -> String {
 
 fn should_prompt(args: &NewArgs) -> bool {
     args.features.is_empty()
+        && args.preset.is_none()
         && !args.with_config
         && !args.with_docker
         && !args.with_ci

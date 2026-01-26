@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use tideway_cli::cli::NewArgs;
+use tideway_cli::cli::{NewArgs, NewPreset};
 
 #[test]
 fn test_new_command_generates_starter_files() {
@@ -9,6 +9,7 @@ fn test_new_command_generates_starter_files() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: Vec::new(),
         with_config: false,
         with_docker: false,
@@ -36,6 +37,7 @@ fn test_new_command_includes_features_and_env() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: vec!["auth".to_string(), "database".to_string()],
         with_config: false,
         with_docker: false,
@@ -71,6 +73,7 @@ fn test_new_command_compiles_with_features_smoke() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: vec!["auth".to_string(), "database".to_string()],
         with_config: false,
         with_docker: false,
@@ -103,6 +106,7 @@ fn test_new_command_with_config() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: Vec::new(),
         with_config: true,
         with_docker: false,
@@ -128,6 +132,7 @@ fn test_new_command_with_docker() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: vec!["database".to_string()],
         with_config: false,
         with_docker: true,
@@ -151,6 +156,7 @@ fn test_new_command_with_ci() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: Vec::new(),
         with_config: false,
         with_docker: false,
@@ -174,6 +180,7 @@ fn test_new_command_prints_summary() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: Vec::new(),
         with_config: false,
         with_docker: false,
@@ -202,6 +209,7 @@ fn test_new_command_with_env() {
 
     let args = NewArgs {
         name: "my_app".to_string(),
+        preset: None,
         features: Vec::new(),
         with_config: false,
         with_docker: false,
@@ -215,6 +223,38 @@ fn test_new_command_with_env() {
 
     tideway_cli::commands::new::run(args).expect("run new command");
 
+    assert!(project_dir.join(".env.example").exists());
+}
+
+#[test]
+fn test_new_command_with_preset_api() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: "my_app".to_string(),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    let cargo_toml = project_dir.join("Cargo.toml");
+    assert_file_contains(&cargo_toml, "\"auth\"");
+    assert_file_contains(&cargo_toml, "\"database\"");
+    assert_file_contains(&cargo_toml, "\"openapi\"");
+    assert_file_contains(&cargo_toml, "\"validation\"");
+    assert!(project_dir.join("src/config.rs").exists());
+    assert!(project_dir.join("docker-compose.yml").exists());
+    assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join(".env.example").exists());
 }
 

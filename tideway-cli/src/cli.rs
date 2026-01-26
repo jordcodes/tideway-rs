@@ -41,6 +41,10 @@ pub struct NewArgs {
     /// Project name (used for Cargo.toml)
     pub name: String,
 
+    /// Preset to apply (preselect features and scaffolding)
+    #[arg(long, value_enum)]
+    pub preset: Option<NewPreset>,
+
     /// Tideway features to enable (comma-separated)
     #[arg(long, value_delimiter = ',')]
     pub features: Vec<String>,
@@ -76,6 +80,14 @@ pub struct NewArgs {
     /// Overwrite existing files without prompting
     #[arg(long, default_value = "false")]
     pub force: bool,
+}
+
+#[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
+pub enum NewPreset {
+    /// Minimal starter (no extra features)
+    Minimal,
+    /// API starter with auth, database, OpenAPI, and validation
+    Api,
 }
 
 #[derive(Parser, Debug)]

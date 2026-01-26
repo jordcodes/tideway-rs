@@ -20,6 +20,12 @@ tideway new my_app
 
 If you run it without extra flags, it will prompt for options.
 
+Use a preset to apply common defaults:
+
+```bash
+tideway new my_app --preset api
+```
+
 With features and local Postgres:
 
 ```bash
@@ -49,6 +55,10 @@ Always generate `.env.example`:
 ```bash
 tideway new my_app --with-env
 ```
+
+Available presets:
+- `minimal` - basic starter
+- `api` - auth + database + openapi + validation, plus config, docker, CI, and env
 
 ### `tideway init`
 

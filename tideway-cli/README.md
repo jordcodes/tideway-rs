@@ -21,6 +21,7 @@ tideway new my_app
 If you run it without extra flags, it will prompt for common options.
 
 Options:
+- `--preset` - Preset to apply (minimal, api)
 - `--features` - Tideway features to enable (comma-separated)
 - `--with-config` - Generate config.rs and error.rs starter files
 - `--with-docker` - Generate docker-compose.yml for local Postgres
@@ -34,6 +35,11 @@ Options:
 Example:
 ```bash
 tideway new my_app --features auth,database
+```
+
+Preset example:
+```bash
+tideway new my_app --preset api
 ```
 
 Docker example:

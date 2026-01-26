@@ -11,6 +11,12 @@ cd my_app
 cp .env.example .env
 ```
 
+Or use the API preset:
+
+```bash
+tideway new my_app --preset api
+```
+
 ## 2) Run the server
 
 ```bash

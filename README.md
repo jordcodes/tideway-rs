@@ -124,6 +124,12 @@ cd my_app
 cargo run
 ```
 
+Or apply the API preset:
+
+```bash
+tideway new my_app --preset api
+```
+
 ### Getting Started Guide
 
 Read the full walkthrough at `docs/getting_started.md`.
