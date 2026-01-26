@@ -96,7 +96,33 @@ let app = tideway::register_optional_modules!(
 );
 ```
 
-## 4) Add database access (optional)
+## 4) Add OpenAPI docs (optional)
+
+If you enable the `openapi` feature, you can define small docs per module and merge them:
+
+```rust
+#[cfg(feature = "openapi")]
+mod openapi_docs {
+    tideway::openapi_doc!(pub(crate) UsersDoc, paths(crate::routes::users::list_users));
+    tideway::openapi_components!(
+        pub(crate) ComponentsDoc,
+        schemas(crate::routes::users::UserResponse)
+    );
+}
+```
+
+Then wire them when OpenAPI is enabled:
+
+```rust
+#[cfg(feature = "openapi")]
+if config.openapi.enabled {
+    let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc, ComponentsDoc);
+    let openapi_router = tideway::openapi::create_openapi_router(openapi, &config.openapi);
+    app = app.merge_router(openapi_router);
+}
+```
+
+## 5) Add database access (optional)
 
 If you enabled `database`, wire a SeaORM pool into the app context:
 
