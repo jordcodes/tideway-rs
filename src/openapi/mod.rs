@@ -86,6 +86,15 @@ mod tests {
         let openapi = merge_openapi(Vec::new());
         assert_eq!(openapi.info.title, "tideway");
     }
+
+    #[test]
+    fn test_openapi_doc_macro() {
+        crate::openapi_doc!(DocOne, paths());
+        crate::openapi_doc!(pub(crate) DocTwo, paths());
+
+        let openapi = crate::openapi_merge!(DocOne, DocTwo);
+        assert!(!openapi.info.title.is_empty());
+    }
 }
 
 /// Helper macro to reduce boilerplate for common response patterns
@@ -113,6 +122,27 @@ macro_rules! openapi_path {
             ),
             security(("bearer_auth" = []))
         )]
+    };
+}
+
+/// Define a lightweight `OpenApi` doc struct with less boilerplate.
+///
+/// # Example
+/// ```ignore
+/// tideway::openapi_doc!(pub(crate) UsersDoc, paths(crate::routes::users::list_users));
+/// ```
+#[cfg(feature = "openapi")]
+#[macro_export]
+macro_rules! openapi_doc {
+    ($vis:vis $name:ident, $($openapi:tt)+) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi($($openapi)+)]
+        $vis struct $name;
+    };
+    ($name:ident, $($openapi:tt)+) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi($($openapi)+)]
+        struct $name;
     };
 }
 

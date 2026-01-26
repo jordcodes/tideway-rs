@@ -104,6 +104,15 @@ struct BillingDoc;
 let openapi = tideway::openapi_merge!(UsersDoc, BillingDoc);
 ```
 
+If you want less boilerplate, use `openapi_doc!`:
+
+```rust
+tideway::openapi_doc!(pub(crate) UsersDoc, paths(crate::routes::users::list_users));
+tideway::openapi_doc!(pub(crate) BillingDoc, paths(crate::routes::billing::get_invoices));
+
+let openapi = tideway::openapi_merge!(UsersDoc, BillingDoc);
+```
+
 If you already have `OpenApi` values, you can merge them directly:
 
 ```rust
