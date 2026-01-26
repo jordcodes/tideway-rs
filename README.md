@@ -124,6 +124,10 @@ cd my_app
 cargo run
 ```
 
+### Getting Started Guide
+
+Read the full walkthrough at `docs/getting_started.md`.
+
 ## Core Concepts
 
 ### 1. Application Structure
