@@ -75,6 +75,10 @@ pub struct DoctorArgs {
     /// Project directory to analyze
     #[arg(short, long, default_value = ".")]
     pub path: String,
+
+    /// Generate missing .env.example when possible
+    #[arg(long, default_value = "false")]
+    pub fix: bool,
 }
 
 #[derive(Parser, Debug)]

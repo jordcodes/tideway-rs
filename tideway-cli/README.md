@@ -59,6 +59,7 @@ tideway doctor
 
 Options:
 - `--path` - Project directory to analyze (default: current directory)
+- `--fix` - Generate .env.example when missing
 
 ### `tideway backend`
 

@@ -17,7 +17,7 @@ pub struct DoctorReport {
 
 pub fn run(args: DoctorArgs) -> Result<()> {
     let project_dir = PathBuf::from(args.path);
-    let report = analyze_project(&project_dir)?;
+    let report = analyze_project(&project_dir, args.fix)?;
 
     println!(
         "\n{} {}\n",
@@ -44,7 +44,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
+pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     let mut report = DoctorReport::default();
 
     let cargo_toml_path = project_dir.join("Cargo.toml");
@@ -94,6 +94,15 @@ pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
 
     let needs_database = tideway_features.contains("database") || detected.contains("database");
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
+
+    if fix {
+        if let Some(lines) = env_example_template(needs_database, needs_auth) {
+            if !env_example_file.exists() {
+                write_env_example(&env_example_file, &lines)?;
+                report.info.push("Created .env.example".to_string());
+            }
+        }
+    }
 
     if needs_database {
         let db_value = check_env_var(
@@ -312,4 +321,39 @@ fn validate_package_metadata(cargo_toml: &toml::Value) -> Option<String> {
         "Package metadata missing: {}",
         missing.join(", ")
     ))
+}
+
+fn env_example_template(needs_database: bool, needs_auth: bool) -> Option<Vec<String>> {
+    let mut lines = Vec::new();
+    if needs_database || needs_auth {
+        lines.push("# Server".to_string());
+        lines.push("TIDEWAY_HOST=0.0.0.0".to_string());
+        lines.push("TIDEWAY_PORT=8000".to_string());
+        lines.push(String::new());
+    }
+
+    if needs_database {
+        lines.push("# Database".to_string());
+        lines.push("DATABASE_URL=postgres://postgres:postgres@localhost:5432/my_app".to_string());
+        lines.push(String::new());
+    }
+
+    if needs_auth {
+        lines.push("# Auth".to_string());
+        lines.push("JWT_SECRET=your-super-secret-jwt-key-change-in-production".to_string());
+        lines.push(String::new());
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines)
+    }
+}
+
+fn write_env_example(path: &Path, lines: &[String]) -> Result<()> {
+    let contents = lines.join("\n");
+    fs::write(path, contents)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
 }

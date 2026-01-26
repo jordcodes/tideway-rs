@@ -21,7 +21,7 @@ tideway = "0.7"
 
     fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
 
-    let report = analyze_project(project_dir).expect("analyze project");
+    let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report.warnings.iter().any(|w| w.contains("auth")),
         "expected auth warning, got {:?}",
@@ -53,7 +53,7 @@ tideway = { version = "0.7", features = ["auth"] }
     )
     .expect("write env");
 
-    let report = analyze_project(project_dir).expect("analyze project");
+    let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report.warnings.is_empty(),
         "expected no warnings, got {:?}",
@@ -85,7 +85,7 @@ tideway = { version = "0.7", features = ["auth", "database"] }
     )
     .expect("write env example");
 
-    let report = analyze_project(project_dir).expect("analyze project");
+    let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report.warnings.iter().any(|w| w.contains("JWT_SECRET")),
         "expected JWT_SECRET warning, got {:?}",
@@ -118,7 +118,7 @@ tideway = { version = "0.7", features = ["database"] }
     std::fs::write(project_dir.join(".env"), "DATABASE_URL=not-a-url\n")
         .expect("write env");
 
-    let report = analyze_project(project_dir).expect("analyze project");
+    let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
             .warnings
@@ -146,7 +146,7 @@ tideway = "0.7"
 "#;
     std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
 
-    let report = analyze_project(project_dir).expect("analyze project");
+    let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
             .info
@@ -174,13 +174,42 @@ tideway = "0.7"
 "#;
     std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
 
-    let report = analyze_project(project_dir).expect("analyze project");
+    let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
             .info
             .iter()
             .any(|line| line.contains("Package metadata missing")),
         "expected metadata info, got {:?}",
+        report.info
+    );
+}
+
+#[test]
+fn test_doctor_fix_creates_env_example() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let report = analyze_project(project_dir, true).expect("analyze project");
+    assert!(
+        project_dir.join(".env.example").exists(),
+        "expected .env.example to be created"
+    );
+    assert!(
+        report.info.iter().any(|line| line.contains("Created .env.example")),
+        "expected creation info, got {:?}",
         report.info
     );
 }

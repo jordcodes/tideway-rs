@@ -60,6 +60,12 @@ Check for missing features and env vars.
 tideway doctor
 ```
 
+Fix missing `.env.example`:
+
+```bash
+tideway doctor --fix
+```
+
 ### `tideway backend`
 
 Generate a full backend preset.
