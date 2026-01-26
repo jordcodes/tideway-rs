@@ -8,7 +8,7 @@ fn test_new_command_generates_starter_files() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: Vec::new(),
         with_config: false,
@@ -36,7 +36,7 @@ fn test_new_command_includes_features_and_env() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: vec!["auth".to_string(), "database".to_string()],
         with_config: false,
@@ -72,7 +72,7 @@ fn test_new_command_compiles_with_features_smoke() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: vec!["auth".to_string(), "database".to_string()],
         with_config: false,
@@ -105,7 +105,7 @@ fn test_new_command_with_config() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: Vec::new(),
         with_config: true,
@@ -131,7 +131,7 @@ fn test_new_command_with_docker() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: vec!["database".to_string()],
         with_config: false,
@@ -155,7 +155,7 @@ fn test_new_command_with_ci() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: Vec::new(),
         with_config: false,
@@ -179,7 +179,7 @@ fn test_new_command_prints_summary() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: Vec::new(),
         with_config: false,
@@ -208,7 +208,7 @@ fn test_new_command_with_env() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: None,
         features: Vec::new(),
         with_config: false,
@@ -232,7 +232,7 @@ fn test_new_command_with_preset_api() {
     let project_dir = temp_dir.path().join("my_app");
 
     let args = NewArgs {
-        name: "my_app".to_string(),
+        name: Some("my_app".to_string()),
         preset: Some(NewPreset::Api),
         features: Vec::new(),
         with_config: false,
@@ -256,6 +256,25 @@ fn test_new_command_with_preset_api() {
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join(".env.example").exists());
+}
+
+#[test]
+fn test_new_command_with_preset_list() {
+    let args = NewArgs {
+        name: None,
+        preset: Some(NewPreset::List),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: None,
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

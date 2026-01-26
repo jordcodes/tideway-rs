@@ -42,6 +42,11 @@ Preset example:
 tideway new my_app --preset api
 ```
 
+List presets:
+```bash
+tideway new --preset list
+```
+
 Docker example:
 ```bash
 tideway new my_app --features database --with-docker

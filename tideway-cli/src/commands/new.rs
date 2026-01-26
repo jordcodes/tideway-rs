@@ -13,16 +13,26 @@ use crate::{print_info, print_success, print_warning};
 
 /// Run the new command
 pub fn run(mut args: NewArgs) -> Result<()> {
+    if let Some(NewPreset::List) = args.preset {
+        print_presets();
+        return Ok(());
+    }
+
     if let Some(preset) = args.preset {
         apply_preset(preset, &mut args);
     }
+
+    let name = args
+        .name
+        .clone()
+        .ok_or_else(|| anyhow!("Project name is required (e.g. `tideway new my_app`)"))?;
 
     if should_prompt(&args) {
         prompt_for_options(&mut args)?;
     }
 
-    let dir_name = args.path.clone().unwrap_or_else(|| args.name.clone());
-    let project_name = normalize_project_name(&args.name);
+    let dir_name = args.path.clone().unwrap_or_else(|| name.clone());
+    let project_name = normalize_project_name(&name);
     let project_name_pascal = to_pascal_case(&project_name);
     let features = normalize_features(&args.features);
     let has_auth_feature = features.contains("auth");
@@ -256,6 +266,7 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
     let preset_features: &[&str] = match preset {
         NewPreset::Minimal => &[],
         NewPreset::Api => &["auth", "database", "openapi", "validation"],
+        NewPreset::List => &[],
     };
 
     for feature in preset_features {
@@ -276,7 +287,14 @@ fn preset_label(preset: NewPreset) -> &'static str {
     match preset {
         NewPreset::Minimal => "minimal",
         NewPreset::Api => "api",
+        NewPreset::List => "list",
     }
+}
+
+fn print_presets() {
+    println!("Available presets:");
+    println!("  - minimal: basic starter (no extra features)");
+    println!("  - api: auth + database + openapi + validation, plus config, docker, CI, and env");
 }
 
 fn needs_env_from_args(args: &NewArgs) -> bool {

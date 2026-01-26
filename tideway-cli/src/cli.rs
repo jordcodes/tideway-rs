@@ -39,7 +39,8 @@ pub enum Commands {
 #[derive(Parser, Debug)]
 pub struct NewArgs {
     /// Project name (used for Cargo.toml)
-    pub name: String,
+    #[arg(value_name = "NAME")]
+    pub name: Option<String>,
 
     /// Preset to apply (preselect features and scaffolding)
     #[arg(long, value_enum)]
@@ -88,6 +89,8 @@ pub enum NewPreset {
     Minimal,
     /// API starter with auth, database, OpenAPI, and validation
     Api,
+    /// Print available presets
+    List,
 }
 
 #[derive(Parser, Debug)]

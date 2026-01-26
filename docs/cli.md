@@ -26,6 +26,12 @@ Use a preset to apply common defaults:
 tideway new my_app --preset api
 ```
 
+List presets:
+
+```bash
+tideway new --preset list
+```
+
 With features and local Postgres:
 
 ```bash
