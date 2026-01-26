@@ -136,6 +136,11 @@ impl Scenario {
         let response = self.app.oneshot(self.request).await.unwrap();
         ScenarioAssert { response }
     }
+
+    /// Alias for execute
+    pub async fn send(self) -> ScenarioAssert {
+        self.execute().await
+    }
 }
 
 /// Assertion builder for test responses
@@ -216,6 +221,11 @@ impl ScenarioAssert {
         self
     }
 
+    /// Assert status is OK and response is JSON.
+    pub fn assert_json_ok(self) -> Self {
+        self.assert_ok().assert_json()
+    }
+
     /// Get the response body as bytes
     pub async fn body_bytes(self) -> Vec<u8> {
         axum::body::to_bytes(self.response.into_body(), usize::MAX)
@@ -255,6 +265,11 @@ impl ScenarioAssert {
     /// Alias for assert_json_field - assert JSON path equals expected value
     pub async fn assert_json_path(self, path: &str, expected: serde_json::Value) -> Self {
         self.assert_json_field(path, expected).await
+    }
+
+    /// Shorthand for assert_json_path
+    pub async fn json_path_eq(self, path: &str, expected: serde_json::Value) -> Self {
+        self.assert_json_path(path, expected).await
     }
 
     /// Assert the response body contains the given text
@@ -362,10 +377,9 @@ mod tests {
         let app = Router::new().route("/hello", axum_get(hello_handler));
 
         let response = get(app, "/hello")
-            .execute()
+            .send()
             .await
-            .assert_ok()
-            .assert_json();
+            .assert_json_ok();
 
         let body: serde_json::Value = response.json().await;
         assert_eq!(body["message"], "Hello, World!");
@@ -404,12 +418,12 @@ mod tests {
         let app = Router::new().route("/hello", axum_get(hello_handler));
 
         let response = get(app, "/hello")
-            .execute()
+            .send()
             .await
             .assert_ok();
 
         response
-            .assert_json_path("message", json!("Hello, World!"))
+            .json_path_eq("message", json!("Hello, World!"))
             .await;
     }
 

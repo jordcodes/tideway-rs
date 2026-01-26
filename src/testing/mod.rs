@@ -21,10 +21,9 @@
 //!     let app = Router::new().route("/hello", routing::get(hello));
 //!
 //!     let response = testing::get(app, "/hello")
-//!         .execute()
+//!         .send()
 //!         .await
-//!         .assert_ok()
-//!         .assert_json();
+//!         .assert_json_ok();
 //!
 //!     let body: serde_json::Value = response.json().await;
 //!     assert_eq!(body["message"], "Hello!");
