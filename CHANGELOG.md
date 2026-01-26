@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.9] - 2026-01-26
+
+### Added
+
+- `ensure!` guard macro for concise precondition checks.
+- `module!` macro for route groups plus OpenAPI module helpers.
+- Alba-style testing helpers (`TestApp`, JSON helpers, `post_json`, status/header assertions).
+- Auth extractor caching for users and claims (`ClaimsRef`) to avoid duplicate verification.
+- Expanded docs and README examples for auth extractors, testing helpers, OpenAPI modules, and CLI flags.
+
 ## [0.7.8] - 2026-01-23
 
 ### Changed
