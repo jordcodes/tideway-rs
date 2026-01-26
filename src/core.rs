@@ -123,6 +123,15 @@ impl App {
         self
     }
 
+    /// Register an optional module, skipping when None.
+    pub fn register_optional_module<M: RouteModule>(self, module: Option<M>) -> Self {
+        if let Some(module) = module {
+            self.register_module(module)
+        } else {
+            self
+        }
+    }
+
     /// Merge a router without state into the application
     ///
     /// Note: This accepts `Router<()>` - routers that have already had their state provided.
@@ -445,6 +454,15 @@ impl AppBuilder {
         let prefix = module.prefix().map(|s| s.to_owned());
         self.modules.push((module.routes(), prefix));
         self
+    }
+
+    /// Register an optional module, skipping when None.
+    pub fn register_optional_module<M: RouteModule>(self, module: Option<M>) -> Self {
+        if let Some(module) = module {
+            self.register_module(module)
+        } else {
+            self
+        }
     }
 
     pub fn build(self) -> App {

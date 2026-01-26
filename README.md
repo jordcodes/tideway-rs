@@ -203,6 +203,18 @@ let app = App::new()
     .register_module(UsersModule);
 ```
 
+Register multiple modules (and optional ones) more concisely:
+
+```rust
+let app = tideway::register_modules!(
+    App::new(),
+    UsersModule,
+    AdminModule,
+);
+
+let app = app.register_optional_module(optional_module);
+```
+
 ### 4. Error Handling
 
 Use `TidewayError` for consistent error responses:

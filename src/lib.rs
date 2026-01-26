@@ -198,6 +198,26 @@ pub use security::{SecurityConfig, SecurityConfigBuilder};
 pub use timeout::{TimeoutConfig, TimeoutConfigBuilder};
 #[cfg(feature = "cache")]
 pub use traits::cache::{Cache, CacheExt};
+
+/// Register multiple modules with a Tideway `App`.
+///
+/// # Example
+/// ```ignore
+/// let app = tideway::register_modules!(
+///     App::new(),
+///     UsersModule,
+///     AdminModule,
+///     BillingModule,
+/// );
+/// ```
+#[macro_export]
+macro_rules! register_modules {
+    ($app:expr, $($module:expr),+ $(,)?) => {{
+        let mut app = $app;
+        $(app = app.register_module($module);)+
+        app
+    }};
+}
 #[cfg(feature = "database")]
 pub use traits::database::{DatabaseConnection, DatabasePool};
 #[cfg(feature = "database")]

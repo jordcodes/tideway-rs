@@ -48,6 +48,20 @@ impl RouteModule for AdminModule {
     }
 }
 
+// A module for optional registration tests
+struct OptionalModule;
+
+impl RouteModule for OptionalModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/optional", get(|| async { Json(json!({"ok": true})) }))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api")
+    }
+}
+
 #[tokio::test]
 async fn test_app_builder_respects_module_prefix() {
     let app = App::builder()
@@ -165,6 +179,50 @@ async fn test_app_register_module_matches_builder_behavior() {
         .execute()
         .await
         .assert_not_found();
+}
+
+#[tokio::test]
+async fn test_register_optional_module_skips_none() {
+    let app = App::new()
+        .register_optional_module(None::<OptionalModule>)
+        .into_router();
+
+    test_get(app, "/api/optional")
+        .execute()
+        .await
+        .assert_not_found();
+}
+
+#[tokio::test]
+async fn test_register_optional_module_registers_some() {
+    let app = App::new()
+        .register_optional_module(Some(OptionalModule))
+        .into_router();
+
+    test_get(app, "/api/optional")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
+async fn test_register_modules_macro() {
+    let app = tideway::register_modules!(
+        App::new(),
+        OptionalModule,
+        AdminModule,
+    )
+    .into_router();
+
+    test_get(app.clone(), "/api/optional")
+        .execute()
+        .await
+        .assert_ok();
+
+    test_get(app, "/admin/users")
+        .execute()
+        .await
+        .assert_ok();
 }
 
 #[tokio::test]

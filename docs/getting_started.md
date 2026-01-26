@@ -58,6 +58,23 @@ let app = App::new()
     .register_module(users::UsersModule);
 ```
 
+If you have many modules, you can use the helper macro:
+
+```rust
+let app = tideway::register_modules!(
+    App::new(),
+    routes::ApiModule,
+    users::UsersModule,
+);
+```
+
+For optional modules:
+
+```rust
+let app = App::new()
+    .register_optional_module(optional_module);
+```
+
 ## 4) Add database access (optional)
 
 If you enabled `database`, wire a SeaORM pool into the app context:
