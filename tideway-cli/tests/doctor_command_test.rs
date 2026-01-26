@@ -186,6 +186,34 @@ tideway = "0.7"
 }
 
 #[test]
+fn test_doctor_port_info() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .info
+            .iter()
+            .any(|line| line.contains("TIDEWAY_PORT")),
+        "expected port info, got {:?}",
+        report.info
+    );
+}
+
+#[test]
 fn test_doctor_fix_creates_env_example() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

@@ -138,6 +138,12 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
         );
     }
 
+    if !has_port_config(&env_vars, &env_example_vars) {
+        report.info.push(
+            "No port configured (set TIDEWAY_PORT or PORT for deploy environments)".to_string(),
+        );
+    }
+
     Ok(report)
 }
 
@@ -303,6 +309,16 @@ fn has_log_config(
         || env_vars.contains_key("RUST_LOG")
         || env_example_vars.contains_key("TIDEWAY_LOG_LEVEL")
         || env_example_vars.contains_key("RUST_LOG")
+}
+
+fn has_port_config(
+    env_vars: &BTreeMap<String, String>,
+    env_example_vars: &BTreeMap<String, String>,
+) -> bool {
+    env_vars.contains_key("TIDEWAY_PORT")
+        || env_vars.contains_key("PORT")
+        || env_example_vars.contains_key("TIDEWAY_PORT")
+        || env_example_vars.contains_key("PORT")
 }
 
 fn validate_package_metadata(cargo_toml: &toml::Value) -> Option<String> {
