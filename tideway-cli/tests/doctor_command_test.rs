@@ -128,3 +128,31 @@ tideway = { version = "0.7", features = ["database"] }
         report.warnings
     );
 }
+
+#[test]
+fn test_doctor_log_level_info() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let report = analyze_project(project_dir).expect("analyze project");
+    assert!(
+        report
+            .info
+            .iter()
+            .any(|line| line.contains("TIDEWAY_LOG_LEVEL")),
+        "expected log level info, got {:?}",
+        report.info
+    );
+}

@@ -118,6 +118,13 @@ pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
         );
     }
 
+    if !has_log_config(&env_vars, &env_example_vars) {
+        report.info.push(
+            "No log level configured (set TIDEWAY_LOG_LEVEL or RUST_LOG for more output)"
+                .to_string(),
+        );
+    }
+
     Ok(report)
 }
 
@@ -273,4 +280,14 @@ fn validate_database_url(value: &str) -> Option<String> {
     }
 
     None
+}
+
+fn has_log_config(
+    env_vars: &BTreeMap<String, String>,
+    env_example_vars: &BTreeMap<String, String>,
+) -> bool {
+    env_vars.contains_key("TIDEWAY_LOG_LEVEL")
+        || env_vars.contains_key("RUST_LOG")
+        || env_example_vars.contains_key("TIDEWAY_LOG_LEVEL")
+        || env_example_vars.contains_key("RUST_LOG")
 }
