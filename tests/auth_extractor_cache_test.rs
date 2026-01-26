@@ -56,6 +56,27 @@ impl AuthProvider for ClaimsProvider {
     }
 }
 
+#[derive(Clone, Default)]
+struct RejectingUserProvider;
+
+#[async_trait::async_trait]
+impl AuthProvider for RejectingUserProvider {
+    type Claims = TestClaims;
+    type User = TestUser;
+
+    async fn verify_token(&self, _token: &str) -> Result<TestClaims> {
+        Ok(TestClaims)
+    }
+
+    async fn load_user(&self, _claims: &TestClaims) -> Result<TestUser> {
+        Ok(TestUser { admin: false })
+    }
+
+    async fn validate_user(&self, _user: &Self::User) -> Result<()> {
+        Err(tideway::TidewayError::unauthorized("Invalid user"))
+    }
+}
+
 #[tokio::test]
 async fn auth_user_reuses_cached_user() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
@@ -134,4 +155,18 @@ async fn claims_ref_inserts_claims_when_missing() {
         ClaimsRef::<ClaimsProvider>::from_request_parts(&mut parts, &()).await.unwrap();
     let cached = parts.extensions.get::<Arc<TestClaims>>().cloned().unwrap();
     assert!(Arc::ptr_eq(&claims, &cached));
+}
+
+#[tokio::test]
+async fn optional_auth_does_not_cache_claims_on_validation_error() {
+    let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let (mut parts, _) = request.into_parts();
+
+    parts.extensions.insert(RejectingUserProvider::default());
+    parts.headers.insert("authorization", "Bearer test-token".parse().unwrap());
+
+    let OptionalAuth(user) =
+        OptionalAuth::<RejectingUserProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    assert!(user.is_none());
+    assert!(parts.extensions.get::<Arc<TestClaims>>().is_none());
 }

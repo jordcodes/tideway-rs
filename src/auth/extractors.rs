@@ -91,13 +91,15 @@ where
 
             // Verify token and get claims
             let claims = Arc::new(provider.verify_token(&token).await?);
-            parts.extensions.insert(Arc::clone(&claims));
 
             // Load user from claims
             let user = provider.load_user(&claims).await?;
 
             // Validate user (optional business logic)
             provider.validate_user(&user).await?;
+
+            // Cache verified claims after successful user validation
+            parts.extensions.insert(Arc::clone(&claims));
 
             Ok(AuthUser(user))
         })
@@ -161,11 +163,12 @@ where
             match provider.verify_token(&token).await {
                 Ok(claims) => {
                     let claims = Arc::new(claims);
-                    parts.extensions.insert(Arc::clone(&claims));
                     match provider.load_user(&claims).await {
                         Ok(user) => {
                             // Validate user
                             if provider.validate_user(&user).await.is_ok() {
+                                // Cache verified claims after successful user validation
+                                parts.extensions.insert(Arc::clone(&claims));
                                 Ok(OptionalAuth(Some(user)))
                             } else {
                                 Ok(OptionalAuth(None))
@@ -333,13 +336,15 @@ where
 
             // Verify token and get claims
             let claims = Arc::new(provider.verify_token(&token).await?);
-            parts.extensions.insert(Arc::clone(&claims));
 
             // Load user from claims
             let user = provider.load_user(&claims).await?;
 
             // Validate user (optional business logic)
             provider.validate_user(&user).await?;
+
+            // Cache verified claims after successful user validation
+            parts.extensions.insert(Arc::clone(&claims));
 
             // Check admin privileges
             if !user.is_admin() {
