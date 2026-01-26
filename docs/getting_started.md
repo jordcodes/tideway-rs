@@ -68,6 +68,9 @@ let app = tideway::register_modules!(
 );
 ```
 
+If you already have a homogeneous list of modules (same type), you can also use
+`App::register_modules(modules)` with any iterator.
+
 For optional modules:
 
 ```rust

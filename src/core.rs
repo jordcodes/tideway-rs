@@ -126,6 +126,22 @@ impl App {
         self
     }
 
+    /// Register a list of modules with the application.
+    ///
+    /// Note: This is useful for homogeneous module lists. Use the macro
+    /// `register_modules!` for mixed module types.
+    pub fn register_modules<I, M>(self, modules: I) -> Self
+    where
+        I: IntoIterator<Item = M>,
+        M: RouteModule,
+    {
+        let mut app = self;
+        for module in modules {
+            app = app.register_module(module);
+        }
+        app
+    }
+
     /// Register an optional module, skipping when None.
     pub fn register_optional_module<M: RouteModule>(self, module: Option<M>) -> Self {
         if let Some(module) = module {
@@ -484,6 +500,22 @@ impl AppBuilder {
         let prefix = module.prefix().map(|s| s.to_owned());
         self.modules.push((module.routes(), prefix));
         self
+    }
+
+    /// Register a list of modules with the application builder.
+    ///
+    /// Note: This is useful for homogeneous module lists. Use the macro
+    /// `register_modules!` for mixed module types.
+    pub fn register_modules<I, M>(self, modules: I) -> Self
+    where
+        I: IntoIterator<Item = M>,
+        M: RouteModule,
+    {
+        let mut builder = self;
+        for module in modules {
+            builder = builder.register_module(module);
+        }
+        builder
     }
 
     /// Register an optional module, skipping when None.

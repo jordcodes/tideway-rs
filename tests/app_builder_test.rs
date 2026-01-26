@@ -63,6 +63,22 @@ impl RouteModule for OptionalModule {
     }
 }
 
+// A module used for iterator registration tests.
+struct IterableModule {
+    prefix: Option<&'static str>,
+    path: &'static str,
+}
+
+impl RouteModule for IterableModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route(self.path, get(|| async { Json(json!({"ok": true})) }))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        self.prefix
+    }
+}
+
 #[tokio::test]
 async fn test_app_builder_respects_module_prefix() {
     let app = App::builder()
@@ -242,6 +258,61 @@ async fn test_register_modules_macro_with_optional() {
         .assert_ok();
 
     test_get(app, "/admin/users")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
+async fn test_register_modules_iter_on_app() {
+    let modules = vec![
+        IterableModule {
+            prefix: Some("/api"),
+            path: "/alpha",
+        },
+        IterableModule {
+            prefix: Some("/admin"),
+            path: "/beta",
+        },
+    ];
+
+    let app = App::new().register_modules(modules).into_router();
+
+    test_get(app.clone(), "/api/alpha")
+        .execute()
+        .await
+        .assert_ok();
+
+    test_get(app, "/admin/beta")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
+async fn test_register_modules_iter_on_builder() {
+    let modules = vec![
+        IterableModule {
+            prefix: Some("/api"),
+            path: "/alpha",
+        },
+        IterableModule {
+            prefix: Some("/admin"),
+            path: "/beta",
+        },
+    ];
+
+    let app = App::builder()
+        .register_modules(modules)
+        .build()
+        .into_router();
+
+    test_get(app.clone(), "/api/alpha")
+        .execute()
+        .await
+        .assert_ok();
+
+    test_get(app, "/admin/beta")
         .execute()
         .await
         .assert_ok();
