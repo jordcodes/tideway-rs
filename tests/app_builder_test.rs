@@ -4,6 +4,7 @@ use axum::{routing::get, Json, Router};
 use serde_json::json;
 use tideway::{App, AppContext, RouteModule};
 use tideway::testing::get as test_get;
+use axum::http::HeaderValue;
 
 // A module with a prefix
 struct PrefixedModule;
@@ -223,6 +224,30 @@ async fn test_register_modules_macro() {
         .execute()
         .await
         .assert_ok();
+}
+
+#[tokio::test]
+async fn test_global_layer_applied_in_router_with_middleware() {
+    let layer = axum::middleware::from_fn(
+        |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+        let mut response = next.run(req).await;
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("x-global"),
+            HeaderValue::from_static("1"),
+        );
+        response
+    });
+
+    let app = App::new()
+        .register_module(UnprefixedModule)
+        .with_global_layer(layer)
+        .into_router_with_middleware();
+
+    test_get(app, "/status")
+        .execute()
+        .await
+        .assert_ok()
+        .assert_header("x-global", "1");
 }
 
 #[tokio::test]

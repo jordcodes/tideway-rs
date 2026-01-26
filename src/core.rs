@@ -35,6 +35,8 @@ pub struct App {
     context: AppContext,
     /// Routers without state that will be merged after with_state is called
     extra_routers: Vec<Router>,
+    /// Layers to apply after all modules and extra routers are registered
+    global_layers: Vec<GlobalLayer>,
     #[cfg(feature = "metrics")]
     metrics_collector: Option<Arc<MetricsCollector>>,
     #[cfg(feature = "jobs")]
@@ -89,6 +91,7 @@ impl App {
             config,
             context,
             extra_routers: Vec::new(),
+            global_layers: Vec::new(),
             #[cfg(feature = "metrics")]
             metrics_collector,
             #[cfg(feature = "jobs")]
@@ -221,6 +224,27 @@ impl App {
         self
     }
 
+    /// Apply a layer after all modules and extra routers are registered.
+    ///
+    /// Note: This is applied in `serve()` and `into_router_with_middleware()`.
+    /// It is not applied in `into_router()`.
+    pub fn with_global_layer<L>(mut self, layer: L) -> Self
+    where
+        L: tower::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
+        L::Service: tower::Service<axum::http::Request<axum::body::Body>, Error = std::convert::Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Response:
+            axum::response::IntoResponse + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future: Send + 'static,
+    {
+        self.global_layers
+            .push(Box::new(move |router: Router| router.layer(layer.clone())));
+        self
+    }
+
     /// Convert the App into an axum Router without applying middleware.
     ///
     /// This applies the AppContext state to the router, making it ready to serve.
@@ -254,12 +278,14 @@ impl App {
     /// This matches the middleware behavior of `serve()` and is the recommended
     /// choice when you want to manually serve the router without losing defaults.
     pub fn into_router_with_middleware(self) -> Router {
-        let mut app = self.with_middleware();
+        let app = self.with_middleware();
         let mut router = app.router.with_state(app.context);
 
         for extra in app.extra_routers {
             router = router.merge(extra);
         }
+
+        router = apply_global_layers(router, &app.global_layers);
 
         if let Some(cors_layer) = crate::cors::build_cors_layer(&app.config.cors) {
             router = router.layer(cors_layer);
@@ -396,6 +422,8 @@ impl App {
             final_router = final_router.merge(extra);
         }
 
+        final_router = apply_global_layers(final_router, &app.global_layers);
+
         // Apply CORS to the final merged router (to cover extra_routers that missed middleware)
         if let Some(cors_layer) = crate::cors::build_cors_layer(&app.config.cors) {
             final_router = final_router.layer(cors_layer);
@@ -420,6 +448,7 @@ pub struct AppBuilder {
     context: AppContext,
     /// Modules stored as (router, optional_prefix)
     modules: Vec<(Router<AppContext>, Option<String>)>,
+    global_layers: Vec<GlobalLayer>,
     #[cfg(feature = "metrics")]
     metrics_collector: Option<Arc<MetricsCollector>>,
 }
@@ -430,6 +459,7 @@ impl AppBuilder {
             config: Config::default(),
             context: AppContext::new(),
             modules: Vec::new(),
+            global_layers: Vec::new(),
             #[cfg(feature = "metrics")]
             metrics_collector: None,
         }
@@ -465,9 +495,28 @@ impl AppBuilder {
         }
     }
 
+    /// Apply a layer after all modules and extra routers are registered.
+    pub fn with_global_layer<L>(mut self, layer: L) -> Self
+    where
+        L: tower::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
+        L::Service: tower::Service<axum::http::Request<axum::body::Body>, Error = std::convert::Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Response:
+            axum::response::IntoResponse + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future: Send + 'static,
+    {
+        self.global_layers
+            .push(Box::new(move |router: Router| router.layer(layer.clone())));
+        self
+    }
+
     pub fn build(self) -> App {
         let mut app = App::with_config(self.config);
         app.context = self.context;
+        app.global_layers = self.global_layers;
 
         #[cfg(feature = "metrics")]
         {
@@ -486,6 +535,15 @@ impl AppBuilder {
 
         app
     }
+}
+
+type GlobalLayer = Box<dyn Fn(Router) -> Router + Send + Sync>;
+
+fn apply_global_layers(mut router: Router, layers: &[GlobalLayer]) -> Router {
+    for layer in layers {
+        router = layer(router);
+    }
+    router
 }
 
 impl Default for AppBuilder {

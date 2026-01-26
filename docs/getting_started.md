@@ -130,6 +130,14 @@ let router = app.into_router_with_middleware();
 axum::serve(listener, router).await?;
 ```
 
+If you want to add a layer that should apply after all modules are registered:
+
+```rust
+let app = App::new()
+    .register_module(routes::ApiModule)
+    .with_global_layer(my_layer);
+```
+
 ## 7) Return structured errors
 
 ```rust
