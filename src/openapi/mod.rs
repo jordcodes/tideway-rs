@@ -66,6 +66,11 @@ mod tests {
     use super::*;
     use utoipa::OpenApi;
 
+    #[derive(utoipa::ToSchema)]
+    struct DummySchema;
+
+    crate::openapi_components!(ComponentsDoc, schemas(DummySchema));
+
     #[derive(OpenApi)]
     #[openapi(paths())]
     struct ADoc;
@@ -93,6 +98,12 @@ mod tests {
         crate::openapi_doc!(pub(crate) DocTwo, paths());
 
         let openapi = crate::openapi_merge!(DocOne, DocTwo);
+        assert!(!openapi.info.title.is_empty());
+    }
+
+    #[test]
+    fn test_openapi_components_macro() {
+        let openapi = ComponentsDoc::openapi();
         assert!(!openapi.info.title.is_empty());
     }
 }
@@ -142,6 +153,37 @@ macro_rules! openapi_doc {
     ($name:ident, $($openapi:tt)+) => {
         #[derive(utoipa::OpenApi)]
         #[openapi($($openapi)+)]
+        struct $name;
+    };
+}
+
+/// Define an OpenAPI components-only doc struct.
+///
+/// # Example
+/// ```ignore
+/// tideway::openapi_components!(pub(crate) ComponentsDoc, schemas(Foo, Bar));
+/// ```
+#[cfg(feature = "openapi")]
+#[macro_export]
+macro_rules! openapi_components {
+    ($vis:vis $name:ident, schemas($($schema:ty),+ $(,)?), modifiers($($modifier:tt)+)) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi(components(schemas($($schema),+)), modifiers($($modifier)+))]
+        $vis struct $name;
+    };
+    ($vis:vis $name:ident, schemas($($schema:ty),+ $(,)?)) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi(components(schemas($($schema),+)))]
+        $vis struct $name;
+    };
+    ($name:ident, schemas($($schema:ty),+ $(,)?), modifiers($($modifier:tt)+)) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi(components(schemas($($schema),+)), modifiers($($modifier)+))]
+        struct $name;
+    };
+    ($name:ident, schemas($($schema:ty),+ $(,)?)) => {
+        #[derive(utoipa::OpenApi)]
+        #[openapi(components(schemas($($schema),+)))]
         struct $name;
     };
 }

@@ -113,6 +113,25 @@ tideway::openapi_doc!(pub(crate) BillingDoc, paths(crate::routes::billing::get_i
 let openapi = tideway::openapi_merge!(UsersDoc, BillingDoc);
 ```
 
+For large schema lists, use `openapi_components!`:
+
+```rust
+tideway::openapi_components!(
+    pub(crate) ComponentsDoc,
+    schemas(crate::routes::users::UserResponse, crate::routes::billing::InvoiceResponse)
+);
+```
+
+You can also add modifiers:
+
+```rust
+tideway::openapi_components!(
+    pub(crate) ComponentsDoc,
+    schemas(crate::routes::users::UserResponse),
+    modifiers(&SecurityAddon)
+);
+```
+
 If you already have `OpenApi` values, you can merge them directly:
 
 ```rust
