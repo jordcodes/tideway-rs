@@ -1,0 +1,58 @@
+use axum::{Router, routing::get};
+use axum::http::HeaderValue;
+use tideway::{App, AppContext, RouteModule};
+use tideway::testing::TestApp;
+
+struct PingModule;
+
+impl RouteModule for PingModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route("/ping", get(|| async { "pong" }))
+    }
+}
+
+#[tokio::test]
+async fn test_test_app_with_middleware() {
+    let layer = axum::middleware::from_fn(
+        |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+        let mut response = next.run(req).await;
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("x-test"),
+            HeaderValue::from_static("1"),
+        );
+        response
+    });
+
+    let app = App::new()
+        .register_module(PingModule)
+        .with_global_layer(layer);
+    let test_app = TestApp::new(app);
+
+    test_app
+        .get("/ping")
+        .execute()
+        .await
+        .assert_ok()
+        .assert_header("x-test", "1");
+}
+
+#[tokio::test]
+async fn test_test_app_without_middleware() {
+    let layer = axum::middleware::from_fn(
+        |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
+        let mut response = next.run(req).await;
+        response.headers_mut().insert(
+            axum::http::header::HeaderName::from_static("x-test"),
+            HeaderValue::from_static("1"),
+        );
+        response
+    });
+
+    let app = App::new()
+        .register_module(PingModule)
+        .with_global_layer(layer);
+    let test_app = TestApp::without_middleware(app);
+
+    let response = test_app.get("/ping").execute().await.response();
+    assert!(response.headers().get("x-test").is_none());
+}

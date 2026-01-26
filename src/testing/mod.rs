@@ -30,13 +30,35 @@
 //!     assert_eq!(body["message"], "Hello!");
 //! }
 //! ```
+//!
+//! Using `TestApp` with a Tideway `App`:
+//!
+//! ```rust,ignore
+//! use tideway::{App, RouteModule, AppContext};
+//! use tideway::testing::TestApp;
+//! use axum::{routing::get, Router};
+//!
+//! struct HealthModule;
+//!
+//! impl RouteModule for HealthModule {
+//!     fn routes(&self) -> Router<AppContext> {
+//!         Router::new().route("/health", get(|| async { "ok" }))
+//!     }
+//! }
+//!
+//! let app = App::new().register_module(HealthModule);
+//! let test_app = TestApp::new(app);
+//! test_app.get("/health").execute().await.assert_ok();
+//! ```
 
 #[cfg(feature = "database")]
 mod database;
+mod app;
 mod scenario;
 mod fixtures;
 
 #[cfg(feature = "database")]
 pub use database::TestDb;
+pub use app::TestApp;
 pub use scenario::{Scenario, ScenarioAssert, delete, get, patch, post, put};
 pub use fixtures::{TestFactory, TestUser, fake};
