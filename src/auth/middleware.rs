@@ -2,6 +2,7 @@ use crate::auth::{provider::AuthProvider, token::TokenExtractor};
 use crate::error::TidewayError;
 use axum::{extract::Request, middleware::Next, response::Response};
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 /// Middleware that requires authentication for all routes it wraps
 ///
@@ -35,7 +36,7 @@ impl<P: AuthProvider> RequireAuth<P> {
         let token = TokenExtractor::from_header(&parts)?;
 
         // Verify token
-        let claims = provider.verify_token(&token).await?;
+        let claims = Arc::new(provider.verify_token(&token).await?);
 
         // Load user
         let user = provider.load_user(&claims).await?;
@@ -46,6 +47,7 @@ impl<P: AuthProvider> RequireAuth<P> {
         // Store user in extensions for downstream handlers
         let mut request = Request::from_parts(parts, body);
         request.extensions_mut().insert(user);
+        request.extensions_mut().insert(claims);
 
         Ok(next.run(request).await)
     }

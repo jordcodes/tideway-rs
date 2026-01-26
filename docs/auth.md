@@ -501,6 +501,37 @@ let subject = TokenSubject::new("user-123")
 let tokens = issuer.issue(subject, false)?; // false = don't remember me
 ```
 
+## Auth Extractors
+
+Tideway provides extractors for common authentication patterns:
+
+```rust,ignore
+use tideway::auth::{AuthUser, OptionalAuth, RequireAdmin, Claims, ClaimsRef};
+
+async fn me(AuthUser(user): AuthUser<MyAuthProvider>) -> Json<UserResponse> {
+    Json(UserResponse::from(user))
+}
+
+async fn maybe_me(OptionalAuth(user): OptionalAuth<MyAuthProvider>) -> Json<Response> {
+    Json(Response { user })
+}
+
+async fn admin_only(RequireAdmin(user): RequireAdmin<MyAuthProvider>) -> Json<AdminResponse> {
+    Json(AdminResponse::from(user))
+}
+```
+
+If you only need JWT claims, use `Claims` or `ClaimsRef`:
+
+```rust,ignore
+async fn whoami(ClaimsRef(claims): ClaimsRef<MyAuthProvider>) -> String {
+    format!("user_id={}", claims.sub)
+}
+```
+
+`ClaimsRef` reuses cached claims when available (e.g., after auth middleware), avoiding
+duplicate token verification within the same request.
+
 ## MFA (Multi-Factor Authentication)
 
 Requires `auth-mfa` feature.

@@ -4,7 +4,8 @@ use axum::body::Body;
 use axum::extract::FromRequestParts;
 use axum::http::Request;
 use serde::Deserialize;
-use tideway::auth::{AdminUser, AuthProvider, AuthUser, OptionalAuth, RequireAdmin};
+use std::sync::Arc;
+use tideway::auth::{AdminUser, AuthProvider, AuthUser, ClaimsRef, OptionalAuth, RequireAdmin};
 use tideway::Result;
 
 #[derive(Clone, Default)]
@@ -35,6 +36,23 @@ impl AuthProvider for TestProvider {
 
     async fn load_user(&self, _claims: &TestClaims) -> Result<TestUser> {
         panic!("load_user should not be called when user is cached");
+    }
+}
+
+#[derive(Clone, Default)]
+struct ClaimsProvider;
+
+#[async_trait::async_trait]
+impl AuthProvider for ClaimsProvider {
+    type Claims = TestClaims;
+    type User = TestUser;
+
+    async fn verify_token(&self, _token: &str) -> Result<TestClaims> {
+        Ok(TestClaims)
+    }
+
+    async fn load_user(&self, _claims: &TestClaims) -> Result<TestUser> {
+        Ok(TestUser { admin: false })
     }
 }
 
@@ -88,4 +106,32 @@ async fn require_admin_rejects_cached_non_admin() {
 
     let result = RequireAdmin::<TestProvider>::from_request_parts(&mut parts, &()).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn claims_ref_reuses_cached_claims() {
+    let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let (mut parts, _) = request.into_parts();
+
+    parts.extensions.insert(ClaimsProvider::default());
+    let cached = Arc::new(TestClaims);
+    parts.extensions.insert(Arc::clone(&cached));
+
+    let ClaimsRef(claims) =
+        ClaimsRef::<ClaimsProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    assert!(Arc::ptr_eq(&claims, &cached));
+}
+
+#[tokio::test]
+async fn claims_ref_inserts_claims_when_missing() {
+    let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let (mut parts, _) = request.into_parts();
+
+    parts.extensions.insert(ClaimsProvider::default());
+    parts.headers.insert("authorization", "Bearer test-token".parse().unwrap());
+
+    let ClaimsRef(claims) =
+        ClaimsRef::<ClaimsProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    let cached = parts.extensions.get::<Arc<TestClaims>>().cloned().unwrap();
+    assert!(Arc::ptr_eq(&claims, &cached));
 }

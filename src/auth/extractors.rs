@@ -2,6 +2,7 @@ use crate::auth::{provider::AuthProvider, token::TokenExtractor};
 use crate::error::TidewayError;
 use axum::{extract::FromRequestParts, http::request::Parts};
 use std::future::Future;
+use std::sync::Arc;
 
 /// Trait for users that can be administrators.
 ///
@@ -89,7 +90,8 @@ where
             let token = TokenExtractor::from_header(parts)?;
 
             // Verify token and get claims
-            let claims = provider.verify_token(&token).await?;
+            let claims = Arc::new(provider.verify_token(&token).await?);
+            parts.extensions.insert(Arc::clone(&claims));
 
             // Load user from claims
             let user = provider.load_user(&claims).await?;
@@ -157,17 +159,21 @@ where
 
             // Try to verify and load user
             match provider.verify_token(&token).await {
-                Ok(claims) => match provider.load_user(&claims).await {
-                    Ok(user) => {
-                        // Validate user
-                        if provider.validate_user(&user).await.is_ok() {
-                            Ok(OptionalAuth(Some(user)))
-                        } else {
-                            Ok(OptionalAuth(None))
+                Ok(claims) => {
+                    let claims = Arc::new(claims);
+                    parts.extensions.insert(Arc::clone(&claims));
+                    match provider.load_user(&claims).await {
+                        Ok(user) => {
+                            // Validate user
+                            if provider.validate_user(&user).await.is_ok() {
+                                Ok(OptionalAuth(Some(user)))
+                            } else {
+                                Ok(OptionalAuth(None))
+                            }
                         }
+                        Err(_) => Ok(OptionalAuth(None)),
                     }
-                    Err(_) => Ok(OptionalAuth(None)),
-                },
+                }
                 Err(_) => Ok(OptionalAuth(None)),
             }
         })
@@ -214,6 +220,45 @@ where
             let claims = provider.verify_token(&token).await?;
 
             Ok(Claims(claims))
+        })
+    }
+}
+
+/// Axum extractor that reuses cached claims if available.
+///
+/// This avoids re-verifying the token when claims were already verified earlier
+/// in the same request (e.g., by auth middleware).
+pub struct ClaimsRef<P: AuthProvider>(pub Arc<P::Claims>);
+
+impl<P, S> FromRequestParts<S> for ClaimsRef<P>
+where
+    P: AuthProvider,
+    S: Send + Sync,
+{
+    type Rejection = TidewayError;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        Box::pin(async move {
+            if let Some(claims) = parts.extensions.get::<Arc<P::Claims>>() {
+                return Ok(ClaimsRef(Arc::clone(claims)));
+            }
+
+            let provider = parts
+                .extensions
+                .get::<P>()
+                .ok_or_else(|| {
+                    TidewayError::internal("Auth provider not found in request extensions")
+                })?
+                .clone();
+
+            let token = TokenExtractor::from_header(parts)?;
+            let claims = Arc::new(provider.verify_token(&token).await?);
+            parts.extensions.insert(Arc::clone(&claims));
+
+            Ok(ClaimsRef(claims))
         })
     }
 }
@@ -287,7 +332,8 @@ where
             let token = TokenExtractor::from_header(parts)?;
 
             // Verify token and get claims
-            let claims = provider.verify_token(&token).await?;
+            let claims = Arc::new(provider.verify_token(&token).await?);
+            parts.extensions.insert(Arc::clone(&claims));
 
             // Load user from claims
             let user = provider.load_user(&claims).await?;
