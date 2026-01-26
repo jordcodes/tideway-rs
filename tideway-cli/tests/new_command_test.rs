@@ -49,6 +49,36 @@ fn test_new_command_includes_features_and_env() {
     assert_file_contains(&project_dir.join("src/main.rs"), "JwtIssuer");
 }
 
+#[test]
+fn test_new_command_compiles_with_features_smoke() {
+    if std::env::var("TIDEWAY_CLI_SMOKE").is_err() {
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: "my_app".to_string(),
+        features: vec!["auth".to_string(), "database".to_string()],
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    let output = std::process::Command::new("cargo")
+        .arg("check")
+        .current_dir(&project_dir)
+        .output()
+        .expect("run cargo check");
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!("cargo check failed: {}", stderr);
+    }
+}
+
 fn assert_file_contains(path: &Path, needle: &str) {
     let contents = fs::read_to_string(path).expect("read file");
     assert!(
