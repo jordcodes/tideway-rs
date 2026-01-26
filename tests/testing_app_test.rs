@@ -56,3 +56,33 @@ async fn test_test_app_without_middleware() {
     let response = test_app.get("/ping").execute().await.response();
     assert!(response.headers().get("x-test").is_none());
 }
+
+#[tokio::test]
+async fn test_auth_test_app_sets_bearer() {
+    async fn auth_echo(
+        headers: axum::http::HeaderMap,
+    ) -> axum::response::Response<axum::body::Body> {
+        let token = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header("x-auth", token)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+
+    let app = App::new().merge_router(
+        Router::new().route("/auth", axum::routing::get(auth_echo)),
+    );
+    let test_app = TestApp::new(app);
+
+    test_app
+        .auth("test-token")
+        .get("/auth")
+        .send()
+        .await
+        .assert_ok()
+        .assert_header("x-auth", "Bearer test-token");
+}

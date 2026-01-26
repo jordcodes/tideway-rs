@@ -49,6 +49,13 @@
 //! let test_app = TestApp::new(app);
 //! test_app.get("/health").execute().await.assert_ok();
 //! ```
+//!
+//! Auth helper:
+//!
+//! ```rust,ignore
+//! let api = test_app.auth("token");
+//! api.get("/api/me").send().await.assert_ok();
+//! ```
 
 #[cfg(feature = "database")]
 mod database;
@@ -58,6 +65,6 @@ mod fixtures;
 
 #[cfg(feature = "database")]
 pub use database::TestDb;
-pub use app::TestApp;
+pub use app::{AuthTestApp, TestApp};
 pub use scenario::{Scenario, ScenarioAssert, delete, get, patch, post, put};
 pub use fixtures::{TestFactory, TestUser, fake};
