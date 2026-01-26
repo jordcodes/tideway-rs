@@ -21,6 +21,7 @@ fn test_new_command_generates_starter_files() {
     assert_file_contains(&project_dir.join("src/main.rs"), "App::new()");
     assert_file_contains(&project_dir.join("src/routes/mod.rs"), "Tideway is running");
     assert!(project_dir.join(".gitignore").exists());
+    assert!(project_dir.join("tests/health.rs").exists());
 }
 
 #[test]

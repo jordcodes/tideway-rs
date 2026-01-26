@@ -28,6 +28,11 @@ Example:
 tideway new my_app --features auth,database
 ```
 
+The starter includes a basic `tests/health.rs` you can run with:
+```bash
+cargo test
+```
+
 ### `tideway doctor`
 
 Diagnose missing Tideway feature flags based on detected modules.

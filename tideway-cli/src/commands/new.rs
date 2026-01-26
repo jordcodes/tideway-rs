@@ -70,6 +70,12 @@ pub fn run(args: NewArgs) -> Result<()> {
         args.force,
     )?;
 
+    write_file(
+        &target_dir.join("tests/health.rs"),
+        &engine.render("starter/tests/health")?,
+        args.force,
+    )?;
+
     if has_auth_feature || has_database_feature {
         write_file(
             &target_dir.join(".env.example"),
