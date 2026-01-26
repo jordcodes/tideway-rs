@@ -156,3 +156,31 @@ tideway = "0.7"
         report.info
     );
 }
+
+#[test]
+fn test_doctor_package_metadata_info() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let report = analyze_project(project_dir).expect("analyze project");
+    assert!(
+        report
+            .info
+            .iter()
+            .any(|line| line.contains("Package metadata missing")),
+        "expected metadata info, got {:?}",
+        report.info
+    );
+}

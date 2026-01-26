@@ -72,6 +72,10 @@ pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
         report.warnings.push("Cargo.toml is missing a tideway dependency".to_string());
     }
 
+    if let Some(message) = validate_package_metadata(&cargo_toml) {
+        report.info.push(message);
+    }
+
     if !tideway_features.is_empty() && cargo_toml_path.exists() {
         report.info.push(format!(
             "Tideway features enabled: {}",
@@ -290,4 +294,22 @@ fn has_log_config(
         || env_vars.contains_key("RUST_LOG")
         || env_example_vars.contains_key("TIDEWAY_LOG_LEVEL")
         || env_example_vars.contains_key("RUST_LOG")
+}
+
+fn validate_package_metadata(cargo_toml: &toml::Value) -> Option<String> {
+    let package = cargo_toml.get("package")?.as_table()?;
+    let missing = ["description", "license", "repository"]
+        .iter()
+        .filter(|key| !package.contains_key(**key))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if missing.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "Package metadata missing: {}",
+        missing.join(", ")
+    ))
 }
