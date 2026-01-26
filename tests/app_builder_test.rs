@@ -227,6 +227,27 @@ async fn test_register_modules_macro() {
 }
 
 #[tokio::test]
+async fn test_register_modules_macro_with_optional() {
+    let optional_module = Some(OptionalModule);
+    let app = tideway::register_modules!(
+        App::new(),
+        AdminModule;
+        optional: optional_module
+    )
+    .into_router();
+
+    test_get(app.clone(), "/api/optional")
+        .execute()
+        .await
+        .assert_ok();
+
+    test_get(app, "/admin/users")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
 async fn test_global_layer_applied_in_router_with_middleware() {
     let layer = axum::middleware::from_fn(
         |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {

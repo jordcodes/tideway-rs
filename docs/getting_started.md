@@ -71,8 +71,11 @@ let app = tideway::register_modules!(
 For optional modules:
 
 ```rust
-let app = App::new()
-    .register_optional_module(optional_module);
+let app = tideway::register_modules!(
+    App::new(),
+    routes::ApiModule;
+    optional: optional_module
+);
 ```
 
 ## 4) Add database access (optional)

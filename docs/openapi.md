@@ -88,6 +88,28 @@ OPENAPI_VISIBILITY=public  # Only show public endpoints
 
 Tag your internal endpoints with `tag = "internal"` and public ones with appropriate tags like `"customers"`, `"orders"`, etc.
 
+## Splitting OpenAPI Docs by Module
+
+For large applications, you can derive `OpenApi` per module and merge them:
+
+```rust
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(crate::routes::users::list_users))]
+struct UsersDoc;
+
+#[derive(utoipa::OpenApi)]
+#[openapi(paths(crate::routes::billing::get_invoices))]
+struct BillingDoc;
+
+let openapi = tideway::openapi_merge!(UsersDoc, BillingDoc);
+```
+
+If you already have `OpenApi` values, you can merge them directly:
+
+```rust
+let openapi = tideway::openapi::merge_openapi(vec![doc_a, doc_b]);
+```
+
 ## Adding Documentation to Your Endpoints
 
 ### 1. Add Schema Derives to Your Types

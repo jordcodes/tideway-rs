@@ -209,12 +209,30 @@ pub use traits::cache::{Cache, CacheExt};
 ///     AdminModule,
 ///     BillingModule,
 /// );
+///
+/// let app = tideway::register_modules!(
+///     App::new(),
+///     UsersModule,
+///     AdminModule;
+///     optional: billing_module, local_auth_module
+/// );
 /// ```
 #[macro_export]
 macro_rules! register_modules {
+    ($app:expr, $($module:expr),+ ; optional: $($optional:expr),+ $(,)?) => {{
+        let mut app = $app;
+        $(app = app.register_module($module);)+
+        $(app = app.register_optional_module($optional);)+
+        app
+    }};
     ($app:expr, $($module:expr),+ $(,)?) => {{
         let mut app = $app;
         $(app = app.register_module($module);)+
+        app
+    }};
+    ($app:expr; optional: $($optional:expr),+ $(,)?) => {{
+        let mut app = $app;
+        $(app = app.register_optional_module($optional);)+
         app
     }};
 }

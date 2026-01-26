@@ -212,7 +212,11 @@ let app = tideway::register_modules!(
     AdminModule,
 );
 
-let app = app.register_optional_module(optional_module);
+let app = tideway::register_modules!(
+    app,
+    BillingModule;
+    optional: optional_module
+);
 ```
 
 ### 4. Error Handling

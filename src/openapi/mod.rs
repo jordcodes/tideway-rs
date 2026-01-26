@@ -43,6 +43,51 @@ pub fn create_openapi_router(openapi: utoipa::openapi::OpenApi, config: &OpenApi
     router
 }
 
+/// Merge multiple OpenAPI specs into one.
+///
+/// This is useful when you define smaller `#[derive(OpenApi)]` docs per module.
+#[cfg(feature = "openapi")]
+pub fn merge_openapi(mut docs: Vec<utoipa::openapi::OpenApi>) -> utoipa::openapi::OpenApi {
+    let mut iter = docs.drain(..);
+    let Some(mut openapi) = iter.next() else {
+        let info = utoipa::openapi::Info::new("tideway", "0.0.0");
+        return utoipa::openapi::OpenApi::new(info, utoipa::openapi::Paths::new());
+    };
+
+    for doc in iter {
+        openapi.merge(doc);
+    }
+
+    openapi
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use utoipa::OpenApi;
+
+    #[derive(OpenApi)]
+    #[openapi(paths())]
+    struct ADoc;
+
+    #[derive(OpenApi)]
+    #[openapi(paths())]
+    struct BDoc;
+
+    #[test]
+    fn test_openapi_merge_macro() {
+        let openapi = crate::openapi_merge!(ADoc, BDoc);
+        let title = openapi.info.title;
+        assert!(!title.is_empty());
+    }
+
+    #[test]
+    fn test_merge_openapi_empty() {
+        let openapi = merge_openapi(Vec::new());
+        assert_eq!(openapi.info.title, "tideway");
+    }
+}
+
 /// Helper macro to reduce boilerplate for common response patterns
 #[cfg(feature = "openapi")]
 #[macro_export]
@@ -69,4 +114,20 @@ macro_rules! openapi_path {
             security(("bearer_auth" = []))
         )]
     };
+}
+
+/// Merge multiple `OpenApi` derives into a single spec.
+///
+/// # Example
+/// ```ignore
+/// let openapi = tideway::openapi_merge!(AuthDoc, BillingDoc, AdminDoc);
+/// ```
+#[cfg(feature = "openapi")]
+#[macro_export]
+macro_rules! openapi_merge {
+    ($first:ty $(, $rest:ty)* $(,)?) => {{
+        let mut doc = <$first as utoipa::OpenApi>::openapi();
+        $(doc.merge(<$rest as utoipa::OpenApi>::openapi());)+
+        doc
+    }};
 }
