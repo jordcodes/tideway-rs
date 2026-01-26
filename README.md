@@ -138,6 +138,18 @@ Read the full walkthrough at `docs/getting_started.md`.
 
 See `docs/cli.md` for command examples.
 
+**Common `tideway new` flags:**
+| Flag | Example | Purpose |
+| --- | --- | --- |
+| `--preset` | `--preset api` | Apply a preset scaffold |
+| `--features` | `--features auth,database` | Enable crate features |
+| `--with-config` | `--with-config` | Generate `config.rs` / `error.rs` |
+| `--with-docker` | `--with-docker` | Add `docker-compose.yml` |
+| `--with-ci` | `--with-ci` | Add GitHub Actions workflow |
+| `--with-env` | `--with-env` | Generate `.env.example` |
+| `--no-prompt` | `--no-prompt` | Disable interactive prompts |
+| `--summary` | `--summary false` | Hide the file summary |
+
 ## Core Concepts
 
 ### 1. Application Structure
@@ -169,6 +181,17 @@ tideway::module!(
         (post, "/users", create_user),
     ]
 );
+```
+
+**OpenAPI per module (optional):**
+```rust
+#[cfg(feature = "openapi")]
+mod openapi_docs {
+    tideway::openapi_doc!(pub(crate) UsersDoc, paths(crate::routes::users::list_users));
+}
+
+#[cfg(feature = "openapi")]
+let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc);
 ```
 
 ### 2. Configuration
@@ -287,6 +310,13 @@ use tideway::{ensure, Result, TidewayError};
 
 fn require_admin(user: &User) -> Result<()> {
     ensure!(user.is_admin, TidewayError::forbidden("Admin access required"));
+    Ok(())
+}
+```
+
+```rust
+fn prevent_self_delete(user: &User, target_id: uuid::Uuid) -> Result<()> {
+    ensure!(user.id != target_id, "Cannot delete your own account");
     Ok(())
 }
 ```
