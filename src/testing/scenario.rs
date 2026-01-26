@@ -125,6 +125,11 @@ impl Scenario {
         self
     }
 
+    /// Alias for json_body
+    pub fn json<T: Serialize>(self, body: &T) -> Self {
+        self.json_body(body)
+    }
+
     /// Set plain text body
     pub fn text_body(mut self, body: impl Into<String>) -> Self {
         *self.request.body_mut() = Body::from(body.into());
@@ -397,6 +402,24 @@ mod tests {
 
         let body: serde_json::Value = response.json().await;
         assert!(body["params"].is_object());
+    }
+
+    #[tokio::test]
+    async fn test_json_alias() {
+        async fn post_handler(axum::Json(payload): axum::Json<serde_json::Value>) -> axum::Json<serde_json::Value> {
+            axum::Json(payload)
+        }
+
+        let app = Router::new().route("/echo", axum::routing::post(post_handler));
+
+        let response = post(app, "/echo")
+            .json(&json!({"key": "value"}))
+            .send()
+            .await
+            .assert_json_ok();
+
+        let body: serde_json::Value = response.json().await;
+        assert_eq!(body["key"], json!("value"));
     }
 
     #[tokio::test]
