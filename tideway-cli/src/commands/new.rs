@@ -87,6 +87,13 @@ pub fn run(args: NewArgs) -> Result<()> {
             args.force,
         )?;
     }
+    if args.with_ci {
+        write_file(
+            &target_dir.join(".github/workflows/ci.yml"),
+            &engine.render("starter/github-ci")?,
+            args.force,
+        )?;
+    }
     write_file(
         &target_dir.join(".gitignore"),
         &engine.render("starter/gitignore")?,

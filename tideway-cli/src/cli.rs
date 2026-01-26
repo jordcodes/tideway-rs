@@ -53,6 +53,10 @@ pub struct NewArgs {
     #[arg(long, default_value = "false")]
     pub with_docker: bool,
 
+    /// Generate GitHub Actions CI workflow
+    #[arg(long, default_value = "false")]
+    pub with_ci: bool,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,
