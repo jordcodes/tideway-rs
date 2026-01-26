@@ -79,6 +79,18 @@ impl RouteModule for IterableModule {
     }
 }
 
+async fn module_hello() -> Json<serde_json::Value> {
+    Json(json!({"message": "hello"}))
+}
+
+tideway::module!(
+    MacroModule,
+    prefix = "/api",
+    routes = [
+        (get, "/macro", module_hello),
+    ]
+);
+
 #[tokio::test]
 async fn test_app_builder_respects_module_prefix() {
     let app = App::builder()
@@ -237,6 +249,18 @@ async fn test_register_modules_macro() {
         .assert_ok();
 
     test_get(app, "/admin/users")
+        .execute()
+        .await
+        .assert_ok();
+}
+
+#[tokio::test]
+async fn test_module_macro() {
+    let app = App::new()
+        .register_module(MacroModule)
+        .into_router();
+
+    test_get(app, "/api/macro")
         .execute()
         .await
         .assert_ok();

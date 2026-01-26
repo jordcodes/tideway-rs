@@ -255,6 +255,85 @@ macro_rules! register_optional_modules {
         app
     }};
 }
+
+/// Define a `RouteModule` with a compact route list.
+///
+/// # Example
+/// ```ignore
+/// tideway::module!(
+///     UsersModule,
+///     prefix = "/api",
+///     routes = [
+///         (get, "/users", list_users),
+///         (post, "/users", create_user),
+///     ]
+/// );
+/// ```
+#[macro_export]
+macro_rules! module {
+    ($(#[$attr:meta])*, $name:ident, prefix = $prefix:expr, routes = [ $(($method:ident, $path:expr, $handler:expr)),+ $(,)? ]) => {
+        $(#[$attr])*
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, axum::routing::$method($handler));
+                )+
+                router
+            }
+
+            fn prefix(&self) -> Option<&str> {
+                Some($prefix)
+            }
+        }
+    };
+    ($name:ident, prefix = $prefix:expr, routes = [ $(($method:ident, $path:expr, $handler:expr)),+ $(,)? ]) => {
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, axum::routing::$method($handler));
+                )+
+                router
+            }
+
+            fn prefix(&self) -> Option<&str> {
+                Some($prefix)
+            }
+        }
+    };
+    ($(#[$attr:meta])*, $name:ident, routes = [ $(($method:ident, $path:expr, $handler:expr)),+ $(,)? ]) => {
+        $(#[$attr])*
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, axum::routing::$method($handler));
+                )+
+                router
+            }
+        }
+    };
+    ($name:ident, routes = [ $(($method:ident, $path:expr, $handler:expr)),+ $(,)? ]) => {
+        pub struct $name;
+
+        impl $crate::RouteModule for $name {
+            fn routes(&self) -> axum::Router<$crate::AppContext> {
+                let mut router = axum::Router::new();
+                $(
+                    router = router.route($path, axum::routing::$method($handler));
+                )+
+                router
+            }
+        }
+    };
+}
 #[cfg(feature = "database")]
 pub use traits::database::{DatabaseConnection, DatabasePool};
 #[cfg(feature = "database")]
