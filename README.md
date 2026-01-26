@@ -128,6 +128,10 @@ cargo run
 
 Read the full walkthrough at `docs/getting_started.md`.
 
+### CLI Reference
+
+See `docs/cli.md` for command examples.
+
 ## Core Concepts
 
 ### 1. Application Structure
