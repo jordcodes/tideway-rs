@@ -25,7 +25,7 @@
 //!         .await
 //!         .assert_json_ok();
 //!
-//!     let body: serde_json::Value = response.json().await;
+//!     let body = response.json_value().await;
 //!     assert_eq!(body["message"], "Hello!");
 //! }
 //! ```

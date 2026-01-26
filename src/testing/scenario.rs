@@ -250,6 +250,16 @@ impl ScenarioAssert {
         serde_json::from_slice(&bytes).expect("Failed to parse JSON response")
     }
 
+    /// Parse the JSON response body into a serde_json::Value
+    pub async fn json_value(self) -> serde_json::Value {
+        self.json().await
+    }
+
+    /// Parse the JSON response body into a concrete type
+    pub async fn json_into<T: for<'de> Deserialize<'de>>(self) -> T {
+        self.json().await
+    }
+
     /// Assert JSON field equals a value using JSONPath-like syntax
     pub async fn assert_json_field(self, path: &str, expected: serde_json::Value) -> Self {
         let bytes = axum::body::to_bytes(self.response.into_body(), usize::MAX)
@@ -386,7 +396,7 @@ mod tests {
             .await
             .assert_json_ok();
 
-        let body: serde_json::Value = response.json().await;
+        let body = response.json_value().await;
         assert_eq!(body["message"], "Hello, World!");
     }
 
