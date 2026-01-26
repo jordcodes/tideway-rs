@@ -271,6 +271,16 @@ impl AppContextBuilder {
         self
     }
 
+    /// Set the database pool if provided.
+    #[cfg(feature = "database")]
+    pub fn with_optional_database(self, pool: Option<Arc<dyn DatabasePool>>) -> Self {
+        if let Some(pool) = pool {
+            self.with_database(pool)
+        } else {
+            self
+        }
+    }
+
     /// Set the cache
     #[cfg(feature = "cache")]
     pub fn with_cache(mut self, cache: Arc<dyn Cache>) -> Self {
@@ -290,6 +300,16 @@ impl AppContextBuilder {
     pub fn with_job_queue(mut self, queue: Arc<dyn JobQueue>) -> Self {
         self.jobs = Some(queue);
         self
+    }
+
+    /// Set the job queue if provided.
+    #[cfg(feature = "jobs")]
+    pub fn with_optional_job_queue(self, queue: Option<Arc<dyn JobQueue>>) -> Self {
+        if let Some(queue) = queue {
+            self.with_job_queue(queue)
+        } else {
+            self
+        }
     }
 
     /// Set the WebSocket manager
@@ -340,6 +360,18 @@ impl AppContextBuilder {
     pub fn with_auth_provider<T: Send + Sync + 'static>(mut self, provider: Arc<T>) -> Self {
         self.auth_provider = Some(provider as Arc<dyn std::any::Any + Send + Sync>);
         self
+    }
+
+    /// Set the auth provider if provided.
+    pub fn with_optional_auth_provider<T: Send + Sync + 'static>(
+        self,
+        provider: Option<Arc<T>>,
+    ) -> Self {
+        if let Some(provider) = provider {
+            self.with_auth_provider(provider)
+        } else {
+            self
+        }
     }
 
     pub fn build(self) -> AppContext {
