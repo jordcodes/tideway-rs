@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::Path;
-
 use tideway_cli::cli::NewArgs;
 
 #[test]
@@ -148,6 +147,29 @@ fn test_new_command_with_ci() {
     tideway_cli::commands::new::run(args).expect("run new command");
 
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
+}
+
+#[test]
+fn test_new_command_prints_summary() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: "my_app".to_string(),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    let files = tideway_cli::commands::new::expected_files(&args);
+    assert!(
+        files.iter().any(|file| file == "src/main.rs"),
+        "expected src/main.rs in file list, got {:?}",
+        files
+    );
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

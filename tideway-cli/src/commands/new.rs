@@ -52,6 +52,59 @@ pub fn run(args: NewArgs) -> Result<()> {
     };
     let engine = BackendTemplateEngine::new(context)?;
 
+    let needs_env = needs_env_from_args(&args);
+    scaffold_files(&target_dir, &engine, &args, needs_env)?;
+    let created = expected_files(&args);
+
+    println!(
+        "\n{} {}\n",
+        "tideway".cyan().bold(),
+        "starter app created".green().bold()
+    );
+
+    print_info(&format!("Project name: {}", project_name.green()));
+    print_info(&format!("Location: {}", target_dir.display().to_string().yellow()));
+    if has_tideway_features {
+        print_info(&format!(
+            "Tideway features: {}",
+            features
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+                .green()
+        ));
+    }
+
+    println!("\n{}", "Generated files:".yellow().bold());
+    for path in &created {
+        println!("  - {}", path);
+    }
+
+    println!("\n{}", "Next steps:".yellow().bold());
+    println!("  1. cd {}", dir_name);
+    let mut step = 2;
+    if args.with_docker {
+        println!("  {}. docker compose up -d", step);
+        step += 1;
+    }
+    if has_auth_feature || has_database_feature || args.with_config {
+        println!("  {}. cp .env.example .env", step);
+        step += 1;
+    }
+    println!("  {}. cargo run", step);
+    println!();
+
+    print_success("Ready to build");
+    Ok(())
+}
+
+fn scaffold_files(
+    target_dir: &Path,
+    engine: &BackendTemplateEngine,
+    args: &NewArgs,
+    needs_env: bool,
+) -> Result<()> {
     write_file(
         &target_dir.join("Cargo.toml"),
         &engine.render("starter/Cargo.toml")?,
@@ -106,7 +159,7 @@ pub fn run(args: NewArgs) -> Result<()> {
         args.force,
     )?;
 
-    if has_auth_feature || has_database_feature || args.with_config {
+    if needs_env {
         write_file(
             &target_dir.join(".env.example"),
             &engine.render("starter/env_example")?,
@@ -114,44 +167,37 @@ pub fn run(args: NewArgs) -> Result<()> {
         )?;
     }
 
-    println!(
-        "\n{} {}\n",
-        "tideway".cyan().bold(),
-        "starter app created".green().bold()
-    );
-
-    print_info(&format!("Project name: {}", project_name.green()));
-    print_info(&format!("Location: {}", target_dir.display().to_string().yellow()));
-    if has_tideway_features {
-        print_info(&format!(
-            "Tideway features: {}",
-            features
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-                .green()
-        ));
-    }
-
-    println!("\n{}", "Next steps:".yellow().bold());
-    println!("  1. cd {}", dir_name);
-    let mut step = 2;
-    if args.with_docker {
-        println!("  {}. docker compose up -d", step);
-        step += 1;
-    }
-    if has_auth_feature || has_database_feature || args.with_config {
-        println!("  {}. cp .env.example .env", step);
-        step += 1;
-    }
-    println!("  {}. cargo run", step);
-    println!();
-
-    print_success("Ready to build");
     Ok(())
 }
 
+pub fn expected_files(args: &NewArgs) -> Vec<String> {
+    let needs_env = needs_env_from_args(args);
+    let mut files = vec![
+        "Cargo.toml".to_string(),
+        "src/main.rs".to_string(),
+        "src/routes/mod.rs".to_string(),
+    ];
+
+    if args.with_config {
+        files.push("src/config.rs".to_string());
+        files.push("src/error.rs".to_string());
+    }
+    if args.with_docker {
+        files.push("docker-compose.yml".to_string());
+    }
+    if args.with_ci {
+        files.push(".github/workflows/ci.yml".to_string());
+    }
+
+    files.push(".gitignore".to_string());
+    files.push("tests/health.rs".to_string());
+
+    if needs_env {
+        files.push(".env.example".to_string());
+    }
+
+    files
+}
 fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         return Err(anyhow!(
@@ -190,6 +236,11 @@ fn normalize_features(features: &[String]) -> BTreeSet<String> {
         normalized.insert(mapped.to_string());
     }
     normalized
+}
+
+fn needs_env_from_args(args: &NewArgs) -> bool {
+    let features = normalize_features(&args.features);
+    features.contains("auth") || features.contains("database") || args.with_config
 }
 
 fn to_pascal_case(s: &str) -> String {
