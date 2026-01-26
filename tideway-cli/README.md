@@ -21,12 +21,18 @@ tideway new my_app
 Options:
 - `--features` - Tideway features to enable (comma-separated)
 - `--with-config` - Generate config.rs and error.rs starter files
+- `--with-docker` - Generate docker-compose.yml for local Postgres
 - `--path` - Output directory (default: project name)
 - `--force` - Overwrite existing files
 
 Example:
 ```bash
 tideway new my_app --features auth,database
+```
+
+Docker example:
+```bash
+tideway new my_app --features database --with-docker
 ```
 
 The starter includes a basic `tests/health.rs` you can run with:

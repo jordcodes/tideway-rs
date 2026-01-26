@@ -80,6 +80,13 @@ pub fn run(args: NewArgs) -> Result<()> {
             args.force,
         )?;
     }
+    if args.with_docker {
+        write_file(
+            &target_dir.join("docker-compose.yml"),
+            &engine.render("starter/docker-compose")?,
+            args.force,
+        )?;
+    }
     write_file(
         &target_dir.join(".gitignore"),
         &engine.render("starter/gitignore")?,
@@ -122,12 +129,16 @@ pub fn run(args: NewArgs) -> Result<()> {
 
     println!("\n{}", "Next steps:".yellow().bold());
     println!("  1. cd {}", dir_name);
-    if has_auth_feature || has_database_feature || args.with_config {
-        println!("  2. cp .env.example .env");
-        println!("  3. cargo run");
-    } else {
-        println!("  2. cargo run");
+    let mut step = 2;
+    if args.with_docker {
+        println!("  {}. docker compose up -d", step);
+        step += 1;
     }
+    if has_auth_feature || has_database_feature || args.with_config {
+        println!("  {}. cp .env.example .env", step);
+        step += 1;
+    }
+    println!("  {}. cargo run", step);
     println!();
 
     print_success("Ready to build");

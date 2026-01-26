@@ -12,6 +12,7 @@ fn test_new_command_generates_starter_files() {
         name: "my_app".to_string(),
         features: Vec::new(),
         with_config: false,
+        with_docker: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -34,6 +35,7 @@ fn test_new_command_includes_features_and_env() {
         name: "my_app".to_string(),
         features: vec!["auth".to_string(), "database".to_string()],
         with_config: false,
+        with_docker: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -64,6 +66,7 @@ fn test_new_command_compiles_with_features_smoke() {
         name: "my_app".to_string(),
         features: vec!["auth".to_string(), "database".to_string()],
         with_config: false,
+        with_docker: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -91,6 +94,7 @@ fn test_new_command_with_config() {
         name: "my_app".to_string(),
         features: Vec::new(),
         with_config: true,
+        with_docker: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -100,6 +104,25 @@ fn test_new_command_with_config() {
     assert!(project_dir.join("src/config.rs").exists());
     assert!(project_dir.join("src/error.rs").exists());
     assert!(project_dir.join(".env.example").exists());
+}
+
+#[test]
+fn test_new_command_with_docker() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: "my_app".to_string(),
+        features: vec!["database".to_string()],
+        with_config: false,
+        with_docker: true,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    assert!(project_dir.join("docker-compose.yml").exists());
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

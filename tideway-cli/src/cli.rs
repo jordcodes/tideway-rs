@@ -49,6 +49,10 @@ pub struct NewArgs {
     #[arg(long, default_value = "false")]
     pub with_config: bool,
 
+    /// Generate docker-compose.yml for local Postgres
+    #[arg(long, default_value = "false")]
+    pub with_docker: bool,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,
