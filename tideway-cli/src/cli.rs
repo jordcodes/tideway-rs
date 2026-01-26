@@ -45,6 +45,10 @@ pub struct NewArgs {
     #[arg(long, value_delimiter = ',')]
     pub features: Vec<String>,
 
+    /// Generate config.rs and error.rs starter files
+    #[arg(long, default_value = "false")]
+    pub with_config: bool,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,

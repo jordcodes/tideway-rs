@@ -1,6 +1,9 @@
 //! {{project_name_pascal}} API server.
 
 use tideway::{init_tracing, App};
+{{#if has_config}}
+use crate::config::AppConfig;
+{{/if}}
 {{#if needs_arc}}
 use std::sync::Arc;
 {{/if}}
@@ -12,10 +15,18 @@ use tideway::auth::{JwtIssuer, JwtIssuerConfig};
 {{/if}}
 
 mod routes;
+{{#if has_config}}
+mod config;
+mod error;
+{{/if}}
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     init_tracing();
+
+{{#if has_config}}
+    let _config = AppConfig::from_env();
+{{/if}}
 
 {{#if has_database_feature}}
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");

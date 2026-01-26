@@ -1,0 +1,6 @@
+use tideway::{Result, TidewayError};
+
+/// App-specific error helpers.
+pub fn bad_request(message: impl Into<String>) -> Result<()> {
+    Err(TidewayError::bad_request(message))
+}

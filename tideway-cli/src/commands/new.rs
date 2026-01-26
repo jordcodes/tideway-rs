@@ -48,6 +48,7 @@ pub fn run(args: NewArgs) -> Result<()> {
         has_auth_feature,
         has_database_feature,
         needs_arc,
+        has_config: args.with_config,
     };
     let engine = BackendTemplateEngine::new(context)?;
 
@@ -66,6 +67,19 @@ pub fn run(args: NewArgs) -> Result<()> {
         &engine.render("starter/src/routes/mod.rs")?,
         args.force,
     )?;
+
+    if args.with_config {
+        write_file(
+            &target_dir.join("src/config.rs"),
+            &engine.render("starter/src/config.rs")?,
+            args.force,
+        )?;
+        write_file(
+            &target_dir.join("src/error.rs"),
+            &engine.render("starter/src/error.rs")?,
+            args.force,
+        )?;
+    }
     write_file(
         &target_dir.join(".gitignore"),
         &engine.render("starter/gitignore")?,
@@ -78,7 +92,7 @@ pub fn run(args: NewArgs) -> Result<()> {
         args.force,
     )?;
 
-    if has_auth_feature || has_database_feature {
+    if has_auth_feature || has_database_feature || args.with_config {
         write_file(
             &target_dir.join(".env.example"),
             &engine.render("starter/env_example")?,
@@ -108,7 +122,7 @@ pub fn run(args: NewArgs) -> Result<()> {
 
     println!("\n{}", "Next steps:".yellow().bold());
     println!("  1. cd {}", dir_name);
-    if has_auth_feature || has_database_feature {
+    if has_auth_feature || has_database_feature || args.with_config {
         println!("  2. cp .env.example .env");
         println!("  3. cargo run");
     } else {

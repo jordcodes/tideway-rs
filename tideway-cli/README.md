@@ -20,6 +20,7 @@ tideway new my_app
 
 Options:
 - `--features` - Tideway features to enable (comma-separated)
+- `--with-config` - Generate config.rs and error.rs starter files
 - `--path` - Output directory (default: project name)
 - `--force` - Overwrite existing files
 

@@ -10,11 +10,11 @@ fn test_init_minimal_generates_files() {
     let args = InitArgs {
         src: src_dir.to_string_lossy().to_string(),
         name: Some("my_app".to_string()),
+        minimal: true,
         force: true,
         no_database: false,
         no_migrations: false,
         env_example: false,
-        minimal: true,
     };
 
     tideway_cli::commands::init::run(args).expect("run init");

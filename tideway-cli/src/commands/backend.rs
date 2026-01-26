@@ -73,6 +73,7 @@ pub fn run(args: BackendArgs) -> Result<()> {
         has_auth_feature: false,
         has_database_feature: false,
         needs_arc: false,
+        has_config: false,
     };
 
     // Initialize template engine
