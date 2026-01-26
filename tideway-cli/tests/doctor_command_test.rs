@@ -97,3 +97,34 @@ tideway = { version = "0.7", features = ["auth", "database"] }
         report.warnings
     );
 }
+
+#[test]
+fn test_doctor_invalid_database_url_format() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(project_dir.join(".env"), "DATABASE_URL=not-a-url\n")
+        .expect("write env");
+
+    let report = analyze_project(project_dir).expect("analyze project");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|w| w.contains("DATABASE_URL format")),
+        "expected DATABASE_URL format warning, got {:?}",
+        report.warnings
+    );
+}

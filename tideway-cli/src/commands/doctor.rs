@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -85,14 +85,14 @@ pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
 
     let env_file = project_dir.join(".env");
     let env_example_file = project_dir.join(".env.example");
-    let env_vars = read_env_vars(&env_file).unwrap_or_default();
-    let env_example_vars = read_env_vars(&env_example_file).unwrap_or_default();
+    let env_vars = read_env_map(&env_file).unwrap_or_default();
+    let env_example_vars = read_env_map(&env_example_file).unwrap_or_default();
 
     let needs_database = tideway_features.contains("database") || detected.contains("database");
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
 
     if needs_database {
-        check_env_var(
+        let db_value = check_env_var(
             "DATABASE_URL",
             &env_file,
             &env_example_file,
@@ -100,6 +100,11 @@ pub fn analyze_project(project_dir: &Path) -> Result<DoctorReport> {
             &env_example_vars,
             &mut report,
         );
+        if let Some(value) = db_value {
+            if let Some(message) = validate_database_url(&value) {
+                report.warnings.push(message);
+            }
+        }
     }
 
     if needs_auth {
@@ -191,23 +196,24 @@ fn module_to_feature(module: &str) -> &str {
     }
 }
 
-fn read_env_vars(path: &Path) -> Result<BTreeSet<String>> {
+fn read_env_map(path: &Path) -> Result<BTreeMap<String, String>> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("Failed to read {}", path.display()))?;
-    Ok(parse_env_vars(&contents))
+    Ok(parse_env_map(&contents))
 }
 
-fn parse_env_vars(contents: &str) -> BTreeSet<String> {
-    let mut vars = BTreeSet::new();
+fn parse_env_map(contents: &str) -> BTreeMap<String, String> {
+    let mut vars = BTreeMap::new();
     for line in contents.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if let Some((key, _)) = trimmed.split_once('=') {
+        if let Some((key, value)) = trimmed.split_once('=') {
             let key = key.trim();
             if !key.is_empty() {
-                vars.insert(key.to_string());
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                vars.insert(key.to_string(), value.to_string());
             }
         }
     }
@@ -218,20 +224,20 @@ fn check_env_var(
     key: &str,
     env_path: &Path,
     env_example_path: &Path,
-    env_vars: &BTreeSet<String>,
-    env_example_vars: &BTreeSet<String>,
+    env_vars: &BTreeMap<String, String>,
+    env_example_vars: &BTreeMap<String, String>,
     report: &mut DoctorReport,
-) {
-    if env_vars.contains(key) {
-        return;
+) -> Option<String> {
+    if let Some(value) = env_vars.get(key) {
+        return Some(value.clone());
     }
 
-    if env_example_vars.contains(key) {
+    if env_example_vars.contains_key(key) {
         report.warnings.push(format!(
             "{} missing in .env (found in .env.example) - copy .env.example and fill values",
             key
         ));
-        return;
+        return env_example_vars.get(key).cloned();
     }
 
     if env_path.exists() || env_example_path.exists() {
@@ -239,11 +245,32 @@ fn check_env_var(
             "{} missing in .env and .env.example",
             key
         ));
-        return;
+        return None;
     }
 
     report.warnings.push(format!(
         "{} missing - create .env.example (and .env) for local setup",
         key
     ));
+    None
+}
+
+fn validate_database_url(value: &str) -> Option<String> {
+    if !value.contains("://") {
+        return Some("DATABASE_URL format looks invalid (missing scheme)".to_string());
+    }
+
+    let lower = value.to_lowercase();
+    let valid = lower.starts_with("postgres://")
+        || lower.starts_with("postgresql://")
+        || lower.starts_with("sqlite:");
+
+    if !valid {
+        return Some(format!(
+            "DATABASE_URL scheme looks invalid: {}",
+            value
+        ));
+    }
+
+    None
 }
