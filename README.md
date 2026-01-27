@@ -65,7 +65,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.7"
+tideway = "0.7.10"
 tokio = { version = "1.48", features = ["full"] }
 ```
 
@@ -105,6 +105,9 @@ async fn main() -> Result<(), std::io::Error> {
 }
 ```
 
+Note: `into_router()` does **not** apply the full middleware stack. Use
+`into_router_with_middleware()` whenever you serve manually.
+
 Run your app:
 
 ```bash
@@ -129,6 +132,9 @@ Or apply the API preset:
 ```bash
 tideway new my_app --preset api
 ```
+
+When no flags are provided, the CLI will prompt you interactively (similar to Vite).
+You can disable prompts with `--no-prompt`.
 
 ### Getting Started Guide
 
@@ -183,6 +189,18 @@ tideway::module!(
 );
 ```
 
+You can also group multiple methods for the same path:
+
+```rust
+tideway::module!(
+    UsersModule,
+    prefix = "/api",
+    routes = [
+        ("/users", get => list_users, post => create_user),
+    ]
+);
+```
+
 **OpenAPI per module (optional):**
 ```rust
 #[cfg(feature = "openapi")]
@@ -193,6 +211,28 @@ mod openapi_docs {
 #[cfg(feature = "openapi")]
 let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc);
 ```
+
+**Quick guards with `ensure!`:**
+```rust
+use tideway::ensure;
+
+ensure!(user.is_admin, TidewayError::forbidden("Admin access required"));
+ensure!(user.id != target_id, "Cannot delete your own account");
+```
+See `docs/error_handling.md` for more examples.
+
+**Testing helpers (HTTP):**
+```rust
+use tideway::testing::get as test_get;
+use tideway::{App, RouteModule};
+
+let app = App::new().register_module(UsersModule).into_router();
+test_get(app, "/api/users")
+    .execute()
+    .await
+    .assert_ok();
+```
+See `docs/testing.md` for more helpers.
 
 ### 2. Configuration
 
