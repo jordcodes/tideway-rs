@@ -32,6 +32,30 @@ pub trait UserLoader: Send + Sync {
 
     /// Get the user's name (for token claims).
     fn user_name(&self, user: &Self::User) -> Option<String>;
+
+    /// Get custom claims to include in the access token.
+    ///
+    /// Override this to include app-specific claims like `org_id`, `roles`,
+    /// `tenant_id`, etc. These claims are re-fetched on each refresh to ensure
+    /// they reflect the current state (e.g., if a user was removed from an
+    /// organization, the new token won't include that org_id).
+    ///
+    /// Returns `None` by default (no custom claims).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// async fn custom_claims(&self, user: &Self::User) -> Option<serde_json::Value> {
+    ///     let org_id = lookup_org_id(user.id).await;
+    ///     Some(serde_json::json!({
+    ///         "org_id": org_id,
+    ///         "role": user.role,
+    ///     }))
+    /// }
+    /// ```
+    async fn custom_claims(&self, _user: &Self::User) -> Option<serde_json::Value> {
+        None
+    }
 }
 
 /// Handles token refresh with rotation and reuse detection.
@@ -201,16 +225,23 @@ where
         // Issue new access token
         let email = self.user_loader.user_email(&user);
         let name = self.user_loader.user_name(&user);
+        let custom_claims = self.user_loader.custom_claims(&user).await;
 
-        let mut subject = TokenSubject::new(user_id);
-        if let Some(ref e) = email {
-            subject = subject.with_email(e);
-        }
-        if let Some(ref n) = name {
-            subject = subject.with_name(n);
-        }
+        let (access_token, expires_in) = {
+            let mut subject = TokenSubject::new(user_id);
+            if let Some(ref e) = email {
+                subject = subject.with_email(e);
+            }
+            if let Some(ref n) = name {
+                subject = subject.with_name(n);
+            }
 
-        let (access_token, expires_in) = self.issuer.issue_access_token(subject)?;
+            if let Some(custom) = custom_claims {
+                self.issuer.issue_access_token(subject.with_custom(custom))?
+            } else {
+                self.issuer.issue_access_token(subject)?
+            }
+        };
 
         // Rotate refresh token (keeps same family)
         let family = claims.family.clone();
