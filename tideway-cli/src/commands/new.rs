@@ -360,6 +360,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         db: true,
         repo: false,
         repo_tests: false,
+        service: false,
         db_backend: DbBackend::Auto,
     };
 

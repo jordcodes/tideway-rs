@@ -36,6 +36,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         has_openapi,
         args.db,
         args.repo,
+        args.service,
     );
     write_file(&resource_path, &contents, false)?;
 
@@ -59,6 +60,13 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     if args.repo_tests && !args.repo {
         return Err(anyhow::anyhow!(
             "Repository tests require --repo (run `tideway resource {} --db --repo --repo-tests`)",
+            resource_name
+        ));
+    }
+
+    if args.service && !args.repo {
+        return Err(anyhow::anyhow!(
+            "Service scaffolding requires --repo (run `tideway resource {} --db --repo --service`)",
             resource_name
         ));
     }
@@ -94,6 +102,9 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
                 generate_repository_tests(&project_dir, &project_name, &resource_name)?;
             }
+            if args.service {
+                generate_service(&project_dir, &resource_name)?;
+            }
         }
 
         if args.wire {
@@ -101,6 +112,9 @@ pub fn run(args: ResourceArgs) -> Result<()> {
             wire_entities_in_main(&src_dir)?;
             if args.repo {
                 wire_repositories_in_main(&src_dir)?;
+            }
+            if args.service {
+                wire_services_in_main(&src_dir)?;
             }
         } else {
             print_info("Next steps: wire database into main.rs (tideway add database --wire)");
@@ -158,6 +172,7 @@ fn render_resource_module(
     has_openapi: bool,
     with_db: bool,
     with_repo: bool,
+    with_service: bool,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
     let tests_block = if with_tests {
@@ -344,8 +359,92 @@ mod openapi_docs {{
     } else {
         String::new()
     };
+    let services_import = if with_service {
+        format!("use crate::services::{resource_name}::{resource_pascal}Service;\n")
+    } else {
+        String::new()
+    };
 
-    let handlers = if with_db && with_repo {
+    let handlers = if with_db && with_repo && with_service {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Vec<{resource_pascal}>>> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    let service = {resource_pascal}Service::new(repo);
+    let models = service.list().await?;
+    let items = models
+        .into_iter()
+        .map(|model| {resource_pascal} {{
+            id: model.id.to_string(),
+            name: model.name,
+        }})
+        .collect();
+    Ok(Json(items))
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+) -> Result<Json<{resource_pascal}>> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    let service = {resource_pascal}Service::new(repo);
+    let model = service
+        .get(id)
+        .await?
+        .ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
+    Ok(Json({resource_pascal} {{
+        id: model.id.to_string(),
+        name: model.name,
+    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}(
+    State(ctx): State<AppContext>,
+    {body_extractor},
+) -> Result<MessageResponse> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    let service = {resource_pascal}Service::new(repo);
+    service.create(body.name).await?;
+    Ok(MessageResponse::success("Created"))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+    Json(body): Json<UpdateRequest>,
+) -> Result<MessageResponse> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    let service = {resource_pascal}Service::new(repo);
+    service.update(id, body.name).await?;
+    Ok(MessageResponse::success("Updated"))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+) -> Result<MessageResponse> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    let service = {resource_pascal}Service::new(repo);
+    service.delete(id).await?;
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+        )
+    } else if with_db && with_repo {
         format!(
             r#"
 {openapi_attrs}
@@ -555,6 +654,7 @@ use tideway::{{AppContext, MessageResponse, Result, RouteModule}};
 {sea_orm_imports}
 {entities_import}
 {repositories_import}
+{services_import}
 
 pub struct {resource_pascal}Module;
 
@@ -605,6 +705,7 @@ pub struct UpdateRequest {{
         sea_orm_imports = sea_orm_imports,
         entities_import = entities_import,
         repositories_import = repositories_import,
+        services_import = services_import,
     )
 }
 
@@ -733,6 +834,32 @@ fn wire_repositories_in_main(src_dir: &Path) -> Result<()> {
     fs::write(&main_path, contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Added mod repositories to src/main.rs");
+    Ok(())
+}
+
+fn wire_services_in_main(src_dir: &Path) -> Result<()> {
+    let main_path = src_dir.join("main.rs");
+    if !main_path.exists() {
+        print_warning("src/main.rs not found; skipping services wiring");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&main_path)
+        .with_context(|| format!("Failed to read {}", main_path.display()))?;
+
+    if contents.contains("mod services;") {
+        return Ok(());
+    }
+
+    if contents.contains("mod routes;") {
+        contents = contents.replace("mod routes;\n", "mod routes;\nmod services;\n");
+    } else {
+        contents = format!("mod services;\n{}", contents);
+    }
+
+    fs::write(&main_path, contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    print_success("Added mod services to src/main.rs");
     Ok(())
 }
 
@@ -1107,6 +1234,85 @@ impl {resource_pascal}Repository {{
             .exec(&self.db)
             .await?;
         Ok(())
+    }}
+}}
+"#,
+        resource_name = resource_name,
+        resource_pascal = resource_pascal
+    )
+}
+
+fn generate_service(project_dir: &Path, resource_name: &str) -> Result<()> {
+    let src_dir = project_dir.join("src");
+    let services_dir = src_dir.join("services");
+    fs::create_dir_all(&services_dir)
+        .with_context(|| format!("Failed to create {}", services_dir.display()))?;
+
+    let services_mod = services_dir.join("mod.rs");
+    if !services_mod.exists() {
+        let contents = "//! Service layer.\n\n";
+        write_file(&services_mod, contents, false)?;
+        print_success("Created src/services/mod.rs");
+    }
+    wire_services_mod(&services_mod, resource_name)?;
+
+    let service_path = services_dir.join(format!("{}.rs", resource_name));
+    let service_contents = render_service(resource_name);
+    write_file(&service_path, &service_contents, false)?;
+    print_success("Generated service");
+    Ok(())
+}
+
+fn wire_services_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
+    let mut contents = fs::read_to_string(mod_path)
+        .with_context(|| format!("Failed to read {}", mod_path.display()))?;
+    let mod_line = format!("pub mod {};", resource_name);
+    if !contents.contains(&mod_line) {
+        contents.push_str(&format!("\n{}\n", mod_line));
+        fs::write(mod_path, contents)
+            .with_context(|| format!("Failed to write {}", mod_path.display()))?;
+    }
+    Ok(())
+}
+
+fn render_service(resource_name: &str) -> String {
+    let resource_pascal = to_pascal_case(resource_name);
+    format!(
+        r#"use tideway::Result;
+
+use crate::repositories::{resource_name}::{resource_pascal}Repository;
+
+pub struct {resource_pascal}Service {{
+    repo: {resource_pascal}Repository,
+}}
+
+impl {resource_pascal}Service {{
+    pub fn new(repo: {resource_pascal}Repository) -> Self {{
+        Self {{ repo }}
+    }}
+
+    pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{
+        self.repo.list().await
+    }}
+
+    pub async fn get(&self, id: i32) -> Result<Option<crate::entities::{resource_name}::Model>> {{
+        self.repo.get(id).await
+    }}
+
+    pub async fn create(&self, name: String) -> Result<crate::entities::{resource_name}::Model> {{
+        self.repo.create(name).await
+    }}
+
+    pub async fn update(
+        &self,
+        id: i32,
+        name: Option<String>,
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        self.repo.update(id, name).await
+    }}
+
+    pub async fn delete(&self, id: i32) -> Result<()> {{
+        self.repo.delete(id).await
     }}
 }}
 "#,
