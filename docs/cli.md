@@ -90,6 +90,7 @@ tideway add auth --wire
 tideway add database
 tideway add database --wire
 tideway add openapi
+tideway add openapi --wire
 ```
 
 ### `tideway doctor`

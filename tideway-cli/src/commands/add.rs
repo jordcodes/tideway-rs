@@ -43,6 +43,10 @@ pub fn run(args: AddArgs) -> Result<()> {
         wire_database_in_main(&project_dir)?;
     }
 
+    if args.feature == AddFeature::Openapi && args.wire {
+        wire_openapi_in_main(&project_dir)?;
+    }
+
     print_success(&format!("Added {}", args.feature));
     Ok(())
 }
@@ -401,6 +405,80 @@ fn insert_database_into_app_builder(mut contents: String) -> Result<String> {
         Ok(contents)
     } else {
         print_warning("Could not find app builder; skipping database wiring");
+        Ok(contents)
+    }
+}
+
+fn wire_openapi_in_main(project_dir: &Path) -> Result<()> {
+    let main_path = project_dir.join("src").join("main.rs");
+    if !main_path.exists() {
+        print_warning("src/main.rs not found; skipping auto-wiring");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&main_path)
+        .with_context(|| format!("Failed to read {}", main_path.display()))?;
+
+    if contents.contains("openapi::create_openapi_router") || contents.contains("openapi_merge_module") {
+        print_info("OpenAPI already appears wired in main.rs");
+        return Ok(());
+    }
+
+    contents = ensure_use_line(contents, "use tideway::ConfigBuilder;", "use tideway::");
+    if contents.contains("mod config;") {
+        contents = ensure_use_line(contents, "use crate::config::AppConfig;", "use tideway::");
+    }
+    contents = ensure_use_line(contents, "use tideway::openapi;", "use tideway::");
+
+    if !contents.contains("mod openapi_docs;") {
+        if contents.contains("mod routes;") {
+            contents = contents.replace("mod routes;\n", "mod routes;\nmod openapi_docs;\n");
+        } else {
+            contents = format!("mod openapi_docs;\n{}", contents);
+        }
+    }
+
+    let has_config_var = contents.contains("let config = ConfigBuilder::new()")
+        || contents.contains("let config = AppConfig::from_env()");
+    let config_available = contents.contains("ConfigBuilder::new()")
+        || contents.contains("AppConfig::from_env()");
+
+    if !has_config_var && config_available {
+        let config_block = "    let config = ConfigBuilder::new()\n        .from_env()\n        .build()\n        .expect(\"Invalid TIDEWAY_* config\");\n\n";
+        contents = insert_before_app_builder(contents, config_block)?;
+    }
+
+    if contents.contains("let config = AppConfig::from_env()") {
+        contents = insert_openapi_into_app_builder(contents, "config.tideway")?;
+    } else {
+        contents = insert_openapi_into_app_builder(contents, "config")?;
+    }
+
+    fs::write(&main_path, contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    print_success("Wired OpenAPI into src/main.rs");
+    Ok(())
+}
+
+fn insert_openapi_into_app_builder(mut contents: String, config_ref: &str) -> Result<String> {
+    if contents.contains("create_openapi_router") {
+        return Ok(contents);
+    }
+
+    if let Some(pos) = contents.find("let app = App::") {
+        // Insert after app builder block to keep code readable.
+        if let Some(end_pos) = contents[pos..].find(";\n\n") {
+            let insert_at = pos + end_pos + 3;
+            let block = format!(
+                "\n    #[cfg(feature = \"openapi\")]\n    if {config_ref}.openapi.enabled {{\n        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);\n        let openapi_router = tideway::openapi::create_openapi_router(openapi, &{config_ref}.openapi);\n        app = app.merge_router(openapi_router);\n    }}\n"
+            );
+            contents.insert_str(insert_at, &block);
+        } else {
+            print_warning("Could not find app builder termination; skipping OpenAPI wiring");
+        }
+        Ok(contents)
+    } else {
+        print_warning("Could not find app builder; skipping OpenAPI wiring");
         Ok(contents)
     }
 }
