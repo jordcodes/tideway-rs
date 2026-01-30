@@ -17,12 +17,22 @@ pub fn run(args: MigrateArgs) -> Result<()> {
         ensure_env(&project_dir, args.fix_env)?;
     }
 
+    if args.action == "init" {
+        let backend = resolve_backend(&project_dir, args.backend)?;
+        return match backend {
+            MigrateBackend::SeaOrm => init_sea_orm_migration(&project_dir),
+            MigrateBackend::Auto => Err(anyhow::anyhow!(
+                "Unable to detect migration backend; pass --backend"
+            )),
+        };
+    }
+
     let backend = resolve_backend(&project_dir, args.backend)?;
     match backend {
         MigrateBackend::SeaOrm => run_sea_orm_cli(&project_dir, &args),
-        MigrateBackend::Auto => {
-            Err(anyhow::anyhow!("Unable to detect migration backend; pass --backend"))
-        }
+        MigrateBackend::Auto => Err(anyhow::anyhow!(
+            "Unable to detect migration backend; pass --backend"
+        )),
     }
 }
 
@@ -90,6 +100,39 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
 
     if status.success() {
         print_success("Migrations completed");
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "sea-orm-cli exited with status {}",
+            status
+        ))
+    }
+}
+
+fn init_sea_orm_migration(project_dir: &Path) -> Result<()> {
+    let migration_root = project_dir.join("migration");
+    if migration_root.exists() {
+        print_warning("migration/ already exists; skipping init");
+        return Ok(());
+    }
+
+    let mut command = Command::new("sea-orm-cli");
+    command
+        .arg("migrate")
+        .arg("init")
+        .current_dir(project_dir);
+
+    if let Some(env_map) = read_env_map(&project_dir.join(".env")) {
+        command.envs(env_map);
+    }
+
+    print_info("Initializing SeaORM migration crate...");
+    let status = command
+        .status()
+        .context("Failed to run sea-orm-cli (is it installed?)")?;
+
+    if status.success() {
+        print_success("Migration crate initialized");
         Ok(())
     } else {
         Err(anyhow::anyhow!(

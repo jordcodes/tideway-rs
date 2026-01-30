@@ -168,6 +168,7 @@ Run database migrations (SeaORM by default).
 tideway migrate
 tideway migrate status
 tideway migrate down
+tideway migrate init
 tideway migrate up -- --num 2
 ```
 
