@@ -152,6 +152,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     if needs_database {
         check_migration_setup(project_dir, &mut report);
         check_database_wiring(&src_dir, &mut report);
+        check_migration_execution_hint(project_dir, &src_dir, &env_vars, &env_example_vars, &mut report);
     }
 
     Ok(report)
@@ -479,6 +480,33 @@ fn check_database_wiring(src_dir: &Path, report: &mut DoctorReport) {
     if !contents.contains("with_database(") {
         report.warnings.push(
             "DB-backed routes detected but AppContext is not wired (run `tideway add database --wire`)"
+                .to_string(),
+        );
+    }
+}
+
+fn check_migration_execution_hint(
+    project_dir: &Path,
+    src_dir: &Path,
+    env_vars: &BTreeMap<String, String>,
+    env_example_vars: &BTreeMap<String, String>,
+    report: &mut DoctorReport,
+) {
+    let migration_lib = project_dir.join("migration").join("src").join("lib.rs");
+    if !migration_lib.exists() {
+        return;
+    }
+
+    let has_auto_migrate = env_vars.contains_key("DATABASE_AUTO_MIGRATE")
+        || env_example_vars.contains_key("DATABASE_AUTO_MIGRATE");
+    let main_path = src_dir.join("main.rs");
+    let main_contents = fs::read_to_string(&main_path).unwrap_or_default();
+    let has_migration_call = main_contents.contains("run_migrations(")
+        || main_contents.contains("run_migrations_now(");
+
+    if !has_auto_migrate && !has_migration_call {
+        report.info.push(
+            "Migrations detected but not auto-run (set DATABASE_AUTO_MIGRATE=true, call run_migrations, or use `tideway dev`)"
                 .to_string(),
         );
     }
