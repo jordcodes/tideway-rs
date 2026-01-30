@@ -26,6 +26,9 @@ pub enum Commands {
     /// Generate backend scaffolding (routes, entities, migrations)
     Backend(BackendArgs),
 
+    /// Add Tideway features and scaffolding to an existing project
+    Add(AddArgs),
+
     /// Initialize main.rs by scanning for modules and wiring them together
     Init(InitArgs),
 
@@ -94,6 +97,35 @@ pub enum NewPreset {
     Api,
     /// Print available presets
     List,
+}
+
+#[derive(Parser, Debug)]
+pub struct AddArgs {
+    /// Feature to add (auth, database, openapi, validation, cache, sessions, jobs, websocket, metrics, email)
+    #[arg(value_enum)]
+    pub feature: AddFeature,
+
+    /// Project directory to update
+    #[arg(short, long, default_value = ".")]
+    pub path: String,
+
+    /// Overwrite existing scaffold files
+    #[arg(long, default_value = "false")]
+    pub force: bool,
+}
+
+#[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
+pub enum AddFeature {
+    Auth,
+    Database,
+    Openapi,
+    Validation,
+    Cache,
+    Sessions,
+    Jobs,
+    Websocket,
+    Metrics,
+    Email,
 }
 
 #[derive(Parser, Debug)]
@@ -321,5 +353,23 @@ impl std::fmt::Display for BackendPreset {
             BackendPreset::B2c => write!(f, "b2c"),
             BackendPreset::B2b => write!(f, "b2b"),
         }
+    }
+}
+
+impl std::fmt::Display for AddFeature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            AddFeature::Auth => "auth",
+            AddFeature::Database => "database",
+            AddFeature::Openapi => "openapi",
+            AddFeature::Validation => "validation",
+            AddFeature::Cache => "cache",
+            AddFeature::Sessions => "sessions",
+            AddFeature::Jobs => "jobs",
+            AddFeature::Websocket => "websocket",
+            AddFeature::Metrics => "metrics",
+            AddFeature::Email => "email",
+        };
+        write!(f, "{}", name)
     }
 }

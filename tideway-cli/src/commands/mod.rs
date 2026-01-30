@@ -1,6 +1,7 @@
 //! CLI commands
 
 pub mod backend;
+pub mod add;
 pub mod dev;
 pub mod generate;
 pub mod init;

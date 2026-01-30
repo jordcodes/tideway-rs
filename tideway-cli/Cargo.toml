@@ -20,6 +20,7 @@ clap = { version = "4", features = ["derive"] }
 handlebars = "6"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+toml_edit = "0.22"
 include_dir = "0.7"
 colored = "2"
 anyhow = "1"

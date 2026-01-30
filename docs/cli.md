@@ -80,6 +80,16 @@ Minimal entrypoint:
 tideway init --minimal
 ```
 
+### `tideway add`
+
+Add Tideway features and optional scaffolding.
+
+```bash
+tideway add auth
+tideway add database
+tideway add openapi
+```
+
 ### `tideway doctor`
 
 Check for missing features and env vars.

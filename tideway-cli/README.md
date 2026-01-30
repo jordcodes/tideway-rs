@@ -113,6 +113,16 @@ Options:
 - `--no-migrations` - Skip auto-migration on startup
 - `--minimal` - Generate a minimal main.rs + sample routes module
 
+### `tideway add`
+
+Add Tideway features and optional scaffolding.
+
+```bash
+tideway add auth
+tideway add database
+tideway add openapi
+```
+
 ### `tideway setup`
 
 Set up frontend dependencies (Tailwind, shadcn components).

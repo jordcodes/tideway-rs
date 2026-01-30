@@ -18,6 +18,7 @@ fn main() -> Result<()> {
         Commands::Doctor(args) => tideway_cli::commands::doctor::run(args)?,
         Commands::Generate(args) => tideway_cli::commands::generate::run(args)?,
         Commands::Backend(args) => tideway_cli::commands::backend::run(args)?,
+        Commands::Add(args) => tideway_cli::commands::add::run(args)?,
         Commands::Init(args) => tideway_cli::commands::init::run(args)?,
         Commands::Setup(args) => tideway_cli::commands::setup::run(args)?,
         Commands::Dev(args) => tideway_cli::commands::dev::run(args)?,
