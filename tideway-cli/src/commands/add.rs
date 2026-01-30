@@ -39,6 +39,10 @@ pub fn run(args: AddArgs) -> Result<()> {
         }
     }
 
+    if args.feature == AddFeature::Database && args.wire {
+        wire_database_in_main(&project_dir)?;
+    }
+
     print_success(&format!("Added {}", args.feature));
     Ok(())
 }
@@ -285,6 +289,47 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
     Ok(())
 }
 
+fn wire_database_in_main(project_dir: &Path) -> Result<()> {
+    let main_path = project_dir.join("src").join("main.rs");
+    if !main_path.exists() {
+        print_warning("src/main.rs not found; skipping auto-wiring");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&main_path)
+        .with_context(|| format!("Failed to read {}", main_path.display()))?;
+
+    if !contents.contains("async fn main") {
+        print_warning("main.rs is not async; skipping database wiring");
+        return Ok(());
+    }
+
+    contents = ensure_use_line(
+        contents,
+        "use tideway::{AppContext, SeaOrmPool};",
+        "use tideway::",
+    );
+    contents = ensure_use_line(contents, "use std::sync::Arc;", "use tideway::");
+
+    let has_database_block = contents.contains("DATABASE_URL")
+        || contents.contains("sea_orm::Database::connect")
+        || contents.contains("with_database");
+
+    if !has_database_block {
+        let block = "    let database_url = std::env::var(\"DATABASE_URL\").expect(\"DATABASE_URL is not set\");\n    let db = sea_orm::Database::connect(&database_url)\n        .await\n        .expect(\"Failed to connect to database\");\n\n";
+        contents = insert_before_app_builder(contents, block)?;
+    }
+
+    if !contents.contains(".with_database(") {
+        contents = insert_database_into_app_builder(contents)?;
+    }
+
+    fs::write(&main_path, contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    print_success("Wired database into src/main.rs");
+    Ok(())
+}
+
 fn ensure_use_line(mut contents: String, line: &str, anchor: &str) -> String {
     if contents.contains(line) {
         return contents;
@@ -337,6 +382,29 @@ fn insert_auth_into_app_builder(mut contents: String) -> Result<String> {
         Ok(contents)
     }
 }
+
+fn insert_database_into_app_builder(mut contents: String) -> Result<String> {
+    if let Some(pos) = contents.find("let app = App::") {
+        let line_end = contents[pos..]
+            .find('\n')
+            .map(|idx| pos + idx)
+            .unwrap_or(contents.len());
+        let indent = contents[pos..]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect::<String>();
+        let insert = format!(
+            "{}    .with_context(\n{}        AppContext::builder()\n{}            .with_database(Arc::new(SeaOrmPool::new(db, database_url)))\n{}            .build()\n{}    )\n",
+            indent, indent, indent, indent, indent
+        );
+        contents.insert_str(line_end + 1, &insert);
+        Ok(contents)
+    } else {
+        print_warning("Could not find app builder; skipping database wiring");
+        Ok(contents)
+    }
+}
+
 
 fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {

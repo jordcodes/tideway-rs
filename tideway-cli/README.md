@@ -121,6 +121,7 @@ Add Tideway features and optional scaffolding.
 tideway add auth
 tideway add auth --wire
 tideway add database
+tideway add database --wire
 tideway add openapi
 ```
 
