@@ -77,6 +77,10 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
         print_warning("migration/ directory not found; sea-orm-cli may fail");
     }
 
+    if args.action == "status" || args.action == "up" || args.action == "down" || args.action == "reset" {
+        ensure_database_url(project_dir)?;
+    }
+
     let mut command = Command::new("sea-orm-cli");
     command
         .arg("migrate")
@@ -107,6 +111,47 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
             status
         ))
     }
+}
+
+fn ensure_database_url(project_dir: &Path) -> Result<()> {
+    if let Some(env_map) = read_env_map(&project_dir.join(".env")) {
+        if let Some(value) = env_map.get("DATABASE_URL") {
+            validate_database_url(value)?;
+            return Ok(());
+        }
+    }
+
+    if let Ok(value) = std::env::var("DATABASE_URL") {
+        validate_database_url(&value)?;
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "DATABASE_URL is missing (set it in .env or the environment)"
+    ))
+}
+
+fn validate_database_url(value: &str) -> Result<()> {
+    if !value.contains("://") {
+        return Err(anyhow::anyhow!(
+            "DATABASE_URL looks invalid (missing scheme): {}",
+            value
+        ));
+    }
+
+    let lower = value.to_lowercase();
+    let valid = lower.starts_with("postgres://")
+        || lower.starts_with("postgresql://")
+        || lower.starts_with("sqlite:");
+
+    if !valid {
+        return Err(anyhow::anyhow!(
+            "DATABASE_URL scheme looks invalid: {}",
+            value
+        ));
+    }
+
+    Ok(())
 }
 
 fn init_sea_orm_migration(project_dir: &Path) -> Result<()> {
