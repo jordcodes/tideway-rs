@@ -241,3 +241,75 @@ tideway = { version = "0.7", features = ["database"] }
         report.info
     );
 }
+
+#[test]
+fn test_doctor_openapi_missing_docs_warning() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["openapi"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let app = App::new()
+        .register_module(routes::ApiModule);
+    let _ = app;
+}
+"#;
+    std::fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|line| line.contains("openapi_docs.rs")),
+        "expected openapi_docs warning, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn test_doctor_missing_migration_lib_warning() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(project_dir.join(".env"), "DATABASE_URL=postgres://localhost/my_app\n")
+        .expect("write env");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|line| line.contains("migration/src/lib.rs")),
+        "expected migration lib warning, got {:?}",
+        report.warnings
+    );
+}

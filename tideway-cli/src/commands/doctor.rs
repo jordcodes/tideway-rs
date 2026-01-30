@@ -145,6 +145,14 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
         );
     }
 
+    if tideway_features.contains("openapi") {
+        check_openapi_setup(&src_dir, project_dir, &mut report);
+    }
+
+    if needs_database {
+        check_migration_setup(project_dir, &mut report);
+    }
+
     Ok(report)
 }
 
@@ -395,4 +403,39 @@ fn write_env_example(path: &Path, lines: &[String]) -> Result<()> {
     fs::write(path, contents)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
+}
+
+fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorReport) {
+    let openapi_docs = src_dir.join("openapi_docs.rs");
+    if !openapi_docs.exists() {
+        report.warnings.push(
+            "OpenAPI is enabled but src/openapi_docs.rs is missing (run `tideway add openapi`)"
+                .to_string(),
+        );
+    }
+
+    let main_rs = src_dir.join("main.rs");
+    if let Ok(contents) = fs::read_to_string(&main_rs) {
+        let has_module = contents.contains("mod openapi_docs;");
+        let has_router = contents.contains("openapi_merge_module")
+            || contents.contains("create_openapi_router");
+        if !has_module || !has_router {
+            report.warnings.push(
+                "OpenAPI is enabled but main.rs is not wired (run `tideway add openapi --wire`)"
+                    .to_string(),
+            );
+        }
+    } else if project_dir.join("src").join("main.rs").exists() {
+        report.warnings.push("Failed to read src/main.rs for OpenAPI wiring check".to_string());
+    }
+}
+
+fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
+    let migration_lib = project_dir.join("migration").join("src").join("lib.rs");
+    if !migration_lib.exists() {
+        report.warnings.push(
+            "Missing migration/src/lib.rs (run `sea-orm-cli migrate init` or `tideway backend`)"
+                .to_string(),
+        );
+    }
 }
