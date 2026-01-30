@@ -418,3 +418,53 @@ async fn main() {
         report.info
     );
 }
+
+#[test]
+fn test_doctor_warns_when_openapi_docs_missing_routes() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/routes")).expect("create src/routes");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["openapi"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let openapi_docs = r#"
+#[cfg(feature = "openapi")]
+tideway::openapi_doc!(
+    pub(crate) ApiDoc,
+    paths(
+        crate::routes::users::list_users,
+    )
+);
+"#;
+    std::fs::write(project_dir.join("src/openapi_docs.rs"), openapi_docs)
+        .expect("write openapi docs");
+
+    let route = r#"
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/api/todos",
+    responses((status = 200))
+))]
+async fn list_todos() {}
+"#;
+    std::fs::write(project_dir.join("src/routes/todos.rs"), route).expect("write route");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|line| line.contains("OpenAPI docs missing routes")),
+        "expected openapi coverage warning, got {:?}",
+        report.warnings
+    );
+}

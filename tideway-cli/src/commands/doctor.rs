@@ -147,6 +147,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
 
     if tideway_features.contains("openapi") {
         check_openapi_setup(&src_dir, project_dir, &mut report);
+        check_openapi_doc_coverage(&src_dir, &mut report);
     }
 
     if needs_database {
@@ -430,6 +431,85 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
     } else if project_dir.join("src").join("main.rs").exists() {
         report.warnings.push("Failed to read src/main.rs for OpenAPI wiring check".to_string());
     }
+}
+
+fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
+    let openapi_docs = src_dir.join("openapi_docs.rs");
+    if !openapi_docs.exists() {
+        return;
+    }
+
+    let Ok(docs_contents) = fs::read_to_string(&openapi_docs) else {
+        report.warnings.push("Failed to read src/openapi_docs.rs".to_string());
+        return;
+    };
+
+    let paths_block = extract_openapi_paths(&docs_contents);
+    if paths_block.is_empty() {
+        report.warnings.push(
+            "OpenAPI docs file has no paths() entries (add routes or run `tideway resource --wire`)"
+                .to_string(),
+        );
+        return;
+    }
+
+    let routes_dir = src_dir.join("routes");
+    if !routes_dir.exists() {
+        return;
+    }
+
+    let mut missing = Vec::new();
+    if let Ok(entries) = fs::read_dir(&routes_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let file_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if file_name == "mod" {
+                continue;
+            }
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if !contents.contains("cfg_attr(feature = \"openapi\"") {
+                    continue;
+                }
+            }
+
+            let expected_prefix = format!("crate::routes::{}::", file_name);
+            if !paths_block.iter().any(|path| path.starts_with(&expected_prefix)) {
+                missing.push(file_name.to_string());
+            }
+        }
+    }
+
+    if !missing.is_empty() {
+        report.warnings.push(format!(
+            "OpenAPI docs missing routes for: {} (run `tideway resource --wire` to add)",
+            missing.join(", ")
+        ));
+    }
+}
+
+fn extract_openapi_paths(contents: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut in_paths = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("paths(") {
+            in_paths = true;
+            continue;
+        }
+        if in_paths && trimmed.starts_with(')') {
+            break;
+        }
+        if in_paths {
+            let trimmed = trimmed.trim_end_matches(',');
+            if !trimmed.is_empty() {
+                lines.push(trimmed.to_string());
+            }
+        }
+    }
+    lines
 }
 
 fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
