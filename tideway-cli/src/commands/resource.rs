@@ -33,6 +33,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         &resource_plural,
         args.with_tests,
         has_openapi,
+        args.db,
     );
     write_file(&resource_path, &contents, false)?;
 
@@ -121,6 +122,7 @@ fn render_resource_module(
     resource_plural: &str,
     with_tests: bool,
     has_openapi: bool,
+    with_db: bool,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
     let tests_block = if with_tests {
@@ -287,13 +289,157 @@ mod openapi_docs {{
         String::new()
     };
 
+    let extract_import = if with_db {
+        "extract::{Path, State}, "
+    } else {
+        ""
+    };
+    let sea_orm_imports = if with_db {
+        "use sea_orm::{ActiveModelTrait, EntityTrait, Set};\n"
+    } else {
+        ""
+    };
+    let entities_import = if with_db {
+        format!("use crate::entities::{resource_name};\n")
+    } else {
+        String::new()
+    };
+
+    let handlers = if with_db {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Vec<{resource_pascal}>>> {{
+    let db = ctx.sea_orm_connection()?;
+    let models = {resource_name}::Entity::find().all(&db).await?;
+    let items = models
+        .into_iter()
+        .map(|model| {resource_pascal} {{
+            id: model.id.to_string(),
+            name: model.name,
+        }})
+        .collect();
+    Ok(Json(items))
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+) -> Result<Json<{resource_pascal}>> {{
+    let db = ctx.sea_orm_connection()?;
+    let model = {resource_name}::Entity::find_by_id(id).one(&db).await?;
+    let model = model.ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
+    Ok(Json({resource_pascal} {{
+        id: model.id.to_string(),
+        name: model.name,
+    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}(
+    State(ctx): State<AppContext>,
+    {body_extractor},
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let active = {resource_name}::ActiveModel {{
+        name: Set(body.name),
+        ..Default::default()
+    }};
+    active.insert(&db).await?;
+    Ok(MessageResponse::success("Created"))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+    Json(body): Json<UpdateRequest>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let model = {resource_name}::Entity::find_by_id(id).one(&db).await?;
+    let model = model.ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
+    let mut active: {resource_name}::ActiveModel = model.into();
+    if let Some(name) = body.name {{
+        active.name = Set(name);
+    }}
+    active.update(&db).await?;
+    Ok(MessageResponse::success("Updated"))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    {resource_name}::Entity::delete_by_id(id).exec(&db).await?;
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+        )
+    } else {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}() -> Json<Vec<{resource_pascal}>> {{
+    Json(Vec::new())
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}() -> Result<Json<{resource_pascal}>> {{
+    Ok(Json({resource_pascal} {{
+        id: "demo".to_string(),
+        name: "{resource_pascal}".to_string(),
+    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
+    Ok(MessageResponse::success(format!("Created {{}}", body.name)))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
+    let name = body.name.unwrap_or_else(|| "{resource_pascal}".to_string());
+    Ok(MessageResponse::success(format!("Updated {{}}", name)))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}() -> Result<MessageResponse> {{
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+        )
+    };
+
     format!(
         r#"//! {resource_pascal} routes.
 
-use axum::{{routing::{{delete, get, post, put}}, Json, Router}};
+use axum::{{routing::{{delete, get, post, put}}, {extract_import}Json, Router}};
 use serde::{{Deserialize, Serialize}};
 use tideway::{{AppContext, MessageResponse, Result, RouteModule}};
 {openapi_import}
+{sea_orm_imports}
+{entities_import}
 
 pub struct {resource_pascal}Module;
 
@@ -328,50 +474,21 @@ pub struct UpdateRequest {{
     pub name: Option<String>,
 }}
 
-{openapi_attrs}
-async fn list_{resource_plural}() -> Json<Vec<{resource_pascal}>> {{
-    Json(Vec::new())
-}}
-
-{openapi_attrs_get}
-async fn get_{resource_name}() -> Result<Json<{resource_pascal}>> {{
-    Ok(Json({resource_pascal} {{
-        id: "demo".to_string(),
-        name: "{resource_pascal}".to_string(),
-    }}))
-}}
-
-{openapi_attrs_create}
-async fn create_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
-    Ok(MessageResponse::success(format!("Created {{}}", body.name)))
-}}
-
-{openapi_attrs_update}
-async fn update_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
-    let name = body.name.unwrap_or_else(|| "{resource_pascal}".to_string());
-    Ok(MessageResponse::success(format!("Updated {{}}", name)))
-}}
-
-{openapi_attrs_delete}
-async fn delete_{resource_name}() -> Result<MessageResponse> {{
-    Ok(MessageResponse::success("Deleted"))
-}}
+{handlers}
 {tests_block}
 {openapi_paths}
 "#,
         resource_pascal = resource_pascal,
         resource_name = resource_name,
         resource_plural = resource_plural,
-        body_extractor = body_extractor,
         tests_block = tests_block,
         openapi_import = openapi_import,
         openapi_schema = openapi_schema,
         openapi_paths = openapi_paths,
-        openapi_attrs = openapi_attrs,
-        openapi_attrs_get = openapi_attrs_get,
-        openapi_attrs_create = openapi_attrs_create,
-        openapi_attrs_update = openapi_attrs_update,
-        openapi_attrs_delete = openapi_attrs_delete,
+        handlers = handlers,
+        extract_import = extract_import,
+        sea_orm_imports = sea_orm_imports,
+        entities_import = entities_import,
     )
 }
 

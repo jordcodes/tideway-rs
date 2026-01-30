@@ -221,6 +221,10 @@ async fn main() {
     let migration_lib = project_dir.join("migration/src/lib.rs");
     assert!(migration_lib.exists());
     assert_file_contains(&migration_lib, "create_users");
+
+    let routes_path = project_dir.join("src/routes/user.rs");
+    assert_file_contains(&routes_path, "State(ctx): State<AppContext>");
+    assert_file_contains(&routes_path, "Entity::find");
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {
