@@ -15,8 +15,8 @@ use std::str::FromStr;
 ///
 /// # Example
 ///
-/// ```rust
-/// use tideway::organizations::DefaultOrgRole;
+    /// ```rust
+    /// use tideway::organizations::{DefaultOrgRole, OrgRolePermissions};
 ///
 /// let role = DefaultOrgRole::Admin;
 /// assert!(role.can_manage_members());

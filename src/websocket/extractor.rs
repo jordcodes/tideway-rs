@@ -27,15 +27,28 @@ use uuid::Uuid;
 /// # Example
 ///
 /// ```rust,no_run
-/// use tideway::websocket::{ws, ConnectionManager, WebSocketHandler};
-/// use tideway::{App, AppContext};
+/// use async_trait::async_trait;
 /// use std::sync::Arc;
+/// use tideway::websocket::{ws, ConnectionManager, Connection, Message, WebSocketHandler};
+/// use tideway::{AppContext, Result};
 ///
 /// struct MyHandler;
-/// impl WebSocketHandler for MyHandler { /* ... */ }
+///
+/// #[async_trait]
+/// impl WebSocketHandler for MyHandler {
+///     async fn on_connect(&self, _conn: &mut Connection, _ctx: &AppContext) -> Result<()> {
+///         Ok(())
+///     }
+///
+///     async fn on_message(&self, _conn: &mut Connection, _msg: Message, _ctx: &AppContext) -> Result<()> {
+///         Ok(())
+///     }
+///
+///     async fn on_disconnect(&self, _conn: &mut Connection, _ctx: &AppContext) {}
+/// }
 ///
 /// let manager = Arc::new(ConnectionManager::new());
-/// let router = ws("/ws", MyHandler, manager);
+/// let _router = ws("/ws", MyHandler, manager);
 /// ```
 pub fn ws<H>(
     path: &str,

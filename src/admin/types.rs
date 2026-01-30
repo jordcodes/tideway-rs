@@ -42,7 +42,7 @@ pub enum SortOrder {
 }
 
 /// Parameters for listing users.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListUsersParams {
     /// Optional search term (matches email or name).
     pub search: Option<String>,
@@ -56,6 +56,18 @@ pub struct ListUsersParams {
     pub sort_by: Option<String>,
     /// Sort direction.
     pub sort_order: Option<SortOrder>,
+}
+
+impl Default for ListUsersParams {
+    fn default() -> Self {
+        Self {
+            search: None,
+            page: default_page(),
+            per_page: default_per_page(),
+            sort_by: None,
+            sort_order: None,
+        }
+    }
 }
 
 fn default_page() -> u32 {

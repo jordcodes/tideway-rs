@@ -17,12 +17,16 @@ use std::sync::Arc;
 /// # Example
 ///
 /// ```rust,no_run
-/// use tideway::websocket::{Room, ConnectionManager};
 /// use std::sync::Arc;
+/// use tideway::websocket::{Room, ConnectionManager};
+/// use tideway::Result;
 ///
+/// # async fn example() -> Result<()> {
 /// let manager = Arc::new(ConnectionManager::new());
-/// let room = Room::new("chat", manager.clone());
+/// let room = Room::new("chat", manager);
 /// room.broadcast_text("Hello room!").await?;
+/// # Ok(())
+/// # }
 /// ```
 pub struct Room {
     /// Room name
@@ -70,4 +74,3 @@ impl Room {
         self.members().len()
     }
 }
-

@@ -9,11 +9,12 @@ use validator::ValidationError;
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway::validation::validators::validate_uuid;
+/// ```rust,ignore
+/// use serde::Deserialize;
+/// use tideway::validation::validate_uuid;
 /// use validator::Validate;
 ///
-/// #[derive(Validate)]
+/// #[derive(Deserialize, Validate)]
 /// struct Request {
 ///     #[validate(custom = "validate_uuid")]
 ///     id: String,
@@ -33,11 +34,12 @@ pub fn validate_uuid(id: &str) -> Result<(), ValidationError> {
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway::validation::validators::validate_slug;
+/// ```rust,ignore
+/// use serde::Deserialize;
+/// use tideway::validation::validate_slug;
 /// use validator::Validate;
 ///
-/// #[derive(Validate)]
+/// #[derive(Deserialize, Validate)]
 /// struct Request {
 ///     #[validate(custom = "validate_slug")]
 ///     slug: String,
@@ -71,11 +73,12 @@ pub fn validate_slug(slug: &str) -> Result<(), ValidationError> {
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway::validation::validators::validate_phone;
+/// ```rust,ignore
+/// use serde::Deserialize;
+/// use tideway::validation::validate_phone;
 /// use validator::Validate;
 ///
-/// #[derive(Validate)]
+/// #[derive(Deserialize, Validate)]
 /// struct Request {
 ///     #[validate(custom = "validate_phone")]
 ///     phone: String,
@@ -109,11 +112,12 @@ pub fn validate_phone(phone: &str) -> Result<(), ValidationError> {
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway::validation::validators::validate_json_string;
+/// ```rust,ignore
+/// use serde::Deserialize;
+/// use tideway::validation::validate_json_string;
 /// use validator::Validate;
 ///
-/// #[derive(Validate)]
+/// #[derive(Deserialize, Validate)]
 /// struct Request {
 ///     #[validate(custom = "validate_json_string")]
 ///     data: String,
@@ -135,11 +139,12 @@ pub fn validate_json_string(json: &str) -> Result<(), ValidationError> {
 ///
 /// # Example
 ///
-/// ```rust,no_run
-/// use tideway::validation::validators::validate_duration;
+/// ```rust,ignore
+/// use serde::Deserialize;
+/// use tideway::validation::validate_duration;
 /// use validator::Validate;
 ///
-/// #[derive(Validate)]
+/// #[derive(Deserialize, Validate)]
 /// struct Request {
 ///     #[validate(custom = "validate_duration")]
 ///     timeout: String,

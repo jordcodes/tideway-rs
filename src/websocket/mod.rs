@@ -42,8 +42,8 @@
 //!         .build();
 //!
 //!     let app = App::new()
-//!         .with_context(ctx)
-//!         .merge_router(ws("/ws", ChatHandler, manager));
+//!         .with_context(ctx.clone())
+//!         .merge_router(ws("/ws", ChatHandler, manager).with_state(ctx));
 //!
 //!     app.serve().await.unwrap();
 //! }

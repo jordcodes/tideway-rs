@@ -29,7 +29,13 @@ Visit:
 
 ## 3) Add a route module
 
-Create `src/routes/users.rs`:
+Create `src/routes/users.rs` and add it to `src/routes/mod.rs`:
+
+```rust
+pub mod users;
+```
+
+Then add the module file:
 
 ```rust
 use axum::{routing::get, Router};
@@ -70,11 +76,10 @@ Wire it in `src/main.rs`:
 
 ```rust
 mod routes;
-mod users;
 
 let app = App::new()
     .register_module(routes::ApiModule)
-    .register_module(users::UsersModule);
+    .register_module(routes::users::UsersModule);
 ```
 
 If you have many modules, you can use the helper macro:

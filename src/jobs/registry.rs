@@ -41,12 +41,17 @@ impl JobRegistry {
     /// # Example
     ///
     /// ```rust,no_run
-    /// registry.register("send_email", |data, ctx| {
-    ///     Box::pin(async move {
-    ///         let job: SendEmailJob = serde_json::from_value(data.payload)?;
-    ///         job.execute(&ctx).await
-    ///     })
+    /// use std::sync::Arc;
+    /// use futures::future::BoxFuture;
+    /// use tideway::{AppContext, JobData, JobRegistry, Result};
+    ///
+    /// # async fn example() -> Result<()> {
+    /// let registry = JobRegistry::new();
+    /// registry.register("send_email", |_data: JobData, _ctx: Arc<AppContext>| {
+    ///     Box::pin(async move { Ok(()) })
     /// }).await;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn register<F>(&self, job_type: &str, handler: F)
     where

@@ -26,11 +26,11 @@ pub type ConnectionHandle = Arc<tokio::sync::RwLock<Connection>>;
 ///
 /// ```rust,no_run
 /// use tideway::websocket::ConnectionManager;
-/// use std::sync::Arc;
 ///
-/// let manager = Arc::new(ConnectionManager::new());
-/// manager.register(connection_handle).await;
-/// manager.broadcast_text("Hello all!").await?;
+/// let manager = ConnectionManager::new();
+/// // Connection handles are created internally by the websocket handler.
+/// // manager.register(connection_handle).await?;
+/// // manager.broadcast_text("Hello all!").await?;
 /// ```
 #[derive(Clone)]
 pub struct ConnectionManager {

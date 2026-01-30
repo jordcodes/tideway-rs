@@ -357,7 +357,7 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     body.push_str("    let addr = format!(\"{}:{}\", config.host, config.port);\n");
     body.push_str("    tracing::info!(\"Server running on http://{}\", addr);\n\n");
     body.push_str("    let listener = tokio::net::TcpListener::bind(&addr).await?;\n");
-    body.push_str("    let router = app.into_router();\n");
+    body.push_str("    let router = app.into_router_with_middleware();\n");
     body.push_str("    axum::serve(listener, router).await?;\n\n");
     body.push_str("    Ok(())");
 

@@ -1,8 +1,10 @@
 //! {{project_name_pascal}} API server.
 
-use tideway::{init_tracing, App};
 {{#if has_config}}
+use tideway::{init_tracing_with_config, App};
 use crate::config::AppConfig;
+{{else}}
+use tideway::{init_tracing, App};
 {{/if}}
 {{#if needs_arc}}
 use std::sync::Arc;
@@ -22,28 +24,47 @@ mod error;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
-    init_tracing();
-
 {{#if has_config}}
-    let _config = AppConfig::from_env();
+    let config = AppConfig::from_env();
+    init_tracing_with_config(&config.tideway);
+{{else}}
+    init_tracing();
 {{/if}}
 
 {{#if has_database_feature}}
+    {{#if has_config}}
+    let database_url = config
+        .database_url
+        .clone()
+        .expect("DATABASE_URL is not set");
+    {{else}}
     let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");
+    {{/if}}
     let db = sea_orm::Database::connect(&database_url)
         .await
         .expect("Failed to connect to database");
 {{/if}}
 
 {{#if has_auth_feature}}
+    {{#if has_config}}
+    let jwt_secret = config
+        .jwt_secret
+        .clone()
+        .expect("JWT_SECRET is not set");
+    {{else}}
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is not set");
+    {{/if}}
     let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(
         &jwt_secret,
         "{{project_name}}",
     )).expect("Failed to create JWT issuer"));
 {{/if}}
 
+{{#if has_config}}
+    let app = App::with_config(config.tideway.clone())
+{{else}}
     let app = App::new()
+{{/if}}
 {{#if has_database_feature}}
         .with_context(
             AppContext::builder()

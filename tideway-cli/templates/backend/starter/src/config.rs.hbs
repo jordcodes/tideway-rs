@@ -1,23 +1,21 @@
-use tideway::ConfigBuilder;
+use tideway::{Config, ConfigBuilder};
 
 /// App configuration loaded from environment variables.
 pub struct AppConfig {
-    pub host: String,
-    pub port: u16,
+    pub tideway: Config,
     pub database_url: Option<String>,
     pub jwt_secret: Option<String>,
 }
 
 impl AppConfig {
     pub fn from_env() -> Self {
-        let config = ConfigBuilder::new()
+        let tideway = ConfigBuilder::new()
             .from_env()
             .build()
             .expect("Invalid TIDEWAY_* config");
 
         Self {
-            host: config.server.host,
-            port: config.server.port,
+            tideway,
             database_url: std::env::var("DATABASE_URL").ok(),
             jwt_secret: std::env::var("JWT_SECRET").ok(),
         }
