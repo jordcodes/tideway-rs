@@ -119,8 +119,19 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         println!("  {}. cp .env.example .env", step);
         step += 1;
     }
+    if has_database_feature {
+        println!("  {}. tideway migrate", step);
+        step += 1;
+    }
     println!("  {}. cargo run", step);
     println!();
+
+    if matches!(args.preset, Some(NewPreset::Api)) {
+        println!("{}", "First request:".yellow().bold());
+        println!("  curl http://localhost:8000/api/todos");
+        println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
+        println!();
+    }
 
     print_success("Ready to build");
     Ok(())

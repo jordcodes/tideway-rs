@@ -270,6 +270,7 @@ fn test_new_command_with_preset_api() {
     assert_file_contains(&project_dir.join("src/main.rs"), "mod entities;");
 }
 
+
 #[test]
 fn test_new_command_with_preset_list() {
     let args = NewArgs {
