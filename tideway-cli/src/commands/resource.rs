@@ -5,6 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs};
+use crate::commands::add::wire_database_in_main;
 use crate::{print_info, print_success, print_warning};
 
 pub fn run(args: ResourceArgs) -> Result<()> {
@@ -70,6 +71,12 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                     "Unable to detect database backend (use --db-backend)"
                 ));
             }
+        }
+
+        if args.wire {
+            wire_database_in_main(&project_dir)?;
+        } else {
+            print_info("Next steps: wire database into main.rs (tideway add database --wire)");
         }
     }
 

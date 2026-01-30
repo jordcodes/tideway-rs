@@ -298,7 +298,7 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn wire_database_in_main(project_dir: &Path) -> Result<()> {
+pub fn wire_database_in_main(project_dir: &Path) -> Result<()> {
     let main_path = project_dir.join("src").join("main.rs");
     if !main_path.exists() {
         print_warning("src/main.rs not found; skipping auto-wiring");

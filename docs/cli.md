@@ -106,7 +106,7 @@ tideway resource user --wire --db
 ```
 
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
-Use `--db` to scaffold a SeaORM entity + migration and switch routes to real DB CRUD (requires Tideway `database` feature).
+Use `--db` to scaffold a SeaORM entity + migration and switch routes to real DB CRUD. With `--wire`, it also wires the database into `main.rs`.
 
 ### `tideway doctor`
 

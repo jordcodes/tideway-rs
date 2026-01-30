@@ -225,6 +225,9 @@ async fn main() {
     let routes_path = project_dir.join("src/routes/user.rs");
     assert_file_contains(&routes_path, "State(ctx): State<AppContext>");
     assert_file_contains(&routes_path, "Entity::find");
+
+    let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated_main.contains("with_database("));
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {
