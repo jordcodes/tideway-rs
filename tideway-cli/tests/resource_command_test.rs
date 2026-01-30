@@ -228,6 +228,7 @@ async fn main() {
 
     let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated_main.contains("with_database("));
+    assert!(updated_main.contains("mod entities;"));
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

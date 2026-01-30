@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::{NewArgs, NewPreset};
+use crate::cli::{DbBackend, NewArgs, NewPreset, ResourceArgs};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{print_info, print_success, print_warning};
 
@@ -73,6 +73,9 @@ pub fn run(mut args: NewArgs) -> Result<()> {
 
     let needs_env = needs_env_from_args(&args);
     scaffold_files(&target_dir, &engine, &args, needs_env)?;
+    if matches!(args.preset, Some(NewPreset::Api)) {
+        scaffold_api_preset(&target_dir)?;
+    }
     let created = expected_files(&args);
 
     println!(
@@ -130,6 +133,7 @@ fn scaffold_files(
     needs_env: bool,
 ) -> Result<()> {
     let has_auth_feature = normalize_features(&args.features).contains("auth");
+    let is_api_preset = matches!(args.preset, Some(NewPreset::Api));
 
     write_file(
         &target_dir.join("Cargo.toml"),
@@ -211,6 +215,19 @@ fn scaffold_files(
         )?;
     }
 
+    if is_api_preset {
+        write_file(
+            &target_dir.join("migration/Cargo.toml"),
+            &engine.render("starter/migration/Cargo.toml")?,
+            args.force,
+        )?;
+        write_file(
+            &target_dir.join("migration/src/lib.rs"),
+            &engine.render("starter/migration/src/lib.rs")?,
+            args.force,
+        )?;
+    }
+
     Ok(())
 }
 
@@ -245,6 +262,16 @@ pub fn expected_files(args: &NewArgs) -> Vec<String> {
 
     if needs_env {
         files.push(".env.example".to_string());
+    }
+
+    if matches!(args.preset, Some(NewPreset::Api)) {
+        files.push("migration/Cargo.toml".to_string());
+        files.push("migration/src/lib.rs".to_string());
+        files.push("migration/src/m001_create_todos.rs".to_string());
+        files.push("src/entities/mod.rs".to_string());
+        files.push("src/entities/todo.rs".to_string());
+        files.push("src/routes/todo.rs".to_string());
+        files.push("src/openapi_docs.rs".to_string());
     }
 
     files
@@ -321,7 +348,21 @@ fn preset_label(preset: NewPreset) -> &'static str {
 fn print_presets() {
     println!("Available presets:");
     println!("  - minimal: basic starter (no extra features)");
-    println!("  - api: auth + database + openapi + validation, plus config, docker, CI, and env");
+    println!("  - api: auth + database + openapi + validation, plus config, docker, CI, env, and a sample DB-backed resource");
+}
+
+fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
+    let args = ResourceArgs {
+        name: "todo".to_string(),
+        path: target_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: true,
+        db: true,
+        db_backend: DbBackend::Auto,
+    };
+
+    crate::commands::resource::run(args)?;
+    Ok(())
 }
 
 fn needs_env_from_args(args: &NewArgs) -> bool {

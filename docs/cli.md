@@ -64,7 +64,7 @@ tideway new my_app --with-env
 
 Available presets:
 - `minimal` - basic starter
-- `api` - auth + database + openapi + validation, plus config, docker, CI, and env
+- `api` - auth + database + openapi + validation, plus config, docker, CI, env, and a DB-backed sample resource
 
 ### `tideway init`
 

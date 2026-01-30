@@ -47,6 +47,8 @@ List presets:
 tideway new --preset list
 ```
 
+Preset `api` also includes a DB-backed sample resource and migration scaffold.
+
 Docker example:
 ```bash
 tideway new my_app --features database --with-docker

@@ -260,6 +260,14 @@ fn test_new_command_with_preset_api() {
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join(".env.example").exists());
     assert!(project_dir.join("src/auth/mod.rs").exists());
+    assert!(project_dir.join("migration/Cargo.toml").exists());
+    assert!(project_dir.join("migration/src/lib.rs").exists());
+    assert!(project_dir.join("migration/src/m001_create_todos.rs").exists());
+    assert!(project_dir.join("src/entities/mod.rs").exists());
+    assert!(project_dir.join("src/entities/todo.rs").exists());
+    assert!(project_dir.join("src/routes/todo.rs").exists());
+    assert!(project_dir.join("src/openapi_docs.rs").exists());
+    assert_file_contains(&project_dir.join("src/main.rs"), "mod entities;");
 }
 
 #[test]

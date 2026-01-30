@@ -75,6 +75,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
 
         if args.wire {
             wire_database_in_main(&project_dir)?;
+            wire_entities_in_main(&src_dir)?;
         } else {
             print_info("Next steps: wire database into main.rs (tideway add database --wire)");
         }
@@ -572,6 +573,32 @@ fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str)
     fs::write(&docs_path, contents)
         .with_context(|| format!("Failed to write {}", docs_path.display()))?;
     print_success("Updated src/openapi_docs.rs");
+    Ok(())
+}
+
+fn wire_entities_in_main(src_dir: &Path) -> Result<()> {
+    let main_path = src_dir.join("main.rs");
+    if !main_path.exists() {
+        print_warning("src/main.rs not found; skipping entities wiring");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&main_path)
+        .with_context(|| format!("Failed to read {}", main_path.display()))?;
+
+    if contents.contains("mod entities;") {
+        return Ok(());
+    }
+
+    if contents.contains("mod routes;") {
+        contents = contents.replace("mod routes;\n", "mod routes;\nmod entities;\n");
+    } else {
+        contents = format!("mod entities;\n{}", contents);
+    }
+
+    fs::write(&main_path, contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    print_success("Added mod entities to src/main.rs");
     Ok(())
 }
 
