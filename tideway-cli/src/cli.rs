@@ -279,6 +279,10 @@ pub struct ResourceArgs {
     #[arg(long, default_value = "false")]
     pub db: bool,
 
+    /// Generate a repository layer for DB-backed resources
+    #[arg(long, default_value = "false")]
+    pub repo: bool,
+
     /// Database backend for scaffolding
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,

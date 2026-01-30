@@ -35,6 +35,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         args.with_tests,
         has_openapi,
         args.db,
+        args.repo,
     );
     write_file(&resource_path, &contents, false)?;
 
@@ -46,6 +47,13 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         }
     } else {
         print_info("Next steps: add the module to routes/mod.rs and register it in main.rs");
+    }
+
+    if args.repo && !args.db {
+        return Err(anyhow::anyhow!(
+            "Repository scaffolding requires --db (run `tideway resource {} --db --repo`)",
+            resource_name
+        ));
     }
 
     if args.db {
@@ -73,9 +81,16 @@ pub fn run(args: ResourceArgs) -> Result<()> {
             }
         }
 
+        if args.repo {
+            generate_repository(&project_dir, &resource_name)?;
+        }
+
         if args.wire {
             wire_database_in_main(&project_dir)?;
             wire_entities_in_main(&src_dir)?;
+            if args.repo {
+                wire_repositories_in_main(&src_dir)?;
+            }
         } else {
             print_info("Next steps: wire database into main.rs (tideway add database --wire)");
         }
@@ -131,6 +146,7 @@ fn render_resource_module(
     with_tests: bool,
     has_openapi: bool,
     with_db: bool,
+    with_repo: bool,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
     let tests_block = if with_tests {
@@ -312,8 +328,87 @@ mod openapi_docs {{
     } else {
         String::new()
     };
+    let repositories_import = if with_repo {
+        format!("use crate::repositories::{resource_name}::{resource_pascal}Repository;\n")
+    } else {
+        String::new()
+    };
 
-    let handlers = if with_db {
+    let handlers = if with_db && with_repo {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Vec<{resource_pascal}>>> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    let models = repo.list().await?;
+    let items = models
+        .into_iter()
+        .map(|model| {resource_pascal} {{
+            id: model.id.to_string(),
+            name: model.name,
+        }})
+        .collect();
+    Ok(Json(items))
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+) -> Result<Json<{resource_pascal}>> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    let model = repo
+        .get(id)
+        .await?
+        .ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
+    Ok(Json({resource_pascal} {{
+        id: model.id.to_string(),
+        name: model.name,
+    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}(
+    State(ctx): State<AppContext>,
+    {body_extractor},
+) -> Result<MessageResponse> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    repo.create(body.name).await?;
+    Ok(MessageResponse::success("Created"))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+    Json(body): Json<UpdateRequest>,
+) -> Result<MessageResponse> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    repo.update(id, body.name).await?;
+    Ok(MessageResponse::success("Updated"))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}(
+    State(ctx): State<AppContext>,
+    Path(id): Path<i32>,
+) -> Result<MessageResponse> {{
+    let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
+    repo.delete(id).await?;
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+        )
+    } else if with_db {
         format!(
             r#"
 {openapi_attrs}
@@ -448,6 +543,7 @@ use tideway::{{AppContext, MessageResponse, Result, RouteModule}};
 {openapi_import}
 {sea_orm_imports}
 {entities_import}
+{repositories_import}
 
 pub struct {resource_pascal}Module;
 
@@ -497,6 +593,7 @@ pub struct UpdateRequest {{
         extract_import = extract_import,
         sea_orm_imports = sea_orm_imports,
         entities_import = entities_import,
+        repositories_import = repositories_import,
     )
 }
 
@@ -599,6 +696,32 @@ fn wire_entities_in_main(src_dir: &Path) -> Result<()> {
     fs::write(&main_path, contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Added mod entities to src/main.rs");
+    Ok(())
+}
+
+fn wire_repositories_in_main(src_dir: &Path) -> Result<()> {
+    let main_path = src_dir.join("main.rs");
+    if !main_path.exists() {
+        print_warning("src/main.rs not found; skipping repositories wiring");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&main_path)
+        .with_context(|| format!("Failed to read {}", main_path.display()))?;
+
+    if contents.contains("mod repositories;") {
+        return Ok(());
+    }
+
+    if contents.contains("mod routes;") {
+        contents = contents.replace("mod routes;\n", "mod routes;\nmod repositories;\n");
+    } else {
+        contents = format!("mod repositories;\n{}", contents);
+    }
+
+    fs::write(&main_path, contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    print_success("Added mod repositories to src/main.rs");
     Ok(())
 }
 
@@ -889,6 +1012,96 @@ fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
             .with_context(|| format!("Failed to write {}", mod_path.display()))?;
     }
     Ok(())
+}
+
+fn generate_repository(project_dir: &Path, resource_name: &str) -> Result<()> {
+    let src_dir = project_dir.join("src");
+    let repos_dir = src_dir.join("repositories");
+    fs::create_dir_all(&repos_dir)
+        .with_context(|| format!("Failed to create {}", repos_dir.display()))?;
+
+    let repos_mod = repos_dir.join("mod.rs");
+    if !repos_mod.exists() {
+        let contents = "//! Repository layer.\n\n";
+        write_file(&repos_mod, contents, false)?;
+        print_success("Created src/repositories/mod.rs");
+    }
+    wire_repositories_mod(&repos_mod, resource_name)?;
+
+    let repo_path = repos_dir.join(format!("{}.rs", resource_name));
+    let repo_contents = render_repository(resource_name);
+    write_file(&repo_path, &repo_contents, false)?;
+    print_success("Generated repository");
+    Ok(())
+}
+
+fn wire_repositories_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
+    let mut contents = fs::read_to_string(mod_path)
+        .with_context(|| format!("Failed to read {}", mod_path.display()))?;
+    let mod_line = format!("pub mod {};", resource_name);
+    if !contents.contains(&mod_line) {
+        contents.push_str(&format!("\n{}\n", mod_line));
+        fs::write(mod_path, contents)
+            .with_context(|| format!("Failed to write {}", mod_path.display()))?;
+    }
+    Ok(())
+}
+
+fn render_repository(resource_name: &str) -> String {
+    let resource_pascal = to_pascal_case(resource_name);
+    format!(
+        r#"use sea_orm::{{ActiveModelTrait, EntityTrait, Set}};
+use tideway::Result;
+
+use crate::entities::{resource_name};
+
+pub struct {resource_pascal}Repository {{
+    db: sea_orm::DatabaseConnection,
+}}
+
+impl {resource_pascal}Repository {{
+    pub fn new(db: sea_orm::DatabaseConnection) -> Self {{
+        Self {{ db }}
+    }}
+
+    pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{
+        Ok({resource_name}::Entity::find().all(&self.db).await?)
+    }}
+
+    pub async fn get(&self, id: i32) -> Result<Option<{resource_name}::Model>> {{
+        Ok({resource_name}::Entity::find_by_id(id).one(&self.db).await?)
+    }}
+
+    pub async fn create(&self, name: String) -> Result<{resource_name}::Model> {{
+        let active = {resource_name}::ActiveModel {{
+            name: Set(name),
+            ..Default::default()
+        }};
+        Ok(active.insert(&self.db).await?)
+    }}
+
+    pub async fn update(&self, id: i32, name: Option<String>) -> Result<{resource_name}::Model> {{
+        let model = {resource_name}::Entity::find_by_id(id).one(&self.db).await?;
+        let model =
+            model.ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
+        let mut active: {resource_name}::ActiveModel = model.into();
+        if let Some(name) = name {{
+            active.name = Set(name);
+        }}
+        Ok(active.update(&self.db).await?)
+    }}
+
+    pub async fn delete(&self, id: i32) -> Result<()> {{
+        {resource_name}::Entity::delete_by_id(id)
+            .exec(&self.db)
+            .await?;
+        Ok(())
+    }}
+}}
+"#,
+        resource_name = resource_name,
+        resource_pascal = resource_pascal
+    )
 }
 
 fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> Result<()> {
