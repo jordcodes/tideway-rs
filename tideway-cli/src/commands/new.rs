@@ -373,6 +373,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         repo_tests: false,
         service: false,
         id_type: ResourceIdType::Int,
+        add_uuid: false,
         db_backend: DbBackend::Auto,
     };
 

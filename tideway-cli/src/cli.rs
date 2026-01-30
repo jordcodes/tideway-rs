@@ -295,6 +295,10 @@ pub struct ResourceArgs {
     #[arg(long, value_enum, default_value = "int")]
     pub id_type: ResourceIdType,
 
+    /// Auto-add uuid dependency when using --id-type uuid
+    #[arg(long, default_value = "false")]
+    pub add_uuid: bool,
+
     /// Database backend for scaffolding
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,

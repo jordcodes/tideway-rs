@@ -558,7 +558,7 @@ fn to_pascal_case(s: &str) -> String {
         .collect()
 }
 
-fn array_value(values: &[&str]) -> toml_edit::Value {
+pub fn array_value(values: &[&str]) -> toml_edit::Value {
     let mut array = toml_edit::Array::new();
     for value in values {
         array.push(*value);

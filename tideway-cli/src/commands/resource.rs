@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
-use crate::commands::add::wire_database_in_main;
+use crate::commands::add::{array_value, wire_database_in_main};
 use crate::{print_info, print_success, print_warning};
 
 pub fn run(args: ResourceArgs) -> Result<()> {
@@ -84,9 +84,14 @@ pub fn run(args: ResourceArgs) -> Result<()> {
             ));
         }
         if matches!(args.id_type, ResourceIdType::Uuid) && !has_dependency(&cargo_path, "uuid") {
-            return Err(anyhow::anyhow!(
-                "UUID id type requires the uuid dependency (add uuid = {{ version = \"1\", features = [\"v4\"] }})"
-            ));
+            if args.add_uuid {
+                add_uuid_dependency(&cargo_path)?;
+                print_success("Added uuid dependency to Cargo.toml");
+            } else {
+                return Err(anyhow::anyhow!(
+                    "UUID id type requires the uuid dependency (rerun with --add-uuid)"
+                ));
+            }
         }
         let backend = resolve_db_backend(&project_dir, args.db_backend)?;
         match backend {
@@ -1566,6 +1571,28 @@ fn has_dependency(cargo_path: &Path, dependency: &str) -> bool {
     doc.get("dependencies")
         .and_then(|deps| deps.get(dependency))
         .is_some()
+}
+
+fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {
+    let contents = fs::read_to_string(cargo_path)
+        .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let deps = doc["dependencies"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let deps_table = deps
+        .as_table_mut()
+        .context("dependencies should be a table")?;
+
+    let mut table = toml_edit::InlineTable::new();
+    table.get_or_insert("version", "1");
+    table.get_or_insert("features", array_value(&["v4"]));
+    deps_table.insert(
+        "uuid",
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(table)),
+    );
+
+    fs::write(cargo_path, doc.to_string())
+        .with_context(|| format!("Failed to write {}", cargo_path.display()))?;
+    Ok(())
 }
 
 fn project_name_from_cargo(cargo_path: &Path, project_dir: &Path) -> String {
