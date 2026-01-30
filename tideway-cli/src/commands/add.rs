@@ -43,8 +43,13 @@ pub fn run(args: AddArgs) -> Result<()> {
         wire_database_in_main(&project_dir)?;
     }
 
-    if args.feature == AddFeature::Openapi && args.wire {
-        wire_openapi_in_main(&project_dir)?;
+    if args.feature == AddFeature::Openapi {
+        ensure_openapi_docs_file(&project_dir)?;
+        if args.wire {
+            wire_openapi_in_main(&project_dir)?;
+        } else {
+            print_info("Next steps: wire OpenAPI in main.rs");
+        }
     }
 
     print_success(&format!("Added {}", args.feature));
@@ -481,6 +486,27 @@ fn insert_openapi_into_app_builder(mut contents: String, config_ref: &str) -> Re
         print_warning("Could not find app builder; skipping OpenAPI wiring");
         Ok(contents)
     }
+}
+
+fn ensure_openapi_docs_file(project_dir: &Path) -> Result<()> {
+    let docs_path = project_dir.join("src").join("openapi_docs.rs");
+    if docs_path.exists() {
+        return Ok(());
+    }
+
+    let contents = r#"#[cfg(feature = "openapi")]
+tideway::openapi_doc!(pub(crate) ApiDoc, paths());
+"#;
+
+    if let Some(parent) = docs_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+
+    fs::write(&docs_path, contents)
+        .with_context(|| format!("Failed to write {}", docs_path.display()))?;
+    print_success("Created src/openapi_docs.rs");
+    Ok(())
 }
 
 

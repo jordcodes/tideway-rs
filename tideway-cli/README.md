@@ -126,6 +126,8 @@ tideway add openapi
 tideway add openapi --wire
 ```
 
+When adding OpenAPI, the CLI creates `src/openapi_docs.rs` if it does not exist.
+
 ### `tideway resource`
 
 Generate a CRUD route module for a resource.
@@ -134,6 +136,8 @@ Generate a CRUD route module for a resource.
 tideway resource user --wire
 tideway resource invoice_item --wire --with-tests false
 ```
+
+If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
 
 ### `tideway setup`
 

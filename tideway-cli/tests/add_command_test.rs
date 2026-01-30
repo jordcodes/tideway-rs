@@ -224,6 +224,7 @@ async fn main() {
     let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated.contains("create_openapi_router"));
     assert!(updated.contains("openapi_merge_module"));
+    assert!(project_dir.join("src/openapi_docs.rs").exists());
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

@@ -37,6 +37,9 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     if args.wire {
         wire_routes_mod(&routes_dir, &resource_name)?;
         wire_main_rs(&src_dir, &resource_name, &resource_pascal)?;
+        if has_openapi {
+            wire_openapi_docs(&src_dir, &resource_name, &resource_plural)?;
+        }
     } else {
         print_info("Next steps: add the module to routes/mod.rs and register it in main.rs");
     }
@@ -307,6 +310,98 @@ async fn delete_{resource_name}() -> Result<MessageResponse> {{
         openapi_attrs_update = openapi_attrs_update,
         openapi_attrs_delete = openapi_attrs_delete,
     )
+}
+
+fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str) -> Result<()> {
+    let docs_path = src_dir.join("openapi_docs.rs");
+    let paths = [
+        format!("crate::routes::{resource_name}::list_{resource_plural}"),
+        format!("crate::routes::{resource_name}::get_{resource_name}"),
+        format!("crate::routes::{resource_name}::create_{resource_name}"),
+        format!("crate::routes::{resource_name}::update_{resource_name}"),
+        format!("crate::routes::{resource_name}::delete_{resource_name}"),
+    ];
+
+    if !docs_path.exists() {
+        let contents = render_openapi_docs_file(&paths);
+        write_file(&docs_path, &contents, false)?;
+        print_success("Created src/openapi_docs.rs");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&docs_path)
+        .with_context(|| format!("Failed to read {}", docs_path.display()))?;
+
+    if !contents.contains("openapi_doc!") || !contents.contains("paths(") {
+        print_warning("Could not find OpenAPI doc paths; skipping openapi_docs.rs update");
+        return Ok(());
+    }
+
+    if paths.iter().all(|path| contents.contains(path)) {
+        return Ok(());
+    }
+
+    let mut lines = contents.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+    let mut start = None;
+    let mut end = None;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if start.is_none() && line.contains("paths(") {
+            start = Some(idx);
+            continue;
+        }
+        if start.is_some() && line.trim_start().starts_with(")") {
+            end = Some(idx);
+            break;
+        }
+    }
+
+    let (start, mut end) = match (start, end) {
+        (Some(start), Some(end)) if end > start => (start, end),
+        _ => {
+            print_warning("Could not locate OpenAPI paths block; skipping openapi_docs.rs update");
+            return Ok(());
+        }
+    };
+
+    let base_indent = lines[start]
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect::<String>();
+    let entry_indent = format!("{base_indent}    ");
+
+    for path in paths {
+        if contents.contains(&path) {
+            continue;
+        }
+        lines.insert(end, format!("{entry_indent}{path},"));
+        end += 1;
+    }
+
+    contents = lines.join("\n");
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    fs::write(&docs_path, contents)
+        .with_context(|| format!("Failed to write {}", docs_path.display()))?;
+    print_success("Updated src/openapi_docs.rs");
+    Ok(())
+}
+
+fn render_openapi_docs_file(paths: &[String]) -> String {
+    let mut output = String::new();
+    output.push_str("#[cfg(feature = \"openapi\")]\n");
+    output.push_str("tideway::openapi_doc!(\n");
+    output.push_str("    pub(crate) ApiDoc,\n");
+    output.push_str("    paths(\n");
+    for path in paths {
+        output.push_str("        ");
+        output.push_str(path);
+        output.push_str(",\n");
+    }
+    output.push_str("    )\n");
+    output.push_str(");\n");
+    output
 }
 
 fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
