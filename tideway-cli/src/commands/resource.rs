@@ -18,7 +18,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let resource_pascal = to_pascal_case(&resource_name);
     let resource_plural = pluralize(&resource_name);
 
-    let _has_validation = has_feature(&project_dir.join("Cargo.toml"), "validation");
+    let has_openapi = has_feature(&project_dir.join("Cargo.toml"), "openapi");
 
     let routes_dir = src_dir.join("routes");
     fs::create_dir_all(&routes_dir)
@@ -30,6 +30,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         &resource_name,
         &resource_plural,
         args.with_tests,
+        has_openapi,
     );
     write_file(&resource_path, &contents, false)?;
 
@@ -53,6 +54,7 @@ fn render_resource_module(
     resource_name: &str,
     resource_plural: &str,
     with_tests: bool,
+    has_openapi: bool,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
     let tests_block = if with_tests {
@@ -98,12 +100,134 @@ mod tests {{
     } else {
         String::new()
     };
+    let openapi_import = if has_openapi {
+        "use utoipa::ToSchema;\n"
+    } else {
+        ""
+    };
+
+    let openapi_schema = if has_openapi {
+        "#[derive(ToSchema)]"
+    } else {
+        ""
+    };
+
+    let openapi_paths = if has_openapi {
+        format!(
+            r#"
+#[cfg(feature = "openapi")]
+mod openapi_docs {{
+    use super::*;
+    use utoipa::OpenApi;
+
+    #[derive(OpenApi)]
+    #[openapi(
+        paths(
+            list_{resource_plural},
+            get_{resource_name},
+            create_{resource_name},
+            update_{resource_name},
+            delete_{resource_name}
+        ),
+        components(schemas({resource_pascal}, CreateRequest, UpdateRequest))
+    )]
+    pub struct {resource_pascal}Api;
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+        )
+    } else {
+        String::new()
+    };
+
+    let openapi_attrs = if has_openapi {
+        format!(
+            r#"
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/api/{resource_plural}",
+    responses((status = 200, body = [{resource_pascal}]))
+))]
+"#,
+            resource_plural = resource_plural,
+            resource_pascal = resource_pascal,
+        )
+    } else {
+        String::new()
+    };
+
+    let openapi_attrs_get = if has_openapi {
+        format!(
+            r#"
+#[cfg_attr(feature = "openapi", utoipa::path(
+    get,
+    path = "/api/{resource_plural}/{{id}}",
+    responses((status = 200, body = {resource_pascal}))
+))]
+"#,
+            resource_plural = resource_plural,
+            resource_pascal = resource_pascal,
+        )
+    } else {
+        String::new()
+    };
+
+    let openapi_attrs_create = if has_openapi {
+        format!(
+            r#"
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    path = "/api/{resource_plural}",
+    request_body = CreateRequest,
+    responses((status = 200, body = MessageResponse))
+))]
+"#,
+            resource_plural = resource_plural,
+        )
+    } else {
+        String::new()
+    };
+
+    let openapi_attrs_update = if has_openapi {
+        format!(
+            r#"
+#[cfg_attr(feature = "openapi", utoipa::path(
+    put,
+    path = "/api/{resource_plural}/{{id}}",
+    request_body = UpdateRequest,
+    responses((status = 200, body = MessageResponse))
+))]
+"#,
+            resource_plural = resource_plural,
+        )
+    } else {
+        String::new()
+    };
+
+    let openapi_attrs_delete = if has_openapi {
+        format!(
+            r#"
+#[cfg_attr(feature = "openapi", utoipa::path(
+    delete,
+    path = "/api/{resource_plural}/{{id}}",
+    responses((status = 200, body = MessageResponse))
+))]
+"#,
+            resource_plural = resource_plural,
+        )
+    } else {
+        String::new()
+    };
+
     format!(
         r#"//! {resource_pascal} routes.
 
 use axum::{{routing::{{delete, get, post, put}}, Json, Router}};
 use serde::{{Deserialize, Serialize}};
 use tideway::{{AppContext, MessageResponse, Result, RouteModule}};
+{openapi_import}
 
 pub struct {resource_pascal}Module;
 
@@ -120,25 +244,30 @@ impl RouteModule for {resource_pascal}Module {{
 }}
 
 #[derive(Debug, Serialize)]
+{openapi_schema}
 pub struct {resource_pascal} {{
     pub id: String,
     pub name: String,
 }}
 
 #[derive(Deserialize)]
+{openapi_schema}
 pub struct CreateRequest {{
     pub name: String,
 }}
 
 #[derive(Deserialize)]
+{openapi_schema}
 pub struct UpdateRequest {{
     pub name: Option<String>,
 }}
 
+{openapi_attrs}
 async fn list_{resource_plural}() -> Json<Vec<{resource_pascal}>> {{
     Json(Vec::new())
 }}
 
+{openapi_attrs_get}
 async fn get_{resource_name}() -> Result<Json<{resource_pascal}>> {{
     Ok(Json({resource_pascal} {{
         id: "demo".to_string(),
@@ -146,25 +275,37 @@ async fn get_{resource_name}() -> Result<Json<{resource_pascal}>> {{
     }}))
 }}
 
+{openapi_attrs_create}
 async fn create_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
     Ok(MessageResponse::success(format!("Created {{}}", body.name)))
 }}
 
+{openapi_attrs_update}
 async fn update_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
     let name = body.name.unwrap_or_else(|| "{resource_pascal}".to_string());
     Ok(MessageResponse::success(format!("Updated {{}}", name)))
 }}
 
+{openapi_attrs_delete}
 async fn delete_{resource_name}() -> Result<MessageResponse> {{
     Ok(MessageResponse::success("Deleted"))
 }}
 {tests_block}
+{openapi_paths}
 "#,
         resource_pascal = resource_pascal,
         resource_name = resource_name,
         resource_plural = resource_plural,
         body_extractor = body_extractor,
         tests_block = tests_block,
+        openapi_import = openapi_import,
+        openapi_schema = openapi_schema,
+        openapi_paths = openapi_paths,
+        openapi_attrs = openapi_attrs,
+        openapi_attrs_get = openapi_attrs_get,
+        openapi_attrs_create = openapi_attrs_create,
+        openapi_attrs_update = openapi_attrs_update,
+        openapi_attrs_delete = openapi_attrs_delete,
     )
 }
 
