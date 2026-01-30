@@ -66,6 +66,7 @@ async fn main() {
         repo: false,
         repo_tests: false,
         service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -142,6 +143,7 @@ async fn main() {
         repo: false,
         repo_tests: false,
         service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -219,6 +221,7 @@ async fn main() {
         repo: false,
         repo_tests: false,
         service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -304,6 +307,7 @@ async fn main() {
         repo: true,
         repo_tests: false,
         service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -380,6 +384,7 @@ async fn main() {
         repo: true,
         repo_tests: true,
         service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -455,6 +460,7 @@ async fn main() {
         repo: true,
         repo_tests: false,
         service: true,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -465,6 +471,82 @@ async fn main() {
     assert_file_contains(&project_dir.join("src/routes/user.rs"), "Service");
     let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated_main.contains("mod services;"));
+}
+
+#[test]
+fn test_resource_command_uuid_requires_dependency() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src/routes")).expect("create routes");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let routes_mod = r#"
+use axum::{routing::get, Router};
+use tideway::{AppContext, MessageResponse, RouteModule};
+
+pub struct ApiModule;
+
+impl RouteModule for ApiModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route("/", get(root))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api")
+    }
+}
+
+async fn root() -> MessageResponse {
+    MessageResponse::success("Tideway is running")
+}
+"#;
+    fs::write(project_dir.join("src/routes/mod.rs"), routes_mod).expect("write routes mod");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: true,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Uuid,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+    };
+
+    let err = tideway_cli::commands::resource::run(args).expect_err("expected error");
+    assert!(
+        err.to_string().contains("uuid dependency"),
+        "unexpected error: {}",
+        err
+    );
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::{DbBackend, NewArgs, NewPreset, ResourceArgs};
+use crate::cli::{DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{print_info, print_success, print_warning};
 
@@ -361,6 +361,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         repo: false,
         repo_tests: false,
         service: false,
+        id_type: ResourceIdType::Int,
         db_backend: DbBackend::Auto,
     };
 

@@ -291,9 +291,21 @@ pub struct ResourceArgs {
     #[arg(long, default_value = "false")]
     pub service: bool,
 
+    /// ID type for DB scaffolding
+    #[arg(long, value_enum, default_value = "int")]
+    pub id_type: ResourceIdType,
+
     /// Database backend for scaffolding
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,
+}
+
+#[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ResourceIdType {
+    /// Auto-incrementing integer IDs
+    Int,
+    /// UUID IDs
+    Uuid,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]

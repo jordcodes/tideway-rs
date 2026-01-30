@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::{DbBackend, ResourceArgs};
+use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::wire_database_in_main;
 use crate::{print_info, print_success, print_warning};
 
@@ -37,6 +37,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         args.db,
         args.repo,
         args.service,
+        args.id_type,
     );
     write_file(&resource_path, &contents, false)?;
 
@@ -82,12 +83,18 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 "SeaORM dependency not found (run `tideway add database`)"
             ));
         }
+        if matches!(args.id_type, ResourceIdType::Uuid) && !has_dependency(&cargo_path, "uuid") {
+            return Err(anyhow::anyhow!(
+                "UUID id type requires the uuid dependency (add uuid = {{ version = \"1\", features = [\"v4\"] }})"
+            ));
+        }
         let backend = resolve_db_backend(&project_dir, args.db_backend)?;
         match backend {
             DbBackend::SeaOrm => generate_sea_orm_scaffold(
                 &project_dir,
                 &resource_name,
                 &resource_plural,
+                args.id_type,
             )?,
             DbBackend::Auto => {
                 return Err(anyhow::anyhow!(
@@ -97,13 +104,13 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         }
 
         if args.repo {
-            generate_repository(&project_dir, &resource_name)?;
+            generate_repository(&project_dir, &resource_name, args.id_type)?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
-                generate_repository_tests(&project_dir, &project_name, &resource_name)?;
+                generate_repository_tests(&project_dir, &project_name, &resource_name, args.id_type)?;
             }
             if args.service {
-                generate_service(&project_dir, &resource_name)?;
+                generate_service(&project_dir, &resource_name, args.id_type)?;
             }
         }
 
@@ -173,8 +180,24 @@ fn render_resource_module(
     with_db: bool,
     with_repo: bool,
     with_service: bool,
+    id_type: ResourceIdType,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
+    let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
+        "uuid::Uuid"
+    } else {
+        "i32"
+    };
+    let uuid_import = if matches!(id_type, ResourceIdType::Uuid) {
+        "use uuid::Uuid;\n"
+    } else {
+        ""
+    };
+    let create_id_field = if matches!(id_type, ResourceIdType::Uuid) {
+        "        id: Set(Uuid::new_v4()),\n"
+    } else {
+        ""
+    };
     let tests_block = if with_tests {
         format!(
             r#"
@@ -386,7 +409,7 @@ async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Ve
 {openapi_attrs_get}
 async fn get_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
 ) -> Result<Json<{resource_pascal}>> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     let service = {resource_pascal}Service::new(repo);
@@ -414,7 +437,7 @@ async fn create_{resource_name}(
 {openapi_attrs_update}
 async fn update_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
@@ -426,7 +449,7 @@ async fn update_{resource_name}(
 {openapi_attrs_delete}
 async fn delete_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     let service = {resource_pascal}Service::new(repo);
@@ -443,6 +466,7 @@ async fn delete_{resource_name}(
             openapi_attrs_update = openapi_attrs_update,
             openapi_attrs_delete = openapi_attrs_delete,
             body_extractor = body_extractor,
+            id_type_str = id_type_str,
         )
     } else if with_db && with_repo {
         format!(
@@ -464,7 +488,7 @@ async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Ve
 {openapi_attrs_get}
 async fn get_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
 ) -> Result<Json<{resource_pascal}>> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     let model = repo
@@ -490,7 +514,7 @@ async fn create_{resource_name}(
 {openapi_attrs_update}
 async fn update_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
@@ -501,7 +525,7 @@ async fn update_{resource_name}(
 {openapi_attrs_delete}
 async fn delete_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     repo.delete(id).await?;
@@ -517,6 +541,7 @@ async fn delete_{resource_name}(
             openapi_attrs_update = openapi_attrs_update,
             openapi_attrs_delete = openapi_attrs_delete,
             body_extractor = body_extractor,
+            id_type_str = id_type_str,
         )
     } else if with_db {
         format!(
@@ -538,7 +563,7 @@ async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Ve
 {openapi_attrs_get}
 async fn get_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
 ) -> Result<Json<{resource_pascal}>> {{
     let db = ctx.sea_orm_connection()?;
     let model = {resource_name}::Entity::find_by_id(id).one(&db).await?;
@@ -556,6 +581,7 @@ async fn create_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let active = {resource_name}::ActiveModel {{
+{create_id_field}
         name: Set(body.name),
         ..Default::default()
     }};
@@ -566,7 +592,7 @@ async fn create_{resource_name}(
 {openapi_attrs_update}
 async fn update_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
     Json(body): Json<UpdateRequest>,
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
@@ -583,7 +609,7 @@ async fn update_{resource_name}(
 {openapi_attrs_delete}
 async fn delete_{resource_name}(
     State(ctx): State<AppContext>,
-    Path(id): Path<i32>,
+    Path(id): Path<{id_type_str}>,
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     {resource_name}::Entity::delete_by_id(id).exec(&db).await?;
@@ -599,6 +625,7 @@ async fn delete_{resource_name}(
             openapi_attrs_update = openapi_attrs_update,
             openapi_attrs_delete = openapi_attrs_delete,
             body_extractor = body_extractor,
+            id_type_str = id_type_str,
         )
     } else {
         format!(
@@ -652,6 +679,7 @@ use serde::{{Deserialize, Serialize}};
 use tideway::{{AppContext, MessageResponse, Result, RouteModule}};
 {openapi_import}
 {sea_orm_imports}
+{uuid_import}
 {entities_import}
 {repositories_import}
 {services_import}
@@ -703,6 +731,7 @@ pub struct UpdateRequest {{
         handlers = handlers,
         extract_import = extract_import,
         sea_orm_imports = sea_orm_imports,
+        uuid_import = uuid_import,
         entities_import = entities_import,
         repositories_import = repositories_import,
         services_import = services_import,
@@ -883,6 +912,7 @@ fn generate_sea_orm_scaffold(
     project_dir: &Path,
     resource_name: &str,
     resource_plural: &str,
+    id_type: ResourceIdType,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let entities_dir = src_dir.join("entities");
@@ -898,7 +928,7 @@ fn generate_sea_orm_scaffold(
     wire_entities_mod(&entities_mod, resource_name)?;
 
     let entity_path = entities_dir.join(format!("{}.rs", resource_name));
-    let entity_contents = render_sea_orm_entity(resource_name, resource_plural);
+    let entity_contents = render_sea_orm_entity(resource_name, resource_plural, id_type);
     write_file(&entity_path, &entity_contents, false)?;
 
     let migration_root = project_dir.join("migration");
@@ -913,7 +943,7 @@ fn generate_sea_orm_scaffold(
 
     let (migration_mod, migration_file) =
         next_migration_name(&migration_src, resource_plural)?;
-    let migration_contents = render_sea_orm_migration(resource_plural);
+    let migration_contents = render_sea_orm_migration(resource_plural, id_type);
     let migration_path = migration_src.join(&migration_file);
     write_file(&migration_path, &migration_contents, false)?;
 
@@ -942,18 +972,32 @@ fn wire_entities_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_sea_orm_entity(resource_name: &str, resource_plural: &str) -> String {
+fn render_sea_orm_entity(
+    resource_name: &str,
+    resource_plural: &str,
+    id_type: ResourceIdType,
+) -> String {
     let resource_pascal = to_pascal_case(resource_name);
+    let id_field = if matches!(id_type, ResourceIdType::Uuid) {
+        "    #[sea_orm(primary_key, auto_increment = false)]\n    pub id: Uuid,\n"
+    } else {
+        "    #[sea_orm(primary_key, auto_increment = true)]\n    pub id: i32,\n"
+    };
+    let uuid_import = if matches!(id_type, ResourceIdType::Uuid) {
+        "use uuid::Uuid;\n"
+    } else {
+        ""
+    };
     format!(
         r#"//! SeaORM entity for {resource_pascal}.
 
 use sea_orm::entity::prelude::*;
+{uuid_import}
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
 #[sea_orm(table_name = "{resource_plural}")]
 pub struct Model {{
-    #[sea_orm(primary_key, auto_increment = true)]
-    pub id: i32,
+{id_field}
     pub name: String,
 }}
 
@@ -963,7 +1007,9 @@ pub enum Relation {{}}
 impl ActiveModelBehavior for ActiveModel {{}}
 "#,
         resource_pascal = resource_pascal,
-        resource_plural = resource_plural
+        resource_plural = resource_plural,
+        id_field = id_field,
+        uuid_import = uuid_import
     )
 }
 
@@ -1004,8 +1050,17 @@ fn next_migration_name(migration_src: &Path, resource_plural: &str) -> Result<(S
     Ok((mod_name, file_name))
 }
 
-fn render_sea_orm_migration(resource_plural: &str) -> String {
+fn render_sea_orm_migration(resource_plural: &str, id_type: ResourceIdType) -> String {
     let table_enum = to_pascal_case(resource_plural);
+    let id_column = if matches!(id_type, ResourceIdType::Uuid) {
+        format!(
+            "ColumnDef::new({table_enum}::Id)\n                            .uuid()\n                            .not_null()\n                            .primary_key()"
+        )
+    } else {
+        format!(
+            "ColumnDef::new({table_enum}::Id)\n                            .integer()\n                            .not_null()\n                            .auto_increment()\n                            .primary_key()"
+        )
+    };
     format!(
         r#"use sea_orm_migration::prelude::*;
 
@@ -1021,11 +1076,7 @@ impl MigrationTrait for Migration {{
                     .table({table_enum}::Table)
                     .if_not_exists()
                     .col(
-                        ColumnDef::new({table_enum}::Id)
-                            .integer()
-                            .not_null()
-                            .auto_increment()
-                            .primary_key(),
+                        {id_column},
                     )
                     .col(ColumnDef::new({table_enum}::Name).string().not_null())
                     .to_owned(),
@@ -1047,7 +1098,8 @@ enum {table_enum} {{
     Name,
 }}
 "#,
-        table_enum = table_enum
+        table_enum = table_enum,
+        id_column = id_column
     )
 }
 
@@ -1152,7 +1204,11 @@ fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn generate_repository(project_dir: &Path, resource_name: &str) -> Result<()> {
+fn generate_repository(
+    project_dir: &Path,
+    resource_name: &str,
+    id_type: ResourceIdType,
+) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
     fs::create_dir_all(&repos_dir)
@@ -1167,7 +1223,7 @@ fn generate_repository(project_dir: &Path, resource_name: &str) -> Result<()> {
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
-    let repo_contents = render_repository(resource_name);
+    let repo_contents = render_repository(resource_name, id_type);
     write_file(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
@@ -1185,11 +1241,22 @@ fn wire_repositories_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_repository(resource_name: &str) -> String {
+fn render_repository(resource_name: &str, id_type: ResourceIdType) -> String {
     let resource_pascal = to_pascal_case(resource_name);
+    let (id_type_str, uuid_import) = if matches!(id_type, ResourceIdType::Uuid) {
+        ("uuid::Uuid", "use uuid::Uuid;\n")
+    } else {
+        ("i32", "")
+    };
+    let create_id_field = if matches!(id_type, ResourceIdType::Uuid) {
+        "            id: Set(Uuid::new_v4()),\n"
+    } else {
+        ""
+    };
     format!(
         r#"use sea_orm::{{ActiveModelTrait, EntityTrait, Set}};
 use tideway::Result;
+{uuid_import}
 
 use crate::entities::{resource_name};
 
@@ -1206,19 +1273,20 @@ impl {resource_pascal}Repository {{
         Ok({resource_name}::Entity::find().all(&self.db).await?)
     }}
 
-    pub async fn get(&self, id: i32) -> Result<Option<{resource_name}::Model>> {{
+    pub async fn get(&self, id: {id_type}) -> Result<Option<{resource_name}::Model>> {{
         Ok({resource_name}::Entity::find_by_id(id).one(&self.db).await?)
     }}
 
     pub async fn create(&self, name: String) -> Result<{resource_name}::Model> {{
         let active = {resource_name}::ActiveModel {{
+{create_id_field}
             name: Set(name),
             ..Default::default()
         }};
         Ok(active.insert(&self.db).await?)
     }}
 
-    pub async fn update(&self, id: i32, name: Option<String>) -> Result<{resource_name}::Model> {{
+    pub async fn update(&self, id: {id_type}, name: Option<String>) -> Result<{resource_name}::Model> {{
         let model = {resource_name}::Entity::find_by_id(id).one(&self.db).await?;
         let model =
             model.ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
@@ -1229,7 +1297,7 @@ impl {resource_pascal}Repository {{
         Ok(active.update(&self.db).await?)
     }}
 
-    pub async fn delete(&self, id: i32) -> Result<()> {{
+    pub async fn delete(&self, id: {id_type}) -> Result<()> {{
         {resource_name}::Entity::delete_by_id(id)
             .exec(&self.db)
             .await?;
@@ -1238,11 +1306,18 @@ impl {resource_pascal}Repository {{
 }}
 "#,
         resource_name = resource_name,
-        resource_pascal = resource_pascal
+        resource_pascal = resource_pascal,
+        id_type = id_type_str,
+        uuid_import = uuid_import,
+        create_id_field = create_id_field
     )
 }
 
-fn generate_service(project_dir: &Path, resource_name: &str) -> Result<()> {
+fn generate_service(
+    project_dir: &Path,
+    resource_name: &str,
+    id_type: ResourceIdType,
+) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
     fs::create_dir_all(&services_dir)
@@ -1257,7 +1332,7 @@ fn generate_service(project_dir: &Path, resource_name: &str) -> Result<()> {
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
-    let service_contents = render_service(resource_name);
+    let service_contents = render_service(resource_name, id_type);
     write_file(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
@@ -1275,10 +1350,21 @@ fn wire_services_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_service(resource_name: &str) -> String {
+fn render_service(resource_name: &str, id_type: ResourceIdType) -> String {
     let resource_pascal = to_pascal_case(resource_name);
+    let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
+        "uuid::Uuid"
+    } else {
+        "i32"
+    };
+    let uuid_import = if matches!(id_type, ResourceIdType::Uuid) {
+        "use uuid::Uuid;\n"
+    } else {
+        ""
+    };
     format!(
         r#"use tideway::Result;
+{uuid_import}
 
 use crate::repositories::{resource_name}::{resource_pascal}Repository;
 
@@ -1295,7 +1381,7 @@ impl {resource_pascal}Service {{
         self.repo.list().await
     }}
 
-    pub async fn get(&self, id: i32) -> Result<Option<crate::entities::{resource_name}::Model>> {{
+    pub async fn get(&self, id: {id_type}) -> Result<Option<crate::entities::{resource_name}::Model>> {{
         self.repo.get(id).await
     }}
 
@@ -1305,19 +1391,21 @@ impl {resource_pascal}Service {{
 
     pub async fn update(
         &self,
-        id: i32,
+        id: {id_type},
         name: Option<String>,
     ) -> Result<crate::entities::{resource_name}::Model> {{
         self.repo.update(id, name).await
     }}
 
-    pub async fn delete(&self, id: i32) -> Result<()> {{
+    pub async fn delete(&self, id: {id_type}) -> Result<()> {{
         self.repo.delete(id).await
     }}
 }}
 "#,
         resource_name = resource_name,
-        resource_pascal = resource_pascal
+        resource_pascal = resource_pascal,
+        id_type = id_type_str,
+        uuid_import = uuid_import
     )
 }
 
@@ -1325,19 +1413,24 @@ fn generate_repository_tests(
     project_dir: &Path,
     project_name: &str,
     resource_name: &str,
+    id_type: ResourceIdType,
 ) -> Result<()> {
     let tests_dir = project_dir.join("tests");
     fs::create_dir_all(&tests_dir)
         .with_context(|| format!("Failed to create {}", tests_dir.display()))?;
 
     let file_path = tests_dir.join(format!("repository_{}.rs", resource_name));
-    let contents = render_repository_tests(project_name, resource_name);
+    let contents = render_repository_tests(project_name, resource_name, id_type);
     write_file(&file_path, &contents, false)?;
     print_success("Generated repository tests");
     Ok(())
 }
 
-fn render_repository_tests(project_name: &str, resource_name: &str) -> String {
+fn render_repository_tests(
+    project_name: &str,
+    resource_name: &str,
+    _id_type: ResourceIdType,
+) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     format!(
         r#"use sea_orm::Database;
