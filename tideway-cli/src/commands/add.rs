@@ -32,7 +32,11 @@ pub fn run(args: AddArgs) -> Result<()> {
     if args.feature == AddFeature::Auth {
         scaffold_auth(&project_dir, &project_name, &project_name_pascal, args.force)?;
         print_info("Auth scaffold created in src/auth/");
-        print_info("Next steps: wire AuthModule + SimpleAuthProvider in main.rs");
+        if args.wire {
+            wire_auth_in_main(&project_dir, &project_name)?;
+        } else {
+            print_info("Next steps: wire AuthModule + SimpleAuthProvider in main.rs");
+        }
     }
 
     print_success(&format!("Added {}", args.feature));
@@ -210,6 +214,128 @@ fn scaffold_auth(
     )?;
 
     Ok(())
+}
+
+fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
+    let main_path = project_dir.join("src").join("main.rs");
+    if !main_path.exists() {
+        print_warning("src/main.rs not found; skipping auto-wiring");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&main_path)
+        .with_context(|| format!("Failed to read {}", main_path.display()))?;
+
+    if !contents.contains("mod auth;") {
+        if contents.contains("mod routes;") {
+            contents = contents.replace("mod routes;\n", "mod routes;\nmod auth;\n");
+        } else {
+            contents = format!("mod auth;\n{}", contents);
+        }
+    }
+
+    contents = ensure_use_line(
+        contents,
+        "use axum::Extension;",
+        "use tideway::auth",
+    );
+    contents = ensure_use_line(
+        contents,
+        "use crate::auth::{AuthModule, SimpleAuthProvider};",
+        "use tideway::auth",
+    );
+    contents = ensure_use_line(contents, "use std::sync::Arc;", "use tideway::");
+    contents = ensure_use_line(
+        contents,
+        "use tideway::auth::{JwtIssuer, JwtIssuerConfig};",
+        "use tideway::auth",
+    );
+
+    let has_jwt_secret = contents.contains("let jwt_secret");
+    let has_jwt_issuer = contents.contains("let jwt_issuer");
+    let has_auth_provider = contents.contains("auth_provider");
+    let has_auth_module = contents.contains("auth_module");
+
+    if has_jwt_secret && has_jwt_issuer {
+        if !has_auth_provider || !has_auth_module {
+            if let Some(insert_at) = contents.find("let jwt_issuer") {
+                let after = contents[insert_at..]
+                    .find(";\n")
+                    .map(|idx| insert_at + idx + 2)
+                    .unwrap_or(insert_at);
+                let insert = format!(
+                    "    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n"
+                );
+                contents.insert_str(after, &insert);
+            }
+        }
+    } else {
+        let block = format!(
+            "    let jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(\n        &jwt_secret,\n        \"{}\",\n    )).expect(\"Failed to create JWT issuer\"));\n    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n\n",
+            project_name
+        );
+        contents = insert_before_app_builder(contents, &block)?;
+    }
+
+    contents = insert_auth_into_app_builder(contents)?;
+
+    fs::write(&main_path, contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    print_success("Wired auth into src/main.rs");
+    Ok(())
+}
+
+fn ensure_use_line(mut contents: String, line: &str, anchor: &str) -> String {
+    if contents.contains(line) {
+        return contents;
+    }
+
+    if let Some(pos) = contents.find(anchor) {
+        if let Some(line_end) = contents[pos..].find('\n') {
+            let insert_at = pos + line_end + 1;
+            contents.insert_str(insert_at, &format!("{}\n", line));
+            return contents;
+        }
+    }
+
+    contents = format!("{}\n{}", line, contents);
+    contents
+}
+
+fn insert_before_app_builder(mut contents: String, block: &str) -> Result<String> {
+    if let Some(pos) = contents.find("let app = App::") {
+        contents.insert_str(pos, block);
+        Ok(contents)
+    } else {
+        print_warning("Could not find app builder; skipping auth wiring");
+        Ok(contents)
+    }
+}
+
+fn insert_auth_into_app_builder(mut contents: String) -> Result<String> {
+    if contents.contains("register_module(auth_module)") {
+        return Ok(contents);
+    }
+
+    if let Some(pos) = contents.find("let app = App::") {
+        let line_end = contents[pos..]
+            .find('\n')
+            .map(|idx| pos + idx)
+            .unwrap_or(contents.len());
+        let indent = contents[pos..]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect::<String>();
+        let insert = format!(
+            "{}    .with_global_layer(Extension(auth_provider))\n{}    .register_module(auth_module)\n",
+            indent, indent
+        );
+        contents.insert_str(line_end + 1, &insert);
+        Ok(contents)
+    } else {
+        print_warning("Could not find app builder; skipping auth module registration");
+        Ok(contents)
+    }
 }
 
 fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {

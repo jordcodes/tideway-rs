@@ -86,6 +86,7 @@ Add Tideway features and optional scaffolding.
 
 ```bash
 tideway add auth
+tideway add auth --wire
 tideway add database
 tideway add openapi
 ```

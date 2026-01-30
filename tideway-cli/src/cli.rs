@@ -112,6 +112,10 @@ pub struct AddArgs {
     /// Overwrite existing scaffold files
     #[arg(long, default_value = "false")]
     pub force: bool,
+
+    /// Attempt to wire the new feature into src/main.rs
+    #[arg(long, default_value = "false")]
+    pub wire: bool,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
