@@ -151,6 +151,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
 
     if needs_database {
         check_migration_setup(project_dir, &mut report);
+        check_database_wiring(&src_dir, &mut report);
     }
 
     Ok(report)
@@ -435,6 +436,49 @@ fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
     if !migration_lib.exists() {
         report.warnings.push(
             "Missing migration/src/lib.rs (run `sea-orm-cli migrate init` or `tideway backend`)"
+                .to_string(),
+        );
+    }
+}
+
+fn check_database_wiring(src_dir: &Path, report: &mut DoctorReport) {
+    let routes_dir = src_dir.join("routes");
+    if !routes_dir.exists() {
+        return;
+    }
+
+    let mut has_db_routes = false;
+    if let Ok(entries) = fs::read_dir(&routes_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if contents.contains("sea_orm_connection()")
+                    || contents.contains("Entity::find")
+                    || contents.contains("ActiveModel")
+                {
+                    has_db_routes = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if !has_db_routes {
+        return;
+    }
+
+    let main_path = src_dir.join("main.rs");
+    let Ok(contents) = fs::read_to_string(&main_path) else {
+        report.warnings.push("Failed to read src/main.rs for database wiring check".to_string());
+        return;
+    };
+
+    if !contents.contains("with_database(") {
+        report.warnings.push(
+            "DB-backed routes detected but AppContext is not wired (run `tideway add database --wire`)"
                 .to_string(),
         );
     }
