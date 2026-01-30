@@ -283,6 +283,10 @@ pub struct ResourceArgs {
     #[arg(long, default_value = "false")]
     pub repo: bool,
 
+    /// Generate repository tests (requires --repo)
+    #[arg(long, default_value = "false")]
+    pub repo_tests: bool,
+
     /// Database backend for scaffolding
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,

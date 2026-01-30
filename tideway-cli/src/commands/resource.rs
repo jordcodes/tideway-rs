@@ -56,6 +56,13 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         ));
     }
 
+    if args.repo_tests && !args.repo {
+        return Err(anyhow::anyhow!(
+            "Repository tests require --repo (run `tideway resource {} --db --repo --repo-tests`)",
+            resource_name
+        ));
+    }
+
     if args.db {
         if !has_database {
             return Err(anyhow::anyhow!(
@@ -83,6 +90,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
 
         if args.repo {
             generate_repository(&project_dir, &resource_name)?;
+            if args.repo_tests {
+                let project_name = project_name_from_cargo(&cargo_path, &project_dir);
+                generate_repository_tests(&project_dir, &project_name, &resource_name)?;
+            }
         }
 
         if args.wire {
@@ -1104,6 +1115,50 @@ impl {resource_pascal}Repository {{
     )
 }
 
+fn generate_repository_tests(
+    project_dir: &Path,
+    project_name: &str,
+    resource_name: &str,
+) -> Result<()> {
+    let tests_dir = project_dir.join("tests");
+    fs::create_dir_all(&tests_dir)
+        .with_context(|| format!("Failed to create {}", tests_dir.display()))?;
+
+    let file_path = tests_dir.join(format!("repository_{}.rs", resource_name));
+    let contents = render_repository_tests(project_name, resource_name);
+    write_file(&file_path, &contents, false)?;
+    print_success("Generated repository tests");
+    Ok(())
+}
+
+fn render_repository_tests(project_name: &str, resource_name: &str) -> String {
+    let resource_pascal = to_pascal_case(resource_name);
+    format!(
+        r#"use sea_orm::Database;
+use tideway::Result;
+
+use {project_name}::repositories::{resource_name}::{resource_pascal}Repository;
+
+#[tokio::test]
+#[ignore = "Requires DATABASE_URL and existing migrations"]
+async fn repository_crud_smoke() -> Result<()> {{
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL is required for repository tests");
+    let db = Database::connect(&database_url).await?;
+    let repo = {resource_pascal}Repository::new(db);
+
+    let created = repo.create("Example".to_string()).await?;
+    let _ = repo.list().await?;
+    repo.delete(created.id).await?;
+    Ok(())
+}}
+"#,
+        project_name = project_name,
+        resource_name = resource_name,
+        resource_pascal = resource_pascal
+    )
+}
+
 fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> Result<()> {
     let main_path = src_dir.join("main.rs");
     if !main_path.exists() {
@@ -1212,4 +1267,27 @@ fn has_dependency(cargo_path: &Path, dependency: &str) -> bool {
     doc.get("dependencies")
         .and_then(|deps| deps.get(dependency))
         .is_some()
+}
+
+fn project_name_from_cargo(cargo_path: &Path, project_dir: &Path) -> String {
+    let Ok(contents) = fs::read_to_string(cargo_path) else {
+        return fallback_project_name(project_dir);
+    };
+    let Ok(doc) = contents.parse::<toml_edit::DocumentMut>() else {
+        return fallback_project_name(project_dir);
+    };
+
+    doc.get("package")
+        .and_then(|pkg| pkg.get("name"))
+        .and_then(|value| value.as_str())
+        .map(|name| name.replace('-', "_"))
+        .unwrap_or_else(|| fallback_project_name(project_dir))
+}
+
+fn fallback_project_name(project_dir: &Path) -> String {
+    project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("my_app")
+        .replace('-', "_")
 }

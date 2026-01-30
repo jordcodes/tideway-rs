@@ -359,6 +359,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         with_tests: true,
         db: true,
         repo: false,
+        repo_tests: false,
         db_backend: DbBackend::Auto,
     };
 

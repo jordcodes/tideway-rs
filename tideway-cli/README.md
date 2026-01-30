@@ -139,11 +139,13 @@ tideway resource user --wire
 tideway resource invoice_item --wire --with-tests false
 tideway resource user --wire --db
 tideway resource user --wire --db --repo
+tideway resource user --wire --db --repo --repo-tests
 ```
 
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
 Use `--db` to scaffold a SeaORM entity + migration and switch routes to real DB CRUD. With `--wire`, it also wires the database into `main.rs`.
 Use `--repo` to generate a repository layer for DB-backed resources.
+Use `--repo-tests` to generate an ignored CRUD smoke test (requires DATABASE_URL).
 
 ### `tideway setup`
 
