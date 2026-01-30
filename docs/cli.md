@@ -93,6 +93,15 @@ tideway add openapi
 tideway add openapi --wire
 ```
 
+### `tideway resource`
+
+Generate a CRUD route module for a resource.
+
+```bash
+tideway resource user --wire
+tideway resource invoice_item --wire --with-tests false
+```
+
 ### `tideway doctor`
 
 Check for missing features and env vars.

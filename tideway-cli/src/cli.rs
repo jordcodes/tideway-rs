@@ -32,6 +32,9 @@ pub enum Commands {
     /// Initialize main.rs by scanning for modules and wiring them together
     Init(InitArgs),
 
+    /// Generate a CRUD resource module
+    Resource(ResourceArgs),
+
     /// Set up frontend dependencies (Tailwind, shadcn components, etc.)
     Setup(SetupArgs),
 
@@ -214,6 +217,25 @@ pub struct InitArgs {
     /// Generate a minimal app entrypoint and sample route
     #[arg(long, default_value = "false")]
     pub minimal: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct ResourceArgs {
+    /// Resource name (singular, e.g. user or invoice_item)
+    #[arg(value_name = "NAME")]
+    pub name: String,
+
+    /// Project directory
+    #[arg(short, long, default_value = ".")]
+    pub path: String,
+
+    /// Wire the module into routes/mod.rs and main.rs
+    #[arg(long, default_value = "false")]
+    pub wire: bool,
+
+    /// Generate tests
+    #[arg(long, default_value = "true")]
+    pub with_tests: bool,
 }
 
 #[derive(Parser, Debug)]
