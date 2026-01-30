@@ -23,6 +23,7 @@ fn main() -> Result<()> {
         Commands::Resource(args) => tideway_cli::commands::resource::run(args)?,
         Commands::Setup(args) => tideway_cli::commands::setup::run(args)?,
         Commands::Dev(args) => tideway_cli::commands::dev::run(args)?,
+        Commands::Migrate(args) => tideway_cli::commands::migrate::run(args)?,
         Commands::Templates => tideway_cli::commands::templates::run()?,
     }
 

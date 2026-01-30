@@ -168,6 +168,17 @@ tideway dev --no-migrate
 tideway dev -- --release
 ```
 
+### `tideway migrate`
+
+Run database migrations (SeaORM by default).
+
+```bash
+tideway migrate
+tideway migrate status
+tideway migrate down
+tideway migrate up -- --num 2
+```
+
 ### `tideway generate`
 
 Generate frontend components for Vue (more frameworks coming soon).

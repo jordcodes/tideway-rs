@@ -158,6 +158,17 @@ tideway dev --no-migrate
 tideway dev -- --release
 ```
 
+### `tideway migrate`
+
+Run database migrations (SeaORM by default).
+
+```bash
+tideway migrate
+tideway migrate status
+tideway migrate down
+tideway migrate up -- --num 2
+```
+
 ## Notes
 
 - `tideway new` is the fastest path to a runnable API.

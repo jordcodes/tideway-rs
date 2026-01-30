@@ -41,6 +41,9 @@ pub enum Commands {
     /// Run a Tideway app in dev mode (loads env, optional migrations)
     Dev(DevArgs),
 
+    /// Run database migrations
+    Migrate(MigrateArgs),
+
     /// List available templates
     Templates,
 }
@@ -186,6 +189,41 @@ pub struct DevArgs {
     /// Extra args passed to `cargo run`
     #[arg(trailing_var_arg = true)]
     pub args: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct MigrateArgs {
+    /// Action to run (up, down, status, reset, ...)
+    #[arg(value_name = "ACTION", default_value = "up")]
+    pub action: String,
+
+    /// Project directory
+    #[arg(short, long, default_value = ".")]
+    pub path: String,
+
+    /// Migration backend
+    #[arg(long, value_enum, default_value = "auto")]
+    pub backend: MigrateBackend,
+
+    /// Skip loading .env
+    #[arg(long, default_value = "false")]
+    pub no_env: bool,
+
+    /// Create .env from .env.example when missing
+    #[arg(long, default_value = "false")]
+    pub fix_env: bool,
+
+    /// Extra args passed to the backend CLI (use `--` before them)
+    #[arg(trailing_var_arg = true)]
+    pub args: Vec<String>,
+}
+
+#[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
+pub enum MigrateBackend {
+    /// Auto-detect backend from Cargo.toml
+    Auto,
+    /// SeaORM migrations via sea-orm-cli
+    SeaOrm,
 }
 
 #[derive(Parser, Debug)]

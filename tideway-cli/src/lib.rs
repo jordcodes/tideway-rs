@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod commands;
+pub mod env;
 pub mod templates;
 
 use colored::Colorize;
