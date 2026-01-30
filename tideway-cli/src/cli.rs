@@ -32,6 +32,9 @@ pub enum Commands {
     /// Set up frontend dependencies (Tailwind, shadcn components, etc.)
     Setup(SetupArgs),
 
+    /// Run a Tideway app in dev mode (loads env, optional migrations)
+    Dev(DevArgs),
+
     /// List available templates
     Templates,
 }
@@ -121,6 +124,29 @@ pub struct SetupArgs {
     /// Skip shadcn component installation
     #[arg(long, default_value = "false")]
     pub no_components: bool,
+}
+
+#[derive(Parser, Debug)]
+pub struct DevArgs {
+    /// Project directory to run
+    #[arg(short, long, default_value = ".")]
+    pub path: String,
+
+    /// Skip loading .env
+    #[arg(long, default_value = "false")]
+    pub no_env: bool,
+
+    /// Create .env from .env.example when missing
+    #[arg(long, default_value = "false")]
+    pub fix_env: bool,
+
+    /// Skip setting DATABASE_AUTO_MIGRATE=true
+    #[arg(long, default_value = "false")]
+    pub no_migrate: bool,
+
+    /// Extra args passed to `cargo run`
+    #[arg(trailing_var_arg = true)]
+    pub args: Vec<String>,
 }
 
 #[derive(Parser, Debug)]

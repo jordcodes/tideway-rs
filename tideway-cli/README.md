@@ -131,6 +131,17 @@ Options:
 - `--no-tailwind` - Skip Tailwind setup
 - `--no-components` - Skip shadcn component installation
 
+### `tideway dev`
+
+Run your app with `.env` loaded and optional auto-migrations.
+
+```bash
+tideway dev
+tideway dev --fix-env
+tideway dev --no-migrate
+tideway dev -- --release
+```
+
 ### `tideway generate`
 
 Generate frontend components for Vue (more frameworks coming soon).

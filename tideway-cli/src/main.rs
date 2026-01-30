@@ -20,6 +20,7 @@ fn main() -> Result<()> {
         Commands::Backend(args) => tideway_cli::commands::backend::run(args)?,
         Commands::Init(args) => tideway_cli::commands::init::run(args)?,
         Commands::Setup(args) => tideway_cli::commands::setup::run(args)?,
+        Commands::Dev(args) => tideway_cli::commands::dev::run(args)?,
         Commands::Templates => tideway_cli::commands::templates::run()?,
     }
 

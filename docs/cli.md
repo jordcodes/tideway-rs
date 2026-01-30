@@ -121,6 +121,17 @@ Install Tailwind + shadcn-vue for your frontend.
 tideway setup
 ```
 
+### `tideway dev`
+
+Run a Tideway app in dev mode (loads `.env`, optional migrations).
+
+```bash
+tideway dev
+tideway dev --fix-env
+tideway dev --no-migrate
+tideway dev -- --release
+```
+
 ## Notes
 
 - `tideway new` is the fastest path to a runnable API.
