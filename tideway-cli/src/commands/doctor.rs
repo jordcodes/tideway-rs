@@ -91,12 +91,13 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     let env_example_file = project_dir.join(".env.example");
     let env_vars = read_env_map(&env_file).unwrap_or_default();
     let env_example_vars = read_env_map(&env_example_file).unwrap_or_default();
+    let project_name = project_name_from_cargo(&cargo_toml, project_dir);
 
     let needs_database = tideway_features.contains("database") || detected.contains("database");
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
 
     if fix {
-        if let Some(lines) = env_example_template(needs_database, needs_auth) {
+        if let Some(lines) = env_example_template(&project_name, needs_database, needs_auth) {
             if !env_example_file.exists() {
                 write_env_example(&env_example_file, &lines)?;
                 report.info.push("Created .env.example".to_string());
@@ -339,7 +340,11 @@ fn validate_package_metadata(cargo_toml: &toml::Value) -> Option<String> {
     ))
 }
 
-fn env_example_template(needs_database: bool, needs_auth: bool) -> Option<Vec<String>> {
+fn env_example_template(
+    project_name: &str,
+    needs_database: bool,
+    needs_auth: bool,
+) -> Option<Vec<String>> {
     let mut lines = Vec::new();
     if needs_database || needs_auth {
         lines.push("# Server".to_string());
@@ -350,7 +355,10 @@ fn env_example_template(needs_database: bool, needs_auth: bool) -> Option<Vec<St
 
     if needs_database {
         lines.push("# Database".to_string());
-        lines.push("DATABASE_URL=postgres://postgres:postgres@localhost:5432/my_app".to_string());
+        lines.push(format!(
+            "DATABASE_URL=postgres://postgres:postgres@localhost:5432/{}",
+            project_name
+        ));
         lines.push(String::new());
     }
 
@@ -367,6 +375,21 @@ fn env_example_template(needs_database: bool, needs_auth: bool) -> Option<Vec<St
     }
 }
 
+fn project_name_from_cargo(cargo_toml: &toml::Value, project_dir: &Path) -> String {
+    if let Some(name) = cargo_toml
+        .get("package")
+        .and_then(|pkg| pkg.get("name"))
+        .and_then(|value| value.as_str())
+    {
+        return name.replace('-', "_");
+    }
+
+    project_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("my_app")
+        .replace('-', "_")
+}
 fn write_env_example(path: &Path, lines: &[String]) -> Result<()> {
     let contents = lines.join("\n");
     fs::write(path, contents)

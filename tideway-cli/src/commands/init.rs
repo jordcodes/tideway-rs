@@ -85,7 +85,7 @@ pub fn run(args: InitArgs) -> Result<()> {
 
     // Generate .env.example
     if args.env_example {
-        let env_example = generate_env_example(&modules, &args);
+        let env_example = generate_env_example(&project_name, &modules, &args);
         let env_path = Path::new(".env.example");
         // Always overwrite .env.example
         fs::write(env_path, env_example).context("Failed to write .env.example")?;
@@ -494,10 +494,10 @@ impl AppConfig {{
 }
 
 /// Generate .env.example content
-fn generate_env_example(modules: &DetectedModules, args: &InitArgs) -> String {
+fn generate_env_example(project_name: &str, modules: &DetectedModules, args: &InitArgs) -> String {
     let mut lines = vec![
         "# Application".to_string(),
-        "APP_NAME=my_app".to_string(),
+        format!("APP_NAME={}", project_name),
         "HOST=127.0.0.1".to_string(),
         "PORT=3000".to_string(),
         "".to_string(),
@@ -505,7 +505,10 @@ fn generate_env_example(modules: &DetectedModules, args: &InitArgs) -> String {
 
     if !args.no_database {
         lines.push("# Database".to_string());
-        lines.push("DATABASE_URL=postgres://postgres:postgres@localhost:5432/my_app".to_string());
+        lines.push(format!(
+            "DATABASE_URL=postgres://postgres:postgres@localhost:5432/{}",
+            project_name
+        ));
         lines.push("".to_string());
     }
 
