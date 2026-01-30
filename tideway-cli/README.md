@@ -143,6 +143,7 @@ tideway resource user --wire --db --repo --repo-tests
 tideway resource user --wire --db --repo --service
 tideway resource user --wire --db --id-type uuid
 tideway resource user --wire --db --id-type uuid --add-uuid
+tideway resource user --wire --db --paginate
 ```
 
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
@@ -151,6 +152,7 @@ Use `--repo` to generate a repository layer for DB-backed resources.
 Use `--repo-tests` to generate an ignored CRUD smoke test (requires DATABASE_URL).
 Use `--service` to generate a thin service layer on top of the repository.
 Use `--id-type` to switch ID generation (int or uuid) for DB scaffolding. Use `--add-uuid` to automatically add the `uuid` dependency.
+Use `--paginate` to add limit/offset query params to list endpoints.
 
 ### `tideway setup`
 

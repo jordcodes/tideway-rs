@@ -38,6 +38,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         args.repo,
         args.service,
         args.id_type,
+        args.paginate,
     );
     write_file(&resource_path, &contents, false)?;
 
@@ -68,6 +69,13 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     if args.service && !args.repo {
         return Err(anyhow::anyhow!(
             "Service scaffolding requires --repo (run `tideway resource {} --db --repo --service`)",
+            resource_name
+        ));
+    }
+
+    if args.paginate && !args.db {
+        return Err(anyhow::anyhow!(
+            "Pagination requires --db (run `tideway resource {} --db --paginate`)",
             resource_name
         ));
     }
@@ -109,13 +117,13 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         }
 
         if args.repo {
-            generate_repository(&project_dir, &resource_name, args.id_type)?;
+            generate_repository(&project_dir, &resource_name, args.id_type, args.paginate)?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
                 generate_repository_tests(&project_dir, &project_name, &resource_name, args.id_type)?;
             }
             if args.service {
-                generate_service(&project_dir, &resource_name, args.id_type)?;
+                generate_service(&project_dir, &resource_name, args.id_type, args.paginate)?;
             }
         }
 
@@ -186,6 +194,7 @@ fn render_resource_module(
     with_repo: bool,
     with_service: bool,
     id_type: ResourceIdType,
+    paginate: bool,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
@@ -246,11 +255,13 @@ mod tests {{
     } else {
         String::new()
     };
-    let openapi_import = if has_openapi {
-        "use utoipa::ToSchema;\n"
-    } else {
-        ""
-    };
+    let mut openapi_import = String::new();
+    if has_openapi {
+        openapi_import.push_str("use utoipa::ToSchema;\n");
+        if paginate {
+            openapi_import.push_str("use utoipa::IntoParams;\n");
+        }
+    }
 
     let openapi_schema = if has_openapi {
         "#[derive(ToSchema)]"
@@ -294,11 +305,13 @@ mod openapi_docs {{
 #[cfg_attr(feature = "openapi", utoipa::path(
     get,
     path = "/api/{resource_plural}",
+    {pagination_params}
     responses((status = 200, body = [{resource_pascal}]))
 ))]
 "#,
             resource_plural = resource_plural,
             resource_pascal = resource_pascal,
+            pagination_params = if paginate { "params(PaginationParams)," } else { "" },
         )
     } else {
         String::new()
@@ -368,7 +381,11 @@ mod openapi_docs {{
     };
 
     let extract_import = if with_db {
-        "extract::{Path, State}, "
+        if paginate {
+            "extract::{Path, Query, State}, "
+        } else {
+            "extract::{Path, State}, "
+        }
     } else {
         ""
     };
@@ -393,14 +410,47 @@ mod openapi_docs {{
         String::new()
     };
 
+    let pagination_struct = if paginate {
+        let attrs = if has_openapi {
+            "#[cfg_attr(feature = \"openapi\", derive(IntoParams))]"
+        } else {
+            ""
+        };
+        format!(
+            r#"
+#[derive(Deserialize)]
+{attrs}
+pub struct PaginationParams {{
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+}}
+"#,
+            attrs = attrs
+        )
+    } else {
+        String::new()
+    };
+    let list_params = if paginate {
+        "Query(params): Query<PaginationParams>"
+    } else {
+        ""
+    };
+    let list_param_prefix = if paginate { ", " } else { "" };
+    let list_args = if paginate { "params.limit, params.offset" } else { "" };
+    let pagination_query = if paginate {
+        "    if let Some(limit) = params.limit { query = query.limit(limit); }\n    if let Some(offset) = params.offset { query = query.offset(offset); }"
+    } else {
+        ""
+    };
+
     let handlers = if with_db && with_repo && with_service {
         format!(
             r#"
 {openapi_attrs}
-async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Vec<{resource_pascal}>>> {{
+async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}{list_params}) -> Result<Json<Vec<{resource_pascal}>>> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     let service = {resource_pascal}Service::new(repo);
-    let models = service.list().await?;
+    let models = service.list({list_args}).await?;
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
@@ -472,14 +522,17 @@ async fn delete_{resource_name}(
             openapi_attrs_delete = openapi_attrs_delete,
             body_extractor = body_extractor,
             id_type_str = id_type_str,
+            list_param_prefix = list_param_prefix,
+            list_params = list_params,
+            list_args = list_args,
         )
     } else if with_db && with_repo {
         format!(
             r#"
 {openapi_attrs}
-async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Vec<{resource_pascal}>>> {{
+async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}{list_params}) -> Result<Json<Vec<{resource_pascal}>>> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
-    let models = repo.list().await?;
+    let models = repo.list({list_args}).await?;
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
@@ -547,14 +600,19 @@ async fn delete_{resource_name}(
             openapi_attrs_delete = openapi_attrs_delete,
             body_extractor = body_extractor,
             id_type_str = id_type_str,
+            list_param_prefix = list_param_prefix,
+            list_params = list_params,
+            list_args = list_args,
         )
     } else if with_db {
         format!(
             r#"
 {openapi_attrs}
-async fn list_{resource_plural}(State(ctx): State<AppContext>) -> Result<Json<Vec<{resource_pascal}>>> {{
+async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}{list_params}) -> Result<Json<Vec<{resource_pascal}>>> {{
     let db = ctx.sea_orm_connection()?;
-    let models = {resource_name}::Entity::find().all(&db).await?;
+    let mut query = {resource_name}::Entity::find();
+{pagination_query}
+    let models = query.all(&db).await?;
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
@@ -631,6 +689,9 @@ async fn delete_{resource_name}(
             openapi_attrs_delete = openapi_attrs_delete,
             body_extractor = body_extractor,
             id_type_str = id_type_str,
+            list_params = list_params,
+            list_param_prefix = list_param_prefix,
+            pagination_query = pagination_query,
         )
     } else {
         format!(
@@ -722,6 +783,7 @@ pub struct UpdateRequest {{
     pub name: Option<String>,
 }}
 
+{pagination_struct}
 {handlers}
 {tests_block}
 {openapi_paths}
@@ -733,6 +795,7 @@ pub struct UpdateRequest {{
         openapi_import = openapi_import,
         openapi_schema = openapi_schema,
         openapi_paths = openapi_paths,
+        pagination_struct = pagination_struct,
         handlers = handlers,
         extract_import = extract_import,
         sea_orm_imports = sea_orm_imports,
@@ -1213,6 +1276,7 @@ fn generate_repository(
     project_dir: &Path,
     resource_name: &str,
     id_type: ResourceIdType,
+    paginate: bool,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
@@ -1228,7 +1292,7 @@ fn generate_repository(
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
-    let repo_contents = render_repository(resource_name, id_type);
+    let repo_contents = render_repository(resource_name, id_type, paginate);
     write_file(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
@@ -1246,7 +1310,7 @@ fn wire_repositories_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_repository(resource_name: &str, id_type: ResourceIdType) -> String {
+fn render_repository(resource_name: &str, id_type: ResourceIdType, paginate: bool) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     let (id_type_str, uuid_import) = if matches!(id_type, ResourceIdType::Uuid) {
         ("uuid::Uuid", "use uuid::Uuid;\n")
@@ -1257,6 +1321,17 @@ fn render_repository(resource_name: &str, id_type: ResourceIdType) -> String {
         "            id: Set(Uuid::new_v4()),\n"
     } else {
         ""
+    };
+    let list_signature = if paginate {
+        "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
+            .to_string()
+    } else {
+        "pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{".to_string()
+    };
+    let list_params = if paginate {
+        "        let mut query = {resource_name}::Entity::find();\n        if let Some(limit) = limit { query = query.limit(limit); }\n        if let Some(offset) = offset { query = query.offset(offset); }\n        Ok(query.all(&self.db).await?)"
+    } else {
+        "        Ok({resource_name}::Entity::find().all(&self.db).await?)"
     };
     format!(
         r#"use sea_orm::{{ActiveModelTrait, EntityTrait, Set}};
@@ -1274,8 +1349,8 @@ impl {resource_pascal}Repository {{
         Self {{ db }}
     }}
 
-    pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{
-        Ok({resource_name}::Entity::find().all(&self.db).await?)
+    {list_signature}
+{list_params}
     }}
 
     pub async fn get(&self, id: {id_type}) -> Result<Option<{resource_name}::Model>> {{
@@ -1314,7 +1389,9 @@ impl {resource_pascal}Repository {{
         resource_pascal = resource_pascal,
         id_type = id_type_str,
         uuid_import = uuid_import,
-        create_id_field = create_id_field
+        create_id_field = create_id_field,
+        list_signature = list_signature,
+        list_params = list_params
     )
 }
 
@@ -1322,6 +1399,7 @@ fn generate_service(
     project_dir: &Path,
     resource_name: &str,
     id_type: ResourceIdType,
+    paginate: bool,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
@@ -1337,7 +1415,7 @@ fn generate_service(
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
-    let service_contents = render_service(resource_name, id_type);
+    let service_contents = render_service(resource_name, id_type, paginate);
     write_file(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
@@ -1355,7 +1433,7 @@ fn wire_services_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_service(resource_name: &str, id_type: ResourceIdType) -> String {
+fn render_service(resource_name: &str, id_type: ResourceIdType, paginate: bool) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
@@ -1366,6 +1444,17 @@ fn render_service(resource_name: &str, id_type: ResourceIdType) -> String {
         "use uuid::Uuid;\n"
     } else {
         ""
+    };
+    let list_signature = if paginate {
+        "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+            .to_string()
+    } else {
+        "pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{".to_string()
+    };
+    let list_body = if paginate {
+        "        self.repo.list(limit, offset).await"
+    } else {
+        "        self.repo.list().await"
     };
     format!(
         r#"use tideway::Result;
@@ -1382,8 +1471,8 @@ impl {resource_pascal}Service {{
         Self {{ repo }}
     }}
 
-    pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{
-        self.repo.list().await
+    {list_signature}
+{list_body}
     }}
 
     pub async fn get(&self, id: {id_type}) -> Result<Option<crate::entities::{resource_name}::Model>> {{
@@ -1410,7 +1499,9 @@ impl {resource_pascal}Service {{
         resource_name = resource_name,
         resource_pascal = resource_pascal,
         id_type = id_type_str,
-        uuid_import = uuid_import
+        uuid_import = uuid_import,
+        list_signature = list_signature,
+        list_body = list_body
     )
 }
 

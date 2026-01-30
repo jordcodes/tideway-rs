@@ -299,6 +299,10 @@ pub struct ResourceArgs {
     #[arg(long, default_value = "false")]
     pub add_uuid: bool,
 
+    /// Add pagination (limit/offset) helpers for DB-backed resources
+    #[arg(long, default_value = "false")]
+    pub paginate: bool,
+
     /// Database backend for scaffolding
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,

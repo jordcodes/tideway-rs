@@ -68,6 +68,7 @@ async fn main() {
         service: false,
         id_type: tideway_cli::cli::ResourceIdType::Int,
         add_uuid: false,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -146,6 +147,7 @@ async fn main() {
         service: false,
         id_type: tideway_cli::cli::ResourceIdType::Int,
         add_uuid: false,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -225,6 +227,7 @@ async fn main() {
         service: false,
         id_type: tideway_cli::cli::ResourceIdType::Int,
         add_uuid: false,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -312,6 +315,7 @@ async fn main() {
         service: false,
         id_type: tideway_cli::cli::ResourceIdType::Int,
         add_uuid: false,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -390,6 +394,7 @@ async fn main() {
         service: false,
         id_type: tideway_cli::cli::ResourceIdType::Int,
         add_uuid: false,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -399,6 +404,86 @@ async fn main() {
     assert!(test_path.exists());
     assert_file_contains(&test_path, "Repository");
     assert_file_contains(&test_path, "DATABASE_URL");
+}
+
+#[test]
+fn test_resource_command_generates_pagination_helpers() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src/routes")).expect("create routes");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let routes_mod = r#"
+use axum::{routing::get, Router};
+use tideway::{AppContext, MessageResponse, RouteModule};
+
+pub struct ApiModule;
+
+impl RouteModule for ApiModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route("/", get(root))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api")
+    }
+}
+
+async fn root() -> MessageResponse {
+    MessageResponse::success("Tideway is running")
+}
+"#;
+    fs::write(project_dir.join("src/routes/mod.rs"), routes_mod).expect("write routes mod");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: true,
+        repo: true,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: true,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let routes_path = project_dir.join("src/routes/user.rs");
+    assert_file_contains(&routes_path, "PaginationParams");
+    assert_file_contains(&routes_path, "Query(params)");
+
+    let repo_path = project_dir.join("src/repositories/user.rs");
+    assert_file_contains(&repo_path, "limit: Option<u64>");
 }
 
 #[test]
@@ -467,6 +552,7 @@ async fn main() {
         service: true,
         id_type: tideway_cli::cli::ResourceIdType::Int,
         add_uuid: false,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -545,6 +631,7 @@ async fn main() {
         service: false,
         id_type: tideway_cli::cli::ResourceIdType::Uuid,
         add_uuid: true,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
@@ -620,6 +707,7 @@ async fn main() {
         service: false,
         id_type: tideway_cli::cli::ResourceIdType::Uuid,
         add_uuid: false,
+        paginate: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 

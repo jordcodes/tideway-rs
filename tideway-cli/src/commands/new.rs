@@ -374,6 +374,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         service: false,
         id_type: ResourceIdType::Int,
         add_uuid: false,
+        paginate: false,
         db_backend: DbBackend::Auto,
     };
 
