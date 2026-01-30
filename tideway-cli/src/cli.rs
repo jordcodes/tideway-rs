@@ -274,6 +274,22 @@ pub struct ResourceArgs {
     /// Generate tests
     #[arg(long, default_value = "true")]
     pub with_tests: bool,
+
+    /// Scaffold database entity + migration for the resource
+    #[arg(long, default_value = "false")]
+    pub db: bool,
+
+    /// Database backend for scaffolding
+    #[arg(long, value_enum, default_value = "auto")]
+    pub db_backend: DbBackend,
+}
+
+#[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
+pub enum DbBackend {
+    /// Auto-detect backend from Cargo.toml
+    Auto,
+    /// SeaORM entities + migrations
+    SeaOrm,
 }
 
 #[derive(Parser, Debug)]

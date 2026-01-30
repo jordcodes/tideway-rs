@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::ResourceArgs;
+use crate::cli::{DbBackend, ResourceArgs};
 use crate::{print_info, print_success, print_warning};
 
 pub fn run(args: ResourceArgs) -> Result<()> {
@@ -18,7 +18,9 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let resource_pascal = to_pascal_case(&resource_name);
     let resource_plural = pluralize(&resource_name);
 
-    let has_openapi = has_feature(&project_dir.join("Cargo.toml"), "openapi");
+    let cargo_path = project_dir.join("Cargo.toml");
+    let has_openapi = has_feature(&cargo_path, "openapi");
+    let has_database = has_feature(&cargo_path, "database");
 
     let routes_dir = src_dir.join("routes");
     fs::create_dir_all(&routes_dir)
@@ -44,12 +46,73 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         print_info("Next steps: add the module to routes/mod.rs and register it in main.rs");
     }
 
+    if args.db {
+        if !has_database {
+            return Err(anyhow::anyhow!(
+                "Database scaffolding requires the Tideway `database` feature (run `tideway add database`)"
+            ));
+        }
+        if !has_dependency(&cargo_path, "sea-orm") {
+            return Err(anyhow::anyhow!(
+                "SeaORM dependency not found (run `tideway add database`)"
+            ));
+        }
+        let backend = resolve_db_backend(&project_dir, args.db_backend)?;
+        match backend {
+            DbBackend::SeaOrm => generate_sea_orm_scaffold(
+                &project_dir,
+                &resource_name,
+                &resource_plural,
+            )?,
+            DbBackend::Auto => {
+                return Err(anyhow::anyhow!(
+                    "Unable to detect database backend (use --db-backend)"
+                ));
+            }
+        }
+    }
+
     if args.with_tests {
         print_info("Added unit tests to the resource module");
     }
 
     print_success(&format!("Generated {} resource", resource_name));
     Ok(())
+}
+
+fn resolve_db_backend(project_dir: &Path, backend: DbBackend) -> Result<DbBackend> {
+    match backend {
+        DbBackend::Auto => detect_db_backend(project_dir),
+        DbBackend::SeaOrm => Ok(DbBackend::SeaOrm),
+    }
+}
+
+fn detect_db_backend(project_dir: &Path) -> Result<DbBackend> {
+    let cargo_path = project_dir.join("Cargo.toml");
+    let contents = fs::read_to_string(&cargo_path)
+        .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
+    let doc = contents
+        .parse::<toml_edit::DocumentMut>()
+        .context("Failed to parse Cargo.toml")?;
+
+    let deps = doc.get("dependencies");
+    let has_sea_orm = deps
+        .and_then(|deps| deps.get("sea-orm"))
+        .is_some();
+    let has_tideway_db = deps
+        .and_then(|deps| deps.get("tideway"))
+        .and_then(|item| item.get("features"))
+        .and_then(|item| item.as_array())
+        .map(|arr| arr.iter().any(|v| v.as_str() == Some("database")))
+        .unwrap_or(false);
+
+    if has_sea_orm || has_tideway_db {
+        Ok(DbBackend::SeaOrm)
+    } else {
+        Err(anyhow::anyhow!(
+            "Could not detect database backend (add sea-orm or pass --db-backend)"
+        ))
+    }
 }
 
 fn render_resource_module(
@@ -404,6 +467,261 @@ fn render_openapi_docs_file(paths: &[String]) -> String {
     output
 }
 
+fn generate_sea_orm_scaffold(
+    project_dir: &Path,
+    resource_name: &str,
+    resource_plural: &str,
+) -> Result<()> {
+    let src_dir = project_dir.join("src");
+    let entities_dir = src_dir.join("entities");
+    fs::create_dir_all(&entities_dir)
+        .with_context(|| format!("Failed to create {}", entities_dir.display()))?;
+
+    let entities_mod = entities_dir.join("mod.rs");
+    if !entities_mod.exists() {
+        let contents = "//! Database entities.\n\n";
+        write_file(&entities_mod, contents, false)?;
+        print_success("Created src/entities/mod.rs");
+    }
+    wire_entities_mod(&entities_mod, resource_name)?;
+
+    let entity_path = entities_dir.join(format!("{}.rs", resource_name));
+    let entity_contents = render_sea_orm_entity(resource_name, resource_plural);
+    write_file(&entity_path, &entity_contents, false)?;
+
+    let migration_root = project_dir.join("migration");
+    let migration_src = migration_root.join("src");
+    if !migration_src.exists() {
+        fs::create_dir_all(&migration_src)
+            .with_context(|| format!("Failed to create {}", migration_src.display()))?;
+    }
+    if !migration_root.join("Cargo.toml").exists() {
+        print_warning("migration/Cargo.toml not found (run `sea-orm-cli migrate init` if needed)");
+    }
+
+    let (migration_mod, migration_file) =
+        next_migration_name(&migration_src, resource_plural)?;
+    let migration_contents = render_sea_orm_migration(resource_plural);
+    let migration_path = migration_src.join(&migration_file);
+    write_file(&migration_path, &migration_contents, false)?;
+
+    let migration_lib = migration_src.join("lib.rs");
+    if !migration_lib.exists() {
+        let contents = render_migration_lib(&migration_mod);
+        write_file(&migration_lib, &contents, false)?;
+        print_success("Created migration/src/lib.rs");
+    } else {
+        update_migration_lib(&migration_lib, &migration_mod)?;
+    }
+
+    print_success("Generated SeaORM entity + migration");
+    Ok(())
+}
+
+fn wire_entities_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
+    let mut contents = fs::read_to_string(mod_path)
+        .with_context(|| format!("Failed to read {}", mod_path.display()))?;
+    let mod_line = format!("pub mod {};", resource_name);
+    if !contents.contains(&mod_line) {
+        contents.push_str(&format!("\n{}\n", mod_line));
+        fs::write(mod_path, contents)
+            .with_context(|| format!("Failed to write {}", mod_path.display()))?;
+    }
+    Ok(())
+}
+
+fn render_sea_orm_entity(resource_name: &str, resource_plural: &str) -> String {
+    let resource_pascal = to_pascal_case(resource_name);
+    format!(
+        r#"//! SeaORM entity for {resource_pascal}.
+
+use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, PartialEq, DeriveEntityModel, Eq)]
+#[sea_orm(table_name = "{resource_plural}")]
+pub struct Model {{
+    #[sea_orm(primary_key, auto_increment = true)]
+    pub id: i32,
+    pub name: String,
+}}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {{}}
+
+impl ActiveModelBehavior for ActiveModel {{}}
+"#,
+        resource_pascal = resource_pascal,
+        resource_plural = resource_plural
+    )
+}
+
+fn next_migration_name(migration_src: &Path, resource_plural: &str) -> Result<(String, String)> {
+    let mut max_num = 0u64;
+    let mut width = 3usize;
+
+    if migration_src.exists() {
+        for entry in fs::read_dir(migration_src)
+            .with_context(|| format!("Failed to read {}", migration_src.display()))?
+        {
+            let entry = entry?;
+            let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            if !name.starts_with('m') || !name.ends_with(".rs") {
+                continue;
+            }
+            let stem = name.trim_end_matches(".rs");
+            let number_part = stem
+                .trim_start_matches('m')
+                .split('_')
+                .next()
+                .unwrap_or("");
+            if number_part.chars().all(|c| c.is_ascii_digit()) && !number_part.is_empty() {
+                if let Ok(num) = number_part.parse::<u64>() {
+                    max_num = max_num.max(num);
+                    width = width.max(number_part.len());
+                }
+            }
+        }
+    }
+
+    let next = max_num + 1;
+    let prefix = format!("m{:0width$}", next, width = width);
+    let mod_name = format!("{prefix}_create_{resource_plural}");
+    let file_name = format!("{mod_name}.rs");
+    Ok((mod_name, file_name))
+}
+
+fn render_sea_orm_migration(resource_plural: &str) -> String {
+    let table_enum = to_pascal_case(resource_plural);
+    format!(
+        r#"use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {{
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {{
+        manager
+            .create_table(
+                Table::create()
+                    .table({table_enum}::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new({table_enum}::Id)
+                            .integer()
+                            .not_null()
+                            .auto_increment()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new({table_enum}::Name).string().not_null())
+                    .to_owned(),
+            )
+            .await
+    }}
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {{
+        manager
+            .drop_table(Table::drop().table({table_enum}::Table).to_owned())
+            .await
+    }}
+}}
+
+#[derive(Iden)]
+enum {table_enum} {{
+    Table,
+    Id,
+    Name,
+}}
+"#,
+        table_enum = table_enum
+    )
+}
+
+fn render_migration_lib(mod_name: &str) -> String {
+    format!(
+        r#"//! Database migrations.
+
+pub use sea_orm_migration::prelude::*;
+
+mod {mod_name};
+
+pub struct Migrator;
+
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {{
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {{
+        vec![Box::new({mod_name}::Migration)]
+    }}
+}}
+"#,
+        mod_name = mod_name
+    )
+}
+
+fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
+    let mut contents = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+
+    let mod_line = format!("mod {};", mod_name);
+    if !contents.contains(&mod_line) {
+        let mut lines = contents.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+        let mut insert_at = None;
+        for (idx, line) in lines.iter().enumerate() {
+            if line.trim_start().starts_with("mod ") {
+                insert_at = Some(idx + 1);
+            }
+        }
+        let insert_at = insert_at.unwrap_or_else(|| {
+            let prelude_line = lines
+                .iter()
+                .position(|line| line.contains("sea_orm_migration::prelude"))
+                .map(|idx| idx + 1)
+                .unwrap_or(0);
+            prelude_line
+        });
+        lines.insert(insert_at, mod_line);
+        contents = lines.join("\n");
+        if !contents.ends_with('\n') {
+            contents.push('\n');
+        }
+    }
+
+    if !contents.contains(&format!("{}::Migration", mod_name)) {
+        let mut lines = contents.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+        let mut vec_start = None;
+        let mut vec_end = None;
+        for (idx, line) in lines.iter().enumerate() {
+            if vec_start.is_none() && line.contains("vec![") {
+                vec_start = Some(idx);
+                continue;
+            }
+            if vec_start.is_some() && line.trim_start().starts_with(']') {
+                vec_end = Some(idx);
+                break;
+            }
+        }
+        if let (Some(start), Some(end)) = (vec_start, vec_end) {
+            let base_indent = lines[start]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect::<String>();
+            let entry_indent = format!("{base_indent}    ");
+            lines.insert(end, format!("{entry_indent}Box::new({}::Migration),", mod_name));
+            contents = lines.join("\n");
+            if !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+        } else {
+            print_warning("Could not find migrations vector in migration/src/lib.rs");
+        }
+    }
+
+    fs::write(path, contents)
+        .with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
+}
 fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
     let mod_path = routes_dir.join("mod.rs");
     if !mod_path.exists() {
@@ -517,4 +835,17 @@ fn has_feature(cargo_path: &Path, feature: &str) -> bool {
     };
 
     features.iter().any(|v| v.as_str() == Some(feature))
+}
+
+fn has_dependency(cargo_path: &Path, dependency: &str) -> bool {
+    let Ok(contents) = fs::read_to_string(cargo_path) else {
+        return false;
+    };
+    let Ok(doc) = contents.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+
+    doc.get("dependencies")
+        .and_then(|deps| deps.get(dependency))
+        .is_some()
 }

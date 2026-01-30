@@ -135,9 +135,11 @@ Generate a CRUD route module for a resource.
 ```bash
 tideway resource user --wire
 tideway resource invoice_item --wire --with-tests false
+tideway resource user --wire --db
 ```
 
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
+Use `--db` to scaffold a SeaORM entity + migration (requires Tideway `database` feature).
 
 ### `tideway setup`
 

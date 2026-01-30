@@ -62,6 +62,8 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: true,
+        db: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -133,6 +135,8 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
+        db: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -143,6 +147,80 @@ async fn main() {
         &docs_path,
         "crate::routes::user::list_users",
     );
+}
+
+#[test]
+fn test_resource_command_generates_sea_orm_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src/routes")).expect("create routes");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let routes_mod = r#"
+use axum::{routing::get, Router};
+use tideway::{AppContext, MessageResponse, RouteModule};
+
+pub struct ApiModule;
+
+impl RouteModule for ApiModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route("/", get(root))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api")
+    }
+}
+
+async fn root() -> MessageResponse {
+    MessageResponse::success("Tideway is running")
+}
+"#;
+    fs::write(project_dir.join("src/routes/mod.rs"), routes_mod).expect("write routes mod");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: true,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert!(project_dir.join("src/entities/user.rs").exists());
+    assert_file_contains(&project_dir.join("src/entities/mod.rs"), "pub mod user;");
+
+    let migration_lib = project_dir.join("migration/src/lib.rs");
+    assert!(migration_lib.exists());
+    assert_file_contains(&migration_lib, "create_users");
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {
