@@ -129,6 +129,8 @@ fn scaffold_files(
     args: &NewArgs,
     needs_env: bool,
 ) -> Result<()> {
+    let has_auth_feature = normalize_features(&args.features).contains("auth");
+
     write_file(
         &target_dir.join("Cargo.toml"),
         &engine.render("starter/Cargo.toml")?,
@@ -144,6 +146,24 @@ fn scaffold_files(
         &engine.render("starter/src/routes/mod.rs")?,
         args.force,
     )?;
+
+    if has_auth_feature {
+        write_file(
+            &target_dir.join("src/auth/mod.rs"),
+            &engine.render("starter/src/auth/mod.rs")?,
+            args.force,
+        )?;
+        write_file(
+            &target_dir.join("src/auth/provider.rs"),
+            &engine.render("starter/src/auth/provider.rs")?,
+            args.force,
+        )?;
+        write_file(
+            &target_dir.join("src/auth/routes.rs"),
+            &engine.render("starter/src/auth/routes.rs")?,
+            args.force,
+        )?;
+    }
 
     if args.with_config {
         write_file(
@@ -196,11 +216,18 @@ fn scaffold_files(
 
 pub fn expected_files(args: &NewArgs) -> Vec<String> {
     let needs_env = needs_env_from_args(args);
+    let has_auth_feature = normalize_features(&args.features).contains("auth");
     let mut files = vec![
         "Cargo.toml".to_string(),
         "src/main.rs".to_string(),
         "src/routes/mod.rs".to_string(),
     ];
+
+    if has_auth_feature {
+        files.push("src/auth/mod.rs".to_string());
+        files.push("src/auth/provider.rs".to_string());
+        files.push("src/auth/routes.rs".to_string());
+    }
 
     if args.with_config {
         files.push("src/config.rs".to_string());

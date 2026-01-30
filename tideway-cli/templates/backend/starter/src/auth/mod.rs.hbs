@@ -1,0 +1,7 @@
+//! Minimal auth module for Tideway starters.
+
+mod provider;
+mod routes;
+
+pub use provider::{SimpleAuthProvider, SimpleUser};
+pub use routes::AuthModule;

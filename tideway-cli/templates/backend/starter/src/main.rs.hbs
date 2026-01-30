@@ -13,10 +13,15 @@ use std::sync::Arc;
 use tideway::{AppContext, SeaOrmPool};
 {{/if}}
 {{#if has_auth_feature}}
+use axum::Extension;
+use crate::auth::{AuthModule, SimpleAuthProvider};
 use tideway::auth::{JwtIssuer, JwtIssuerConfig};
 {{/if}}
 
 mod routes;
+{{#if has_auth_feature}}
+mod auth;
+{{/if}}
 {{#if has_config}}
 mod config;
 mod error;
@@ -58,12 +63,18 @@ async fn main() -> Result<(), std::io::Error> {
         &jwt_secret,
         "{{project_name}}",
     )).expect("Failed to create JWT issuer"));
+    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);
+    let auth_module = AuthModule::new(jwt_issuer.clone());
 {{/if}}
 
 {{#if has_config}}
     let app = App::with_config(config.tideway.clone())
 {{else}}
     let app = App::new()
+{{/if}}
+{{#if has_auth_feature}}
+        .with_global_layer(Extension(auth_provider))
+        .register_module(auth_module)
 {{/if}}
 {{#if has_database_feature}}
         .with_context(

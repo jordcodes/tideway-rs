@@ -1,0 +1,88 @@
+//! Minimal auth routes for starters.
+
+use axum::{
+    extract::Extension,
+    routing::{get, post},
+    Json, Router,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tideway::auth::{AuthUser, JwtIssuer, TokenPair, TokenSubject};
+use tideway::{AppContext, Result, RouteModule, TidewayError};
+
+use crate::auth::{SimpleAuthProvider, SimpleUser};
+
+#[derive(Clone)]
+pub struct AuthState {
+    pub jwt_issuer: Arc<JwtIssuer>,
+}
+
+pub struct AuthModule {
+    state: AuthState,
+}
+
+impl AuthModule {
+    pub fn new(jwt_issuer: Arc<JwtIssuer>) -> Self {
+        Self {
+            state: AuthState { jwt_issuer },
+        }
+    }
+}
+
+impl RouteModule for AuthModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/login", post(login))
+            .route("/me", get(me))
+            .layer(Extension(self.state.clone()))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/auth")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginBody {
+    pub email: String,
+    pub password: String,
+    pub name: Option<String>,
+    pub remember_me: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LoginResponse {
+    pub user_id: String,
+    pub tokens: TokenPair,
+}
+
+async fn login(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<LoginBody>,
+) -> Result<Json<LoginResponse>> {
+    if body.email.trim().is_empty() {
+        return Err(TidewayError::bad_request("Email is required"));
+    }
+    if body.password.trim().is_empty() {
+        return Err(TidewayError::bad_request("Password is required"));
+    }
+
+    // TODO: Replace this stub with real user lookup + password verification.
+    let user_id = body.email.clone();
+
+    let mut subject = TokenSubject::new(&user_id).with_email(&body.email);
+    if let Some(name) = body.name.as_deref() {
+        if !name.is_empty() {
+            subject = subject.with_name(name);
+        }
+    }
+
+    let remember_me = body.remember_me.unwrap_or(false);
+    let tokens = state.jwt_issuer.issue(subject, remember_me)?;
+
+    Ok(Json(LoginResponse { user_id, tokens }))
+}
+
+async fn me(AuthUser(user): AuthUser<SimpleAuthProvider>) -> Result<Json<SimpleUser>> {
+    Ok(Json(user))
+}

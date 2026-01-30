@@ -60,6 +60,9 @@ fn test_new_command_includes_features_and_env() {
     assert_file_contains(&project_dir.join(".env.example"), "JWT_SECRET=");
     assert_file_contains(&project_dir.join("src/main.rs"), "DATABASE_URL");
     assert_file_contains(&project_dir.join("src/main.rs"), "JwtIssuer");
+    assert!(project_dir.join("src/auth/mod.rs").exists());
+    assert!(project_dir.join("src/auth/routes.rs").exists());
+    assert!(project_dir.join("src/auth/provider.rs").exists());
 }
 
 #[test]
@@ -256,6 +259,7 @@ fn test_new_command_with_preset_api() {
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join(".env.example").exists());
+    assert!(project_dir.join("src/auth/mod.rs").exists());
 }
 
 #[test]
