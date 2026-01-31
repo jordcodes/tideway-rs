@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::cli::{BackendArgs, BackendPreset};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning};
 
 /// Convert snake_case to PascalCase
 fn to_pascal_case(s: &str) -> String {
@@ -30,17 +30,19 @@ pub fn run(args: BackendArgs) -> Result<()> {
         BackendPreset::B2b => "B2B (Auth + Billing + Organizations + Admin)",
     };
 
-    println!(
-        "\n{} Generating {} backend scaffolding\n",
-        "tideway".cyan().bold(),
-        preset_name.green()
-    );
-    println!(
-        "  Project: {}\n  Database: {}\n  Output: {}\n",
-        args.name.yellow(),
-        args.database.yellow(),
-        args.output.yellow()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Generating {} backend scaffolding\n",
+            "tideway".cyan().bold(),
+            preset_name.green()
+        );
+        println!(
+            "  Project: {}\n  Database: {}\n  Output: {}\n",
+            args.name.yellow(),
+            args.database.yellow(),
+            args.output.yellow()
+        );
+    }
 
     // Create output directories
     let output_path = Path::new(&args.output);
@@ -102,31 +104,33 @@ pub fn run(args: BackendArgs) -> Result<()> {
     // Generate migrations
     generate_migrations(&engine, migrations_path, &args)?;
 
-    println!(
-        "\n{} Backend scaffolding generated successfully!\n",
-        "✓".green().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Backend scaffolding generated successfully!\n",
+            "✓".green().bold()
+        );
 
-    // Print next steps
-    println!("{}", "Next steps:".yellow().bold());
-    println!("  1. Add dependencies to Cargo.toml:");
-    println!("     tideway = {{ version = \"0.7\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}");
-    println!("     axum = {{ version = \"0.8\", features = [\"macros\"] }}");
-    println!("     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}");
-    println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");
-    println!("     serde = {{ version = \"1\", features = [\"derive\"] }}");
-    println!("     serde_json = \"1\"");
-    println!("     tracing = \"0.1\"");
-    println!("     async-trait = \"0.1\"");
-    println!("     chrono = {{ version = \"0.4\", features = [\"serde\"] }}");
-    println!("     uuid = {{ version = \"1\", features = [\"v4\", \"serde\"] }}");
-    println!();
-    println!("  2. Run migrations:");
-    println!("     sea-orm-cli migrate up");
-    println!();
-    println!("  3. Start the server:");
-    println!("     cargo run");
-    println!();
+        // Print next steps
+        println!("{}", "Next steps:".yellow().bold());
+        println!("  1. Add dependencies to Cargo.toml:");
+        println!("     tideway = {{ version = \"0.7\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}");
+        println!("     axum = {{ version = \"0.8\", features = [\"macros\"] }}");
+        println!("     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}");
+        println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");
+        println!("     serde = {{ version = \"1\", features = [\"derive\"] }}");
+        println!("     serde_json = \"1\"");
+        println!("     tracing = \"0.1\"");
+        println!("     async-trait = \"0.1\"");
+        println!("     chrono = {{ version = \"0.4\", features = [\"serde\"] }}");
+        println!("     uuid = {{ version = \"1\", features = [\"v4\", \"serde\"] }}");
+        println!();
+        println!("  2. Run migrations:");
+        println!("     sea-orm-cli migrate up");
+        println!();
+        println!("  3. Start the server:");
+        println!("     cargo run");
+        println!();
+    }
 
     Ok(())
 }

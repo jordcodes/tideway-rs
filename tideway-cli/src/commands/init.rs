@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
-use crate::{print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning};
 
 /// Detected modules in the project
 #[derive(Debug, Default)]
@@ -31,11 +31,13 @@ pub fn run(args: InitArgs) -> Result<()> {
         return run_minimal(src_path, &args);
     }
 
-    println!(
-        "\n{} Scanning {} for modules...\n",
-        "tideway".cyan().bold(),
-        args.src.yellow()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Scanning {} for modules...\n",
+            "tideway".cyan().bold(),
+            args.src.yellow()
+        );
+    }
 
     // Detect project name
     let project_name = detect_project_name(&args)?;
@@ -52,20 +54,22 @@ pub fn run(args: InitArgs) -> Result<()> {
     }
 
     // Print detected modules
-    println!("\n{}", "Detected modules:".yellow().bold());
-    if modules.auth {
-        println!("  {} auth", "✓".green());
+    if !is_json_output() {
+        println!("\n{}", "Detected modules:".yellow().bold());
+        if modules.auth {
+            println!("  {} auth", "✓".green());
+        }
+        if modules.billing {
+            println!("  {} billing", "✓".green());
+        }
+        if modules.organizations {
+            println!("  {} organizations", "✓".green());
+        }
+        if modules.admin {
+            println!("  {} admin", "✓".green());
+        }
+        println!();
     }
-    if modules.billing {
-        println!("  {} billing", "✓".green());
-    }
-    if modules.organizations {
-        println!("  {} organizations", "✓".green());
-    }
-    if modules.admin {
-        println!("  {} admin", "✓".green());
-    }
-    println!();
 
     // Generate main.rs
     let main_rs = generate_main_rs(&project_name, &modules, &args);
@@ -92,37 +96,41 @@ pub fn run(args: InitArgs) -> Result<()> {
         print_success("Generated .env.example");
     }
 
-    println!(
-        "\n{} Initialization complete!\n",
-        "✓".green().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Initialization complete!\n",
+            "✓".green().bold()
+        );
 
-    // Print next steps
-    println!("{}", "Next steps:".yellow().bold());
-    println!("  1. Copy .env.example to .env and fill in values:");
-    println!("     cp .env.example .env");
-    println!();
-    println!("  2. Ensure dependencies in Cargo.toml:");
-    println!("     tideway = {{ version = \"0.7\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\"] }}");
-    println!();
-    if !args.no_migrations {
-        println!("  3. Run migrations:");
-        println!("     cargo run -- migrate");
-        println!("     # or: sea-orm-cli migrate up");
+        // Print next steps
+        println!("{}", "Next steps:".yellow().bold());
+        println!("  1. Copy .env.example to .env and fill in values:");
+        println!("     cp .env.example .env");
+        println!();
+        println!("  2. Ensure dependencies in Cargo.toml:");
+        println!("     tideway = {{ version = \"0.7\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\"] }}");
+        println!();
+        if !args.no_migrations {
+            println!("  3. Run migrations:");
+            println!("     cargo run -- migrate");
+            println!("     # or: sea-orm-cli migrate up");
+            println!();
+        }
+        println!("  4. Start the server:");
+        println!("     cargo run");
         println!();
     }
-    println!("  4. Start the server:");
-    println!("     cargo run");
-    println!();
 
     Ok(())
 }
 
 fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
-    println!(
-        "\n{} Generating minimal app...\n",
-        "tideway".cyan().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Generating minimal app...\n",
+            "tideway".cyan().bold()
+        );
+    }
 
     let project_name = detect_project_name(args)?;
     let project_name_pascal = to_pascal_case(&project_name);
@@ -140,14 +148,16 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
     write_file(&routes_path, &routes_rs, args.force)?;
     print_success("Generated routes/mod.rs");
 
-    println!(
-        "\n{} Initialization complete!\n",
-        "✓".green().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Initialization complete!\n",
+            "✓".green().bold()
+        );
 
-    println!("{}", "Next steps:".yellow().bold());
-    println!("  1. cargo run");
-    println!();
+        println!("{}", "Next steps:".yellow().bold());
+        println!("  1. cargo run");
+        println!();
+    }
 
     Ok(())
 }

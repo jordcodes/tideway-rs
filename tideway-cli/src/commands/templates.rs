@@ -3,7 +3,12 @@
 use anyhow::Result;
 use colored::Colorize;
 
+use crate::is_json_output;
+
 pub fn run() -> Result<()> {
+    if is_json_output() {
+        return Ok(());
+    }
     println!("\n{}\n", "Available Templates".cyan().bold());
 
     println!("{}", "Auth Module:".yellow());

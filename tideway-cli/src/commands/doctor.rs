@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::DoctorArgs;
-use crate::{print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning};
 
 #[derive(Debug, Default)]
 pub struct DoctorReport {
@@ -19,11 +19,13 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     let project_dir = PathBuf::from(args.path);
     let report = analyze_project(&project_dir, args.fix)?;
 
-    println!(
-        "\n{} {}\n",
-        "tideway".cyan().bold(),
-        "doctor report".blue().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} {}\n",
+            "tideway".cyan().bold(),
+            "doctor report".blue().bold()
+        );
+    }
 
     if report.info.is_empty() && report.warnings.is_empty() {
         print_success("No issues found");
@@ -35,7 +37,9 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     }
 
     if !report.warnings.is_empty() {
-        println!();
+        if !is_json_output() {
+            println!();
+        }
         for warning in report.warnings {
             print_warning(&warning);
         }

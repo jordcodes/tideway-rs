@@ -8,6 +8,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(version)]
 #[command(about = "Scaffold Tideway apps and generate components", long_about = None)]
 pub struct Cli {
+    /// Output machine-readable JSON lines
+    #[arg(long, global = true, default_value = "false")]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

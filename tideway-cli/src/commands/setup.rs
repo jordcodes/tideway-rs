@@ -5,7 +5,7 @@ use colored::Colorize;
 use std::process::Command;
 
 use crate::cli::{Framework, SetupArgs, Style};
-use crate::{print_error, print_info, print_success, print_warning};
+use crate::{is_json_output, print_error, print_info, print_success, print_warning};
 
 /// Components required for tideway frontend
 const SHADCN_VUE_COMPONENTS: &[&str] = &[
@@ -31,18 +31,22 @@ const SHADCN_VUE_COMPONENTS: &[&str] = &[
 
 /// Run the setup command
 pub fn run(args: SetupArgs) -> Result<()> {
-    println!(
-        "\n{} Setting up frontend dependencies...\n",
-        "tideway".cyan().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Setting up frontend dependencies...\n",
+            "tideway".cyan().bold()
+        );
+    }
 
     // Check for package.json
     if !std::path::Path::new("package.json").exists() {
         print_error("No package.json found. Please run this from a frontend project directory.");
-        println!("\nTo create a new Vue project:");
-        println!("  npm create vue@latest my-app");
-        println!("  cd my-app");
-        println!("  tideway setup");
+        if !is_json_output() {
+            println!("\nTo create a new Vue project:");
+            println!("  npm create vue@latest my-app");
+            println!("  cd my-app");
+            println!("  tideway setup");
+        }
         return Ok(());
     }
 
@@ -50,17 +54,19 @@ pub fn run(args: SetupArgs) -> Result<()> {
         Framework::Vue => setup_vue(&args)?,
     }
 
-    println!(
-        "\n{} Frontend setup complete!\n",
-        "✓".green().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Frontend setup complete!\n",
+            "✓".green().bold()
+        );
 
-    println!("{}", "Next steps:".yellow().bold());
-    println!("  1. Generate components:");
-    println!("     tideway generate all --with-views");
-    println!();
-    println!("  2. Set up your router to use the generated views");
-    println!();
+        println!("{}", "Next steps:".yellow().bold());
+        println!("  1. Generate components:");
+        println!("     tideway generate all --with-views");
+        println!();
+        println!("  2. Set up your router to use the generated views");
+        println!();
+    }
 
     Ok(())
 }
@@ -296,7 +302,9 @@ fn setup_shadcn_vue() -> Result<()> {
 
         if !status.success() {
             print_error("Failed to initialize shadcn-vue");
-            println!("You can try running manually: npx shadcn-vue@latest init");
+            if !is_json_output() {
+                println!("You can try running manually: npx shadcn-vue@latest init");
+            }
             return Ok(());
         }
 
@@ -321,7 +329,9 @@ fn setup_shadcn_vue() -> Result<()> {
 
     if !status.success() {
         print_warning("Some components may have failed to install");
-        println!("You can try running manually: npx shadcn-vue@latest add {}", components);
+        if !is_json_output() {
+            println!("You can try running manually: npx shadcn-vue@latest add {}", components);
+        }
         return Ok(());
     }
 

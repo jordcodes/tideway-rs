@@ -7,16 +7,18 @@ use std::path::Path;
 
 use crate::cli::{GenerateArgs, Module, Style};
 use crate::templates::{TemplateContext, TemplateEngine};
-use crate::{print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning};
 
 /// Run the generate command
 pub fn run(args: GenerateArgs) -> Result<()> {
-    println!(
-        "\n{} Generating {} components with {} style\n",
-        "tideway".cyan().bold(),
-        args.module.to_string().green(),
-        args.style.to_string().yellow()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Generating {} components with {} style\n",
+            "tideway".cyan().bold(),
+            args.module.to_string().green(),
+            args.style.to_string().yellow()
+        );
+    }
 
     // Create output directory if it doesn't exist
     let output_path = Path::new(&args.output);
@@ -116,25 +118,29 @@ pub fn run(args: GenerateArgs) -> Result<()> {
             .copied()
             .collect();
 
-        if missing.is_empty() {
-            println!(
-                "\n{} All required shadcn-vue components are installed",
-                "✓".green().bold()
-            );
-        } else {
-            println!("\n{}", "Missing shadcn-vue components:".yellow().bold());
-            println!(
-                "  npx shadcn-vue@latest add {}",
-                missing.join(" ")
-            );
+        if !is_json_output() {
+            if missing.is_empty() {
+                println!(
+                    "\n{} All required shadcn-vue components are installed",
+                    "✓".green().bold()
+                );
+            } else {
+                println!("\n{}", "Missing shadcn-vue components:".yellow().bold());
+                println!(
+                    "  npx shadcn-vue@latest add {}",
+                    missing.join(" ")
+                );
+            }
         }
     }
 
-    println!(
-        "\n{} Components generated in {}\n",
-        "✓".green().bold(),
-        args.output.cyan()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} Components generated in {}\n",
+            "✓".green().bold(),
+            args.output.cyan()
+        );
+    }
 
     Ok(())
 }
@@ -490,8 +496,10 @@ fn update_router_all() -> Result<()> {
         content.replace("const routes = [", &format!("const routes = [{}", all_routes))
     } else {
         print_warning("Could not find routes array in router file");
-        println!("\n{}", "Add to your router manually:".yellow().bold());
-        println!("{}", all_routes);
+        if !is_json_output() {
+            println!("\n{}", "Add to your router manually:".yellow().bold());
+            println!("{}", all_routes);
+        }
         return Ok(());
     };
 

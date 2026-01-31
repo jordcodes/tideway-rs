@@ -9,9 +9,11 @@
 use anyhow::Result;
 use clap::Parser;
 use tideway_cli::cli::{Cli, Commands};
+use tideway_cli::set_json_output;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    set_json_output(cli.json);
 
     match cli.command {
         Commands::New(args) => tideway_cli::commands::new::run(args)?,

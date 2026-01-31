@@ -12,7 +12,7 @@ use crate::cli::{
     BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType,
 };
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning};
 
 #[derive(Default)]
 struct WizardOptions {
@@ -109,11 +109,13 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     }
     let created = expected_files(&args);
 
-    println!(
-        "\n{} {}\n",
-        "tideway".cyan().bold(),
-        "starter app created".green().bold()
-    );
+    if !is_json_output() {
+        println!(
+            "\n{} {}\n",
+            "tideway".cyan().bold(),
+            "starter app created".green().bold()
+        );
+    }
 
     print_info(&format!("Project name: {}", project_name.green()));
     print_info(&format!("Location: {}", target_dir.display().to_string().yellow()));
@@ -132,36 +134,38 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         ));
     }
 
-    if args.summary {
-        println!("\n{}", "Generated files:".yellow().bold());
-        for path in &created {
-            println!("  - {}", path);
+    if !is_json_output() {
+        if args.summary {
+            println!("\n{}", "Generated files:".yellow().bold());
+            for path in &created {
+                println!("  - {}", path);
+            }
         }
-    }
 
-    println!("\n{}", "Next steps:".yellow().bold());
-    println!("  1. cd {}", dir_name);
-    let mut step = 2;
-    if args.with_docker {
-        println!("  {}. docker compose up -d", step);
-        step += 1;
-    }
-    if has_auth_feature || has_database_feature || args.with_config {
-        println!("  {}. cp .env.example .env", step);
-        step += 1;
-    }
-    if has_database_feature {
-        println!("  {}. tideway migrate", step);
-        step += 1;
-    }
-    println!("  {}. cargo run", step);
-    println!();
-
-    if matches!(args.preset, Some(NewPreset::Api)) {
-        println!("{}", "First request:".yellow().bold());
-        println!("  curl http://localhost:8000/api/todos");
-        println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
+        println!("\n{}", "Next steps:".yellow().bold());
+        println!("  1. cd {}", dir_name);
+        let mut step = 2;
+        if args.with_docker {
+            println!("  {}. docker compose up -d", step);
+            step += 1;
+        }
+        if has_auth_feature || has_database_feature || args.with_config {
+            println!("  {}. cp .env.example .env", step);
+            step += 1;
+        }
+        if has_database_feature {
+            println!("  {}. tideway migrate", step);
+            step += 1;
+        }
+        println!("  {}. cargo run", step);
         println!();
+
+        if matches!(args.preset, Some(NewPreset::Api)) {
+            println!("{}", "First request:".yellow().bold());
+            println!("  curl http://localhost:8000/api/todos");
+            println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
+            println!();
+        }
     }
 
     print_success("Ready to build");
@@ -408,6 +412,9 @@ fn preset_label(preset: NewPreset) -> &'static str {
 }
 
 fn print_presets() {
+    if is_json_output() {
+        return;
+    }
     println!("Available presets:");
     println!("  - minimal: basic starter (no extra features)");
     println!("  - api: auth + database + openapi + validation, plus config, docker, CI, env, and a sample DB-backed resource");

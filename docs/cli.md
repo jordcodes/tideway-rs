@@ -10,6 +10,9 @@ cargo install tideway-cli
 
 ## Commands
 
+Global options:
+- `--json` - Emit machine-readable JSON lines (useful for tooling/agents)
+
 ### `tideway new`
 
 Create a new starter project.
