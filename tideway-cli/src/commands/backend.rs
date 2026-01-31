@@ -77,6 +77,7 @@ pub fn run(args: BackendArgs) -> Result<()> {
         has_tideway_features: false,
         has_auth_feature: false,
         has_database_feature: false,
+        has_openapi_feature: false,
         needs_arc: false,
         has_config: false,
     };

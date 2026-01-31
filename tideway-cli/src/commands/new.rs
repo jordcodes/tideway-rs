@@ -64,6 +64,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     let features = normalize_features(&args.features);
     let has_auth_feature = features.contains("auth");
     let has_database_feature = features.contains("database");
+    let has_openapi_feature = features.contains("openapi");
     let has_tideway_features = !features.is_empty();
 
     let target_dir = PathBuf::from(&dir_name);
@@ -94,6 +95,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         has_tideway_features,
         has_auth_feature,
         has_database_feature,
+        has_openapi_feature,
         needs_arc,
         has_config: args.with_config,
     };
@@ -475,6 +477,7 @@ fn scaffold_backend_preset(
         has_tideway_features: false,
         has_auth_feature: false,
         has_database_feature: false,
+        has_openapi_feature: false,
         needs_arc: false,
         has_config: false,
     };

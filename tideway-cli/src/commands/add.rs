@@ -210,6 +210,7 @@ fn scaffold_auth(
         has_tideway_features: true,
         has_auth_feature: true,
         has_database_feature: false,
+        has_openapi_feature: false,
         needs_arc: true,
         has_config: false,
     };

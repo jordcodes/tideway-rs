@@ -15,3 +15,6 @@ serde_json = "1.0"
 {{#if has_database_feature}}
 sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
 {{/if}}
+{{#if has_openapi_feature}}
+utoipa = { version = "5", features = ["axum_extras"] }
+{{/if}}
