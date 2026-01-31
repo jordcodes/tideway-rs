@@ -2,14 +2,34 @@
 
 use anyhow::{anyhow, Context, Result};
 use colored::Colorize;
-use dialoguer::{console::Term, theme::ColorfulTheme, Confirm, MultiSelect};
+use dialoguer::{console::Term, theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use toml_edit::{Array, InlineTable, Item, Table, Value};
 
-use crate::cli::{DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
+use crate::cli::{
+    BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType,
+};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{print_info, print_success, print_warning};
+
+#[derive(Default)]
+struct WizardOptions {
+    backend_preset: Option<BackendPreset>,
+    resource: Option<ResourceWizardOptions>,
+}
+
+struct ResourceWizardOptions {
+    name: String,
+    db: bool,
+    repo: bool,
+    repo_tests: bool,
+    service: bool,
+    paginate: bool,
+    search: bool,
+    with_tests: bool,
+}
 
 /// Run the new command
 pub fn run(mut args: NewArgs) -> Result<()> {
@@ -27,8 +47,12 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         .clone()
         .ok_or_else(|| anyhow!("Project name is required (e.g. `tideway new my_app`)"))?;
 
+    let mut wizard = WizardOptions::default();
     if should_prompt(&args) {
-        prompt_for_options(&mut args)?;
+        wizard = prompt_for_options(&mut args)?;
+        if let Some(preset) = args.preset {
+            apply_preset(preset, &mut args);
+        }
     }
 
     let dir_name = args.path.clone().unwrap_or_else(|| name.clone());
@@ -75,6 +99,13 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     scaffold_files(&target_dir, &engine, &args, needs_env)?;
     if matches!(args.preset, Some(NewPreset::Api)) {
         scaffold_api_preset(&target_dir)?;
+    }
+    if let Some(backend_preset) = wizard.backend_preset {
+        scaffold_backend_preset(&target_dir, &project_name, backend_preset)?;
+        ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
+    }
+    if let Some(resource) = wizard.resource {
+        scaffold_wizard_resource(&target_dir, resource)?;
     }
     let created = expected_files(&args);
 
@@ -348,6 +379,26 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
     }
 }
 
+fn apply_backend_defaults(args: &mut NewArgs, has_organizations: bool) {
+    let mut features = vec![
+        "auth",
+        "auth-mfa",
+        "database",
+        "billing",
+        "billing-seaorm",
+        "admin",
+    ];
+    if has_organizations {
+        features.push("organizations");
+    }
+
+    args.features = features.into_iter().map(|feature| feature.to_string()).collect();
+    args.with_config = true;
+    args.with_docker = true;
+    args.with_ci = true;
+    args.with_env = true;
+}
+
 fn preset_label(preset: NewPreset) -> &'static str {
     match preset {
         NewPreset::Minimal => "minimal",
@@ -383,6 +434,120 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+fn scaffold_backend_preset(
+    target_dir: &Path,
+    project_name: &str,
+    preset: BackendPreset,
+) -> Result<()> {
+    let has_organizations = matches!(preset, BackendPreset::B2b);
+    let backend_args = crate::cli::BackendArgs {
+        preset,
+        name: project_name.to_string(),
+        output: target_dir.join("src").to_string_lossy().to_string(),
+        migrations_output: target_dir
+            .join("migration/src")
+            .to_string_lossy()
+            .to_string(),
+        force: true,
+        database: "postgres".to_string(),
+    };
+
+    crate::commands::backend::run(backend_args)?;
+
+    let context = BackendTemplateContext {
+        project_name: project_name.to_string(),
+        project_name_pascal: to_pascal_case(project_name),
+        has_organizations,
+        database: "postgres".to_string(),
+        tideway_features: Vec::new(),
+        has_tideway_features: false,
+        has_auth_feature: false,
+        has_database_feature: false,
+        needs_arc: false,
+        has_config: false,
+    };
+    let engine = BackendTemplateEngine::new(context)?;
+    write_file(
+        &target_dir.join("migration/Cargo.toml"),
+        &engine.render("starter/migration/Cargo.toml")?,
+        true,
+    )?;
+
+    Ok(())
+}
+
+fn scaffold_wizard_resource(target_dir: &Path, resource: ResourceWizardOptions) -> Result<()> {
+    let args = ResourceArgs {
+        name: resource.name,
+        path: target_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: resource.with_tests,
+        db: resource.db,
+        repo: resource.repo,
+        repo_tests: resource.repo_tests,
+        service: resource.service,
+        id_type: ResourceIdType::Int,
+        add_uuid: false,
+        paginate: resource.paginate,
+        search: resource.search,
+        db_backend: DbBackend::Auto,
+    };
+
+    crate::commands::resource::run(args)?;
+    Ok(())
+}
+
+fn ensure_backend_dependencies(cargo_path: &Path) -> Result<()> {
+    let contents = fs::read_to_string(cargo_path)
+        .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+
+    let deps = doc["dependencies"].or_insert(Item::Table(Table::new()));
+    let deps_table = deps
+        .as_table_mut()
+        .expect("dependencies should be a table");
+
+    ensure_dependency_value(deps_table, "tracing", Value::from("0.1"));
+    ensure_dependency_value(deps_table, "dotenvy", Value::from("0.15"));
+    ensure_dependency_inline(
+        deps_table,
+        "uuid",
+        "1",
+        &["v4", "serde"],
+    );
+    ensure_dependency_inline(
+        deps_table,
+        "chrono",
+        "0.4",
+        &["serde"],
+    );
+
+    fs::write(cargo_path, doc.to_string())
+        .with_context(|| format!("Failed to write {}", cargo_path.display()))?;
+    Ok(())
+}
+
+fn ensure_dependency_value(deps: &mut Table, name: &str, value: Value) {
+    if !deps.contains_key(name) {
+        deps.insert(name, Item::Value(value));
+    }
+}
+
+fn ensure_dependency_inline(deps: &mut Table, name: &str, version: &str, features: &[&str]) {
+    if deps.contains_key(name) {
+        return;
+    }
+
+    let mut table = InlineTable::new();
+    table.get_or_insert("version", version);
+    let mut array = Array::new();
+    for feature in features {
+        array.push(*feature);
+    }
+    table.get_or_insert("features", Value::Array(array));
+    deps.insert(name, Item::Value(Value::InlineTable(table)));
+}
+
 fn needs_env_from_args(args: &NewArgs) -> bool {
     let features = normalize_features(&args.features);
     features.contains("auth")
@@ -414,50 +579,158 @@ fn should_prompt(args: &NewArgs) -> bool {
         && Term::stdout().is_term()
 }
 
-fn prompt_for_options(args: &mut NewArgs) -> Result<()> {
+fn prompt_for_options(args: &mut NewArgs) -> Result<WizardOptions> {
     let theme = ColorfulTheme::default();
+    let mut wizard = WizardOptions::default();
 
-    let options = [
-        "auth",
-        "database",
-        "cache",
-        "sessions",
-        "jobs",
-        "email",
-        "websocket",
-        "metrics",
-        "validation",
-        "openapi",
+    let preset_options = [
+        "Minimal (no extra features)",
+        "API preset (auth + database + openapi + validation)",
+        "Backend preset: B2C (auth + billing + admin)",
+        "Backend preset: B2B (auth + billing + orgs + admin)",
+        "Custom (pick features)",
     ];
 
-    let selections = MultiSelect::with_theme(&theme)
-        .with_prompt("Select Tideway features (space to select)")
-        .items(&options)
+    let preset_choice = Select::with_theme(&theme)
+        .with_prompt("Choose a starter preset")
+        .items(&preset_options)
+        .default(1)
         .interact()
         .map_err(|e| anyhow!("Prompt failed: {}", e))?;
 
-    args.features = selections
-        .iter()
-        .map(|idx| options[*idx].to_string())
-        .collect();
+    match preset_choice {
+        0 => {
+            args.preset = Some(NewPreset::Minimal);
+        }
+        1 => {
+            args.preset = Some(NewPreset::Api);
+        }
+        2 => {
+            wizard.backend_preset = Some(BackendPreset::B2c);
+            apply_backend_defaults(args, false);
+        }
+        3 => {
+            wizard.backend_preset = Some(BackendPreset::B2b);
+            apply_backend_defaults(args, true);
+        }
+        _ => {
+            let options = [
+                "auth",
+                "database",
+                "cache",
+                "sessions",
+                "jobs",
+                "email",
+                "websocket",
+                "metrics",
+                "validation",
+                "openapi",
+            ];
 
-    args.with_config = Confirm::with_theme(&theme)
-        .with_prompt("Generate config.rs and error.rs?")
-        .default(false)
+            let selections = MultiSelect::with_theme(&theme)
+                .with_prompt("Select Tideway features (space to select)")
+                .items(&options)
+                .interact()
+                .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+            args.features = selections
+                .iter()
+                .map(|idx| options[*idx].to_string())
+                .collect();
+
+            args.with_config = Confirm::with_theme(&theme)
+                .with_prompt("Generate config.rs and error.rs?")
+                .default(false)
+                .interact()
+                .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+            args.with_docker = Confirm::with_theme(&theme)
+                .with_prompt("Generate docker-compose.yml for Postgres?")
+                .default(false)
+                .interact()
+                .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+            args.with_ci = Confirm::with_theme(&theme)
+                .with_prompt("Generate GitHub Actions CI workflow?")
+                .default(false)
+                .interact()
+                .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+        }
+    }
+
+    if Confirm::with_theme(&theme)
+        .with_prompt("Generate your first resource now?")
+        .default(true)
         .interact()
-        .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+        .map_err(|e| anyhow!("Prompt failed: {}", e))?
+    {
+        let name = Input::<String>::with_theme(&theme)
+            .with_prompt("Resource name (singular, e.g. carehome)")
+            .interact_text()
+            .map_err(|e| anyhow!("Prompt failed: {}", e))?;
 
-    args.with_docker = Confirm::with_theme(&theme)
-        .with_prompt("Generate docker-compose.yml for Postgres?")
-        .default(false)
-        .interact()
-        .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+        let has_database_feature = normalize_features(&args.features).contains("database");
+        let db = Confirm::with_theme(&theme)
+            .with_prompt("Use database-backed CRUD?")
+            .default(has_database_feature)
+            .interact()
+            .map_err(|e| anyhow!("Prompt failed: {}", e))?;
 
-    args.with_ci = Confirm::with_theme(&theme)
-        .with_prompt("Generate GitHub Actions CI workflow?")
-        .default(false)
-        .interact()
-        .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+        let mut repo = false;
+        let mut repo_tests = false;
+        let mut service = false;
+        let mut paginate = false;
+        let mut search = false;
 
-    Ok(())
+        if db {
+            repo = Confirm::with_theme(&theme)
+                .with_prompt("Generate a repository layer?")
+                .default(true)
+                .interact()
+                .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+            if repo {
+                repo_tests = Confirm::with_theme(&theme)
+                    .with_prompt("Generate repository tests? (requires DATABASE_URL)")
+                    .default(false)
+                    .interact()
+                    .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+                service = Confirm::with_theme(&theme)
+                    .with_prompt("Generate a service layer?")
+                    .default(true)
+                    .interact()
+                    .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+            }
+            paginate = Confirm::with_theme(&theme)
+                .with_prompt("Add pagination to list endpoints?")
+                .default(true)
+                .interact()
+                .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+            if paginate {
+                search = Confirm::with_theme(&theme)
+                    .with_prompt("Add a search filter (q) to list endpoints?")
+                    .default(true)
+                    .interact()
+                    .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+            }
+        }
+
+        let with_tests = Confirm::with_theme(&theme)
+            .with_prompt("Generate route tests?")
+            .default(true)
+            .interact()
+            .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+        wizard.resource = Some(ResourceWizardOptions {
+            name,
+            db,
+            repo,
+            repo_tests,
+            service,
+            paginate,
+            search,
+            with_tests,
+        });
+    }
+
+    Ok(wizard)
 }
