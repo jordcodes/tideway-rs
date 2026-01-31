@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 tideway = { version = "{{tideway_version}}"{{#if has_tideway_features}}, features = [{{#each tideway_features}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}} }
 tokio = { version = "1.48", features = ["full"] }
-axum = "0.7"
+axum = "0.8"
 {{#if has_auth_feature}}
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }

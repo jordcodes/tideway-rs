@@ -1385,33 +1385,31 @@ fn render_repository(
     };
     let list_signature = if paginate {
         if search {
-            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
-                .to_string()
+            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{")
         } else {
-            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
-                .to_string()
+            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{")
         }
     } else {
-        "pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{".to_string()
+        format!("pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{")
     };
     let list_params = if paginate {
         let search_query = if search {
-            "        if let Some(search) = search.as_deref() { query = query.filter({resource_name}::Column::Name.contains(search)); }\n"
+            format!("        if let Some(search) = search.as_deref() {{ query = query.filter({resource_name}::Column::Name.contains(search)); }}\n")
         } else {
-            ""
+            String::new()
         };
         format!(
             "        let mut query = {resource_name}::Entity::find();\n        if let Some(limit) = limit {{ query = query.limit(limit); }}\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
             search_query = search_query,
-            resource_name = resource_name
         )
     } else {
-        "        Ok({resource_name}::Entity::find().all(&self.db).await?)".to_string()
+        format!("        Ok({resource_name}::Entity::find().all(&self.db).await?)")
     };
-    let sea_orm_imports = if search {
-        "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
-    } else {
-        "use sea_orm::{ActiveModelTrait, EntityTrait, Set};"
+    let sea_orm_imports = match (paginate, search) {
+        (true, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};",
+        (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};",
+        (false, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};",
+        (false, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, Set};",
     };
     format!(
         r#"{sea_orm_imports}
@@ -1534,15 +1532,12 @@ fn render_service(
     };
     let list_signature = if paginate {
         if search {
-            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
-                .to_string()
+            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{")
         } else {
-            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
-                .to_string()
+            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{")
         }
     } else {
-        "pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
-            .to_string()
+        format!("pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{")
     };
     let list_body = if paginate {
         if search {
