@@ -136,6 +136,20 @@ tideway new my_app --preset api
 When no flags are provided, the CLI will prompt you interactively (similar to Vite).
 You can disable prompts with `--no-prompt`.
 
+### Agent Quickstart
+
+If you're using coding agents (Codex, Claude Code, OpenCode), start here:
+
+- Use `tideway new my_app` and follow the wizard (fastest path).
+- Add resources with `tideway resource <name> --wire --db --repo --service --paginate --search`.
+- Run `tideway dev --fix-env` to boot with env + migrations.
+
+Agent-friendly flags:
+- `--json` emits machine-readable JSON lines.
+- `--plan` shows planned file operations without writing.
+
+Project-specific guidance lives in `SKILLS.md`.
+
 ### Getting Started Guide
 
 Read the full walkthrough at `docs/getting_started.md`.
