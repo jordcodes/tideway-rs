@@ -16,7 +16,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::checkout::{
-    CheckoutMode, CheckoutSession, CreateCheckoutSessionRequest, StripeCheckoutClient,
+    CheckoutMode, CheckoutSession, CreateCheckoutSessionRequest, PaymentMethodCollection,
+    StripeCheckoutClient,
 };
 use super::customer::{CreateCustomerRequest, StripeClient, UpdateCustomerRequest};
 use super::error::BillingError;
@@ -905,6 +906,18 @@ impl StripeCheckoutClient for LiveStripeClient {
                 coupon: Some(coupon.clone()),
                 ..Default::default()
             }]);
+        }
+
+        // Set payment method collection behavior
+        if let Some(collection) = request.payment_method_collection {
+            params.payment_method_collection = Some(match collection {
+                PaymentMethodCollection::Always => {
+                    stripe::CheckoutSessionPaymentMethodCollection::Always
+                }
+                PaymentMethodCollection::IfRequired => {
+                    stripe::CheckoutSessionPaymentMethodCollection::IfRequired
+                }
+            });
         }
 
         let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_checkout_session", || {

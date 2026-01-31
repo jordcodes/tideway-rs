@@ -104,6 +104,7 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
             tax_id_collection: self.config.collect_tax_id,
             billing_address_collection: self.config.collect_billing_address,
             coupon: request.coupon,
+            payment_method_collection: request.payment_method_collection,
         }).await?;
 
         Ok(session)
@@ -271,6 +272,27 @@ impl CheckoutConfig {
     }
 }
 
+/// Payment method collection behavior for checkout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PaymentMethodCollection {
+    /// Always collect payment method (default Stripe behavior).
+    #[default]
+    Always,
+    /// Only collect payment method if required (e.g., skip for trials).
+    IfRequired,
+}
+
+impl PaymentMethodCollection {
+    /// Convert to Stripe API string.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Always => "always",
+            Self::IfRequired => "if_required",
+        }
+    }
+}
+
 /// Request to create a checkout session.
 #[derive(Debug, Clone)]
 pub struct CheckoutRequest {
@@ -291,6 +313,10 @@ pub struct CheckoutRequest {
     /// When set, this coupon will be automatically applied to the checkout session.
     /// Note: Cannot be used together with `allow_promotion_codes: true`.
     pub coupon: Option<String>,
+    /// Payment method collection behavior.
+    ///
+    /// Use `IfRequired` to skip payment collection for trials.
+    pub payment_method_collection: Option<PaymentMethodCollection>,
 }
 
 impl CheckoutRequest {
@@ -305,6 +331,7 @@ impl CheckoutRequest {
             trial_days: None,
             allow_promotion_codes: None,
             coupon: None,
+            payment_method_collection: None,
         }
     }
 
@@ -345,6 +372,33 @@ impl CheckoutRequest {
     pub fn with_coupon(mut self, coupon: impl Into<String>) -> Self {
         self.coupon = Some(coupon.into());
         self
+    }
+
+    /// Set payment method collection behavior.
+    ///
+    /// Use `PaymentMethodCollection::IfRequired` to skip payment collection
+    /// for trials, allowing users to start without entering payment details.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = CheckoutRequest::new("pro", success_url, cancel_url)
+    ///     .with_trial_days(14)
+    ///     .with_payment_method_collection(PaymentMethodCollection::IfRequired);
+    /// ```
+    #[must_use]
+    pub fn with_payment_method_collection(mut self, collection: PaymentMethodCollection) -> Self {
+        self.payment_method_collection = Some(collection);
+        self
+    }
+
+    /// Skip payment collection (convenience method for trials).
+    ///
+    /// This is equivalent to `.with_payment_method_collection(PaymentMethodCollection::IfRequired)`.
+    /// Users can start a trial without entering payment details.
+    #[must_use]
+    pub fn skip_payment_collection(self) -> Self {
+        self.with_payment_method_collection(PaymentMethodCollection::IfRequired)
     }
 }
 
@@ -439,6 +493,8 @@ pub struct CreateCheckoutSessionRequest {
     pub billing_address_collection: bool,
     /// Coupon code to apply.
     pub coupon: Option<String>,
+    /// Payment method collection behavior.
+    pub payment_method_collection: Option<PaymentMethodCollection>,
 }
 
 /// Trait for Stripe checkout operations.

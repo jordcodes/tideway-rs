@@ -97,8 +97,8 @@ pub use subscription::{
 // Checkout exports
 pub use checkout::{
     CheckoutConfig, CheckoutLineItem, CheckoutManager, CheckoutMetadata, CheckoutMode,
-    CheckoutRequest, CheckoutSession, CreateCheckoutSessionRequest, SeatCheckoutRequest,
-    StripeCheckoutClient,
+    CheckoutRequest, CheckoutSession, CreateCheckoutSessionRequest, PaymentMethodCollection,
+    SeatCheckoutRequest, StripeCheckoutClient,
 };
 
 // Portal exports
