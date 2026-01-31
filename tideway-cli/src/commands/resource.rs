@@ -418,10 +418,11 @@ mod openapi_docs {{
         ""
     };
     let sea_orm_imports = if with_db {
-        if search {
-            "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};\n"
-        } else {
-            "use sea_orm::{ActiveModelTrait, EntityTrait, Set};\n"
+        match (paginate, search) {
+            (true, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};\n",
+            (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};\n",
+            (false, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};\n",
+            (false, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, Set};\n",
         }
     } else {
         ""
