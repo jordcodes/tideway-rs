@@ -303,6 +303,10 @@ pub struct ResourceArgs {
     #[arg(long, default_value = "false")]
     pub paginate: bool,
 
+    /// Add simple search filter for list endpoints (requires --paginate)
+    #[arg(long, default_value = "false")]
+    pub search: bool,
+
     /// Database backend for scaffolding
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,

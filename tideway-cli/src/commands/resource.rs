@@ -39,6 +39,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         args.service,
         args.id_type,
         args.paginate,
+        args.search,
     );
     write_file(&resource_path, &contents, false)?;
 
@@ -69,6 +70,20 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     if args.service && !args.repo {
         return Err(anyhow::anyhow!(
             "Service scaffolding requires --repo (run `tideway resource {} --db --repo --service`)",
+            resource_name
+        ));
+    }
+
+    if args.search && !args.paginate {
+        return Err(anyhow::anyhow!(
+            "Search requires --paginate (run `tideway resource {} --db --paginate --search`)",
+            resource_name
+        ));
+    }
+
+    if args.search && !args.db {
+        return Err(anyhow::anyhow!(
+            "Search requires --db (run `tideway resource {} --db --paginate --search`)",
             resource_name
         ));
     }
@@ -117,13 +132,25 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         }
 
         if args.repo {
-            generate_repository(&project_dir, &resource_name, args.id_type, args.paginate)?;
+            generate_repository(
+                &project_dir,
+                &resource_name,
+                args.id_type,
+                args.paginate,
+                args.search,
+            )?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
                 generate_repository_tests(&project_dir, &project_name, &resource_name, args.id_type)?;
             }
             if args.service {
-                generate_service(&project_dir, &resource_name, args.id_type, args.paginate)?;
+                generate_service(
+                    &project_dir,
+                    &resource_name,
+                    args.id_type,
+                    args.paginate,
+                    args.search,
+                )?;
             }
         }
 
@@ -195,6 +222,7 @@ fn render_resource_module(
     with_service: bool,
     id_type: ResourceIdType,
     paginate: bool,
+    search: bool,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
@@ -390,7 +418,11 @@ mod openapi_docs {{
         ""
     };
     let sea_orm_imports = if with_db {
-        "use sea_orm::{ActiveModelTrait, EntityTrait, Set};\n"
+        if search {
+            "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};\n"
+        } else {
+            "use sea_orm::{ActiveModelTrait, EntityTrait, Set};\n"
+        }
     } else {
         ""
     };
@@ -416,17 +448,21 @@ mod openapi_docs {{
         } else {
             ""
         };
-        format!(
+        let mut struct_body = format!(
             r#"
 #[derive(Deserialize)]
 {attrs}
 pub struct PaginationParams {{
     pub limit: Option<u64>,
     pub offset: Option<u64>,
-}}
 "#,
             attrs = attrs
-        )
+        );
+        if search {
+            struct_body.push_str("    pub q: Option<String>,\n");
+        }
+        struct_body.push_str("}\n");
+        struct_body
     } else {
         String::new()
     };
@@ -436,11 +472,30 @@ pub struct PaginationParams {{
         ""
     };
     let list_param_prefix = if paginate { ", " } else { "" };
-    let list_args = if paginate { "params.limit, params.offset" } else { "" };
-    let pagination_query = if paginate {
-        "    if let Some(limit) = params.limit { query = query.limit(limit); }\n    if let Some(offset) = params.offset { query = query.offset(offset); }"
+    let list_args = if paginate {
+        if search {
+            "params.limit, params.offset, params.q"
+        } else {
+            "params.limit, params.offset"
+        }
     } else {
         ""
+    };
+    let pagination_query = if paginate {
+        let search_query = if search {
+            format!(
+                "    if let Some(q) = params.q.as_deref() {{ query = query.filter({resource_name}::Column::Name.contains(q)); }}\n",
+                resource_name = resource_name
+            )
+        } else {
+            String::new()
+        };
+        format!(
+            "    if let Some(limit) = params.limit {{ query = query.limit(limit); }}\n    if let Some(offset) = params.offset {{ query = query.offset(offset); }}\n{search_query}",
+            search_query = search_query
+        )
+    } else {
+        String::new()
     };
 
     let handlers = if with_db && with_repo && with_service {
@@ -1277,6 +1332,7 @@ fn generate_repository(
     resource_name: &str,
     id_type: ResourceIdType,
     paginate: bool,
+    search: bool,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
@@ -1292,7 +1348,7 @@ fn generate_repository(
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
-    let repo_contents = render_repository(resource_name, id_type, paginate);
+    let repo_contents = render_repository(resource_name, id_type, paginate, search);
     write_file(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
@@ -1310,7 +1366,12 @@ fn wire_repositories_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_repository(resource_name: &str, id_type: ResourceIdType, paginate: bool) -> String {
+fn render_repository(
+    resource_name: &str,
+    id_type: ResourceIdType,
+    paginate: bool,
+    search: bool,
+) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     let (id_type_str, uuid_import) = if matches!(id_type, ResourceIdType::Uuid) {
         ("uuid::Uuid", "use uuid::Uuid;\n")
@@ -1323,18 +1384,37 @@ fn render_repository(resource_name: &str, id_type: ResourceIdType, paginate: boo
         ""
     };
     let list_signature = if paginate {
-        "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
-            .to_string()
+        if search {
+            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
+                .to_string()
+        } else {
+            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
+                .to_string()
+        }
     } else {
         "pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{".to_string()
     };
     let list_params = if paginate {
-        "        let mut query = {resource_name}::Entity::find();\n        if let Some(limit) = limit { query = query.limit(limit); }\n        if let Some(offset) = offset { query = query.offset(offset); }\n        Ok(query.all(&self.db).await?)"
+        let search_query = if search {
+            "        if let Some(search) = search.as_deref() { query = query.filter({resource_name}::Column::Name.contains(search)); }\n"
+        } else {
+            ""
+        };
+        format!(
+            "        let mut query = {resource_name}::Entity::find();\n        if let Some(limit) = limit {{ query = query.limit(limit); }}\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
+            search_query = search_query,
+            resource_name = resource_name
+        )
     } else {
-        "        Ok({resource_name}::Entity::find().all(&self.db).await?)"
+        "        Ok({resource_name}::Entity::find().all(&self.db).await?)".to_string()
+    };
+    let sea_orm_imports = if search {
+        "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
+    } else {
+        "use sea_orm::{ActiveModelTrait, EntityTrait, Set};"
     };
     format!(
-        r#"use sea_orm::{{ActiveModelTrait, EntityTrait, Set}};
+        r#"{sea_orm_imports}
 use tideway::Result;
 {uuid_import}
 
@@ -1391,7 +1471,8 @@ impl {resource_pascal}Repository {{
         uuid_import = uuid_import,
         create_id_field = create_id_field,
         list_signature = list_signature,
-        list_params = list_params
+        list_params = list_params,
+        sea_orm_imports = sea_orm_imports
     )
 }
 
@@ -1400,6 +1481,7 @@ fn generate_service(
     resource_name: &str,
     id_type: ResourceIdType,
     paginate: bool,
+    search: bool,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
@@ -1415,7 +1497,7 @@ fn generate_service(
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
-    let service_contents = render_service(resource_name, id_type, paginate);
+    let service_contents = render_service(resource_name, id_type, paginate, search);
     write_file(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
@@ -1433,7 +1515,12 @@ fn wire_services_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
-fn render_service(resource_name: &str, id_type: ResourceIdType, paginate: bool) -> String {
+fn render_service(
+    resource_name: &str,
+    id_type: ResourceIdType,
+    paginate: bool,
+    search: bool,
+) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
@@ -1446,13 +1533,23 @@ fn render_service(resource_name: &str, id_type: ResourceIdType, paginate: bool) 
         ""
     };
     let list_signature = if paginate {
-        "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
-            .to_string()
+        if search {
+            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                .to_string()
+        } else {
+            "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                .to_string()
+        }
     } else {
-        "pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{".to_string()
+        "pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+            .to_string()
     };
     let list_body = if paginate {
-        "        self.repo.list(limit, offset).await"
+        if search {
+            "        self.repo.list(limit, offset, search).await"
+        } else {
+            "        self.repo.list(limit, offset).await"
+        }
     } else {
         "        self.repo.list().await"
     };
