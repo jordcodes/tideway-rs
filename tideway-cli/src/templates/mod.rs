@@ -124,6 +124,8 @@ pub struct BackendTemplateContext {
     pub has_organizations: bool,
     /// Database type ("postgres" or "sqlite")
     pub database: String,
+    /// Tideway crate version for scaffolding
+    pub tideway_version: String,
     /// Tideway feature list for starter templates
     pub tideway_features: Vec<String>,
     /// Whether any Tideway features were requested

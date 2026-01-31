@@ -7,7 +7,7 @@ use std::path::Path;
 
 use crate::cli::{BackendArgs, BackendPreset};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{is_json_output, print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning, TIDEWAY_VERSION};
 
 /// Convert snake_case to PascalCase
 fn to_pascal_case(s: &str) -> String {
@@ -70,6 +70,7 @@ pub fn run(args: BackendArgs) -> Result<()> {
         project_name_pascal: to_pascal_case(&args.name),
         has_organizations,
         database: args.database.clone(),
+        tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: Vec::new(),
         has_tideway_features: false,
         has_auth_feature: false,
@@ -113,7 +114,10 @@ pub fn run(args: BackendArgs) -> Result<()> {
         // Print next steps
         println!("{}", "Next steps:".yellow().bold());
         println!("  1. Add dependencies to Cargo.toml:");
-        println!("     tideway = {{ version = \"0.7\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}");
+        println!(
+            "     tideway = {{ version = \"{}\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}",
+            TIDEWAY_VERSION
+        );
         println!("     axum = {{ version = \"0.8\", features = [\"macros\"] }}");
         println!("     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}");
         println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");

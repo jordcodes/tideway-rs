@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{AddArgs, AddFeature};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{print_info, print_success, print_warning};
+use crate::{print_info, print_success, print_warning, TIDEWAY_VERSION};
 
 pub fn run(args: AddArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
@@ -71,13 +71,17 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
     match tideway_item {
         toml_edit::Entry::Vacant(entry) => {
             let mut table = toml_edit::InlineTable::new();
-            table.get_or_insert("version", "0.7");
+            table.get_or_insert("version", TIDEWAY_VERSION);
             table.get_or_insert("features", array_value(&[feature_name.as_str()]));
             entry.insert(toml_edit::Item::Value(toml_edit::Value::InlineTable(table)));
         }
         toml_edit::Entry::Occupied(mut entry) => {
             if entry.get().is_str() {
-                let version = entry.get().as_str().unwrap_or("0.7").to_string();
+                let version = entry
+                    .get()
+                    .as_str()
+                    .unwrap_or(TIDEWAY_VERSION)
+                    .to_string();
                 let mut table = toml_edit::InlineTable::new();
                 table.get_or_insert("version", version);
                 table.get_or_insert("features", array_value(&[feature_name.as_str()]));
@@ -199,6 +203,7 @@ fn scaffold_auth(
         project_name_pascal: project_name_pascal.to_string(),
         has_organizations: false,
         database: "postgres".to_string(),
+        tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: vec!["auth".to_string()],
         has_tideway_features: true,
         has_auth_feature: true,

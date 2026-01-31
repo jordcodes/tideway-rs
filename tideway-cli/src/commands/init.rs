@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
-use crate::{is_json_output, print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning, TIDEWAY_VERSION};
 
 /// Detected modules in the project
 #[derive(Debug, Default)]
@@ -108,7 +108,10 @@ pub fn run(args: InitArgs) -> Result<()> {
         println!("     cp .env.example .env");
         println!();
         println!("  2. Ensure dependencies in Cargo.toml:");
-        println!("     tideway = {{ version = \"0.7\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\"] }}");
+        println!(
+            "     tideway = {{ version = \"{}\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\"] }}",
+            TIDEWAY_VERSION
+        );
         println!();
         if !args.no_migrations {
             println!("  3. Run migrations:");

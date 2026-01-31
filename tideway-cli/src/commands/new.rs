@@ -12,7 +12,7 @@ use crate::cli::{
     BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType,
 };
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{is_json_output, print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning, TIDEWAY_VERSION};
 
 #[derive(Default)]
 struct WizardOptions {
@@ -86,6 +86,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         project_name_pascal,
         has_organizations: false,
         database: "postgres".to_string(),
+        tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: features.iter().cloned().collect(),
         has_tideway_features,
         has_auth_feature,
@@ -466,6 +467,7 @@ fn scaffold_backend_preset(
         project_name_pascal: to_pascal_case(project_name),
         has_organizations,
         database: "postgres".to_string(),
+        tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: Vec::new(),
         has_tideway_features: false,
         has_auth_feature: false,

@@ -8,6 +8,8 @@ pub mod templates;
 use colored::Colorize;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub const TIDEWAY_VERSION: &str = env!("TIDEWAY_VERSION");
+
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 pub fn set_json_output(enabled: bool) {
