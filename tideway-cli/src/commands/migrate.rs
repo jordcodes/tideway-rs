@@ -7,9 +7,13 @@ use std::process::Command;
 
 use crate::cli::{MigrateArgs, MigrateBackend};
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
-use crate::{print_info, print_success, print_warning};
+use crate::{is_plan_mode, print_info, print_success, print_warning};
 
 pub fn run(args: MigrateArgs) -> Result<()> {
+    if is_plan_mode() {
+        print_info(&format!("Plan: would run migrations ({})", args.action));
+        return Ok(());
+    }
     let project_dir = PathBuf::from(&args.path);
     ensure_project_dir(&project_dir)?;
 

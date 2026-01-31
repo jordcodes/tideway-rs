@@ -12,6 +12,10 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "false")]
     pub json: bool,
 
+    /// Show planned changes without writing files
+    #[arg(long, global = true, default_value = "false")]
+    pub plan: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }

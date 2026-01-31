@@ -6,7 +6,10 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
-use crate::{is_json_output, print_info, print_success, print_warning, TIDEWAY_VERSION};
+use crate::{
+    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
+    TIDEWAY_VERSION,
+};
 
 /// Detected modules in the project
 #[derive(Debug, Default)]
@@ -74,14 +77,14 @@ pub fn run(args: InitArgs) -> Result<()> {
     // Generate main.rs
     let main_rs = generate_main_rs(&project_name, &modules, &args);
     let main_path = src_path.join("main.rs");
-    write_file(&main_path, &main_rs, args.force)?;
+    write_file_with_force(&main_path, &main_rs, args.force)?;
     print_success("Generated main.rs");
 
     // Generate config.rs if it doesn't exist
     let config_path = src_path.join("config.rs");
     if !config_path.exists() || args.force {
         let config_rs = generate_config_rs(&modules, &args);
-        write_file(&config_path, &config_rs, args.force)?;
+        write_file_with_force(&config_path, &config_rs, args.force)?;
         print_success("Generated config.rs");
     } else {
         print_info("config.rs already exists, skipping (use --force to overwrite)");
@@ -92,7 +95,7 @@ pub fn run(args: InitArgs) -> Result<()> {
         let env_example = generate_env_example(&project_name, &modules, &args);
         let env_path = Path::new(".env.example");
         // Always overwrite .env.example
-        fs::write(env_path, env_example).context("Failed to write .env.example")?;
+        write_file(env_path, &env_example).context("Failed to write .env.example")?;
         print_success("Generated .env.example");
     }
 
@@ -144,11 +147,11 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
     let routes_rs = generate_minimal_routes_rs();
 
     let main_path = src_path.join("main.rs");
-    write_file(&main_path, &main_rs, args.force)?;
+    write_file_with_force(&main_path, &main_rs, args.force)?;
     print_success("Generated main.rs");
 
     let routes_path = src_path.join("routes").join("mod.rs");
-    write_file(&routes_path, &routes_rs, args.force)?;
+    write_file_with_force(&routes_path, &routes_rs, args.force)?;
     print_success("Generated routes/mod.rs");
 
     if !is_json_output() {
@@ -542,7 +545,7 @@ fn generate_env_example(project_name: &str, modules: &DetectedModules, args: &In
 }
 
 /// Write file with optional force overwrite
-fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
+fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
             "Skipping {} (use --force to overwrite)",
@@ -551,9 +554,9 @@ fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        ensure_dir(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }

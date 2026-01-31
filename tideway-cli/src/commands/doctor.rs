@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::DoctorArgs;
-use crate::{is_json_output, print_info, print_success, print_warning};
+use crate::{is_json_output, print_info, print_success, print_warning, write_file};
 
 #[derive(Debug, Default)]
 pub struct DoctorReport {
@@ -407,7 +407,7 @@ fn project_name_from_cargo(cargo_toml: &toml::Value, project_dir: &Path) -> Stri
 }
 fn write_env_example(path: &Path, lines: &[String]) -> Result<()> {
     let contents = lines.join("\n");
-    fs::write(path, contents)
+    write_file(path, &contents)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }

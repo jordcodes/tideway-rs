@@ -12,7 +12,10 @@ use crate::cli::{
     BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType,
 };
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{is_json_output, print_info, print_success, print_warning, TIDEWAY_VERSION};
+use crate::{
+    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
+    TIDEWAY_VERSION,
+};
 
 #[derive(Default)]
 struct WizardOptions {
@@ -77,7 +80,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         ));
     }
 
-    fs::create_dir_all(&target_dir)
+    ensure_dir(&target_dir)
         .with_context(|| format!("Failed to create {}", target_dir.display()))?;
 
     let needs_arc = has_auth_feature || has_database_feature;
@@ -182,34 +185,34 @@ fn scaffold_files(
     let has_auth_feature = normalize_features(&args.features).contains("auth");
     let is_api_preset = matches!(args.preset, Some(NewPreset::Api));
 
-    write_file(
+    write_file_with_force(
         &target_dir.join("Cargo.toml"),
         &engine.render("starter/Cargo.toml")?,
         args.force,
     )?;
-    write_file(
+    write_file_with_force(
         &target_dir.join("src/main.rs"),
         &engine.render("starter/src/main.rs")?,
         args.force,
     )?;
-    write_file(
+    write_file_with_force(
         &target_dir.join("src/routes/mod.rs"),
         &engine.render("starter/src/routes/mod.rs")?,
         args.force,
     )?;
 
     if has_auth_feature {
-        write_file(
+        write_file_with_force(
             &target_dir.join("src/auth/mod.rs"),
             &engine.render("starter/src/auth/mod.rs")?,
             args.force,
         )?;
-        write_file(
+        write_file_with_force(
             &target_dir.join("src/auth/provider.rs"),
             &engine.render("starter/src/auth/provider.rs")?,
             args.force,
         )?;
-        write_file(
+        write_file_with_force(
             &target_dir.join("src/auth/routes.rs"),
             &engine.render("starter/src/auth/routes.rs")?,
             args.force,
@@ -217,45 +220,45 @@ fn scaffold_files(
     }
 
     if args.with_config {
-        write_file(
+        write_file_with_force(
             &target_dir.join("src/config.rs"),
             &engine.render("starter/src/config.rs")?,
             args.force,
         )?;
-        write_file(
+        write_file_with_force(
             &target_dir.join("src/error.rs"),
             &engine.render("starter/src/error.rs")?,
             args.force,
         )?;
     }
     if args.with_docker {
-        write_file(
+        write_file_with_force(
             &target_dir.join("docker-compose.yml"),
             &engine.render("starter/docker-compose")?,
             args.force,
         )?;
     }
     if args.with_ci {
-        write_file(
+        write_file_with_force(
             &target_dir.join(".github/workflows/ci.yml"),
             &engine.render("starter/github-ci")?,
             args.force,
         )?;
     }
-    write_file(
+    write_file_with_force(
         &target_dir.join(".gitignore"),
         &engine.render("starter/gitignore")?,
         args.force,
     )?;
 
-    write_file(
+    write_file_with_force(
         &target_dir.join("tests/health.rs"),
         &engine.render("starter/tests/health")?,
         args.force,
     )?;
 
     if needs_env {
-        write_file(
+        write_file_with_force(
             &target_dir.join(".env.example"),
             &engine.render("starter/env_example")?,
             args.force,
@@ -263,12 +266,12 @@ fn scaffold_files(
     }
 
     if is_api_preset {
-        write_file(
+        write_file_with_force(
             &target_dir.join("migration/Cargo.toml"),
             &engine.render("starter/migration/Cargo.toml")?,
             args.force,
         )?;
-        write_file(
+        write_file_with_force(
             &target_dir.join("migration/src/lib.rs"),
             &engine.render("starter/migration/src/lib.rs")?,
             args.force,
@@ -323,7 +326,7 @@ pub fn expected_files(args: &NewArgs) -> Vec<String> {
 
     files
 }
-fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
+fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         return Err(anyhow!(
             "File already exists: {} (use --force to overwrite)",
@@ -332,11 +335,11 @@ fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     }
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        ensure_dir(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
 
-    fs::write(path, contents)
+    write_file(path, contents)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
@@ -476,7 +479,7 @@ fn scaffold_backend_preset(
         has_config: false,
     };
     let engine = BackendTemplateEngine::new(context)?;
-    write_file(
+    write_file_with_force(
         &target_dir.join("migration/Cargo.toml"),
         &engine.render("starter/migration/Cargo.toml")?,
         true,
@@ -531,7 +534,7 @@ fn ensure_backend_dependencies(cargo_path: &Path) -> Result<()> {
         &["serde"],
     );
 
-    fs::write(cargo_path, doc.to_string())
+    write_file(cargo_path, &doc.to_string())
         .with_context(|| format!("Failed to write {}", cargo_path.display()))?;
     Ok(())
 }

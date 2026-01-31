@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{AddArgs, AddFeature};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{print_info, print_success, print_warning, TIDEWAY_VERSION};
+use crate::{
+    ensure_dir, print_info, print_success, print_warning, write_file, TIDEWAY_VERSION,
+};
 
 pub fn run(args: AddArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
@@ -137,7 +139,7 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
             .or_insert(toml_edit::value("1.0"));
     }
 
-    fs::write(path, doc.to_string())
+    write_file(path, &doc.to_string())
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
@@ -187,7 +189,7 @@ fn update_env_example(project_dir: &Path, feature: AddFeature, project_name: &st
         _ => {}
     }
 
-    fs::write(&env_path, lines.join("\n"))
+    write_file(&env_path, &lines.join("\n"))
         .with_context(|| format!("Failed to write {}", env_path.display()))?;
     Ok(())
 }
@@ -215,17 +217,17 @@ fn scaffold_auth(
     let engine = BackendTemplateEngine::new(context)?;
     let auth_dir = project_dir.join("src").join("auth");
 
-    write_file(
+    write_file_with_force(
         &auth_dir.join("mod.rs"),
         &engine.render("starter/src/auth/mod.rs")?,
         force,
     )?;
-    write_file(
+    write_file_with_force(
         &auth_dir.join("provider.rs"),
         &engine.render("starter/src/auth/provider.rs")?,
         force,
     )?;
-    write_file(
+    write_file_with_force(
         &auth_dir.join("routes.rs"),
         &engine.render("starter/src/auth/routes.rs")?,
         force,
@@ -297,7 +299,7 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
 
     contents = insert_auth_into_app_builder(contents)?;
 
-    fs::write(&main_path, contents)
+    write_file(&main_path, &contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Wired auth into src/main.rs");
     Ok(())
@@ -338,7 +340,7 @@ pub fn wire_database_in_main(project_dir: &Path) -> Result<()> {
         contents = insert_database_into_app_builder(contents)?;
     }
 
-    fs::write(&main_path, contents)
+    write_file(&main_path, &contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Wired database into src/main.rs");
     Ok(())
@@ -464,7 +466,7 @@ fn wire_openapi_in_main(project_dir: &Path) -> Result<()> {
         contents = insert_openapi_into_app_builder(contents, "config")?;
     }
 
-    fs::write(&main_path, contents)
+    write_file(&main_path, &contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Wired OpenAPI into src/main.rs");
     Ok(())
@@ -504,18 +506,17 @@ tideway::openapi_doc!(pub(crate) ApiDoc, paths());
 "#;
 
     if let Some(parent) = docs_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
+        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
     }
 
-    fs::write(&docs_path, contents)
+    write_file(&docs_path, &contents)
         .with_context(|| format!("Failed to write {}", docs_path.display()))?;
     print_success("Created src/openapi_docs.rs");
     Ok(())
 }
 
 
-fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
+fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
             "Skipping {} (use --force to overwrite)",
@@ -525,11 +526,10 @@ fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
     }
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
+        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
     }
 
-    fs::write(path, contents)
+    write_file(path, contents)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }

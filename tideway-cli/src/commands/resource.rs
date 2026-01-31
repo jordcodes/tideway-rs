@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
-use crate::{print_info, print_success, print_warning};
+use crate::{ensure_dir, print_info, print_success, print_warning, write_file};
 
 pub fn run(args: ResourceArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
@@ -24,7 +24,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let has_database = has_feature(&cargo_path, "database");
 
     let routes_dir = src_dir.join("routes");
-    fs::create_dir_all(&routes_dir)
+    ensure_dir(&routes_dir)
         .with_context(|| format!("Failed to create {}", routes_dir.display()))?;
 
     let resource_path = routes_dir.join(format!("{}.rs", resource_name));
@@ -41,7 +41,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         args.paginate,
         args.search,
     );
-    write_file(&resource_path, &contents, false)?;
+    write_file_with_force(&resource_path, &contents, false)?;
 
     if args.wire {
         wire_routes_mod(&routes_dir, &resource_name)?;
@@ -873,7 +873,7 @@ fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str)
 
     if !docs_path.exists() {
         let contents = render_openapi_docs_file(&paths);
-        write_file(&docs_path, &contents, false)?;
+        write_file_with_force(&docs_path, &contents, false)?;
         print_success("Created src/openapi_docs.rs");
         return Ok(());
     }
@@ -931,7 +931,7 @@ fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str)
     if !contents.ends_with('\n') {
         contents.push('\n');
     }
-    fs::write(&docs_path, contents)
+    write_file(&docs_path, &contents)
         .with_context(|| format!("Failed to write {}", docs_path.display()))?;
     print_success("Updated src/openapi_docs.rs");
     Ok(())
@@ -957,7 +957,7 @@ fn wire_entities_in_main(src_dir: &Path) -> Result<()> {
         contents = format!("mod entities;\n{}", contents);
     }
 
-    fs::write(&main_path, contents)
+    write_file(&main_path, &contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Added mod entities to src/main.rs");
     Ok(())
@@ -983,7 +983,7 @@ fn wire_repositories_in_main(src_dir: &Path) -> Result<()> {
         contents = format!("mod repositories;\n{}", contents);
     }
 
-    fs::write(&main_path, contents)
+    write_file(&main_path, &contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Added mod repositories to src/main.rs");
     Ok(())
@@ -1009,7 +1009,7 @@ fn wire_services_in_main(src_dir: &Path) -> Result<()> {
         contents = format!("mod services;\n{}", contents);
     }
 
-    fs::write(&main_path, contents)
+    write_file(&main_path, &contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Added mod services to src/main.rs");
     Ok(())
@@ -1039,25 +1039,25 @@ fn generate_sea_orm_scaffold(
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let entities_dir = src_dir.join("entities");
-    fs::create_dir_all(&entities_dir)
-        .with_context(|| format!("Failed to create {}", entities_dir.display()))?;
+        ensure_dir(&entities_dir)
+            .with_context(|| format!("Failed to create {}", entities_dir.display()))?;
 
     let entities_mod = entities_dir.join("mod.rs");
     if !entities_mod.exists() {
         let contents = "//! Database entities.\n\n";
-        write_file(&entities_mod, contents, false)?;
+        write_file_with_force(&entities_mod, contents, false)?;
         print_success("Created src/entities/mod.rs");
     }
     wire_entities_mod(&entities_mod, resource_name)?;
 
     let entity_path = entities_dir.join(format!("{}.rs", resource_name));
     let entity_contents = render_sea_orm_entity(resource_name, resource_plural, id_type);
-    write_file(&entity_path, &entity_contents, false)?;
+    write_file_with_force(&entity_path, &entity_contents, false)?;
 
     let migration_root = project_dir.join("migration");
     let migration_src = migration_root.join("src");
     if !migration_src.exists() {
-        fs::create_dir_all(&migration_src)
+        ensure_dir(&migration_src)
             .with_context(|| format!("Failed to create {}", migration_src.display()))?;
     }
     if !migration_root.join("Cargo.toml").exists() {
@@ -1068,12 +1068,12 @@ fn generate_sea_orm_scaffold(
         next_migration_name(&migration_src, resource_plural)?;
     let migration_contents = render_sea_orm_migration(resource_plural, id_type);
     let migration_path = migration_src.join(&migration_file);
-    write_file(&migration_path, &migration_contents, false)?;
+    write_file_with_force(&migration_path, &migration_contents, false)?;
 
     let migration_lib = migration_src.join("lib.rs");
     if !migration_lib.exists() {
         let contents = render_migration_lib(&migration_mod);
-        write_file(&migration_lib, &contents, false)?;
+        write_file_with_force(&migration_lib, &contents, false)?;
         print_success("Created migration/src/lib.rs");
     } else {
         update_migration_lib(&migration_lib, &migration_mod)?;
@@ -1089,7 +1089,7 @@ fn wire_entities_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     let mod_line = format!("pub mod {};", resource_name);
     if !contents.contains(&mod_line) {
         contents.push_str(&format!("\n{}\n", mod_line));
-        fs::write(mod_path, contents)
+        write_file(mod_path, &contents)
             .with_context(|| format!("Failed to write {}", mod_path.display()))?;
     }
     Ok(())
@@ -1305,7 +1305,7 @@ fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
         }
     }
 
-    fs::write(path, contents)
+    write_file(path, &contents)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
@@ -1321,7 +1321,7 @@ fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
     let mod_line = format!("pub mod {};", resource_name);
     if !contents.contains(&mod_line) {
         contents.push_str(&format!("\n{}\n", mod_line));
-        fs::write(&mod_path, contents)
+        write_file(&mod_path, &contents)
             .with_context(|| format!("Failed to write {}", mod_path.display()))?;
     }
     Ok(())
@@ -1336,20 +1336,20 @@ fn generate_repository(
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
-    fs::create_dir_all(&repos_dir)
+    ensure_dir(&repos_dir)
         .with_context(|| format!("Failed to create {}", repos_dir.display()))?;
 
     let repos_mod = repos_dir.join("mod.rs");
     if !repos_mod.exists() {
         let contents = "//! Repository layer.\n\n";
-        write_file(&repos_mod, contents, false)?;
+        write_file_with_force(&repos_mod, contents, false)?;
         print_success("Created src/repositories/mod.rs");
     }
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
     let repo_contents = render_repository(resource_name, id_type, paginate, search);
-    write_file(&repo_path, &repo_contents, false)?;
+    write_file_with_force(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
 }
@@ -1360,7 +1360,7 @@ fn wire_repositories_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     let mod_line = format!("pub mod {};", resource_name);
     if !contents.contains(&mod_line) {
         contents.push_str(&format!("\n{}\n", mod_line));
-        fs::write(mod_path, contents)
+        write_file(mod_path, &contents)
             .with_context(|| format!("Failed to write {}", mod_path.display()))?;
     }
     Ok(())
@@ -1485,20 +1485,20 @@ fn generate_service(
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
-    fs::create_dir_all(&services_dir)
+    ensure_dir(&services_dir)
         .with_context(|| format!("Failed to create {}", services_dir.display()))?;
 
     let services_mod = services_dir.join("mod.rs");
     if !services_mod.exists() {
         let contents = "//! Service layer.\n\n";
-        write_file(&services_mod, contents, false)?;
+        write_file_with_force(&services_mod, contents, false)?;
         print_success("Created src/services/mod.rs");
     }
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
     let service_contents = render_service(resource_name, id_type, paginate, search);
-    write_file(&service_path, &service_contents, false)?;
+    write_file_with_force(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
 }
@@ -1509,7 +1509,7 @@ fn wire_services_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
     let mod_line = format!("pub mod {};", resource_name);
     if !contents.contains(&mod_line) {
         contents.push_str(&format!("\n{}\n", mod_line));
-        fs::write(mod_path, contents)
+        write_file(mod_path, &contents)
             .with_context(|| format!("Failed to write {}", mod_path.display()))?;
     }
     Ok(())
@@ -1609,12 +1609,12 @@ fn generate_repository_tests(
     id_type: ResourceIdType,
 ) -> Result<()> {
     let tests_dir = project_dir.join("tests");
-    fs::create_dir_all(&tests_dir)
+    ensure_dir(&tests_dir)
         .with_context(|| format!("Failed to create {}", tests_dir.display()))?;
 
     let file_path = tests_dir.join(format!("repository_{}.rs", resource_name));
     let contents = render_repository_tests(project_name, resource_name, id_type);
-    write_file(&file_path, &contents, false)?;
+    write_file_with_force(&file_path, &contents, false)?;
     print_success("Generated repository tests");
     Ok(())
 }
@@ -1679,12 +1679,12 @@ fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> R
         print_warning("Could not find register_module call in main.rs");
     }
 
-    fs::write(&main_path, contents)
+    write_file(&main_path, &contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     Ok(())
 }
 
-fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
+fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
             "Skipping {} (use --force to overwrite)",
@@ -1693,10 +1693,10 @@ fn write_file(path: &Path, contents: &str, force: bool) -> Result<()> {
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
+        ensure_dir(parent)
             .with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    fs::write(path, contents)
+    write_file(path, contents)
         .with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
@@ -1778,7 +1778,7 @@ fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {
         toml_edit::Item::Value(toml_edit::Value::InlineTable(table)),
     );
 
-    fs::write(cargo_path, doc.to_string())
+    write_file(cargo_path, &doc.to_string())
         .with_context(|| format!("Failed to write {}", cargo_path.display()))?;
     Ok(())
 }

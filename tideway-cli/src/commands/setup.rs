@@ -5,7 +5,7 @@ use colored::Colorize;
 use std::process::Command;
 
 use crate::cli::{Framework, SetupArgs, Style};
-use crate::{is_json_output, print_error, print_info, print_success, print_warning};
+use crate::{is_json_output, is_plan_mode, print_error, print_info, print_success, print_warning};
 
 /// Components required for tideway frontend
 const SHADCN_VUE_COMPONENTS: &[&str] = &[
@@ -31,6 +31,10 @@ const SHADCN_VUE_COMPONENTS: &[&str] = &[
 
 /// Run the setup command
 pub fn run(args: SetupArgs) -> Result<()> {
+    if is_plan_mode() {
+        print_info("Plan: would set up frontend dependencies");
+        return Ok(());
+    }
     if !is_json_output() {
         println!(
             "\n{} Setting up frontend dependencies...\n",

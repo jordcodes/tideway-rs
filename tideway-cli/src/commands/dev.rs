@@ -5,10 +5,15 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::cli::DevArgs;
+use crate::is_plan_mode;
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
 use crate::{print_info, print_success};
 
 pub fn run(args: DevArgs) -> Result<()> {
+    if is_plan_mode() {
+        print_info("Plan: would run tideway dev (cargo run) with env + migrations");
+        return Ok(());
+    }
     let project_dir = PathBuf::from(&args.path);
     ensure_project_dir(&project_dir)?;
 

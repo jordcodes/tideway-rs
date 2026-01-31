@@ -2,12 +2,14 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use std::fs;
 use std::path::Path;
 
 use crate::cli::{BackendArgs, BackendPreset};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{is_json_output, print_info, print_success, print_warning, TIDEWAY_VERSION};
+use crate::{
+    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
+    TIDEWAY_VERSION,
+};
 
 /// Convert snake_case to PascalCase
 fn to_pascal_case(s: &str) -> String {
@@ -49,13 +51,13 @@ pub fn run(args: BackendArgs) -> Result<()> {
     let migrations_path = Path::new(&args.migrations_output);
 
     if !output_path.exists() {
-        fs::create_dir_all(output_path)
+        ensure_dir(output_path)
             .with_context(|| format!("Failed to create output directory: {}", args.output))?;
         print_info(&format!("Created directory: {}", args.output));
     }
 
     if !migrations_path.exists() {
-        fs::create_dir_all(migrations_path).with_context(|| {
+        ensure_dir(migrations_path).with_context(|| {
             format!(
                 "Failed to create migrations directory: {}",
                 args.migrations_output
@@ -148,7 +150,7 @@ fn generate_shared(
     if engine.has_template("shared/main") {
         let content = engine.render("shared/main")?;
         let file_path = output_path.join("main.rs");
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success("Generated main.rs");
     }
 
@@ -156,7 +158,7 @@ fn generate_shared(
     if engine.has_template("shared/lib") {
         let content = engine.render("shared/lib")?;
         let file_path = output_path.join("lib.rs");
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success("Generated lib.rs");
     }
 
@@ -164,7 +166,7 @@ fn generate_shared(
     if engine.has_template("shared/config") {
         let content = engine.render("shared/config")?;
         let file_path = output_path.join("config.rs");
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success("Generated config.rs");
     }
 
@@ -172,7 +174,7 @@ fn generate_shared(
     if engine.has_template("shared/error") {
         let content = engine.render("shared/error")?;
         let file_path = output_path.join("error.rs");
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success("Generated error.rs");
     }
 
@@ -185,13 +187,13 @@ fn generate_entities(
     args: &BackendArgs,
 ) -> Result<()> {
     let entities_path = output_path.join("entities");
-    fs::create_dir_all(&entities_path)?;
+    ensure_dir(&entities_path)?;
 
     // Generate entities/mod.rs
     if engine.has_template("entities/mod") {
         let content = engine.render("entities/mod")?;
         let file_path = entities_path.join("mod.rs");
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success("Generated entities/mod.rs");
     }
 
@@ -199,7 +201,7 @@ fn generate_entities(
     if engine.has_template("entities/prelude") {
         let content = engine.render("entities/prelude")?;
         let file_path = entities_path.join("prelude.rs");
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success("Generated entities/prelude.rs");
     }
 
@@ -214,7 +216,7 @@ fn generate_entities(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = entities_path.join(filename);
-            write_file(&file_path, &content, args.force)?;
+            write_file_with_force(&file_path, &content, args.force)?;
             print_success(&format!("Generated entities/{}", filename));
         }
     }
@@ -230,7 +232,7 @@ fn generate_entities(
             if engine.has_template(template_name) {
                 let content = engine.render(template_name)?;
                 let file_path = entities_path.join(filename);
-                write_file(&file_path, &content, args.force)?;
+                write_file_with_force(&file_path, &content, args.force)?;
                 print_success(&format!("Generated entities/{}", filename));
             }
         }
@@ -245,7 +247,7 @@ fn generate_auth(
     args: &BackendArgs,
 ) -> Result<()> {
     let auth_path = output_path.join("auth");
-    fs::create_dir_all(&auth_path)?;
+    ensure_dir(&auth_path)?;
 
     let templates = [
         ("mod.rs", "auth/mod"),
@@ -257,7 +259,7 @@ fn generate_auth(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = auth_path.join(filename);
-            write_file(&file_path, &content, args.force)?;
+            write_file_with_force(&file_path, &content, args.force)?;
             print_success(&format!("Generated auth/{}", filename));
         }
     }
@@ -271,7 +273,7 @@ fn generate_billing(
     args: &BackendArgs,
 ) -> Result<()> {
     let billing_path = output_path.join("billing");
-    fs::create_dir_all(&billing_path)?;
+    ensure_dir(&billing_path)?;
 
     let templates = [
         ("mod.rs", "billing/mod"),
@@ -283,7 +285,7 @@ fn generate_billing(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = billing_path.join(filename);
-            write_file(&file_path, &content, args.force)?;
+            write_file_with_force(&file_path, &content, args.force)?;
             print_success(&format!("Generated billing/{}", filename));
         }
     }
@@ -297,7 +299,7 @@ fn generate_organizations(
     args: &BackendArgs,
 ) -> Result<()> {
     let orgs_path = output_path.join("organizations");
-    fs::create_dir_all(&orgs_path)?;
+    ensure_dir(&orgs_path)?;
 
     let templates = [
         ("mod.rs", "organizations/mod"),
@@ -309,7 +311,7 @@ fn generate_organizations(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = orgs_path.join(filename);
-            write_file(&file_path, &content, args.force)?;
+            write_file_with_force(&file_path, &content, args.force)?;
             print_success(&format!("Generated organizations/{}", filename));
         }
     }
@@ -323,7 +325,7 @@ fn generate_admin(
     args: &BackendArgs,
 ) -> Result<()> {
     let admin_path = output_path.join("admin");
-    fs::create_dir_all(&admin_path)?;
+    ensure_dir(&admin_path)?;
 
     let templates = [
         ("mod.rs", "admin/mod"),
@@ -335,7 +337,7 @@ fn generate_admin(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = admin_path.join(filename);
-            write_file(&file_path, &content, args.force)?;
+            write_file_with_force(&file_path, &content, args.force)?;
             print_success(&format!("Generated admin/{}", filename));
         }
     }
@@ -352,7 +354,7 @@ fn generate_migrations(
     if engine.has_template("migrations/lib") {
         let content = engine.render("migrations/lib")?;
         let file_path = migrations_path.join("lib.rs");
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success("Generated migration/src/lib.rs");
     }
 
@@ -374,7 +376,7 @@ fn generate_migrations(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = migrations_path.join(filename);
-            write_file(&file_path, &content, args.force)?;
+            write_file_with_force(&file_path, &content, args.force)?;
             print_success(&format!("Generated migration/src/{}", filename));
         }
     }
@@ -397,7 +399,7 @@ fn generate_migrations(
             if engine.has_template(template_name) {
                 let content = engine.render(template_name)?;
                 let file_path = migrations_path.join(filename);
-                write_file(&file_path, &content, args.force)?;
+                write_file_with_force(&file_path, &content, args.force)?;
                 print_success(&format!("Generated migration/src/{}", filename));
             }
         }
@@ -406,7 +408,7 @@ fn generate_migrations(
         if engine.has_template("migrations/m005_add_admin_flag") {
             let content = engine.render("migrations/m005_add_admin_flag")?;
             let file_path = migrations_path.join("m005_add_admin_flag.rs");
-            write_file(&file_path, &content, args.force)?;
+            write_file_with_force(&file_path, &content, args.force)?;
             print_success("Generated migration/src/m005_add_admin_flag.rs");
         }
     }
@@ -414,7 +416,7 @@ fn generate_migrations(
     Ok(())
 }
 
-fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
+fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
             "Skipping {} (use --force to overwrite)",
@@ -422,6 +424,6 @@ fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
         ));
         return Ok(());
     }
-    fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }

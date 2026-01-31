@@ -12,6 +12,7 @@ cargo install tideway-cli
 
 Global options:
 - `--json` - Emit machine-readable JSON lines (useful for tooling/agents)
+- `--plan` - Show planned changes without writing files
 
 ### `tideway new`
 

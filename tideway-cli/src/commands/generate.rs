@@ -7,7 +7,9 @@ use std::path::Path;
 
 use crate::cli::{GenerateArgs, Module, Style};
 use crate::templates::{TemplateContext, TemplateEngine};
-use crate::{is_json_output, print_info, print_success, print_warning};
+use crate::{
+    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
+};
 
 /// Run the generate command
 pub fn run(args: GenerateArgs) -> Result<()> {
@@ -23,7 +25,7 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     // Create output directory if it doesn't exist
     let output_path = Path::new(&args.output);
     if !output_path.exists() {
-        fs::create_dir_all(output_path)
+        ensure_dir(output_path)
             .with_context(|| format!("Failed to create output directory: {}", args.output))?;
         print_info(&format!("Created directory: {}", args.output));
     }
@@ -73,7 +75,7 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     if args.with_views {
         let views_path = Path::new(&args.views_output);
         if !views_path.exists() {
-            fs::create_dir_all(views_path)
+            ensure_dir(views_path)
                 .with_context(|| format!("Failed to create views directory: {}", args.views_output))?;
         }
 
@@ -152,10 +154,10 @@ fn generate_auth(
     shadcn_components: &mut Vec<&str>,
 ) -> Result<()> {
     let auth_path = output_path.join("auth");
-    fs::create_dir_all(&auth_path)?;
+    ensure_dir(&auth_path)?;
 
     let composables_path = auth_path.join("composables");
-    fs::create_dir_all(&composables_path)?;
+    ensure_dir(&composables_path)?;
 
     // Generate components
     let components = [
@@ -169,14 +171,14 @@ fn generate_auth(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = auth_path.join(filename);
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success(&format!("Generated auth/{}", filename));
     }
 
     // Generate composable
     let composable_content = engine.render("auth/composables/useAuth")?;
     let composable_path = composables_path.join("useAuth.ts");
-    write_file(&composable_path, &composable_content, args.force)?;
+    write_file_with_force(&composable_path, &composable_content, args.force)?;
     print_success("Generated auth/composables/useAuth.ts");
 
     // Track shadcn components needed for auth
@@ -196,10 +198,10 @@ fn generate_billing(
     shadcn_components: &mut Vec<&str>,
 ) -> Result<()> {
     let billing_path = output_path.join("billing");
-    fs::create_dir_all(&billing_path)?;
+    ensure_dir(&billing_path)?;
 
     let composables_path = billing_path.join("composables");
-    fs::create_dir_all(&composables_path)?;
+    ensure_dir(&composables_path)?;
 
     // Generate components
     let components = [
@@ -216,19 +218,19 @@ fn generate_billing(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = billing_path.join(filename);
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success(&format!("Generated billing/{}", filename));
     }
 
     // Generate composables
     let composable_content = engine.render("billing/composables/useBilling")?;
     let composable_path = composables_path.join("useBilling.ts");
-    write_file(&composable_path, &composable_content, args.force)?;
+    write_file_with_force(&composable_path, &composable_content, args.force)?;
     print_success("Generated billing/composables/useBilling.ts");
 
     let plans_composable_content = engine.render("billing/composables/usePlans")?;
     let plans_composable_path = composables_path.join("usePlans.ts");
-    write_file(&plans_composable_path, &plans_composable_content, args.force)?;
+    write_file_with_force(&plans_composable_path, &plans_composable_content, args.force)?;
     print_success("Generated billing/composables/usePlans.ts");
 
     // Track shadcn components needed for billing
@@ -249,10 +251,10 @@ fn generate_organizations(
     shadcn_components: &mut Vec<&str>,
 ) -> Result<()> {
     let orgs_path = output_path.join("organizations");
-    fs::create_dir_all(&orgs_path)?;
+    ensure_dir(&orgs_path)?;
 
     let composables_path = orgs_path.join("composables");
-    fs::create_dir_all(&composables_path)?;
+    ensure_dir(&composables_path)?;
 
     // Generate components
     let components = [
@@ -265,14 +267,14 @@ fn generate_organizations(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = orgs_path.join(filename);
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success(&format!("Generated organizations/{}", filename));
     }
 
     // Generate composable
     let composable_content = engine.render("organizations/composables/useOrganization")?;
     let composable_path = composables_path.join("useOrganization.ts");
-    write_file(&composable_path, &composable_content, args.force)?;
+    write_file_with_force(&composable_path, &composable_content, args.force)?;
     print_success("Generated organizations/composables/useOrganization.ts");
 
     // Track shadcn components needed for organizations
@@ -302,10 +304,10 @@ fn generate_admin(
     shadcn_components: &mut Vec<&str>,
 ) -> Result<()> {
     let admin_path = output_path.join("admin");
-    fs::create_dir_all(&admin_path)?;
+    ensure_dir(&admin_path)?;
 
     let composables_path = admin_path.join("composables");
-    fs::create_dir_all(&composables_path)?;
+    ensure_dir(&composables_path)?;
 
     // Generate components
     let components = [
@@ -320,14 +322,14 @@ fn generate_admin(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = admin_path.join(filename);
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success(&format!("Generated admin/{}", filename));
     }
 
     // Generate composable
     let composable_content = engine.render("admin/composables/useAdmin")?;
     let composable_path = composables_path.join("useAdmin.ts");
-    write_file(&composable_path, &composable_content, args.force)?;
+    write_file_with_force(&composable_path, &composable_content, args.force)?;
     print_success("Generated admin/composables/useAdmin.ts");
 
     // Track shadcn components needed for admin
@@ -355,7 +357,7 @@ fn generate_admin_views(
     args: &GenerateArgs,
 ) -> Result<()> {
     let admin_views_path = views_path.join("admin");
-    fs::create_dir_all(&admin_views_path)?;
+    ensure_dir(&admin_views_path)?;
 
     // Generate view files
     let views = [
@@ -368,7 +370,7 @@ fn generate_admin_views(
     for (filename, template_name) in views {
         let content = engine.render(template_name)?;
         let file_path = admin_views_path.join(filename);
-        write_file(&file_path, &content, args.force)?;
+        write_file_with_force(&file_path, &content, args.force)?;
         print_success(&format!("Generated views/admin/{}", filename));
     }
 
@@ -381,7 +383,7 @@ fn generate_auth_views(
     args: &GenerateArgs,
 ) -> Result<()> {
     let auth_views_path = views_path.join("auth");
-    fs::create_dir_all(&auth_views_path)?;
+    ensure_dir(&auth_views_path)?;
 
     // Generate auth view files inline (simple wrappers around components)
     let views = [
@@ -394,7 +396,7 @@ fn generate_auth_views(
 
     for (filename, content) in views {
         let file_path = auth_views_path.join(filename);
-        write_file(&file_path, content, args.force)?;
+        write_file_with_force(&file_path, content, args.force)?;
         print_success(&format!("Generated views/auth/{}", filename));
     }
 
@@ -407,7 +409,7 @@ fn generate_billing_views(
     args: &GenerateArgs,
 ) -> Result<()> {
     let billing_views_path = views_path.join("billing");
-    fs::create_dir_all(&billing_views_path)?;
+    ensure_dir(&billing_views_path)?;
 
     let views = [
         ("BillingView.vue", include_str!("../templates_inline/views/billing/BillingView.vue")),
@@ -415,7 +417,7 @@ fn generate_billing_views(
 
     for (filename, content) in views {
         let file_path = billing_views_path.join(filename);
-        write_file(&file_path, content, args.force)?;
+        write_file_with_force(&file_path, content, args.force)?;
         print_success(&format!("Generated views/billing/{}", filename));
     }
 
@@ -428,7 +430,7 @@ fn generate_org_views(
     args: &GenerateArgs,
 ) -> Result<()> {
     let org_views_path = views_path.join("settings");
-    fs::create_dir_all(&org_views_path)?;
+    ensure_dir(&org_views_path)?;
 
     let views = [
         ("OrganizationSettingsView.vue", include_str!("../templates_inline/views/settings/OrganizationSettingsView.vue")),
@@ -437,7 +439,7 @@ fn generate_org_views(
 
     for (filename, content) in views {
         let file_path = org_views_path.join(filename);
-        write_file(&file_path, content, args.force)?;
+        write_file_with_force(&file_path, content, args.force)?;
         print_success(&format!("Generated views/settings/{}", filename));
     }
 
@@ -503,7 +505,7 @@ fn update_router_all() -> Result<()> {
         return Ok(());
     };
 
-    fs::write(router_path, updated)?;
+    write_file(router_path, &updated)?;
     print_success("Updated router with all routes (auth, billing, settings, admin)");
 
     Ok(())
@@ -548,7 +550,7 @@ fn update_app_vue() -> Result<()> {
         );
     }
 
-    fs::write(app_path, updated)?;
+    write_file(app_path, &updated)?;
     print_success("Updated App.vue with Sonner");
 
     Ok(())
@@ -557,26 +559,26 @@ fn update_app_vue() -> Result<()> {
 fn generate_shared(engine: &TemplateEngine, output_path: &Path, args: &GenerateArgs) -> Result<()> {
     // Generate shared types
     let types_path = output_path.join("types");
-    fs::create_dir_all(&types_path)?;
+    ensure_dir(&types_path)?;
 
     let types_content = engine.render("shared/types/index")?;
     let types_file = types_path.join("index.ts");
-    write_file(&types_file, &types_content, args.force)?;
+    write_file_with_force(&types_file, &types_content, args.force)?;
     print_success("Generated types/index.ts");
 
     // Generate shared API composable
     let composables_path = output_path.join("composables");
-    fs::create_dir_all(&composables_path)?;
+    ensure_dir(&composables_path)?;
 
     let api_content = engine.render("shared/composables/useApi")?;
     let api_file = composables_path.join("useApi.ts");
-    write_file(&api_file, &api_content, args.force)?;
+    write_file_with_force(&api_file, &api_content, args.force)?;
     print_success("Generated composables/useApi.ts");
 
     Ok(())
 }
 
-fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
+fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
             "Skipping {} (use --force to overwrite)",
@@ -584,7 +586,7 @@ fn write_file(path: &Path, content: &str, force: bool) -> Result<()> {
         ));
         return Ok(());
     }
-    fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
