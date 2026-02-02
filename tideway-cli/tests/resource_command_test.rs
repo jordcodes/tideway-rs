@@ -164,6 +164,114 @@ async fn main() {
 }
 
 #[test]
+fn test_resource_wire_is_idempotent() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src/routes")).expect("create routes");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let routes_mod = r#"
+use axum::{routing::get, Router};
+use tideway::{AppContext, MessageResponse, RouteModule};
+
+pub struct ApiModule;
+
+impl RouteModule for ApiModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route("/", get(root))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api")
+    }
+}
+
+async fn root() -> MessageResponse {
+    MessageResponse::success("Tideway is running")
+}
+"#;
+    fs::write(project_dir.join("src/routes/mod.rs"), routes_mod).expect("write routes mod");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    // tideway:app-builder:start
+    let app = App::new()
+        .register_module(routes::ApiModule);
+    // tideway:app-builder:end
+
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("first run resource command");
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+    };
+    tideway_cli::commands::resource::run(args).expect("second run resource command");
+
+    let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert_eq!(
+        updated_main
+            .matches(".register_module(routes::user::UserModule)")
+            .count(),
+        1,
+        "resource module should be registered once"
+    );
+
+    let updated_routes_mod =
+        fs::read_to_string(project_dir.join("src/routes/mod.rs")).expect("read routes mod");
+    assert_eq!(
+        updated_routes_mod.matches("pub mod user;").count(),
+        1,
+        "resource module declaration should be inserted once"
+    );
+}
+
+#[test]
 fn test_resource_command_updates_openapi_docs() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

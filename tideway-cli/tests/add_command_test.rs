@@ -166,6 +166,71 @@ async fn main() {
 }
 
 #[test]
+fn test_add_auth_wire_is_idempotent() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    // tideway:app-builder:start
+    let app = App::new()
+        .register_module(routes::ApiModule);
+    // tideway:app-builder:end
+
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Auth,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("first run add command");
+    let args = AddArgs {
+        feature: AddFeature::Auth,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+    tideway_cli::commands::add::run(args).expect("second run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert_eq!(
+        updated.matches("register_module(auth_module)").count(),
+        1,
+        "auth module registration should be inserted once"
+    );
+    assert_eq!(
+        updated
+            .matches(".with_global_layer(Extension(auth_provider))")
+            .count(),
+        1,
+        "auth provider layer should be inserted once"
+    );
+}
+
+#[test]
 fn test_add_database_wires_main_rs() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -320,6 +385,77 @@ async fn main() {
     assert!(updated.contains("openapi_merge_module"));
     assert!(updated.contains("server = server.merge_router(openapi_router);"));
     assert!(project_dir.join("src/openapi_docs.rs").exists());
+}
+
+#[test]
+fn test_add_openapi_wire_is_idempotent() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use tideway::{App, ConfigBuilder};
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let config = ConfigBuilder::new()
+        .from_env()
+        .build()
+        .expect("Invalid TIDEWAY_* config");
+
+    // tideway:app-builder:start
+    let app = App::new()
+        .register_module(routes::ApiModule);
+    // tideway:app-builder:end
+
+    let _ = app;
+    let _ = config;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Openapi,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("first run add command");
+    let args = AddArgs {
+        feature: AddFeature::Openapi,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+    tideway_cli::commands::add::run(args).expect("second run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert_eq!(
+        updated.matches("create_openapi_router").count(),
+        1,
+        "openapi router wiring should be inserted once"
+    );
+    assert_eq!(
+        updated
+            .matches("openapi_merge_module!(openapi_docs, ApiDoc)")
+            .count(),
+        1,
+        "openapi merge macro should be inserted once"
+    );
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {
