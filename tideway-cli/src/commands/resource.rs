@@ -1767,6 +1767,16 @@ fn insert_register_into_builder_block(block: &str, register_line: &str) -> Optio
 }
 
 fn wire_register_fallback(contents: &mut String, register_line: &str) {
+    if let Some((start, end)) = find_unmarked_app_builder_statement_range(contents) {
+        let statement = contents[start..=end].to_string();
+        if let Some(updated_statement) =
+            insert_register_into_builder_block(&statement, register_line)
+        {
+            contents.replace_range(start..=end, &updated_statement);
+            return;
+        }
+    }
+
     if let Some(pos) = contents.find(".register_module(") {
         let line_end = contents[pos..]
             .find('\n')
@@ -1776,6 +1786,98 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
     } else {
         print_warning("Could not find register_module call in main.rs");
     }
+}
+
+fn find_unmarked_app_builder_statement_range(contents: &str) -> Option<(usize, usize)> {
+    let mut search_from = 0;
+    while let Some(rel_pos) = contents[search_from..].find(" = App::") {
+        let abs_pos = search_from + rel_pos;
+        let line_start = contents[..abs_pos]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        if is_app_builder_start_line(&contents[line_start..]) {
+            if let Some(end) = find_statement_terminator(contents, line_start) {
+                return Some((line_start, end));
+            }
+        }
+        search_from = abs_pos + 1;
+    }
+    None
+}
+
+fn is_app_builder_start_line(line_and_rest: &str) -> bool {
+    let line = line_and_rest.lines().next().unwrap_or("").trim();
+    line.starts_with("let ") && line.contains(" = App::")
+}
+
+fn find_statement_terminator(contents: &str, start_pos: usize) -> Option<usize> {
+    let bytes = contents.as_bytes();
+    let mut i = start_pos;
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escape = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        if !in_single_quote
+            && !in_double_quote
+            && i + 1 < bytes.len()
+            && bytes[i] == b'/'
+            && bytes[i + 1] == b'/'
+        {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if escape {
+            escape = false;
+            i += 1;
+            continue;
+        }
+
+        if in_single_quote {
+            if b == b'\\' {
+                escape = true;
+            } else if b == b'\'' {
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double_quote {
+            if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b'\'' => in_single_quote = true,
+            b'"' => in_double_quote = true,
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b';' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => return Some(i),
+            _ => {}
+        }
+
+        i += 1;
+    }
+    None
 }
 
 fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {

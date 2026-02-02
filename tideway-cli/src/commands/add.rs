@@ -550,9 +550,77 @@ fn find_app_builder_end_insert_at(contents: &str, start_pos: usize) -> Option<us
             return Some(contents.len());
         }
     }
-    contents[start_pos..]
-        .find(";\n\n")
-        .map(|end_pos| start_pos + end_pos + 3)
+    find_statement_terminator(contents, start_pos).map(|idx| idx + 1)
+}
+
+fn find_statement_terminator(contents: &str, start_pos: usize) -> Option<usize> {
+    let bytes = contents.as_bytes();
+    let mut i = start_pos;
+    let mut paren_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut escape = false;
+
+    while i < bytes.len() {
+        let b = bytes[i];
+
+        // Skip line comments.
+        if !in_single_quote
+            && !in_double_quote
+            && i + 1 < bytes.len()
+            && bytes[i] == b'/'
+            && bytes[i + 1] == b'/'
+        {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if escape {
+            escape = false;
+            i += 1;
+            continue;
+        }
+
+        if in_single_quote {
+            if b == b'\\' {
+                escape = true;
+            } else if b == b'\'' {
+                in_single_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double_quote {
+            if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_double_quote = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        match b {
+            b'\'' => in_single_quote = true,
+            b'"' => in_double_quote = true,
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b';' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => return Some(i),
+            _ => {}
+        }
+
+        i += 1;
+    }
+    None
 }
 
 fn ensure_openapi_docs_file(project_dir: &Path) -> Result<()> {

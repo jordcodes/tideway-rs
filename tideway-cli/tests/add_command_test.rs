@@ -205,7 +205,6 @@ async fn main() {
         force: false,
         wire: true,
     };
-
     tideway_cli::commands::add::run(args).expect("first run add command");
     let args = AddArgs {
         feature: AddFeature::Auth,
@@ -228,6 +227,54 @@ async fn main() {
         1,
         "auth provider layer should be inserted once"
     );
+}
+
+#[test]
+fn test_add_auth_wires_legacy_main_with_custom_builder_var() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let boot = "ok";
+    let server = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = boot;
+    let _ = server;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Auth,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated.contains("register_module(auth_module)"));
+    assert!(updated.contains(".with_global_layer(Extension(auth_provider))"));
 }
 
 #[test]
@@ -433,7 +480,6 @@ async fn main() {
         force: false,
         wire: true,
     };
-
     tideway_cli::commands::add::run(args).expect("first run add command");
     let args = AddArgs {
         feature: AddFeature::Openapi,
@@ -456,6 +502,57 @@ async fn main() {
         1,
         "openapi merge macro should be inserted once"
     );
+}
+
+#[test]
+fn test_add_openapi_wires_legacy_main_with_custom_builder_var() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use tideway::{App, ConfigBuilder};
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let config = ConfigBuilder::new()
+        .from_env()
+        .build()
+        .expect("Invalid TIDEWAY_* config");
+    let server = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = server;
+    let _ = config;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Openapi,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated.contains("server = server.merge_router(openapi_router);"));
+    assert!(updated.contains("create_openapi_router"));
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {
