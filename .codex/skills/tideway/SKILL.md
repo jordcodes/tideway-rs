@@ -40,9 +40,9 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
 - Preserve generated-path compatibility; prefer additive updates.
 
 ## Guardrails
-- Docs drift: `python3 scripts/check_docs_drift.py`
+- Docs drift: `bash scripts/check_docs_drift.sh`
 - CLI FS-write policy: `bash scripts/check_cli_fs_writes.sh`
-- Public API surface: `python3 scripts/check_public_api_surface.py`
+- Public API surface: `bash scripts/check_public_api_surface.sh`
 
 ## Testing
 - CLI: `cargo test -p tideway-cli`

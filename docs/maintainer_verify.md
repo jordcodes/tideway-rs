@@ -10,10 +10,10 @@ bash scripts/verify.sh
 
 ## What `verify.sh` Runs
 
-1. `python3 scripts/check_docs_drift.py`
-2. `python3 scripts/check_quickstart_parity.py`
+1. `bash scripts/check_docs_drift.sh`
+2. `bash scripts/check_quickstart_parity.sh`
 3. `bash scripts/check_cli_fs_writes.sh`
-4. `python3 scripts/check_public_api_surface.py`
+4. `bash scripts/check_public_api_surface.sh`
 5. `cargo test -p tideway-cli`
 6. `cargo test --test prelude_smoke_test`
 7. `cargo test --test feature_gate_contract_test`
@@ -69,7 +69,7 @@ Fix:
 - if intentional, update baseline:
 
 ```bash
-python3 scripts/check_public_api_surface.py --update
+bash scripts/check_public_api_surface.sh --update
 ```
 
 ---

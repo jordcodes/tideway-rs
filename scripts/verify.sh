@@ -5,16 +5,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 echo "[verify] docs drift"
-python3 scripts/check_docs_drift.py
+bash scripts/check_docs_drift.sh
 
 echo "[verify] quickstart parity"
-python3 scripts/check_quickstart_parity.py
+bash scripts/check_quickstart_parity.sh
 
 echo "[verify] cli filesystem policy"
 bash scripts/check_cli_fs_writes.sh
 
 echo "[verify] public api surface"
-python3 scripts/check_public_api_surface.py
+bash scripts/check_public_api_surface.sh
 
 echo "[verify] tideway-cli tests"
 cargo test -p tideway-cli
