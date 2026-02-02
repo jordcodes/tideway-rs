@@ -1,0 +1,111 @@
+//! Todo routes.
+
+use axum::{routing::{delete, get, post, put}, Json, Router};
+use serde::{Deserialize, Serialize};
+use tideway::{AppContext, MessageResponse, Result, RouteModule};
+
+
+
+
+
+
+
+pub struct TodoModule;
+
+impl RouteModule for TodoModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/", get(list_todos).post(create_todo))
+            .route("/:id", get(get_todo).put(update_todo).delete(delete_todo))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api/todos")
+    }
+}
+
+#[derive(Debug, Serialize)]
+
+pub struct Todo {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+
+pub struct CreateRequest {
+    pub name: String,
+}
+
+#[derive(Deserialize)]
+
+pub struct UpdateRequest {
+    pub name: Option<String>,
+}
+
+
+
+
+async fn list_todos() -> Json<Vec<Todo>> {
+    Json(Vec::new())
+}
+
+
+async fn get_todo() -> Result<Json<Todo>> {
+    Ok(Json(Todo {
+        id: "demo".to_string(),
+        name: "Todo".to_string(),
+    }))
+}
+
+
+async fn create_todo(Json(body): Json<CreateRequest>) -> Result<MessageResponse> {
+    Ok(MessageResponse::success(format!("Created {}", body.name)))
+}
+
+
+async fn update_todo(Json(body): Json<CreateRequest>) -> Result<MessageResponse> {
+    let name = body.name.unwrap_or_else(|| "Todo".to_string());
+    Ok(MessageResponse::success(format!("Updated {}", name)))
+}
+
+
+async fn delete_todo() -> Result<MessageResponse> {
+    Ok(MessageResponse::success("Deleted"))
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tideway::testing::{get, post};
+    use tideway::App;
+
+    #[tokio::test]
+    async fn list_todos_ok() {
+        let app = App::new()
+            .register_module(TodoModule)
+            .into_router();
+
+        get(app, "/api/todos")
+            .execute()
+            .await
+            .assert_ok();
+    }
+
+    #[tokio::test]
+    async fn create_todo_ok() {
+        let app = App::new()
+            .register_module(TodoModule)
+            .into_router();
+
+        post(app, "/api/todos")
+            .with_json(&serde_json::json!({ "name": "Example" }))
+            .execute()
+            .await
+            .assert_ok();
+    }
+}
+
+

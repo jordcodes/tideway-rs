@@ -1,0 +1,11 @@
+use tideway::testing::get as test_get;
+
+#[tokio::test]
+async fn test_health_endpoint() {
+    let app = tideway::App::new().into_router();
+
+    test_get(app, "/health")
+        .execute()
+        .await
+        .assert_ok();
+}
