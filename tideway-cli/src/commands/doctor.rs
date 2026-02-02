@@ -13,6 +13,7 @@ use crate::{is_json_output, print_info, print_success, print_warning, write_file
 pub struct DoctorReport {
     pub warnings: Vec<String>,
     pub info: Vec<String>,
+    pub fixes: Vec<String>,
 }
 
 pub fn run(args: DoctorArgs) -> Result<()> {
@@ -32,18 +33,30 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         return Ok(());
     }
 
-    for line in report.info {
+    for line in &report.info {
         print_info(&line);
+    }
+
+    for line in &report.fixes {
+        print_success(&line);
     }
 
     if !report.warnings.is_empty() {
         if !is_json_output() {
             println!();
         }
-        for warning in report.warnings {
+        for warning in &report.warnings {
             print_warning(&warning);
         }
     }
+
+    let summary = format!(
+        "Doctor summary: {} info, {} fixes, {} warnings",
+        report.info.len(),
+        report.fixes.len(),
+        report.warnings.len()
+    );
+    print_info(&summary);
 
     Ok(())
 }
@@ -105,12 +118,14 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
 
     if fix {
-        if let Some(lines) = env_example_template(&project_name, needs_database, needs_auth) {
-            if !env_example_file.exists() {
-                write_env_example(&env_example_file, &lines)?;
-                report.info.push("Created .env.example".to_string());
-            }
-        }
+        apply_env_fixes(
+            &env_file,
+            &env_example_file,
+            &project_name,
+            needs_database,
+            needs_auth,
+            &mut report,
+        )?;
     }
 
     if needs_database {
@@ -407,6 +422,73 @@ fn project_name_from_cargo(cargo_toml: &toml::Value, project_dir: &Path) -> Stri
 fn write_env_example(path: &Path, lines: &[String]) -> Result<()> {
     let contents = lines.join("\n");
     write_file(path, &contents).with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
+}
+
+fn apply_env_fixes(
+    env_file: &Path,
+    env_example_file: &Path,
+    project_name: &str,
+    needs_database: bool,
+    needs_auth: bool,
+    report: &mut DoctorReport,
+) -> Result<()> {
+    let Some(lines) = env_example_template(project_name, needs_database, needs_auth) else {
+        return Ok(());
+    };
+    let expected_vars = parse_env_map(&lines.join("\n"));
+
+    if !env_example_file.exists() {
+        write_env_example(env_example_file, &lines)?;
+        report.fixes.push("Created .env.example".to_string());
+    } else {
+        let existing = fs::read_to_string(env_example_file).with_context(|| {
+            format!(
+                "Failed to read {} while applying doctor fixes",
+                env_example_file.display()
+            )
+        })?;
+        let existing_vars = parse_env_map(&existing);
+        let mut missing_keys = Vec::new();
+        for key in expected_vars.keys() {
+            if !existing_vars.contains_key(key) {
+                missing_keys.push(key.clone());
+            }
+        }
+
+        if !missing_keys.is_empty() {
+            let mut merged = existing.trim_end().to_string();
+            merged.push_str("\n\n# Added by tideway doctor --fix\n");
+            for key in &missing_keys {
+                if let Some(value) = expected_vars.get(key) {
+                    merged.push_str(&format!("{}={}\n", key, value));
+                }
+            }
+            write_file(env_example_file, &merged).with_context(|| {
+                format!(
+                    "Failed to write {} while applying doctor fixes",
+                    env_example_file.display()
+                )
+            })?;
+            report.fixes.push(format!(
+                "Updated .env.example with missing keys: {}",
+                missing_keys.join(", ")
+            ));
+        }
+    }
+
+    if !env_file.exists() && env_example_file.exists() {
+        let source = fs::read_to_string(env_example_file).with_context(|| {
+            format!(
+                "Failed to read {} while creating .env",
+                env_example_file.display()
+            )
+        })?;
+        write_file(env_file, &source)
+            .with_context(|| format!("Failed to write {}", env_file.display()))?;
+        report.fixes.push("Created .env from .env.example".to_string());
+    }
+
     Ok(())
 }
 

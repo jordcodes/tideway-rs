@@ -1,4 +1,5 @@
 use std::fs;
+use std::process::Command;
 
 use tideway_cli::commands::doctor::analyze_project;
 
@@ -229,11 +230,129 @@ tideway = { version = "0.7", features = ["database"] }
     );
     assert!(
         report
-            .info
+            .fixes
             .iter()
             .any(|line| line.contains("Created .env.example")),
-        "expected creation info, got {:?}",
-        report.info
+        "expected creation fix, got {:?}",
+        report.fixes
+    );
+}
+
+#[test]
+fn test_doctor_fix_creates_env_from_env_example() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join(".env.example"),
+        "DATABASE_URL=postgres://localhost/my_app\n",
+    )
+    .expect("write env example");
+
+    let report = analyze_project(project_dir, true).expect("analyze project");
+    assert!(project_dir.join(".env").exists(), "expected .env to be created");
+    assert!(
+        report
+            .fixes
+            .iter()
+            .any(|line| line.contains("Created .env from .env.example")),
+        "expected env copy fix, got {:?}",
+        report.fixes
+    );
+}
+
+#[test]
+fn test_doctor_fix_updates_env_example_with_missing_keys() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/auth")).expect("create src/auth");
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database", "auth"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join(".env.example"),
+        "DATABASE_URL=postgres://localhost/my_app\n",
+    )
+    .expect("write env example");
+
+    let report = analyze_project(project_dir, true).expect("analyze project");
+    let env_example = std::fs::read_to_string(project_dir.join(".env.example")).expect("read env");
+    assert!(
+        env_example.contains("JWT_SECRET="),
+        "expected JWT_SECRET to be added, got:\n{}",
+        env_example
+    );
+    assert!(
+        env_example.contains("TIDEWAY_HOST="),
+        "expected server keys to be added, got:\n{}",
+        env_example
+    );
+    assert!(
+        report
+            .fixes
+            .iter()
+            .any(|line| line.contains("Updated .env.example with missing keys")),
+        "expected env example update fix, got {:?}",
+        report.fixes
+    );
+}
+
+#[test]
+fn test_doctor_json_includes_summary_line() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--json")
+        .arg("doctor")
+        .arg("--fix")
+        .arg("--path")
+        .arg(project_dir.to_str().expect("utf8 path"))
+        .output()
+        .expect("run tideway doctor");
+
+    assert!(
+        output.status.success(),
+        "doctor command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Doctor summary:"),
+        "expected summary line in JSON output, got:\n{}",
+        stdout
     );
 }
 
