@@ -161,6 +161,7 @@ For module composition contracts, see `docs/module_contracts.md`.
 ### CLI Reference
 
 See `docs/cli.md` for command examples.
+Maintainers: see `docs/maintainer_verify.md` for `scripts/verify.sh` troubleshooting.
 
 **Common `tideway new` flags:**
 | Flag | Example | Purpose |
