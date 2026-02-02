@@ -119,6 +119,7 @@ pub mod openapi {
 #[cfg(all(not(feature = "openapi"), feature = "feature-gate-warnings"))]
 #[deprecated(note = "Enable the `openapi` feature to use tideway::openapi")]
 pub mod openapi {}
+pub mod prelude;
 pub mod ratelimit;
 pub mod request_logging;
 pub mod security;
