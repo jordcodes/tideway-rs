@@ -22,6 +22,9 @@ jobs:
       - name: Docs drift guard
         run: python3 scripts/check_docs_drift.py
 
+      - name: Quickstart parity guard
+        run: python3 scripts/check_quickstart_parity.py
+
       - name: CLI filesystem guard
         run: bash scripts/check_cli_fs_writes.sh
 

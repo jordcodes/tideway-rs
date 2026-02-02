@@ -124,8 +124,11 @@ Use the CLI to scaffold a minimal Tideway app:
 cargo install tideway-cli
 tideway new my_app
 cd my_app
-cargo run
+tideway doctor --fix
+tideway dev --fix-env
 ```
+
+Then visit `http://localhost:8000/health`.
 
 Or apply the API preset:
 
