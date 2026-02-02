@@ -20,6 +20,8 @@ fn test_init_minimal_generates_files() {
     tideway_cli::commands::init::run(args).expect("run init");
 
     assert_contains(src_dir.join("main.rs"), "App::new()");
+    assert_contains(src_dir.join("main.rs"), "tideway:app-builder:start");
+    assert_contains(src_dir.join("main.rs"), "tideway:app-builder:end");
     assert_contains(src_dir.join("routes/mod.rs"), "Tideway is running");
 }
 

@@ -9,6 +9,9 @@ use crate::cli::{AddArgs, AddFeature};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{TIDEWAY_VERSION, ensure_dir, print_info, print_success, print_warning, write_file};
 
+const APP_BUILDER_START_MARKER: &str = "tideway:app-builder:start";
+const APP_BUILDER_END_MARKER: &str = "tideway:app-builder:end";
+
 pub fn run(args: AddArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
     let cargo_path = project_dir.join("Cargo.toml");
@@ -358,7 +361,7 @@ fn ensure_use_line(mut contents: String, line: &str, anchor: &str) -> String {
 }
 
 fn insert_before_app_builder(mut contents: String, block: &str) -> Result<String> {
-    if let Some(pos) = contents.find("let app = App::") {
+    if let Some(pos) = find_app_builder_start(&contents) {
         contents.insert_str(pos, block);
         Ok(contents)
     } else {
@@ -372,7 +375,7 @@ fn insert_auth_into_app_builder(mut contents: String) -> Result<String> {
         return Ok(contents);
     }
 
-    if let Some(pos) = contents.find("let app = App::") {
+    if let Some(pos) = find_app_builder_start(&contents) {
         let line_end = contents[pos..]
             .find('\n')
             .map(|idx| pos + idx)
@@ -394,7 +397,7 @@ fn insert_auth_into_app_builder(mut contents: String) -> Result<String> {
 }
 
 fn insert_database_into_app_builder(mut contents: String) -> Result<String> {
-    if let Some(pos) = contents.find("let app = App::") {
+    if let Some(pos) = find_app_builder_start(&contents) {
         let line_end = contents[pos..]
             .find('\n')
             .map(|idx| pos + idx)
@@ -473,10 +476,9 @@ fn insert_openapi_into_app_builder(mut contents: String, config_ref: &str) -> Re
         return Ok(contents);
     }
 
-    if let Some(pos) = contents.find("let app = App::") {
+    if let Some(pos) = find_app_builder_start(&contents) {
         // Insert after app builder block to keep code readable.
-        if let Some(end_pos) = contents[pos..].find(";\n\n") {
-            let insert_at = pos + end_pos + 3;
+        if let Some(insert_at) = find_app_builder_end_insert_at(&contents, pos) {
             let block = format!(
                 "\n    #[cfg(feature = \"openapi\")]\n    if {config_ref}.openapi.enabled {{\n        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);\n        let openapi_router = tideway::openapi::create_openapi_router(openapi, &{config_ref}.openapi);\n        app = app.merge_router(openapi_router);\n    }}\n"
             );
@@ -489,6 +491,33 @@ fn insert_openapi_into_app_builder(mut contents: String, config_ref: &str) -> Re
         print_warning("Could not find app builder; skipping OpenAPI wiring");
         Ok(contents)
     }
+}
+
+fn find_app_builder_start(contents: &str) -> Option<usize> {
+    if let Some(marker_pos) = contents.find(APP_BUILDER_START_MARKER) {
+        if let Some(line_end) = contents[marker_pos..].find('\n') {
+            return Some(marker_pos + line_end + 1);
+        }
+    }
+    contents.find("let app = App::")
+}
+
+fn find_app_builder_end_insert_at(contents: &str, start_pos: usize) -> Option<usize> {
+    if let Some(marker_pos) = contents.find(APP_BUILDER_END_MARKER) {
+        if marker_pos >= start_pos {
+            let marker_line_start = contents[..marker_pos]
+                .rfind('\n')
+                .map(|idx| idx + 1)
+                .unwrap_or(0);
+            if let Some(marker_line_end_rel) = contents[marker_line_start..].find('\n') {
+                return Some(marker_line_start + marker_line_end_rel + 1);
+            }
+            return Some(contents.len());
+        }
+    }
+    contents[start_pos..]
+        .find(";\n\n")
+        .map(|end_pos| start_pos + end_pos + 3)
 }
 
 fn ensure_openapi_docs_file(project_dir: &Path) -> Result<()> {

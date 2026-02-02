@@ -335,6 +335,7 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
 
     // App builder
     body.push_str("    // Build application with modules\n");
+    body.push_str("    // tideway:app-builder:start\n");
     body.push_str("    let app = App::new()");
 
     if modules.auth {
@@ -349,7 +350,8 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
         body.push_str("\n        .register_module(admin_module)");
     }
 
-    body.push_str(";\n\n");
+    body.push_str(";\n");
+    body.push_str("    // tideway:app-builder:end\n\n");
 
     // Billing note
     if modules.billing {
@@ -395,8 +397,10 @@ mod routes;\n\
 async fn main() -> Result<(), std::io::Error> {{\n\
     init_tracing();\n\
 \n\
+    // tideway:app-builder:start\n\
     let app = App::new()\n\
         .register_module(routes::ApiModule);\n\
+    // tideway:app-builder:end\n\
 \n\
     app.serve().await\n\
 }}\n",
