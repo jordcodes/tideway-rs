@@ -33,3 +33,8 @@ jobs:
 
       - name: CLI tests
         run: cargo test -p tideway-cli
+
+      - name: Module contract tests
+        run: |
+          cargo test --test prelude_smoke_test
+          cargo test --test feature_gate_contract_test
