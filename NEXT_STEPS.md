@@ -49,19 +49,13 @@
 
 ## Recommended Next Steps
 
-### Phase 7: Advanced Features (Lower Priority)
-- Job priorities (high/medium/low queues)
-- Cron-style scheduling with cron expressions
-- SQLx database backend (complete implementation)
-- Additional cache backends (Memcached)
-- Database-backed sessions
-- CLI robustness improvements (AST-aware wiring and broader idempotency coverage)
+Tideway now has a DX-first roadmap focused on the original goal:
+"batteries included, modular API, fastest path to shipping Rust APIs."
 
-### Phase 8: Documentation & Community
-- Deployment guides (Docker, Kubernetes, Railway)
-- Performance benchmarks documentation
-- Example SaaS application
-- Prepare for public release
+See `ROADMAP_2026_DX.md` for:
+- Phase DX-1 through DX-5 outcomes and acceptance criteria
+- Explicit success metrics (time-to-first-endpoint, idempotency, CI regression targets)
+- A concrete first 2-week execution plan for DX-1
 
 ## Notes
 
