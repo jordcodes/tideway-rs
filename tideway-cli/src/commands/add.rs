@@ -477,10 +477,12 @@ fn insert_openapi_into_app_builder(mut contents: String, config_ref: &str) -> Re
     }
 
     if let Some(pos) = find_app_builder_start(&contents) {
+        let app_var =
+            find_app_builder_var_name(&contents, pos).unwrap_or_else(|| "app".to_string());
         // Insert after app builder block to keep code readable.
         if let Some(insert_at) = find_app_builder_end_insert_at(&contents, pos) {
             let block = format!(
-                "\n    #[cfg(feature = \"openapi\")]\n    if {config_ref}.openapi.enabled {{\n        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);\n        let openapi_router = tideway::openapi::create_openapi_router(openapi, &{config_ref}.openapi);\n        app = app.merge_router(openapi_router);\n    }}\n"
+                "\n    #[cfg(feature = \"openapi\")]\n    if {config_ref}.openapi.enabled {{\n        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);\n        let openapi_router = tideway::openapi::create_openapi_router(openapi, &{config_ref}.openapi);\n        {app_var} = {app_var}.merge_router(openapi_router);\n    }}\n"
             );
             contents.insert_str(insert_at, &block);
         } else {
@@ -499,7 +501,40 @@ fn find_app_builder_start(contents: &str) -> Option<usize> {
             return Some(marker_pos + line_end + 1);
         }
     }
-    contents.find("let app = App::")
+    let mut search_from = 0;
+    while let Some(rel_pos) = contents[search_from..].find(" = App::") {
+        let abs_pos = search_from + rel_pos;
+        let line_start = contents[..abs_pos]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        if find_app_builder_var_name(contents, line_start).is_some() {
+            return Some(line_start);
+        }
+        search_from = abs_pos + 1;
+    }
+    None
+}
+
+fn find_app_builder_var_name(contents: &str, start_pos: usize) -> Option<String> {
+    let line_end = contents[start_pos..]
+        .find('\n')
+        .map(|idx| start_pos + idx)
+        .unwrap_or(contents.len());
+    let line = contents[start_pos..line_end].trim();
+
+    if !line.starts_with("let ") || !line.contains("= App::") {
+        return None;
+    }
+
+    let after_let = line.trim_start_matches("let ").trim();
+    let before_eq = after_let.split('=').next()?.trim();
+    let var = before_eq.strip_prefix("mut ").unwrap_or(before_eq).trim();
+    if var.is_empty() {
+        None
+    } else {
+        Some(var.to_string())
+    }
 }
 
 fn find_app_builder_end_insert_at(contents: &str, start_pos: usize) -> Option<usize> {
