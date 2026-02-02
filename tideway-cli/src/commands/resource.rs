@@ -8,6 +8,9 @@ use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
 use crate::{ensure_dir, print_info, print_success, print_warning, write_file};
 
+const APP_BUILDER_START_MARKER: &str = "tideway:app-builder:start";
+const APP_BUILDER_END_MARKER: &str = "tideway:app-builder:end";
+
 pub fn run(args: ResourceArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
     let src_dir = project_dir.join("src");
@@ -1699,6 +1702,71 @@ fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> R
         return Ok(());
     }
 
+    if let Some((start, end)) = find_app_builder_marker_range(&contents) {
+        let block = contents[start..end].to_string();
+        if let Some(updated_block) = insert_register_into_builder_block(&block, &register_line) {
+            contents.replace_range(start..end, &updated_block);
+        } else {
+            print_warning(
+                "Could not locate app-builder statement inside markers; trying fallback wiring",
+            );
+            wire_register_fallback(&mut contents, &register_line);
+        }
+    } else {
+        wire_register_fallback(&mut contents, &register_line);
+    }
+
+    write_file(&main_path, &contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    Ok(())
+}
+
+fn find_app_builder_marker_range(contents: &str) -> Option<(usize, usize)> {
+    let start_marker = contents.find(APP_BUILDER_START_MARKER)?;
+    let start = contents[start_marker..]
+        .find('\n')
+        .map(|idx| start_marker + idx + 1)?;
+
+    let end_marker = contents.find(APP_BUILDER_END_MARKER)?;
+    if end_marker <= start {
+        return None;
+    }
+
+    let end = contents[..end_marker]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(end_marker);
+
+    Some((start, end))
+}
+
+fn insert_register_into_builder_block(block: &str, register_line: &str) -> Option<String> {
+    let stmt_end = block.rfind(';')?;
+    let line_start = block[..stmt_end]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let line = &block[line_start..stmt_end];
+    let indent = line
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect::<String>();
+    let indent = if indent.is_empty() {
+        "        "
+    } else {
+        &indent
+    };
+
+    let mut updated = String::with_capacity(block.len() + register_line.len() + indent.len() + 2);
+    updated.push_str(&block[..stmt_end]);
+    updated.push('\n');
+    updated.push_str(indent);
+    updated.push_str(register_line);
+    updated.push_str(&block[stmt_end..]);
+    Some(updated)
+}
+
+fn wire_register_fallback(contents: &mut String, register_line: &str) {
     if let Some(pos) = contents.find(".register_module(") {
         let line_end = contents[pos..]
             .find('\n')
@@ -1708,10 +1776,6 @@ fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> R
     } else {
         print_warning("Could not find register_module call in main.rs");
     }
-
-    write_file(&main_path, &contents)
-        .with_context(|| format!("Failed to write {}", main_path.display()))?;
-    Ok(())
 }
 
 fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
