@@ -33,7 +33,7 @@ Feature flags are opt-in unless marked Default.
 | `feature-gate-warnings` | — | — | — | Optional warnings for missing features |
 | `macros` | `tideway-macros` / `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
 | `database` | `database` | `docs/database_traits.md` | `examples/custom_database.rs` | Default (SeaORM) |
-| `database-sqlx` | `database` | `docs/database_traits.md` | — | WIP |
+| `database-sqlx` | `database` | `docs/database_traits.md` | — | Placeholder (not implemented yet) |
 | `openapi` | `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
 | `validation` | `validation` | `docs/validation.md` | `examples/validation_example.rs` | — |
 | `metrics` | `metrics` | `README.md#built-in-middleware` | `tests/metrics_integration_test.rs` | — |
@@ -51,11 +51,11 @@ Feature flags are opt-in unless marked Default.
 | `billing` | `billing` | `docs/billing.md` | — | — |
 | `billing-seaorm` | `billing` | `docs/billing.md` | — | — |
 | `test-billing` | `billing` | `docs/billing.md` | `tests/` | Tests only |
-| `organizations` | `organizations` | — | — | Docs TBD |
-| `organizations-seaorm` | `organizations` | — | — | Docs TBD |
-| `organizations-billing` | `organizations` | — | — | Docs TBD |
-| `test-organizations` | `organizations` | — | `tests/` | Tests only |
-| `admin` | `admin` | — | — | Docs TBD |
+| `organizations` | `organizations` | `docs/organizations.md` | — | — |
+| `organizations-seaorm` | `organizations` | `docs/organizations.md` | — | — |
+| `organizations-billing` | `organizations` | `docs/organizations.md` | — | — |
+| `test-organizations` | `organizations` | `docs/organizations.md` | `tests/` | Tests only |
+| `admin` | `admin` | `docs/admin.md` | — | — |
 
 ## Quick Start
 
@@ -65,7 +65,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.10"
+tideway = "0.7.13"
 tokio = { version = "1.48", features = ["full"] }
 ```
 
@@ -765,7 +765,7 @@ Tideway follows a layered architecture:
 
 **Trait-Based Components:**
 
-- **DatabasePool**: Abstract database connection pooling (SeaORM, SQLx support)
+- **DatabasePool**: Abstract database connection pooling (SeaORM, SQLx placeholder)
 - **Cache**: Key-value caching abstraction (in-memory, Redis)
 - **SessionStore**: Session management abstraction (in-memory, cookie-based)
 - **JobQueue**: Background job processing (in-memory, Redis)
@@ -834,7 +834,7 @@ async fn my_handler(State(ctx): State<AppContext>) -> Json<Response> {
 Tideway supports multiple database backends through the `DatabasePool` trait:
 
 - **SeaORM** (default): Full-featured ORM with migrations
-- **SQLx** (coming soon): Async SQL toolkit
+- **SQLx** (feature placeholder): Async SQL toolkit (not implemented yet)
 
 ```rust
 use tideway::{SeaOrmPool, DatabasePool};

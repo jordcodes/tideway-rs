@@ -1,6 +1,6 @@
 # Database Traits
 
-Tideway provides a trait-based abstraction for database connection pooling, allowing you to swap between SeaORM, SQLx, or custom implementations without changing your application code.
+Tideway provides a trait-based abstraction for database connection pooling, allowing you to swap between SeaORM or custom implementations without changing your application code.
 
 ## DatabasePool Trait
 
@@ -48,9 +48,10 @@ async fn main() -> tideway::Result<()> {
 }
 ```
 
-### SQLx (Coming Soon)
+### SQLx (`database-sqlx` Feature)
 
-SQLx support is planned for a future release.
+The `database-sqlx` feature currently exposes a placeholder API only.
+`SqlxPool` is not implemented yet.
 
 ## Custom Implementation
 

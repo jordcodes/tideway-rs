@@ -55,7 +55,7 @@
 - SQLx database backend (complete implementation)
 - Additional cache backends (Memcached)
 - Database-backed sessions
-- CLI tool for scaffolding projects
+- CLI robustness improvements (AST-aware wiring and broader idempotency coverage)
 
 ### Phase 8: Documentation & Community
 - Deployment guides (Docker, Kubernetes, Railway)
