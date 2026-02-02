@@ -325,6 +325,116 @@ async fn main() {
 }
 
 #[test]
+fn test_add_database_wire_is_idempotent() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    // tideway:app-builder:start
+    let app = App::new()
+        .register_module(routes::ApiModule);
+    // tideway:app-builder:end
+
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Database,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+    tideway_cli::commands::add::run(args).expect("first run add command");
+    let args = AddArgs {
+        feature: AddFeature::Database,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+    tideway_cli::commands::add::run(args).expect("second run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert_eq!(
+        updated.matches("let database_url = std::env::var(\"DATABASE_URL\")").count(),
+        1,
+        "database url bootstrap should be inserted once"
+    );
+    assert_eq!(
+        updated.matches(".with_database(Arc::new(SeaOrmPool::new(db, database_url)))").count(),
+        1,
+        "database context wiring should be inserted once"
+    );
+}
+
+#[test]
+fn test_add_database_wires_legacy_main_with_custom_builder_var() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let started = true;
+    let server = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = started;
+    let _ = server;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Database,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+    };
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated.contains("let database_url = std::env::var(\"DATABASE_URL\")"));
+    assert!(updated.contains("server = App::new()") || updated.contains("let server = App::new()"));
+    assert!(updated.contains(".with_database(Arc::new(SeaOrmPool::new(db, database_url)))"));
+}
+
+#[test]
 fn test_add_openapi_wires_main_rs() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
