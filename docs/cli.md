@@ -28,6 +28,8 @@ Use a preset to apply common defaults:
 
 ```bash
 tideway new my_app --preset api
+tideway new my_app --preset saas
+tideway new my_app --preset worker
 ```
 
 List presets:
@@ -69,6 +71,8 @@ tideway new my_app --with-env
 Available presets:
 - `minimal` - basic starter
 - `api` - auth + database + openapi + validation, plus config, docker, CI, env, and a DB-backed sample resource
+- `saas` - b2b backend modules (auth, billing, organizations, admin) + api defaults and production scaffolding
+- `worker` - jobs-first scaffold (database + jobs + redis + metrics) with config, docker, CI, env
 
 ### `tideway init`
 

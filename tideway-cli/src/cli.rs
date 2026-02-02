@@ -109,6 +109,10 @@ pub enum NewPreset {
     Minimal,
     /// API starter with auth, database, OpenAPI, and validation
     Api,
+    /// SaaS starter with B2B backend modules and production defaults
+    Saas,
+    /// Worker starter focused on background jobs
+    Worker,
     /// Print available presets
     List,
 }

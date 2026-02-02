@@ -104,6 +104,12 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     if matches!(args.preset, Some(NewPreset::Api)) {
         scaffold_api_preset(&target_dir)?;
     }
+    if let Some(preset) = args.preset {
+        if let Some(backend_preset) = preset_backend_preset(preset) {
+            scaffold_backend_preset(&target_dir, &project_name, backend_preset)?;
+            ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
+        }
+    }
     if let Some(backend_preset) = wizard.backend_preset {
         scaffold_backend_preset(&target_dir, &project_name, backend_preset)?;
         ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
@@ -371,6 +377,19 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
     let preset_features: &[&str] = match preset {
         NewPreset::Minimal => &[],
         NewPreset::Api => &["auth", "database", "openapi", "validation"],
+        NewPreset::Saas => &[
+            "auth",
+            "auth-mfa",
+            "database",
+            "billing",
+            "billing-seaorm",
+            "organizations",
+            "admin",
+            "openapi",
+            "validation",
+            "metrics",
+        ],
+        NewPreset::Worker => &["database", "jobs", "jobs-redis", "metrics"],
         NewPreset::List => &[],
     };
 
@@ -384,11 +403,20 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
         }
     }
 
-    if preset == NewPreset::Api {
-        args.with_config = true;
-        args.with_docker = true;
-        args.with_ci = true;
-        args.with_env = true;
+    match preset {
+        NewPreset::Api | NewPreset::Saas => {
+            args.with_config = true;
+            args.with_docker = true;
+            args.with_ci = true;
+            args.with_env = true;
+        }
+        NewPreset::Worker => {
+            args.with_config = true;
+            args.with_docker = true;
+            args.with_ci = true;
+            args.with_env = true;
+        }
+        NewPreset::Minimal | NewPreset::List => {}
     }
 }
 
@@ -419,6 +447,8 @@ fn preset_label(preset: NewPreset) -> &'static str {
     match preset {
         NewPreset::Minimal => "minimal",
         NewPreset::Api => "api",
+        NewPreset::Saas => "saas",
+        NewPreset::Worker => "worker",
         NewPreset::List => "list",
     }
 }
@@ -432,6 +462,19 @@ fn print_presets() {
     println!(
         "  - api: auth + database + openapi + validation, plus config, docker, CI, env, and a sample DB-backed resource"
     );
+    println!(
+        "  - saas: b2b backend modules (auth, billing, organizations, admin) + api defaults + production scaffolding"
+    );
+    println!(
+        "  - worker: jobs-first starter (database + jobs + redis + metrics) with config, docker, CI, and env"
+    );
+}
+
+fn preset_backend_preset(preset: NewPreset) -> Option<BackendPreset> {
+    match preset {
+        NewPreset::Saas => Some(BackendPreset::B2b),
+        _ => None,
+    }
 }
 
 fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
@@ -594,6 +637,8 @@ fn prompt_for_options(args: &mut NewArgs) -> Result<WizardOptions> {
     let preset_options = [
         "Minimal (no extra features)",
         "API preset (auth + database + openapi + validation)",
+        "SaaS preset (b2b backend + api defaults)",
+        "Worker preset (jobs + redis + metrics)",
         "Backend preset: B2C (auth + billing + admin)",
         "Backend preset: B2B (auth + billing + orgs + admin)",
         "Custom (pick features)",
@@ -614,10 +659,16 @@ fn prompt_for_options(args: &mut NewArgs) -> Result<WizardOptions> {
             args.preset = Some(NewPreset::Api);
         }
         2 => {
+            args.preset = Some(NewPreset::Saas);
+        }
+        3 => {
+            args.preset = Some(NewPreset::Worker);
+        }
+        4 => {
             wizard.backend_preset = Some(BackendPreset::B2c);
             apply_backend_defaults(args, false);
         }
-        3 => {
+        5 => {
             wizard.backend_preset = Some(BackendPreset::B2b);
             apply_backend_defaults(args, true);
         }

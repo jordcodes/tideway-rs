@@ -293,6 +293,74 @@ fn test_new_command_with_preset_list() {
     tideway_cli::commands::new::run(args).expect("run new command");
 }
 
+#[test]
+fn test_new_command_with_preset_saas() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    let cargo_toml = project_dir.join("Cargo.toml");
+    assert_file_contains(&cargo_toml, "\"auth\"");
+    assert_file_contains(&cargo_toml, "\"billing\"");
+    assert_file_contains(&cargo_toml, "\"organizations\"");
+    assert_file_contains(&cargo_toml, "\"admin\"");
+    assert_file_contains(&cargo_toml, "\"openapi\"");
+    assert!(project_dir.join(".env.example").exists());
+    assert!(project_dir.join("docker-compose.yml").exists());
+    assert!(project_dir.join(".github/workflows/ci.yml").exists());
+    assert!(project_dir.join("src/auth/mod.rs").exists());
+    assert!(project_dir.join("src/billing/mod.rs").exists());
+    assert!(project_dir.join("src/organizations/mod.rs").exists());
+    assert!(project_dir.join("src/admin/mod.rs").exists());
+}
+
+#[test]
+fn test_new_command_with_preset_worker() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Worker),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    let cargo_toml = project_dir.join("Cargo.toml");
+    assert_file_contains(&cargo_toml, "\"jobs\"");
+    assert_file_contains(&cargo_toml, "\"jobs-redis\"");
+    assert_file_contains(&cargo_toml, "\"metrics\"");
+    assert_file_contains(&cargo_toml, "\"database\"");
+    assert!(project_dir.join(".env.example").exists());
+    assert!(project_dir.join("docker-compose.yml").exists());
+    assert!(project_dir.join(".github/workflows/ci.yml").exists());
+    assert!(project_dir.join("src/config.rs").exists());
+}
+
 fn assert_file_contains(path: &Path, needle: &str) {
     let contents = fs::read_to_string(path).expect("read file");
     assert!(

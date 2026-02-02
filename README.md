@@ -134,6 +134,8 @@ Or apply the API preset:
 
 ```bash
 tideway new my_app --preset api
+tideway new my_app --preset saas
+tideway new my_app --preset worker
 ```
 
 When no flags are provided, the CLI will prompt you interactively (similar to Vite).
