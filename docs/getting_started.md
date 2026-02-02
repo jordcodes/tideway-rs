@@ -114,6 +114,9 @@ let app = tideway::register_optional_modules!(
 );
 ```
 
+For the stable module composition contract (including `prelude` and
+feature-gate behavior), see `docs/module_contracts.md`.
+
 ## 4) Add OpenAPI docs (optional)
 
 If you enable the `openapi` feature, you can define small docs per module and merge them:

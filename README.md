@@ -156,6 +156,7 @@ Project-specific guidance lives in `SKILLS.md`.
 ### Getting Started Guide
 
 Read the full walkthrough at `docs/getting_started.md`.
+For module composition contracts, see `docs/module_contracts.md`.
 
 ### CLI Reference
 
