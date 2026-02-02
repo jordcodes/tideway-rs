@@ -23,32 +23,37 @@ use crate::websocket::ConnectionManager;
 #[derive(Clone)]
 pub struct AppContext {
     #[cfg(feature = "database")]
-    pub database: Option<Arc<dyn DatabasePool>>,
+    pub(crate) database: Option<Arc<dyn DatabasePool>>,
 
     #[cfg(feature = "cache")]
-    pub cache: Option<Arc<dyn Cache>>,
+    pub(crate) cache: Option<Arc<dyn Cache>>,
 
     #[cfg(feature = "sessions")]
-    pub sessions: Option<Arc<dyn SessionStore>>,
+    pub(crate) sessions: Option<Arc<dyn SessionStore>>,
 
     #[cfg(feature = "jobs")]
-    pub jobs: Option<Arc<dyn JobQueue>>,
+    pub(crate) jobs: Option<Arc<dyn JobQueue>>,
 
     #[cfg(feature = "websocket")]
-    pub websocket_manager: Option<Arc<ConnectionManager>>,
+    pub(crate) websocket_manager: Option<Arc<ConnectionManager>>,
 
     #[cfg(feature = "metrics")]
-    pub metrics: Option<Arc<MetricsCollector>>,
+    pub(crate) metrics: Option<Arc<MetricsCollector>>,
 
     #[cfg(feature = "email")]
-    pub mailer: Option<Arc<dyn Mailer>>,
+    pub(crate) mailer: Option<Arc<dyn Mailer>>,
 
     /// Authentication provider (application-specific)
     ///
     /// Note: Stored as `Arc<dyn Any>` due to AuthProvider's associated types.
     /// Applications should downcast to their concrete auth provider type when needed.
-    pub auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
+    pub(crate) auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
 }
+
+/// Internal request-extension wrapper for typed auth-provider lookup.
+#[cfg(feature = "auth")]
+#[derive(Clone)]
+pub(crate) struct AuthProviderExtension(pub Arc<dyn std::any::Any + Send + Sync>);
 
 impl AppContext {
     pub fn new() -> Self {
@@ -193,6 +198,15 @@ impl AppContext {
         self.auth_provider_opt::<T>().ok_or_else(|| {
             crate::error::TidewayError::internal("Auth provider not configured or wrong type")
         })
+    }
+
+    /// Internal helper to expose the configured auth provider for middleware injection.
+    #[cfg(feature = "auth")]
+    pub(crate) fn auth_provider_extension(&self) -> Option<AuthProviderExtension> {
+        self.auth_provider
+            .as_ref()
+            .map(Arc::clone)
+            .map(AuthProviderExtension)
     }
 
     /// Get SeaORM connection from the database pool

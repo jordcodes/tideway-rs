@@ -1,8 +1,25 @@
+use crate::app::AuthProviderExtension;
 use crate::auth::{provider::AuthProvider, token::TokenExtractor};
 use crate::error::TidewayError;
 use axum::{extract::FromRequestParts, http::request::Parts};
 use std::future::Future;
 use std::sync::Arc;
+
+fn resolve_provider<P: AuthProvider>(parts: &Parts) -> Result<P, TidewayError> {
+    if let Some(provider) = parts.extensions.get::<P>() {
+        return Ok(provider.clone());
+    }
+
+    if let Some(provider) = parts.extensions.get::<AuthProviderExtension>() {
+        if let Some(typed) = provider.0.downcast_ref::<P>() {
+            return Ok(typed.clone());
+        }
+    }
+
+    Err(TidewayError::internal(
+        "Auth provider not found in request extensions",
+    ))
+}
 
 /// Trait for users that can be administrators.
 ///
@@ -58,13 +75,7 @@ where
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         Box::pin(async move {
             // Extract the auth provider from the app state
-            let provider = parts
-                .extensions
-                .get::<P>()
-                .ok_or_else(|| {
-                    TidewayError::internal("Auth provider not found in request extensions")
-                })?
-                .clone();
+            let provider = resolve_provider::<P>(parts)?;
 
             // Reuse cached user if already loaded by middleware
             if let Some(user) = parts.extensions.get::<P::User>().cloned() {
@@ -140,9 +151,9 @@ where
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         Box::pin(async move {
             // Try to get the auth provider
-            let provider = match parts.extensions.get::<P>() {
-                Some(p) => p.clone(),
-                None => return Ok(OptionalAuth(None)),
+            let provider = match resolve_provider::<P>(parts) {
+                Ok(provider) => provider,
+                Err(_) => return Ok(OptionalAuth(None)),
             };
 
             // Reuse cached user if already loaded by middleware
@@ -211,13 +222,7 @@ where
         _state: &S,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         Box::pin(async move {
-            let provider = parts
-                .extensions
-                .get::<P>()
-                .ok_or_else(|| {
-                    TidewayError::internal("Auth provider not found in request extensions")
-                })?
-                .clone();
+            let provider = resolve_provider::<P>(parts)?;
 
             let token = TokenExtractor::from_header(parts)?;
             let claims = provider.verify_token(&token).await?;
@@ -249,13 +254,7 @@ where
                 return Ok(ClaimsRef(Arc::clone(claims)));
             }
 
-            let provider = parts
-                .extensions
-                .get::<P>()
-                .ok_or_else(|| {
-                    TidewayError::internal("Auth provider not found in request extensions")
-                })?
-                .clone();
+            let provider = resolve_provider::<P>(parts)?;
 
             let token = TokenExtractor::from_header(parts)?;
             let claims = Arc::new(provider.verify_token(&token).await?);
@@ -314,13 +313,7 @@ where
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         Box::pin(async move {
             // Extract the auth provider from the app state
-            let provider = parts
-                .extensions
-                .get::<P>()
-                .ok_or_else(|| {
-                    TidewayError::internal("Auth provider not found in request extensions")
-                })?
-                .clone();
+            let provider = resolve_provider::<P>(parts)?;
 
             // Reuse cached user if already loaded by middleware
             if let Some(user) = parts.extensions.get::<P::User>().cloned() {

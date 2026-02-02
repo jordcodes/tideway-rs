@@ -375,6 +375,22 @@ impl App {
             router = router.layer(logging_layer);
         }
 
+        #[cfg(feature = "auth")]
+        {
+            // 10. Auth provider bridge - make AppContext auth provider available to extractors.
+            if let Some(auth_provider) = self.context.auth_provider_extension() {
+                router = router.layer(axum::middleware::from_fn({
+                    move |mut request: axum::extract::Request, next: axum::middleware::Next| {
+                        let auth_provider = auth_provider.clone();
+                        async move {
+                            request.extensions_mut().insert(auth_provider);
+                            next.run(request).await
+                        }
+                    }
+                }));
+            }
+        }
+
         self.router = router;
         self
     }

@@ -1,8 +1,25 @@
+use crate::app::AuthProviderExtension;
 use crate::auth::{provider::AuthProvider, token::TokenExtractor};
 use crate::error::TidewayError;
 use axum::{extract::Request, middleware::Next, response::Response};
 use std::marker::PhantomData;
 use std::sync::Arc;
+
+fn resolve_provider<P: AuthProvider>(request: &Request) -> Result<P, TidewayError> {
+    if let Some(provider) = request.extensions().get::<P>() {
+        return Ok(provider.clone());
+    }
+
+    if let Some(provider) = request.extensions().get::<AuthProviderExtension>() {
+        if let Some(typed) = provider.0.downcast_ref::<P>() {
+            return Ok(typed.clone());
+        }
+    }
+
+    Err(TidewayError::internal(
+        "Auth provider not found in request extensions",
+    ))
+}
 
 /// Middleware that requires authentication for all routes it wraps
 ///
@@ -25,11 +42,7 @@ impl<P: AuthProvider> RequireAuth<P> {
     /// Middleware function that requires authentication
     pub async fn middleware(request: Request, next: Next) -> Result<Response, TidewayError> {
         // Get the auth provider from extensions
-        let provider = request
-            .extensions()
-            .get::<P>()
-            .ok_or_else(|| TidewayError::internal("Auth provider not found in request extensions"))?
-            .clone();
+        let provider = resolve_provider::<P>(&request)?;
 
         // Extract token
         let (parts, body) = request.into_parts();
