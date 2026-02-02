@@ -24,8 +24,18 @@ fn feature_gate_errors_provide_actionable_messages() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     for expected in [
         "Enable the `auth` feature to use tideway::auth",
+        "Enable the `billing` feature to use tideway::billing",
+        "Enable the `organizations` feature to use tideway::organizations",
+        "Enable the `admin` feature to use tideway::admin",
+        "Enable the `cache` feature to use tideway::cache",
         "Enable the `database` feature to use tideway::database",
+        "Enable the `metrics` feature to use tideway::metrics",
         "Enable the `openapi` feature to use tideway::openapi",
+        "Enable the `sessions` feature to use tideway::session",
+        "Enable the `jobs` feature to use tideway::jobs",
+        "Enable the `email` feature to use tideway::email",
+        "Enable the `validation` feature to use tideway::validation",
+        "Enable the `websocket` feature to use tideway::websocket",
     ] {
         assert!(
             stderr.contains(expected),
