@@ -1,0 +1,136 @@
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+#[test]
+fn test_add_auth_wire_plan_mode_is_non_mutating() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_fixture(&project_dir);
+
+    let tracked_files = vec![project_dir.join("Cargo.toml"), project_dir.join("src/main.rs")];
+    let before = snapshot_files(&tracked_files);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--plan")
+        .arg("add")
+        .arg("auth")
+        .arg("--wire")
+        .arg("--path")
+        .arg(&project_dir)
+        .output()
+        .expect("run tideway add --plan");
+
+    assert!(
+        output.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = snapshot_files(&tracked_files);
+    assert_eq!(before, after, "expected add --plan to be non-mutating");
+
+    assert!(!project_dir.join("src/auth").exists());
+    assert!(!project_dir.join(".env.example").exists());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Plan: write file"),
+        "expected plan output with file writes, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_resource_wire_plan_mode_is_non_mutating() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_fixture(&project_dir);
+    fs::create_dir_all(project_dir.join("src/routes")).expect("create routes dir");
+    fs::write(
+        project_dir.join("src/routes/mod.rs"),
+        "use axum::Router;\n\npub fn router() -> Router { Router::new() }\n",
+    )
+    .expect("write routes mod");
+
+    let tracked_files = vec![
+        project_dir.join("Cargo.toml"),
+        project_dir.join("src/main.rs"),
+        project_dir.join("src/routes/mod.rs"),
+    ];
+    let before = snapshot_files(&tracked_files);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--plan")
+        .arg("resource")
+        .arg("todo")
+        .arg("--wire")
+        .arg("--path")
+        .arg(&project_dir)
+        .output()
+        .expect("run tideway resource --plan");
+
+    assert!(
+        output.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let after = snapshot_files(&tracked_files);
+    assert_eq!(before, after, "expected resource --plan to be non-mutating");
+
+    assert!(!project_dir.join("src/routes/todo.rs").exists());
+    assert!(!project_dir.join("src/repositories").exists());
+    assert!(!project_dir.join("src/services").exists());
+    assert!(!project_dir.join("migration").exists());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Plan: write file"),
+        "expected plan output with file writes, got:\n{}",
+        stdout
+    );
+}
+
+fn create_minimal_fixture(project_dir: &Path) {
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/main.rs"),
+        r#"use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = app;
+}
+"#,
+    )
+    .expect("write src/main.rs");
+}
+
+fn snapshot_files(files: &[PathBuf]) -> BTreeMap<PathBuf, String> {
+    files
+        .iter()
+        .map(|path| {
+            let content = fs::read_to_string(path).expect("read tracked file");
+            (path.clone(), content)
+        })
+        .collect()
+}
