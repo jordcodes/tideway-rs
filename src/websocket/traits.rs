@@ -2,11 +2,11 @@
 //!
 //! This module defines the trait that users implement to handle WebSocket connections.
 
+use super::connection::Connection;
+use super::message::Message;
 use crate::app::AppContext;
 use crate::error::Result;
 use async_trait::async_trait;
-use super::connection::Connection;
-use super::message::Message;
 
 /// Trait for handling WebSocket connections
 ///
@@ -54,7 +54,8 @@ pub trait WebSocketHandler: Send + Sync + 'static {
     ///
     /// This is called for every message received from the client. Handle the
     /// message type appropriately (Text, Binary, Ping, etc.).
-    async fn on_message(&self, conn: &mut Connection, msg: Message, ctx: &AppContext) -> Result<()>;
+    async fn on_message(&self, conn: &mut Connection, msg: Message, ctx: &AppContext)
+    -> Result<()>;
 
     /// Called when the connection is closed
     ///
@@ -73,4 +74,3 @@ pub trait WebSocketHandler: Send + Sync + 'static {
         Ok(())
     }
 }
-

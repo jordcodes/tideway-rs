@@ -6,11 +6,11 @@
 //! Run with: cargo run --example api_macro_example --features macros,openapi
 
 use axum::{
-    extract::{Path, State},
     Json,
+    extract::{Path, State},
 };
 use serde::{Deserialize, Serialize};
-use tideway::{api, App, AppContext, ConfigBuilder, Result, RouteModule};
+use tideway::{App, AppContext, ConfigBuilder, Result, RouteModule, api};
 use uuid::Uuid;
 
 /// User response type

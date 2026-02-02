@@ -65,21 +65,15 @@ where
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         Box::pin(async move {
             // Get the organization store from extensions
-            let store = parts
-                .extensions
-                .get::<O>()
-                .cloned()
-                .ok_or_else(|| {
-                    TidewayError::internal("OrganizationStore not found in request extensions")
-                })?;
+            let store = parts.extensions.get::<O>().cloned().ok_or_else(|| {
+                TidewayError::internal("OrganizationStore not found in request extensions")
+            })?;
 
             // Get org claims from extensions (set by auth middleware)
             let claims = parts
                 .extensions
                 .get::<OrgClaims>()
-                .ok_or_else(|| {
-                    TidewayError::unauthorized("No organization context in token")
-                })?;
+                .ok_or_else(|| TidewayError::unauthorized("No organization context in token"))?;
 
             // Load organization
             let org = store
@@ -147,29 +141,19 @@ where
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         Box::pin(async move {
             // Get stores from extensions
-            let org_store = parts
-                .extensions
-                .get::<O>()
-                .cloned()
-                .ok_or_else(|| {
-                    TidewayError::internal("OrganizationStore not found in request extensions")
-                })?;
+            let org_store = parts.extensions.get::<O>().cloned().ok_or_else(|| {
+                TidewayError::internal("OrganizationStore not found in request extensions")
+            })?;
 
-            let membership_store = parts
-                .extensions
-                .get::<M>()
-                .cloned()
-                .ok_or_else(|| {
-                    TidewayError::internal("MembershipStore not found in request extensions")
-                })?;
+            let membership_store = parts.extensions.get::<M>().cloned().ok_or_else(|| {
+                TidewayError::internal("MembershipStore not found in request extensions")
+            })?;
 
             // Get org claims from extensions
             let claims = parts
                 .extensions
                 .get::<OrgClaims>()
-                .ok_or_else(|| {
-                    TidewayError::unauthorized("No organization context in token")
-                })?;
+                .ok_or_else(|| TidewayError::unauthorized("No organization context in token"))?;
 
             // Get user ID from standard claims (assuming it's in extensions)
             // This would typically be set by the auth middleware
@@ -177,9 +161,7 @@ where
                 .extensions
                 .get::<AuthenticatedUserId>()
                 .map(|u| u.0.clone())
-                .ok_or_else(|| {
-                    TidewayError::unauthorized("User not authenticated")
-                })?;
+                .ok_or_else(|| TidewayError::unauthorized("User not authenticated"))?;
 
             // Load organization
             let org = org_store
@@ -195,9 +177,7 @@ where
                 .get_membership(&claims.org_id, &user_id)
                 .await
                 .map_err(|e| TidewayError::internal(format!("Failed to load membership: {e}")))?
-                .ok_or_else(|| {
-                    TidewayError::forbidden("Not a member of this organization")
-                })?;
+                .ok_or_else(|| TidewayError::forbidden("Not a member of this organization"))?;
 
             // Get role from membership
             let role = membership_store.membership_role(&membership);

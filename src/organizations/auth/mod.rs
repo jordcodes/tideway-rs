@@ -7,6 +7,6 @@ mod claims;
 mod extractors;
 mod middleware;
 
-pub use claims::{create_org_token_subject, OrgClaims};
+pub use claims::{OrgClaims, create_org_token_subject};
 pub use extractors::{AuthenticatedUserId, CurrentMembership, CurrentOrg};
 pub use middleware::{OrgStoreLayer, RequireOrgMembership, RequirePermission};

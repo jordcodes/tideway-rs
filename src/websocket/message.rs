@@ -40,8 +40,12 @@ impl Message {
     /// Convert to Axum's WebSocket message
     pub fn into_axum(self) -> axum::extract::ws::Message {
         match self {
-            Message::Text(text) => axum::extract::ws::Message::Text(axum::extract::ws::Utf8Bytes::from(text.as_str())),
-            Message::Binary(data) => axum::extract::ws::Message::Binary(axum::body::Bytes::from(data)),
+            Message::Text(text) => {
+                axum::extract::ws::Message::Text(axum::extract::ws::Utf8Bytes::from(text.as_str()))
+            }
+            Message::Binary(data) => {
+                axum::extract::ws::Message::Binary(axum::body::Bytes::from(data))
+            }
             Message::Ping(data) => axum::extract::ws::Message::Ping(axum::body::Bytes::from(data)),
             Message::Pong(data) => axum::extract::ws::Message::Pong(axum::body::Bytes::from(data)),
             Message::Close(close_frame) => {

@@ -2,8 +2,8 @@
 //!
 //! Handles creating and linking Stripe customers to billable entities.
 
-use crate::error::Result;
 use super::storage::{BillableEntity, BillingStore};
+use crate::error::Result;
 
 /// Customer management operations.
 ///
@@ -26,31 +26,33 @@ impl<S: BillingStore, C: StripeClient> CustomerManager<S, C> {
     /// 1. Check if the entity already has a linked Stripe customer
     /// 2. If not, create a new Stripe customer
     /// 3. Link the new customer to the entity
-    pub async fn get_or_create_customer(
-        &self,
-        entity: &impl BillableEntity,
-    ) -> Result<String> {
+    pub async fn get_or_create_customer(&self, entity: &impl BillableEntity) -> Result<String> {
         // Check if already linked
-        if let Some(customer_id) = self.store.get_stripe_customer_id(entity.billable_id()).await? {
+        if let Some(customer_id) = self
+            .store
+            .get_stripe_customer_id(entity.billable_id())
+            .await?
+        {
             return Ok(customer_id);
         }
 
         // Create new customer in Stripe
-        let customer_id = self.client.create_customer(CreateCustomerRequest {
-            email: entity.email().to_string(),
-            name: entity.name().map(String::from),
-            metadata: Some(CustomerMetadata {
-                billable_id: entity.billable_id().to_string(),
-                billable_type: entity.billable_type().to_string(),
-            }),
-        }).await?;
+        let customer_id = self
+            .client
+            .create_customer(CreateCustomerRequest {
+                email: entity.email().to_string(),
+                name: entity.name().map(String::from),
+                metadata: Some(CustomerMetadata {
+                    billable_id: entity.billable_id().to_string(),
+                    billable_type: entity.billable_type().to_string(),
+                }),
+            })
+            .await?;
 
         // Link to entity
-        self.store.set_stripe_customer_id(
-            entity.billable_id(),
-            entity.billable_type(),
-            &customer_id,
-        ).await?;
+        self.store
+            .set_stripe_customer_id(entity.billable_id(), entity.billable_type(), &customer_id)
+            .await?;
 
         Ok(customer_id)
     }
@@ -68,11 +70,13 @@ impl<S: BillingStore, C: StripeClient> CustomerManager<S, C> {
         entity: &impl BillableEntity,
         stripe_customer_id: &str,
     ) -> Result<()> {
-        self.store.set_stripe_customer_id(
-            entity.billable_id(),
-            entity.billable_type(),
-            stripe_customer_id,
-        ).await
+        self.store
+            .set_stripe_customer_id(
+                entity.billable_id(),
+                entity.billable_type(),
+                stripe_customer_id,
+            )
+            .await
     }
 
     /// Update customer details in Stripe.
@@ -81,10 +85,13 @@ impl<S: BillingStore, C: StripeClient> CustomerManager<S, C> {
         billable_id: &str,
         update: UpdateCustomerRequest,
     ) -> Result<()> {
-        let customer_id = self.store.get_stripe_customer_id(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No Stripe customer linked".to_string()
-            ))?;
+        let customer_id = self
+            .store
+            .get_stripe_customer_id(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::NotFound("No Stripe customer linked".to_string())
+            })?;
 
         self.client.update_customer(&customer_id, update).await
     }
@@ -140,7 +147,11 @@ pub trait StripeClient: Send + Sync {
     async fn create_customer(&self, request: CreateCustomerRequest) -> Result<String>;
 
     /// Update an existing customer in Stripe.
-    async fn update_customer(&self, customer_id: &str, request: UpdateCustomerRequest) -> Result<()>;
+    async fn update_customer(
+        &self,
+        customer_id: &str,
+        request: UpdateCustomerRequest,
+    ) -> Result<()>;
 
     /// Delete a customer from Stripe.
     async fn delete_customer(&self, customer_id: &str) -> Result<()>;
@@ -153,9 +164,9 @@ pub trait StripeClient: Send + Sync {
 #[cfg(any(test, feature = "test-billing"))]
 pub mod test {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::RwLock;
     use std::collections::HashMap;
+    use std::sync::RwLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Mock Stripe client for testing.
     #[derive(Default)]
@@ -191,7 +202,10 @@ pub mod test {
 
     impl StripeClient for MockStripeClient {
         async fn create_customer(&self, request: CreateCustomerRequest) -> Result<String> {
-            let id = format!("cus_test_{}", self.customer_counter.fetch_add(1, Ordering::SeqCst));
+            let id = format!(
+                "cus_test_{}",
+                self.customer_counter.fetch_add(1, Ordering::SeqCst)
+            );
             self.customers.write().unwrap().insert(
                 id.clone(),
                 MockCustomer {
@@ -203,7 +217,11 @@ pub mod test {
             Ok(id)
         }
 
-        async fn update_customer(&self, customer_id: &str, request: UpdateCustomerRequest) -> Result<()> {
+        async fn update_customer(
+            &self,
+            customer_id: &str,
+            request: UpdateCustomerRequest,
+        ) -> Result<()> {
             let mut customers = self.customers.write().unwrap();
             if let Some(customer) = customers.get_mut(customer_id) {
                 if let Some(email) = request.email {
@@ -214,9 +232,10 @@ pub mod test {
                 }
                 Ok(())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Customer not found: {}", customer_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Customer not found: {}",
+                    customer_id
+                )))
             }
         }
 
@@ -234,8 +253,8 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test::MockStripeClient;
+    use super::*;
     use crate::billing::storage::test::InMemoryBillingStore;
 
     struct TestEntity {
@@ -311,7 +330,10 @@ mod tests {
         };
 
         // Link existing customer
-        manager.link_customer(&entity, "cus_existing_123").await.unwrap();
+        manager
+            .link_customer(&entity, "cus_existing_123")
+            .await
+            .unwrap();
 
         // Verify it's linked
         let customer_id = manager.get_customer_id("org_456").await.unwrap();
@@ -334,10 +356,16 @@ mod tests {
         manager.get_or_create_customer(&entity).await.unwrap();
 
         // Update it
-        manager.update_customer("org_789", UpdateCustomerRequest {
-            email: Some("new@example.com".to_string()),
-            name: Some("New Name".to_string()),
-        }).await.unwrap();
+        manager
+            .update_customer(
+                "org_789",
+                UpdateCustomerRequest {
+                    email: Some("new@example.com".to_string()),
+                    name: Some("New Name".to_string()),
+                },
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -346,7 +374,9 @@ mod tests {
         let client = MockStripeClient::new();
         let manager = CustomerManager::new(store, client);
 
-        let result = manager.update_customer("nonexistent", UpdateCustomerRequest::default()).await;
+        let result = manager
+            .update_customer("nonexistent", UpdateCustomerRequest::default())
+            .await;
         assert!(result.is_err());
     }
 }

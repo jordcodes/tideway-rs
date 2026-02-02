@@ -1,10 +1,10 @@
 #[cfg(feature = "websocket")]
 #[cfg(test)]
 mod tests {
-    use crate::websocket::{ConnectionManager, Message, Connection};
+    use crate::error::TidewayError;
+    use crate::websocket::{Connection, ConnectionManager, Message};
     use std::sync::Arc;
     use tokio::sync::mpsc;
-    use crate::error::TidewayError;
 
     #[tokio::test]
     async fn test_connection_manager_register_unregister() {
@@ -223,6 +223,10 @@ mod tests {
 
         assert_eq!(successes, 5, "Exactly 5 connections should have succeeded");
         assert_eq!(failures, 15, "15 connections should have been rejected");
-        assert_eq!(manager.connection_count(), 5, "Connection count should be exactly 5");
+        assert_eq!(
+            manager.connection_count(),
+            5,
+            "Connection count should be exactly 5"
+        );
     }
 }

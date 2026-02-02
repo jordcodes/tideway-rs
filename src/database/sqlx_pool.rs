@@ -36,7 +36,9 @@ pub struct SqlxPool {
 #[cfg(feature = "database-sqlx")]
 impl SqlxPool {
     pub async fn new(_url: &str) -> Result<Self> {
-        Err(TidewayError::internal("SqlxPool not yet implemented - database-sqlx feature coming soon"))
+        Err(TidewayError::internal(
+            "SqlxPool not yet implemented - database-sqlx feature coming soon",
+        ))
     }
 }
 

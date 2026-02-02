@@ -259,12 +259,10 @@ impl BreachChecker {
     async fn query_api(&self, prefix: &str) -> Result<String> {
         let url = format!("{}{}", self.config.api_url, prefix);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| TidewayError::Internal(format!("Breach check request failed: {}", e)))?;
+        let response =
+            self.client.get(&url).send().await.map_err(|e| {
+                TidewayError::Internal(format!("Breach check request failed: {}", e))
+            })?;
 
         if !response.status().is_success() {
             return Err(TidewayError::Internal(format!(
@@ -273,10 +271,9 @@ impl BreachChecker {
             )));
         }
 
-        response
-            .text()
-            .await
-            .map_err(|e| TidewayError::Internal(format!("Failed to read breach check response: {}", e)))
+        response.text().await.map_err(|e| {
+            TidewayError::Internal(format!("Failed to read breach check response: {}", e))
+        })
     }
 
     /// Find the hash suffix in the API response.
@@ -379,7 +376,11 @@ mod tests {
         let result = checker.check("password").await.unwrap();
         assert!(result.is_some());
         let count = result.unwrap();
-        assert!(count > 1000, "Expected 'password' to be in many breaches, got {}", count);
+        assert!(
+            count > 1000,
+            "Expected 'password' to be in many breaches, got {}",
+            count
+        );
 
         // Verify is_breached returns true
         assert!(checker.is_breached("password").await.unwrap());
@@ -402,7 +403,10 @@ mod tests {
         );
 
         let result = checker.check(&unique_password).await.unwrap();
-        assert!(result.is_none(), "Random password should not be in breach database");
+        assert!(
+            result.is_none(),
+            "Random password should not be in breach database"
+        );
     }
 
     #[tokio::test]
@@ -420,11 +424,13 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access"]
     async fn test_min_breach_count_threshold() {
-        let checker = BreachChecker::hibp()
-            .with_min_breach_count(999_999_999); // Set threshold very high
+        let checker = BreachChecker::hibp().with_min_breach_count(999_999_999); // Set threshold very high
 
         // "password" is breached but below threshold
         let result = checker.is_breached("password").await.unwrap();
-        assert!(!result, "Should not be considered breached when below threshold");
+        assert!(
+            !result,
+            "Should not be considered breached when below threshold"
+        );
     }
 }

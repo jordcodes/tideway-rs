@@ -18,11 +18,14 @@ fn main() {
 #[cfg(feature = "validation")]
 #[cfg(test)]
 mod tests {
-    use axum::{routing::{get as axum_get, post as axum_post}, Router, Json};
+    use axum::{
+        Json, Router,
+        routing::{get as axum_get, post as axum_post},
+    };
     use serde::Deserialize;
     use tideway::{
         testing::{get as test_get, post as test_post},
-        validation::{ValidatedJson, ValidatedQuery, validate_uuid, validate_slug},
+        validation::{ValidatedJson, ValidatedQuery, validate_slug, validate_uuid},
     };
     use validator::Validate;
 
@@ -103,7 +106,10 @@ mod tests {
             .execute()
             .await
             .assert_bad_request()
-            .assert_json_path("field_errors.email", serde_json::json!(["must be a valid email"]));
+            .assert_json_path(
+                "field_errors.email",
+                serde_json::json!(["must be a valid email"]),
+            );
     }
 
     #[tokio::test]
@@ -124,8 +130,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_valid_search() {
-        use tideway::testing::get as test_get;
         use axum::routing::get as axum_get;
+        use tideway::testing::get as test_get;
 
         let app = Router::new().route("/search", axum_get(search));
 
@@ -135,14 +141,18 @@ mod tests {
             .await
             .assert_ok();
 
-        response.assert_json_path("query", serde_json::json!("test")).await;
-        response.assert_json_path("limit", serde_json::json!(20)).await;
+        response
+            .assert_json_path("query", serde_json::json!("test"))
+            .await;
+        response
+            .assert_json_path("limit", serde_json::json!(20))
+            .await;
     }
 
     #[tokio::test]
     async fn test_invalid_search_limit() {
-        use tideway::testing::get as test_get;
         use axum::routing::get as axum_get;
+        use tideway::testing::get as test_get;
 
         let app = Router::new().route("/search", axum_get(search));
 

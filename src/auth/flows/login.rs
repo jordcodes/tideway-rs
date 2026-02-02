@@ -12,10 +12,10 @@
 //! - `auth.password.rehashed` - Password hash upgraded
 
 use crate::auth::password::{PasswordConfig, PasswordHasher};
-use crate::auth::storage::token::{MfaTokenStore, RefreshTokenStore};
 use crate::auth::storage::UserStore;
+use crate::auth::storage::token::{MfaTokenStore, RefreshTokenStore};
 use crate::error::{Result, TidewayError};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime};
 
@@ -349,7 +349,9 @@ where
         // Rehash if needed (transparent upgrade)
         if self.password_hasher.needs_rehash(&hash)? {
             let new_hash = self.password_hasher.hash(&req.password)?;
-            self.user_store.update_password_hash(&user, &new_hash).await?;
+            self.user_store
+                .update_password_hash(&user, &new_hash)
+                .await?;
             tracing::info!(
                 target: "auth.password.rehashed",
                 user_id = %user_id,
@@ -365,9 +367,7 @@ where
             {
                 // If MFA code provided, verify it
                 if let Some(code) = req.mfa_code {
-                    return self
-                        .verify_mfa_code(&user, &code, req.remember_me)
-                        .await;
+                    return self.verify_mfa_code(&user, &code, req.remember_me).await;
                 }
 
                 // Otherwise, return MFA challenge
@@ -382,7 +382,10 @@ where
                     "MFA challenge issued"
                 );
 
-                return Ok(LoginResponse::mfa_required(mfa_token, Some(backup_remaining)));
+                return Ok(LoginResponse::mfa_required(
+                    mfa_token,
+                    Some(backup_remaining),
+                ));
             }
 
             #[cfg(not(feature = "auth-mfa"))]
@@ -549,9 +552,9 @@ fn hash_mfa_token(token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use crate::auth::password::PasswordHasher;
     use crate::auth::storage::token::test::{InMemoryMfaTokenStore, InMemoryRefreshTokenStore};
+    use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::RwLock;
 
@@ -785,7 +788,11 @@ mod tests {
             .unwrap();
 
         assert!(is_error(&response));
-        assert!(get_error_message(&response).unwrap().contains("Invalid credentials"));
+        assert!(
+            get_error_message(&response)
+                .unwrap()
+                .contains("Invalid credentials")
+        );
     }
 
     #[tokio::test]
@@ -808,7 +815,11 @@ mod tests {
             .unwrap();
 
         assert!(is_error(&response));
-        assert!(get_error_message(&response).unwrap().contains("Invalid credentials"));
+        assert!(
+            get_error_message(&response)
+                .unwrap()
+                .contains("Invalid credentials")
+        );
     }
 
     #[tokio::test]
@@ -833,7 +844,11 @@ mod tests {
             .unwrap();
 
         assert!(is_error(&response));
-        assert!(get_error_message(&response).unwrap().contains("verify your email"));
+        assert!(
+            get_error_message(&response)
+                .unwrap()
+                .contains("verify your email")
+        );
     }
 
     #[tokio::test]
@@ -940,7 +955,7 @@ mod tests {
     #[cfg(feature = "auth-mfa")]
     #[tokio::test]
     async fn test_login_mfa_required() {
-        use crate::auth::mfa::{TotpManager, TotpConfig};
+        use crate::auth::mfa::{TotpConfig, TotpManager};
 
         let user_store = TestUserStore::new();
         let totp = TotpManager::new(TotpConfig::default());
@@ -974,12 +989,14 @@ mod tests {
     #[cfg(feature = "auth-mfa")]
     #[tokio::test]
     async fn test_login_with_mfa_code() {
-        use crate::auth::mfa::{TotpManager, TotpConfig};
+        use crate::auth::mfa::{TotpConfig, TotpManager};
 
         let user_store = TestUserStore::new();
         let totp = TotpManager::new(TotpConfig::default());
         let setup = totp.generate_setup("test@example.com").unwrap();
-        let code = totp.generate_current(&setup.secret, "test@example.com").unwrap();
+        let code = totp
+            .generate_current(&setup.secret, "test@example.com")
+            .unwrap();
 
         let mut user = create_test_user("test@example.com", "password123", true);
         user.mfa_enabled = true;
@@ -1042,7 +1059,7 @@ mod tests {
     #[cfg(feature = "auth-mfa")]
     #[tokio::test]
     async fn test_verify_mfa_with_token() {
-        use crate::auth::mfa::{TotpManager, TotpConfig};
+        use crate::auth::mfa::{TotpConfig, TotpManager};
 
         let user_store = TestUserStore::new();
         let totp = TotpManager::new(TotpConfig::default());
@@ -1071,14 +1088,13 @@ mod tests {
             .unwrap();
 
         let mfa_token = get_mfa_token(&response).unwrap();
-        let code = totp.generate_current(&setup.secret, "test@example.com").unwrap();
+        let code = totp
+            .generate_current(&setup.secret, "test@example.com")
+            .unwrap();
 
         // Verify MFA with the token
         let response = flow
-            .verify_mfa(MfaVerifyRequest {
-                mfa_token,
-                code,
-            })
+            .verify_mfa(MfaVerifyRequest { mfa_token, code })
             .await
             .unwrap();
 

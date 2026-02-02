@@ -32,8 +32,10 @@ mod extractor;
 mod validators;
 
 #[cfg(feature = "validation")]
-pub use extractor::{validate_form, validate_json, ValidatedForm, ValidatedJson, ValidatedQuery};
-#[cfg(feature = "validation")]
-pub use validators::{validate_duration, validate_json_string, validate_phone, validate_slug, validate_uuid};
+pub use extractor::{ValidatedForm, ValidatedJson, ValidatedQuery, validate_form, validate_json};
 #[cfg(feature = "validation")]
 pub use validator;
+#[cfg(feature = "validation")]
+pub use validators::{
+    validate_duration, validate_json_string, validate_phone, validate_slug, validate_uuid,
+};

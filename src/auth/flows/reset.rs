@@ -8,7 +8,7 @@
 use crate::auth::password::{PasswordHasher, PasswordPolicy};
 use crate::auth::storage::PasswordResetStore;
 use crate::error::{Result, TidewayError};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime};
 
@@ -120,7 +120,9 @@ impl<S: PasswordResetStore> PasswordResetFlow<S> {
                     reason = "invalid_token",
                     "Password reset failed: invalid or expired token"
                 );
-                return Err(TidewayError::BadRequest("Invalid or expired reset token".into()));
+                return Err(TidewayError::BadRequest(
+                    "Invalid or expired reset token".into(),
+                ));
             }
         };
 

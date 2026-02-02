@@ -81,7 +81,7 @@ where
                     // Users must ensure their Claims type implements Default when using test-auth-bypass
                     return Err(TidewayError::internal(
                         "Test auth bypass requires Claims to implement Default trait. \
-                        Implement Default for your Claims type or disable test-auth-bypass feature."
+                        Implement Default for your Claims type or disable test-auth-bypass feature.",
                     ));
                 }
             }

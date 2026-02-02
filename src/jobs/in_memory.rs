@@ -9,8 +9,8 @@ use async_trait::async_trait;
 #[cfg(feature = "jobs")]
 use chrono::{DateTime, Duration, Utc};
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
@@ -67,7 +67,11 @@ impl InMemoryJobQueue {
     /// * `max_retries` - Maximum retry attempts for failed jobs
     /// * `retry_backoff_seconds` - Base backoff duration (exponentially increased)
     /// * `max_history_size` - Maximum number of completed/failed jobs to retain
-    pub fn with_history_limit(max_retries: u32, retry_backoff_seconds: u64, max_history_size: usize) -> Self {
+    pub fn with_history_limit(
+        max_retries: u32,
+        retry_backoff_seconds: u64,
+        max_history_size: usize,
+    ) -> Self {
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let queue = Self {
@@ -98,12 +102,11 @@ impl InMemoryJobQueue {
 
         let mut handle_guard = self.scheduler_handle.lock().await;
         if let Some(handle) = handle_guard.take() {
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(5),
-                handle
-            ).await {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await {
                 Ok(_) => tracing::debug!("In-memory job queue scheduler stopped cleanly"),
-                Err(_) => tracing::warn!("In-memory job queue scheduler did not stop within timeout"),
+                Err(_) => {
+                    tracing::warn!("In-memory job queue scheduler did not stop within timeout")
+                }
             }
         }
     }
@@ -218,13 +221,17 @@ impl JobQueue for InMemoryJobQueue {
         if let Some(mut job_data) = processing.remove(job_id) {
             if job_data.should_retry() {
                 // Schedule retry with exponential backoff
-                let backoff_seconds = self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
+                let backoff_seconds =
+                    self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
                 let retry_at = Utc::now() + Duration::seconds(backoff_seconds as i64);
 
                 job_data.increment_retry();
 
                 let mut scheduled = self.scheduled.lock().await;
-                scheduled.entry(retry_at).or_insert_with(Vec::new).push(job_data);
+                scheduled
+                    .entry(retry_at)
+                    .or_insert_with(Vec::new)
+                    .push(job_data);
             } else {
                 // Max retries exceeded, move to failed (bounded)
                 let mut failed = self.failed.lock().await;
@@ -266,7 +273,10 @@ impl JobQueue for InMemoryJobQueue {
         );
 
         let mut scheduled = self.scheduled.lock().await;
-        scheduled.entry(run_at).or_insert_with(Vec::new).push(job_data);
+        scheduled
+            .entry(run_at)
+            .or_insert_with(Vec::new)
+            .push(job_data);
 
         Ok(job_id)
     }

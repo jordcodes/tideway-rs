@@ -87,16 +87,24 @@ impl Email {
     /// Validate the email has required fields
     pub fn validate(&self) -> Result<()> {
         if self.from.is_empty() {
-            return Err(crate::error::TidewayError::bad_request("Email 'from' is required"));
+            return Err(crate::error::TidewayError::bad_request(
+                "Email 'from' is required",
+            ));
         }
         if self.to.is_empty() {
-            return Err(crate::error::TidewayError::bad_request("Email 'to' is required"));
+            return Err(crate::error::TidewayError::bad_request(
+                "Email 'to' is required",
+            ));
         }
         if self.subject.is_empty() {
-            return Err(crate::error::TidewayError::bad_request("Email 'subject' is required"));
+            return Err(crate::error::TidewayError::bad_request(
+                "Email 'subject' is required",
+            ));
         }
         if self.text.is_none() && self.html.is_none() {
-            return Err(crate::error::TidewayError::bad_request("Email must have either 'text' or 'html' body"));
+            return Err(crate::error::TidewayError::bad_request(
+                "Email must have either 'text' or 'html' body",
+            ));
         }
         Ok(())
     }

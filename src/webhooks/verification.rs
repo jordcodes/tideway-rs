@@ -53,7 +53,9 @@ pub struct NoVerification;
 #[async_trait]
 impl WebhookVerifier for NoVerification {
     async fn verify_signature(&self, _payload: &[u8], _signature: &str) -> Result<bool> {
-        tracing::warn!("NoVerification webhook verifier used - all webhooks accepted without verification");
+        tracing::warn!(
+            "NoVerification webhook verifier used - all webhooks accepted without verification"
+        );
         Ok(true)
     }
 }
@@ -123,8 +125,8 @@ impl HmacSha256Verifier {
 
     /// Compute the expected HMAC-SHA256 signature for a payload
     fn compute_signature(&self, payload: &[u8]) -> Vec<u8> {
-        let mut mac = HmacSha256::new_from_slice(&self.secret)
-            .expect("HMAC can take key of any size");
+        let mut mac =
+            HmacSha256::new_from_slice(&self.secret).expect("HMAC can take key of any size");
         mac.update(payload);
         mac.finalize().into_bytes().to_vec()
     }
@@ -226,8 +228,7 @@ mod tests {
 
     /// Compute a valid HMAC-SHA256 signature for testing
     fn compute_test_signature(secret: &[u8], payload: &[u8]) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret)
-            .expect("HMAC can take key of any size");
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC can take key of any size");
         mac.update(payload);
         let result = mac.finalize().into_bytes();
         // Convert to hex string
@@ -282,7 +283,12 @@ mod tests {
         let verifier = NoVerification;
 
         // Should return true regardless of payload and signature
-        assert!(verifier.verify_signature(b"any payload", "any-signature").await.unwrap());
+        assert!(
+            verifier
+                .verify_signature(b"any payload", "any-signature")
+                .await
+                .unwrap()
+        );
         assert!(verifier.verify_signature(b"", "").await.unwrap());
         assert!(verifier.verify_signature(b"test", "").await.unwrap());
         assert!(verifier.verify_signature(&[], "signature").await.unwrap());
@@ -363,7 +369,10 @@ mod tests {
 
         let result = verifier.verify_signature(payload, wrong_signature).await;
         assert!(result.is_ok());
-        assert!(!result.unwrap(), "Invalid signature should fail verification");
+        assert!(
+            !result.unwrap(),
+            "Invalid signature should fail verification"
+        );
     }
 
     #[tokio::test]
@@ -391,9 +400,14 @@ mod tests {
 
         // Try to verify with modified payload
         let verifier = HmacSha256Verifier::new(secret.to_vec());
-        let result = verifier.verify_signature(modified_payload, &signature).await;
+        let result = verifier
+            .verify_signature(modified_payload, &signature)
+            .await;
         assert!(result.is_ok());
-        assert!(!result.unwrap(), "Modified payload should fail verification");
+        assert!(
+            !result.unwrap(),
+            "Modified payload should fail verification"
+        );
     }
 
     #[tokio::test]
@@ -418,7 +432,11 @@ mod tests {
         for sig in malformed {
             let result = verifier.verify_signature(payload, sig).await;
             assert!(result.is_ok());
-            assert!(!result.unwrap(), "Malformed signature '{}' should fail", sig);
+            assert!(
+                !result.unwrap(),
+                "Malformed signature '{}' should fail",
+                sig
+            );
         }
     }
 
@@ -449,7 +467,10 @@ mod tests {
 
         let result = verifier.verify_signature(payload, &signature).await;
         assert!(result.is_ok());
-        assert!(!result.unwrap(), "Signature missing required prefix should fail");
+        assert!(
+            !result.unwrap(),
+            "Signature missing required prefix should fail"
+        );
     }
 
     #[tokio::test]
@@ -475,7 +496,10 @@ mod tests {
 
         let result = verifier.verify_signature(payload, &signature).await;
         assert!(result.is_ok());
-        assert!(result.unwrap(), "Empty payload with valid signature should pass");
+        assert!(
+            result.unwrap(),
+            "Empty payload with valid signature should pass"
+        );
     }
 
     #[tokio::test]
@@ -509,8 +533,18 @@ mod tests {
         let passing_verifier = CustomVerifier { should_pass: true };
         let failing_verifier = CustomVerifier { should_pass: false };
 
-        assert!(passing_verifier.verify_signature(b"data", "sig").await.unwrap());
-        assert!(!failing_verifier.verify_signature(b"data", "sig").await.unwrap());
+        assert!(
+            passing_verifier
+                .verify_signature(b"data", "sig")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !failing_verifier
+                .verify_signature(b"data", "sig")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

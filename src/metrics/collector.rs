@@ -1,6 +1,4 @@
-use prometheus::{
-    HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry,
-};
+use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGauge, Opts, Registry};
 use std::sync::Arc;
 
 /// Metrics collector for HTTP request metrics
@@ -26,8 +24,7 @@ impl MetricsCollector {
 
         // HTTP requests total counter
         let http_requests_total = IntCounterVec::new(
-            Opts::new("http_requests_total", "Total number of HTTP requests")
-                .namespace("tideway"),
+            Opts::new("http_requests_total", "Total number of HTTP requests").namespace("tideway"),
             &["method", "path", "status"],
         )?;
 

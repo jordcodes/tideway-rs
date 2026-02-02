@@ -48,9 +48,9 @@ pub trait CacheExt: Cache {
         T: serde::de::DeserializeOwned,
     {
         if let Some(bytes) = self.get_bytes(key).await? {
-            serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|e| crate::error::TidewayError::internal(format!("Failed to deserialize: {}", e)))
+            serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+                crate::error::TidewayError::internal(format!("Failed to deserialize: {}", e))
+            })
         } else {
             Ok(None)
         }
@@ -61,8 +61,9 @@ pub trait CacheExt: Cache {
     where
         T: serde::Serialize + Send + Sync,
     {
-        let bytes = serde_json::to_vec(value)
-            .map_err(|e| crate::error::TidewayError::internal(format!("Failed to serialize: {}", e)))?;
+        let bytes = serde_json::to_vec(value).map_err(|e| {
+            crate::error::TidewayError::internal(format!("Failed to serialize: {}", e))
+        })?;
         self.set_bytes(key, bytes, ttl).await
     }
 

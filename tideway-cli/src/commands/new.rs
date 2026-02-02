@@ -1,20 +1,18 @@
 //! New command - scaffold a minimal Tideway app.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
-use dialoguer::{console::Term, theme::ColorfulTheme, Confirm, Input, MultiSelect, Select};
+use dialoguer::{Confirm, Input, MultiSelect, Select, console::Term, theme::ColorfulTheme};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, InlineTable, Item, Table, Value};
 
-use crate::cli::{
-    BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType,
-};
+use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
-    TIDEWAY_VERSION,
+    TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success, print_warning,
+    write_file,
 };
 
 #[derive(Default)]
@@ -124,7 +122,10 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     }
 
     print_info(&format!("Project name: {}", project_name.green()));
-    print_info(&format!("Location: {}", target_dir.display().to_string().yellow()));
+    print_info(&format!(
+        "Location: {}",
+        target_dir.display().to_string().yellow()
+    ));
     if let Some(preset) = args.preset {
         print_info(&format!("Preset: {}", preset_label(preset).green()));
     }
@@ -337,12 +338,10 @@ fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()>
     }
 
     if let Some(parent) = path.parent() {
-        ensure_dir(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
+        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
     }
 
-    write_file(path, contents)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -376,7 +375,11 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
     };
 
     for feature in preset_features {
-        if !args.features.iter().any(|item| item.eq_ignore_ascii_case(feature)) {
+        if !args
+            .features
+            .iter()
+            .any(|item| item.eq_ignore_ascii_case(feature))
+        {
             args.features.push(feature.to_string());
         }
     }
@@ -402,7 +405,10 @@ fn apply_backend_defaults(args: &mut NewArgs, has_organizations: bool) {
         features.push("organizations");
     }
 
-    args.features = features.into_iter().map(|feature| feature.to_string()).collect();
+    args.features = features
+        .into_iter()
+        .map(|feature| feature.to_string())
+        .collect();
     args.with_config = true;
     args.with_docker = true;
     args.with_ci = true;
@@ -423,7 +429,9 @@ fn print_presets() {
     }
     println!("Available presets:");
     println!("  - minimal: basic starter (no extra features)");
-    println!("  - api: auth + database + openapi + validation, plus config, docker, CI, env, and a sample DB-backed resource");
+    println!(
+        "  - api: auth + database + openapi + validation, plus config, docker, CI, env, and a sample DB-backed resource"
+    );
 }
 
 fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
@@ -518,24 +526,12 @@ fn ensure_backend_dependencies(cargo_path: &Path) -> Result<()> {
     let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
 
     let deps = doc["dependencies"].or_insert(Item::Table(Table::new()));
-    let deps_table = deps
-        .as_table_mut()
-        .expect("dependencies should be a table");
+    let deps_table = deps.as_table_mut().expect("dependencies should be a table");
 
     ensure_dependency_value(deps_table, "tracing", Value::from("0.1"));
     ensure_dependency_value(deps_table, "dotenvy", Value::from("0.15"));
-    ensure_dependency_inline(
-        deps_table,
-        "uuid",
-        "1",
-        &["v4", "serde"],
-    );
-    ensure_dependency_inline(
-        deps_table,
-        "chrono",
-        "0.4",
-        &["serde"],
-    );
+    ensure_dependency_inline(deps_table, "uuid", "1", &["v4", "serde"]);
+    ensure_dependency_inline(deps_table, "chrono", "0.4", &["serde"]);
 
     write_file(cargo_path, &doc.to_string())
         .with_context(|| format!("Failed to write {}", cargo_path.display()))?;
@@ -565,10 +561,7 @@ fn ensure_dependency_inline(deps: &mut Table, name: &str, version: &str, feature
 
 fn needs_env_from_args(args: &NewArgs) -> bool {
     let features = normalize_features(&args.features);
-    features.contains("auth")
-        || features.contains("database")
-        || args.with_config
-        || args.with_env
+    features.contains("auth") || features.contains("database") || args.with_config || args.with_env
 }
 
 fn to_pascal_case(s: &str) -> String {

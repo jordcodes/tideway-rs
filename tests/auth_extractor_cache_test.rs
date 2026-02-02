@@ -5,8 +5,8 @@ use axum::extract::FromRequestParts;
 use axum::http::Request;
 use serde::Deserialize;
 use std::sync::Arc;
-use tideway::auth::{AdminUser, AuthProvider, AuthUser, ClaimsRef, OptionalAuth, RequireAdmin};
 use tideway::Result;
+use tideway::auth::{AdminUser, AuthProvider, AuthUser, ClaimsRef, OptionalAuth, RequireAdmin};
 
 #[derive(Clone, Default)]
 struct TestProvider;
@@ -85,8 +85,9 @@ async fn auth_user_reuses_cached_user() {
     parts.extensions.insert(TestProvider::default());
     parts.extensions.insert(TestUser { admin: false });
 
-    let AuthUser(user) =
-        AuthUser::<TestProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    let AuthUser(user) = AuthUser::<TestProvider>::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
     assert!(!user.admin);
 }
 
@@ -98,8 +99,9 @@ async fn optional_auth_reuses_cached_user() {
     parts.extensions.insert(TestProvider::default());
     parts.extensions.insert(TestUser { admin: true });
 
-    let OptionalAuth(user) =
-        OptionalAuth::<TestProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    let OptionalAuth(user) = OptionalAuth::<TestProvider>::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
     assert!(user.is_some());
     assert!(user.unwrap().admin);
 }
@@ -112,8 +114,9 @@ async fn require_admin_reuses_cached_user() {
     parts.extensions.insert(TestProvider::default());
     parts.extensions.insert(TestUser { admin: true });
 
-    let RequireAdmin(user) =
-        RequireAdmin::<TestProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    let RequireAdmin(user) = RequireAdmin::<TestProvider>::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
     assert!(user.admin);
 }
 
@@ -138,8 +141,9 @@ async fn claims_ref_reuses_cached_claims() {
     let cached = Arc::new(TestClaims);
     parts.extensions.insert(Arc::clone(&cached));
 
-    let ClaimsRef(claims) =
-        ClaimsRef::<ClaimsProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    let ClaimsRef(claims) = ClaimsRef::<ClaimsProvider>::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
     assert!(Arc::ptr_eq(&claims, &cached));
 }
 
@@ -149,10 +153,13 @@ async fn claims_ref_inserts_claims_when_missing() {
     let (mut parts, _) = request.into_parts();
 
     parts.extensions.insert(ClaimsProvider::default());
-    parts.headers.insert("authorization", "Bearer test-token".parse().unwrap());
+    parts
+        .headers
+        .insert("authorization", "Bearer test-token".parse().unwrap());
 
-    let ClaimsRef(claims) =
-        ClaimsRef::<ClaimsProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+    let ClaimsRef(claims) = ClaimsRef::<ClaimsProvider>::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
     let cached = parts.extensions.get::<Arc<TestClaims>>().cloned().unwrap();
     assert!(Arc::ptr_eq(&claims, &cached));
 }
@@ -163,10 +170,14 @@ async fn optional_auth_does_not_cache_claims_on_validation_error() {
     let (mut parts, _) = request.into_parts();
 
     parts.extensions.insert(RejectingUserProvider::default());
-    parts.headers.insert("authorization", "Bearer test-token".parse().unwrap());
+    parts
+        .headers
+        .insert("authorization", "Bearer test-token".parse().unwrap());
 
     let OptionalAuth(user) =
-        OptionalAuth::<RejectingUserProvider>::from_request_parts(&mut parts, &()).await.unwrap();
+        OptionalAuth::<RejectingUserProvider>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
     assert!(user.is_none());
     assert!(parts.extensions.get::<Arc<TestClaims>>().is_none());
 }

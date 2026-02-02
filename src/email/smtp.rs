@@ -6,9 +6,9 @@ use crate::error::{Result, TidewayError};
 use crate::traits::mailer::{Email, Mailer};
 use async_trait::async_trait;
 use lettre::{
-    message::{header::ContentType, Mailbox, MultiPart, SinglePart},
-    transport::smtp::authentication::Credentials,
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+    message::{Mailbox, MultiPart, SinglePart, header::ContentType},
+    transport::smtp::authentication::Credentials,
 };
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -133,11 +133,13 @@ impl SmtpMailer {
     /// Create a new SMTP mailer with the given configuration
     pub fn new(config: SmtpConfig) -> Result<Self> {
         let mut builder = if config.starttls {
-            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
-                .map_err(|e| TidewayError::internal(format!("Failed to create SMTP transport: {}", e)))?
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host).map_err(|e| {
+                TidewayError::internal(format!("Failed to create SMTP transport: {}", e))
+            })?
         } else {
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.host)
-                .map_err(|e| TidewayError::internal(format!("Failed to create SMTP transport: {}", e)))?
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.host).map_err(|e| {
+                TidewayError::internal(format!("Failed to create SMTP transport: {}", e))
+            })?
         };
 
         builder = builder.port(config.port);
@@ -176,39 +178,37 @@ impl SmtpMailer {
             .map_err(|e| TidewayError::bad_request(format!("Invalid 'from' address: {}", e)))?;
 
         // Build message
-        let mut builder = Message::builder()
-            .from(from)
-            .subject(&email.subject);
+        let mut builder = Message::builder().from(from).subject(&email.subject);
 
         // Add recipients
         for to in &email.to {
-            let mailbox: Mailbox = to
-                .parse()
-                .map_err(|e| TidewayError::bad_request(format!("Invalid 'to' address '{}': {}", to, e)))?;
+            let mailbox: Mailbox = to.parse().map_err(|e| {
+                TidewayError::bad_request(format!("Invalid 'to' address '{}': {}", to, e))
+            })?;
             builder = builder.to(mailbox);
         }
 
         // Add CC
         for cc in &email.cc {
-            let mailbox: Mailbox = cc
-                .parse()
-                .map_err(|e| TidewayError::bad_request(format!("Invalid 'cc' address '{}': {}", cc, e)))?;
+            let mailbox: Mailbox = cc.parse().map_err(|e| {
+                TidewayError::bad_request(format!("Invalid 'cc' address '{}': {}", cc, e))
+            })?;
             builder = builder.cc(mailbox);
         }
 
         // Add BCC
         for bcc in &email.bcc {
-            let mailbox: Mailbox = bcc
-                .parse()
-                .map_err(|e| TidewayError::bad_request(format!("Invalid 'bcc' address '{}': {}", bcc, e)))?;
+            let mailbox: Mailbox = bcc.parse().map_err(|e| {
+                TidewayError::bad_request(format!("Invalid 'bcc' address '{}': {}", bcc, e))
+            })?;
             builder = builder.bcc(mailbox);
         }
 
         // Add reply-to
         if let Some(ref reply_to) = email.reply_to {
-            let mailbox: Mailbox = reply_to
-                .parse()
-                .map_err(|e| TidewayError::bad_request(format!("Invalid 'reply_to' address: {}", e)))?;
+            let mailbox: Mailbox = reply_to.parse().map_err(|e| {
+                TidewayError::bad_request(format!("Invalid 'reply_to' address: {}", e))
+            })?;
             builder = builder.reply_to(mailbox);
         }
 
@@ -247,7 +247,9 @@ impl SmtpMailer {
                     .map_err(|e| TidewayError::internal(format!("Failed to build email: {}", e)))?
             }
             (None, None) => {
-                return Err(TidewayError::bad_request("Email must have either text or HTML body"));
+                return Err(TidewayError::bad_request(
+                    "Email must have either text or HTML body",
+                ));
             }
         };
 

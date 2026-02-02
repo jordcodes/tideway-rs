@@ -14,7 +14,8 @@ use std::sync::Arc;
 ///
 /// Handlers receive the `JobData` (with serialized payload) and `AppContext`,
 /// and are responsible for deserializing the payload and executing the job.
-type JobHandler = Arc<dyn Fn(JobData, Arc<AppContext>) -> BoxFuture<'static, Result<()>> + Send + Sync>;
+type JobHandler =
+    Arc<dyn Fn(JobData, Arc<AppContext>) -> BoxFuture<'static, Result<()>> + Send + Sync>;
 
 /// Registry for mapping job types to their handlers
 ///
@@ -67,8 +68,12 @@ impl JobRegistry {
     /// Returns an error if the job type is not registered.
     pub async fn execute(&self, data: JobData, ctx: Arc<AppContext>) -> Result<()> {
         let handlers = self.handlers.read().await;
-        let handler = handlers.get(&data.job_type)
-            .ok_or_else(|| TidewayError::internal(format!("No handler registered for job type: {}", data.job_type)))?;
+        let handler = handlers.get(&data.job_type).ok_or_else(|| {
+            TidewayError::internal(format!(
+                "No handler registered for job type: {}",
+                data.job_type
+            ))
+        })?;
 
         handler(data, ctx).await
     }

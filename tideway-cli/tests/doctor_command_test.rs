@@ -47,11 +47,7 @@ tideway = { version = "0.7", features = ["auth"] }
 "#;
 
     fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
-    fs::write(
-        project_dir.join(".env"),
-        "JWT_SECRET=dev-secret\n",
-    )
-    .expect("write env");
+    fs::write(project_dir.join(".env"), "JWT_SECRET=dev-secret\n").expect("write env");
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
@@ -115,8 +111,7 @@ edition = "2021"
 tideway = { version = "0.7", features = ["database"] }
 "#;
     std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
-    std::fs::write(project_dir.join(".env"), "DATABASE_URL=not-a-url\n")
-        .expect("write env");
+    std::fs::write(project_dir.join(".env"), "DATABASE_URL=not-a-url\n").expect("write env");
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
@@ -204,10 +199,7 @@ tideway = "0.7"
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
-        report
-            .info
-            .iter()
-            .any(|line| line.contains("TIDEWAY_PORT")),
+        report.info.iter().any(|line| line.contains("TIDEWAY_PORT")),
         "expected port info, got {:?}",
         report.info
     );
@@ -236,7 +228,10 @@ tideway = { version = "0.7", features = ["database"] }
         "expected .env.example to be created"
     );
     assert!(
-        report.info.iter().any(|line| line.contains("Created .env.example")),
+        report
+            .info
+            .iter()
+            .any(|line| line.contains("Created .env.example")),
         "expected creation info, got {:?}",
         report.info
     );
@@ -300,8 +295,11 @@ edition = "2021"
 tideway = { version = "0.7", features = ["database"] }
 "#;
     std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
-    std::fs::write(project_dir.join(".env"), "DATABASE_URL=postgres://localhost/my_app\n")
-        .expect("write env");
+    std::fs::write(
+        project_dir.join(".env"),
+        "DATABASE_URL=postgres://localhost/my_app\n",
+    )
+    .expect("write env");
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
@@ -380,7 +378,8 @@ fn test_doctor_reports_missing_migration_autorun() {
 
     std::fs::create_dir_all(project_dir.join("src")).expect("create src");
     std::fs::create_dir_all(project_dir.join("migration/src")).expect("create migration");
-    std::fs::write(project_dir.join("migration/src/lib.rs"), "// migration lib").expect("write lib");
+    std::fs::write(project_dir.join("migration/src/lib.rs"), "// migration lib")
+        .expect("write lib");
 
     let cargo = r#"
 [package]

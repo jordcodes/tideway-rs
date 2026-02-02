@@ -79,7 +79,7 @@ pub use flows::{
     LoginRateLimiter, LoginRequest, LoginResponse, LogoutRequest, MfaType, MfaVerifyRequest,
     PasswordChangeConfig, PasswordChangeFlow, PasswordChangeRequest, PasswordChangeStore,
     PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, RefreshRequest,
-    RegisterRequest, RegistrationFlow, ResendVerificationRequest, TokenIssuer, TokenIssuance,
+    RegisterRequest, RegistrationFlow, ResendVerificationRequest, TokenIssuance, TokenIssuer,
     WithRateLimiter, WithRefreshStore,
 };
 
@@ -96,41 +96,40 @@ pub use storage::token::MfaTokenStore;
 pub use storage::user::{PasswordResetStore, UserCreator, VerificationStore};
 
 // Session re-exports
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use sessions::test::InMemorySessionStore;
 pub use sessions::{
     SessionCreateResult, SessionInfo, SessionLimitConfig, SessionManager, SessionMetadata,
     SessionOverflowBehavior, SessionStore,
 };
-#[cfg(any(test, feature = "test-auth-bypass"))]
-pub use sessions::test::InMemorySessionStore;
 
 // Trusted device re-exports
-pub use trusted_device::{
-    DeviceFingerprint, TrustedDevice, TrustedDeviceConfig, TrustedDeviceManager,
-    TrustedDeviceStore,
-};
 #[cfg(any(test, feature = "test-auth-bypass"))]
 pub use trusted_device::test::InMemoryTrustedDeviceStore;
+pub use trusted_device::{
+    DeviceFingerprint, TrustedDevice, TrustedDeviceConfig, TrustedDeviceManager, TrustedDeviceStore,
+};
 
 // Lockout re-exports
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use lockout::test::InMemoryLockoutStore;
 pub use lockout::{
     FailedAttemptResult, LockoutManager, LockoutPolicy, LockoutStatus, LockoutStore,
 };
-#[cfg(any(test, feature = "test-auth-bypass"))]
-pub use lockout::test::InMemoryLockoutStore;
 
 // Deletion re-exports
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use deletion::test::InMemoryDeletionStore;
 pub use deletion::{
     AccountDeletionFlow, AccountDeletionStore, CleanupStats, DeletionConfig, DeletionRequest,
     DeletionResult, PendingDeletion,
 };
-#[cfg(any(test, feature = "test-auth-bypass"))]
-pub use deletion::test::InMemoryDeletionStore;
 
 // Impersonation re-exports
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use impersonation::test::InMemoryImpersonationStore;
 pub use impersonation::{
     BlockedAction, ImpersonationAuditEntry, ImpersonationClaims, ImpersonationConfig,
     ImpersonationEvent, ImpersonationManager, ImpersonationRequest, ImpersonationSession,
     ImpersonationStore,
 };
-#[cfg(any(test, feature = "test-auth-bypass"))]
-pub use impersonation::test::InMemoryImpersonationStore;

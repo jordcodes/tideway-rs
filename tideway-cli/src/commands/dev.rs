@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::cli::DevArgs;
-use crate::is_plan_mode;
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
+use crate::is_plan_mode;
 use crate::{print_info, print_success};
 
 pub fn run(args: DevArgs) -> Result<()> {

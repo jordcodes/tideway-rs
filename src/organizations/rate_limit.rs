@@ -8,16 +8,14 @@
 
 use super::error::{OrganizationError, Result};
 use governor::{
-    clock::DefaultClock,
-    middleware::NoOpMiddleware,
+    Quota, RateLimiter, clock::DefaultClock, middleware::NoOpMiddleware,
     state::keyed::DashMapStateStore,
-    Quota, RateLimiter,
 };
 use std::{
     num::NonZeroU32,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -82,8 +80,7 @@ impl InvitationRateLimitConfig {
 }
 
 /// Type alias for the keyed rate limiter
-type KeyedLimiter =
-    RateLimiter<String, DashMapStateStore<String>, DefaultClock, NoOpMiddleware>;
+type KeyedLimiter = RateLimiter<String, DashMapStateStore<String>, DefaultClock, NoOpMiddleware>;
 
 /// Rate limiter for invitation operations.
 ///
@@ -112,10 +109,10 @@ pub struct InvitationRateLimiter {
 impl InvitationRateLimiter {
     /// Create a new invitation rate limiter with the given configuration.
     pub fn new(config: InvitationRateLimitConfig) -> Self {
-        let max_per_org = NonZeroU32::new(config.max_per_org.max(1))
-            .expect("max_per_org should be positive");
-        let max_per_actor = NonZeroU32::new(config.max_per_actor.max(1))
-            .expect("max_per_actor should be positive");
+        let max_per_org =
+            NonZeroU32::new(config.max_per_org.max(1)).expect("max_per_org should be positive");
+        let max_per_actor =
+            NonZeroU32::new(config.max_per_actor.max(1)).expect("max_per_actor should be positive");
 
         let window = Duration::from_secs(config.window_seconds);
 
@@ -148,15 +145,15 @@ impl InvitationRateLimiter {
 
         // Check org limit first
         if let Err(not_until) = self.org_limiter.check_key(&org_id.to_string()) {
-            let wait = not_until
-                .wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+            let wait =
+                not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
             return Err(("organization".to_string(), wait.as_secs().max(1)));
         }
 
         // Then check actor limit
         if let Err(not_until) = self.actor_limiter.check_key(&actor_id.to_string()) {
-            let wait = not_until
-                .wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+            let wait =
+                not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
             return Err(("actor".to_string(), wait.as_secs().max(1)));
         }
 

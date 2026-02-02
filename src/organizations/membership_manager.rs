@@ -6,7 +6,7 @@ use super::audit::{OrgAuditEntry, OrgAuditEvent};
 use super::error::{OrganizationError, Result};
 use super::manager::MembershipCreateParams;
 use super::seats::{SeatChecker, UnlimitedSeats};
-use super::storage::{MembershipStore, OrgAuditStore, OptionalAuditStore, WithAuditStore};
+use super::storage::{MembershipStore, OptionalAuditStore, OrgAuditStore, WithAuditStore};
 use super::utils::current_timestamp;
 use tracing::{debug, info, instrument};
 
@@ -191,12 +191,7 @@ where
 
     /// Remove a member from an organization (Owner cannot be removed).
     #[instrument(skip(self))]
-    pub async fn remove_member(
-        &self,
-        org_id: &str,
-        user_id: &str,
-        actor_id: &str,
-    ) -> Result<()> {
+    pub async fn remove_member(&self, org_id: &str, user_id: &str, actor_id: &str) -> Result<()> {
         // Check actor has permission
         let actor_membership = self
             .membership_store
@@ -265,7 +260,11 @@ where
 
         // Record audit event (actor is the member themselves)
         self.audit_store
-            .record(OrgAuditEntry::new(OrgAuditEvent::MemberLeft, org_id, user_id))
+            .record(OrgAuditEntry::new(
+                OrgAuditEvent::MemberLeft,
+                org_id,
+                user_id,
+            ))
             .await;
 
         Ok(())
@@ -383,7 +382,12 @@ where
             .update_memberships_atomic(&[demoted, promoted])
             .await?;
 
-        info!(org_id, new_owner_id, former_owner = actor_id, "Ownership transferred");
+        info!(
+            org_id,
+            new_owner_id,
+            former_owner = actor_id,
+            "Ownership transferred"
+        );
 
         // Record audit event
         self.audit_store
@@ -426,7 +430,10 @@ where
 
     /// Check if user has can_manage_members permission.
     pub async fn can_manage_members(&self, org_id: &str, user_id: &str) -> Result<bool> {
-        let membership = self.membership_store.get_membership(org_id, user_id).await?;
+        let membership = self
+            .membership_store
+            .get_membership(org_id, user_id)
+            .await?;
         Ok(membership.is_some_and(|m| {
             let role = self.membership_store.membership_role(&m);
             self.membership_store.can_manage_members(&role)
@@ -435,7 +442,10 @@ where
 
     /// Check if user has can_manage_settings permission.
     pub async fn can_manage_settings(&self, org_id: &str, user_id: &str) -> Result<bool> {
-        let membership = self.membership_store.get_membership(org_id, user_id).await?;
+        let membership = self
+            .membership_store
+            .get_membership(org_id, user_id)
+            .await?;
         Ok(membership.is_some_and(|m| {
             let role = self.membership_store.membership_role(&m);
             self.membership_store.can_manage_settings(&role)
@@ -444,7 +454,10 @@ where
 
     /// Check if user has can_delete_org permission.
     pub async fn can_delete_org(&self, org_id: &str, user_id: &str) -> Result<bool> {
-        let membership = self.membership_store.get_membership(org_id, user_id).await?;
+        let membership = self
+            .membership_store
+            .get_membership(org_id, user_id)
+            .await?;
         Ok(membership.is_some_and(|m| {
             let role = self.membership_store.membership_role(&m);
             self.membership_store.can_delete_org(&role)

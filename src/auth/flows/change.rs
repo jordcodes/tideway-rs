@@ -160,7 +160,10 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
         };
 
         // Verify current password
-        if !self.password_hasher.verify(&req.current_password, &current_hash)? {
+        if !self
+            .password_hasher
+            .verify(&req.current_password, &current_hash)?
+        {
             tracing::warn!(
                 target: "auth.password.change_failed",
                 user_id = %user_id,
@@ -184,7 +187,10 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
         }
 
         // Prevent setting same password
-        if self.password_hasher.verify(&req.new_password, &current_hash)? {
+        if self
+            .password_hasher
+            .verify(&req.new_password, &current_hash)?
+        {
             tracing::info!(
                 target: "auth.password.change_failed",
                 user_id = %user_id,

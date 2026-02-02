@@ -75,7 +75,8 @@ pub trait BillingStore: Send + Sync {
         // Production code MUST override this method with an atomic implementation.
         #[cfg(debug_assertions)]
         {
-            static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
             if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 tracing::warn!(
                     target: "tideway::billing",
@@ -514,7 +515,8 @@ pub mod test {
 
         /// Get all processed events (for testing).
         pub fn get_processed_events(&self) -> Vec<String> {
-            self.inner.processed_events
+            self.inner
+                .processed_events
                 .read()
                 .unwrap()
                 .keys()
@@ -540,11 +542,8 @@ pub mod test {
     impl PlanStore for InMemoryBillingStore {
         async fn list_plans(&self) -> Result<Vec<StoredPlan>> {
             let plans = self.inner.plans.read().unwrap();
-            let mut active: Vec<StoredPlan> = plans
-                .values()
-                .filter(|p| p.is_active)
-                .cloned()
-                .collect();
+            let mut active: Vec<StoredPlan> =
+                plans.values().filter(|p| p.is_active).cloned().collect();
             active.sort_by_key(|p| p.sort_order);
             Ok(active)
         }
@@ -560,13 +559,23 @@ pub mod test {
             Ok(self.inner.plans.read().unwrap().get(plan_id).cloned())
         }
 
-        async fn get_plan_by_stripe_price(&self, stripe_price_id: &str) -> Result<Option<StoredPlan>> {
+        async fn get_plan_by_stripe_price(
+            &self,
+            stripe_price_id: &str,
+        ) -> Result<Option<StoredPlan>> {
             let plans = self.inner.plans.read().unwrap();
-            Ok(plans.values().find(|p| p.stripe_price_id == stripe_price_id).cloned())
+            Ok(plans
+                .values()
+                .find(|p| p.stripe_price_id == stripe_price_id)
+                .cloned())
         }
 
         async fn create_plan(&self, plan: &StoredPlan) -> Result<()> {
-            self.inner.plans.write().unwrap().insert(plan.id.clone(), plan.clone());
+            self.inner
+                .plans
+                .write()
+                .unwrap()
+                .insert(plan.id.clone(), plan.clone());
             Ok(())
         }
 
@@ -664,7 +673,11 @@ pub mod test {
         }
 
         async fn delete_subscription(&self, billable_id: &str) -> Result<()> {
-            self.inner.subscriptions.write().unwrap().remove(billable_id);
+            self.inner
+                .subscriptions
+                .write()
+                .unwrap()
+                .remove(billable_id);
             Ok(())
         }
 
@@ -916,7 +929,11 @@ impl<S: PlanStore + Send + Sync> PlanStore for CachedPlanStore<S> {
         if let Ok(cache) = self.cache.read() {
             if let Some(ref cached) = cache.all_plans {
                 if cached.expires_at > std::time::Instant::now() {
-                    return Ok(cached.plans.iter().find(|p| p.stripe_price_id == stripe_price_id).cloned());
+                    return Ok(cached
+                        .plans
+                        .iter()
+                        .find(|p| p.stripe_price_id == stripe_price_id)
+                        .cloned());
                 }
             }
         }
@@ -1043,11 +1060,13 @@ mod tests {
         let store = InMemoryBillingStore::new();
 
         // Test customer
-        assert!(store
-            .get_stripe_customer_id("org_123")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            store
+                .get_stripe_customer_id("org_123")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         store
             .set_stripe_customer_id("org_123", "org", "cus_abc")
@@ -1091,7 +1110,12 @@ mod tests {
         assert!(store.is_event_processed("evt_123").await.unwrap());
     }
 
-    fn create_test_plan(id: &str, price_cents: i64, is_active: bool, sort_order: i32) -> StoredPlan {
+    fn create_test_plan(
+        id: &str,
+        price_cents: i64,
+        is_active: bool,
+        sort_order: i32,
+    ) -> StoredPlan {
         StoredPlan {
             id: id.to_string(),
             name: format!("{} Plan", id),
@@ -1146,7 +1170,11 @@ mod tests {
         assert_eq!(plan.price_cents, 999);
 
         // Get by Stripe price
-        let plan = store.get_plan_by_stripe_price("price_pro").await.unwrap().unwrap();
+        let plan = store
+            .get_plan_by_stripe_price("price_pro")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(plan.id, "pro");
 
         // Update plan
@@ -1230,7 +1258,10 @@ mod tests {
         let store = InMemoryBillingStore::new();
 
         // Initially no subscriptions
-        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 0);
+        assert_eq!(
+            store.count_subscriptions_by_plan("starter").await.unwrap(),
+            0
+        );
 
         // Add an active subscription on starter plan
         let sub1 = StoredSubscription {
@@ -1248,7 +1279,10 @@ mod tests {
             updated_at: 0,
         };
         store.save_subscription("org_1", &sub1).await.unwrap();
-        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 1);
+        assert_eq!(
+            store.count_subscriptions_by_plan("starter").await.unwrap(),
+            1
+        );
 
         // Add a trialing subscription on starter plan
         let sub2 = StoredSubscription {
@@ -1266,7 +1300,10 @@ mod tests {
             updated_at: 0,
         };
         store.save_subscription("org_2", &sub2).await.unwrap();
-        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 2);
+        assert_eq!(
+            store.count_subscriptions_by_plan("starter").await.unwrap(),
+            2
+        );
 
         // Add a canceled subscription on starter plan (should not count)
         let sub3 = StoredSubscription {
@@ -1284,7 +1321,10 @@ mod tests {
             updated_at: 0,
         };
         store.save_subscription("org_3", &sub3).await.unwrap();
-        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 2);
+        assert_eq!(
+            store.count_subscriptions_by_plan("starter").await.unwrap(),
+            2
+        );
 
         // Add an active subscription on pro plan (should not affect starter count)
         let sub4 = StoredSubscription {
@@ -1302,14 +1342,17 @@ mod tests {
             updated_at: 0,
         };
         store.save_subscription("org_4", &sub4).await.unwrap();
-        assert_eq!(store.count_subscriptions_by_plan("starter").await.unwrap(), 2);
+        assert_eq!(
+            store.count_subscriptions_by_plan("starter").await.unwrap(),
+            2
+        );
         assert_eq!(store.count_subscriptions_by_plan("pro").await.unwrap(), 1);
     }
 
     #[tokio::test]
     async fn test_cached_plan_store_caches_results() {
-        use test::InMemoryBillingStore;
         use std::time::Duration;
+        use test::InMemoryBillingStore;
 
         let inner = InMemoryBillingStore::new();
 
@@ -1341,8 +1384,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_plan_store_get_plan() {
-        use test::InMemoryBillingStore;
         use std::time::Duration;
+        use test::InMemoryBillingStore;
 
         let inner = InMemoryBillingStore::new();
         let starter = create_test_plan("starter", 999, true, 1);
@@ -1372,8 +1415,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_plan_store_write_operations_invalidate() {
-        use test::InMemoryBillingStore;
         use std::time::Duration;
+        use test::InMemoryBillingStore;
 
         let inner = InMemoryBillingStore::new();
         let cached = CachedPlanStore::new(inner, Duration::from_secs(60));
@@ -1402,8 +1445,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_plan_store_set_active_invalidates() {
-        use test::InMemoryBillingStore;
         use std::time::Duration;
+        use test::InMemoryBillingStore;
 
         let inner = InMemoryBillingStore::new();
         let cached = CachedPlanStore::new(inner, Duration::from_secs(60));

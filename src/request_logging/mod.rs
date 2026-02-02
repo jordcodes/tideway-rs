@@ -8,4 +8,3 @@ mod middleware;
 
 pub use config::{RequestLoggingConfig, RequestLoggingConfigBuilder};
 pub use middleware::build_request_logging_layer;
-

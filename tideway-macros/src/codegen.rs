@@ -3,15 +3,19 @@
 //! This module generates `#[utoipa::path(...)]` attributes based on
 //! parsed arguments and inferred types.
 
-use proc_macro2::{TokenStream, Literal};
-use quote::{quote, format_ident};
+use proc_macro2::{Literal, TokenStream};
+use quote::{format_ident, quote};
 use syn::ItemFn;
 
 use crate::inference::InferenceResult;
 use crate::parse::{ApiArgs, HttpMethod, convert_path_to_openapi, extract_path_params};
 
 /// Generate the complete output for the API macro.
-pub fn generate_api_macro(args: &ApiArgs, func: &ItemFn, inference: &InferenceResult) -> TokenStream {
+pub fn generate_api_macro(
+    args: &ApiArgs,
+    func: &ItemFn,
+    inference: &InferenceResult,
+) -> TokenStream {
     // If skip_openapi is set, just return the original function
     if args.skip_openapi {
         return quote! { #func };
@@ -44,7 +48,8 @@ fn generate_utoipa_path(args: &ApiArgs, func: &ItemFn, inference: &InferenceResu
     let tag = args.tag.as_deref().unwrap_or("default");
 
     // Operation ID - use explicit, or function name
-    let operation_id = args.operation_id
+    let operation_id = args
+        .operation_id
         .clone()
         .unwrap_or_else(|| func.sig.ident.to_string());
 
@@ -55,8 +60,7 @@ fn generate_utoipa_path(args: &ApiArgs, func: &ItemFn, inference: &InferenceResu
     });
     let summary = args.summary.as_ref().or(inferred_summary.as_ref());
 
-    let description = args.description.as_ref()
-        .or(inference.doc_comment.as_ref());
+    let description = args.description.as_ref().or(inference.doc_comment.as_ref());
 
     // Generate params
     let params = generate_params(args, inference, &path_params_from_route);
@@ -85,8 +89,12 @@ fn generate_utoipa_path(args: &ApiArgs, func: &ItemFn, inference: &InferenceResu
     };
 
     // Build summary/description if present
-    let summary_attr = summary.map(|s| quote! { summary = #s, }).unwrap_or_default();
-    let description_attr = description.map(|d| quote! { description = #d, }).unwrap_or_default();
+    let summary_attr = summary
+        .map(|s| quote! { summary = #s, })
+        .unwrap_or_default();
+    let description_attr = description
+        .map(|d| quote! { description = #d, })
+        .unwrap_or_default();
 
     quote! {
         utoipa::path(
@@ -122,7 +130,9 @@ fn generate_params(
     // Generate path parameters from the route
     for param_name in path_params_from_route {
         // Try to find a matching type from inference
-        let param_type = inference.path_params.first()
+        let param_type = inference
+            .path_params
+            .first()
             .and_then(|p| p.ty.as_ref())
             .map(|ty| quote! { #ty })
             .unwrap_or_else(|| quote! { String });
@@ -219,7 +229,9 @@ fn generate_responses(args: &ApiArgs, inference: &InferenceResult) -> TokenStrea
     };
 
     // Only add success response if not already defined in explicit responses
-    let has_success_status = args.responses.iter()
+    let has_success_status = args
+        .responses
+        .iter()
         .any(|r| r.status == inference.response.status);
 
     if !has_success_status {

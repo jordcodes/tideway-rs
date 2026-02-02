@@ -313,30 +313,27 @@ impl ConfigBuilder {
     /// - Other configuration validation failures
     pub fn build(self) -> crate::error::Result<Config> {
         // Validate server address
-        self.config.server.addr()
-            .map_err(|e| crate::error::TidewayError::bad_request(
-                format!("Invalid server address {}:{} - {}",
-                    self.config.server.host,
-                    self.config.server.port,
-                    e
-                )
-            ))?;
+        self.config.server.addr().map_err(|e| {
+            crate::error::TidewayError::bad_request(format!(
+                "Invalid server address {}:{} - {}",
+                self.config.server.host, self.config.server.port, e
+            ))
+        })?;
 
         // Validate log level
         let valid_log_levels = ["trace", "debug", "info", "warn", "error"];
         if !valid_log_levels.contains(&self.config.logging.level.to_lowercase().as_str()) {
-            return Err(crate::error::TidewayError::bad_request(
-                format!("Invalid log level: {}. Must be one of: {}",
-                    self.config.logging.level,
-                    valid_log_levels.join(", ")
-                )
-            ));
+            return Err(crate::error::TidewayError::bad_request(format!(
+                "Invalid log level: {}. Must be one of: {}",
+                self.config.logging.level,
+                valid_log_levels.join(", ")
+            )));
         }
 
         // Validate timeout values (only if enabled)
         if self.config.timeout.enabled && self.config.timeout.timeout_seconds == 0 {
             return Err(crate::error::TidewayError::bad_request(
-                "Request timeout must be greater than 0 when enabled"
+                "Request timeout must be greater than 0 when enabled",
             ));
         }
 
@@ -344,37 +341,38 @@ impl ConfigBuilder {
         if self.config.rate_limit.enabled {
             if self.config.rate_limit.max_requests == 0 {
                 return Err(crate::error::TidewayError::bad_request(
-                    "Rate limit max_requests must be greater than 0 when enabled"
+                    "Rate limit max_requests must be greater than 0 when enabled",
                 ));
             }
 
             if self.config.rate_limit.window_seconds == 0 {
                 return Err(crate::error::TidewayError::bad_request(
-                    "Rate limit window_seconds must be greater than 0 when enabled"
+                    "Rate limit window_seconds must be greater than 0 when enabled",
                 ));
             }
 
             // Validate strategy
-            if self.config.rate_limit.strategy != "global" && self.config.rate_limit.strategy != "per_ip" {
-                return Err(crate::error::TidewayError::bad_request(
-                    format!("Rate limit strategy must be 'global' or 'per_ip', got: {}",
-                        self.config.rate_limit.strategy
-                    )
-                ));
+            if self.config.rate_limit.strategy != "global"
+                && self.config.rate_limit.strategy != "per_ip"
+            {
+                return Err(crate::error::TidewayError::bad_request(format!(
+                    "Rate limit strategy must be 'global' or 'per_ip', got: {}",
+                    self.config.rate_limit.strategy
+                )));
             }
         }
 
         // Validate port is in valid range
         if self.config.server.port == 0 {
             return Err(crate::error::TidewayError::bad_request(
-                "Server port must be greater than 0"
+                "Server port must be greater than 0",
             ));
         }
 
         // Validate max body size
         if self.config.server.max_body_size == 0 {
             return Err(crate::error::TidewayError::bad_request(
-                "Maximum body size must be greater than 0"
+                "Maximum body size must be greater than 0",
             ));
         }
 
@@ -469,20 +467,14 @@ mod tests {
 
     #[test]
     fn test_config_builder_with_host() {
-        let config = ConfigBuilder::new()
-            .with_host("127.0.0.1")
-            .build()
-            .unwrap();
+        let config = ConfigBuilder::new().with_host("127.0.0.1").build().unwrap();
 
         assert_eq!(config.server.host, "127.0.0.1");
     }
 
     #[test]
     fn test_config_builder_with_port() {
-        let config = ConfigBuilder::new()
-            .with_port(3000)
-            .build()
-            .unwrap();
+        let config = ConfigBuilder::new().with_port(3000).build().unwrap();
 
         assert_eq!(config.server.port, 3000);
     }
@@ -529,10 +521,7 @@ mod tests {
 
     #[test]
     fn test_config_builder_with_dev_mode() {
-        let config = ConfigBuilder::new()
-            .with_dev_mode(true)
-            .build()
-            .unwrap();
+        let config = ConfigBuilder::new().with_dev_mode(true).build().unwrap();
 
         assert!(config.dev.enabled);
     }
@@ -574,9 +563,7 @@ mod tests {
 
     #[test]
     fn test_config_builder_invalid_log_level() {
-        let result = ConfigBuilder::new()
-            .with_log_level("invalid_level")
-            .build();
+        let result = ConfigBuilder::new().with_log_level("invalid_level").build();
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -586,9 +573,7 @@ mod tests {
     #[test]
     fn test_config_builder_valid_log_levels() {
         for level in &["trace", "debug", "info", "warn", "error"] {
-            let result = ConfigBuilder::new()
-                .with_log_level(*level)
-                .build();
+            let result = ConfigBuilder::new().with_log_level(*level).build();
             assert!(result.is_ok(), "Log level '{}' should be valid", level);
         }
     }
@@ -596,10 +581,12 @@ mod tests {
     #[test]
     fn test_config_builder_log_level_case_insensitive() {
         for level in &["TRACE", "Debug", "INFO", "Warn", "ERROR"] {
-            let result = ConfigBuilder::new()
-                .with_log_level(*level)
-                .build();
-            assert!(result.is_ok(), "Log level '{}' should be valid (case insensitive)", level);
+            let result = ConfigBuilder::new().with_log_level(*level).build();
+            assert!(
+                result.is_ok(),
+                "Log level '{}' should be valid (case insensitive)",
+                level
+            );
         }
     }
 
@@ -616,9 +603,7 @@ mod tests {
 
     #[test]
     fn test_config_builder_max_body_size_zero_invalid() {
-        let result = ConfigBuilder::new()
-            .with_max_body_size(0)
-            .build();
+        let result = ConfigBuilder::new().with_max_body_size(0).build();
 
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -796,10 +781,7 @@ mod tests {
             std::env::set_var("TIDEWAY_LOG_LEVEL", "trace");
         }
 
-        let config = ConfigBuilder::new()
-            .from_env()
-            .build()
-            .unwrap();
+        let config = ConfigBuilder::new().from_env().build().unwrap();
 
         assert_eq!(config.server.host, "10.0.0.1");
         assert_eq!(config.logging.level, "trace");

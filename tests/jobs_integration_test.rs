@@ -1,16 +1,16 @@
 #[cfg(feature = "jobs")]
 mod tests {
+    use async_trait::async_trait;
+    use chrono::{Duration, Utc};
+    use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
     use tideway::{
         AppContext,
         jobs::{InMemoryJobQueue, JobRegistry, WorkerPool},
         traits::job::{Job, JobQueue},
     };
-    use async_trait::async_trait;
-    use chrono::{Duration, Utc};
-    use serde::{Deserialize, Serialize};
-    use std::sync::Arc;
     use tokio::sync::mpsc;
-    use tokio::time::{sleep, Duration as TokioDuration};
+    use tokio::time::{Duration as TokioDuration, sleep};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestJob {
@@ -25,9 +25,8 @@ mod tests {
         }
 
         fn serialize(&self) -> tideway::Result<serde_json::Value> {
-            serde_json::to_value(self).map_err(|e| {
-                tideway::TidewayError::internal(format!("Serialization error: {}", e))
-            })
+            serde_json::to_value(self)
+                .map_err(|e| tideway::TidewayError::internal(format!("Serialization error: {}", e)))
         }
 
         async fn execute(&self, _ctx: &tideway::AppContext) -> tideway::Result<()> {
@@ -78,7 +77,10 @@ mod tests {
         let job_data = queue.dequeue().await.unwrap().unwrap();
 
         // Fail the job
-        queue.fail(&job_id, "Test failure".to_string()).await.unwrap();
+        queue
+            .fail(&job_id, "Test failure".to_string())
+            .await
+            .unwrap();
 
         // Job should be scheduled for retry
         // Wait for scheduler to move it back to pending
@@ -105,7 +107,10 @@ mod tests {
         // Fail job multiple times to exceed max retries
         for _ in 0..3 {
             if let Some(job_data) = queue.dequeue().await.unwrap() {
-                queue.fail(&job_id, "Test failure".to_string()).await.unwrap();
+                queue
+                    .fail(&job_id, "Test failure".to_string())
+                    .await
+                    .unwrap();
                 sleep(TokioDuration::from_millis(1100)).await;
             }
         }
@@ -152,8 +157,9 @@ mod tests {
                 move |data: tideway::JobData, ctx: std::sync::Arc<tideway::AppContext>| {
                     Box::pin(async move {
                         // Deserialize and execute
-                        let job: TestJob = serde_json::from_value(data.payload)
-                            .map_err(|e| tideway::TidewayError::internal(format!("Deserialize error: {}", e)))?;
+                        let job: TestJob = serde_json::from_value(data.payload).map_err(|e| {
+                            tideway::TidewayError::internal(format!("Deserialize error: {}", e))
+                        })?;
                         job.execute(&ctx).await
                     })
                 }
@@ -228,9 +234,6 @@ mod tests {
 
         let result = registry.execute(job_data, context).await;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unregistered"));
+        assert!(result.unwrap_err().to_string().contains("unregistered"));
     }
 }

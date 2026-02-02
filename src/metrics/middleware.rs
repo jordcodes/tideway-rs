@@ -1,18 +1,16 @@
 use super::collector::MetricsCollector;
+use axum::body::Body;
 use axum::{
     extract::{MatchedPath, Request},
     response::Response,
 };
-use axum::body::Body;
 use futures::future::BoxFuture;
 use std::sync::Arc;
 use std::time::Instant;
 use tower::Service;
 
 /// Build a Tower layer for metrics collection
-pub fn build_metrics_layer(
-    collector: Arc<MetricsCollector>,
-) -> MetricsLayer {
+pub fn build_metrics_layer(collector: Arc<MetricsCollector>) -> MetricsLayer {
     MetricsLayer { collector }
 }
 
@@ -90,10 +88,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
     use axum::routing::get;
-    use axum::Router;
     use prometheus::proto::MetricFamily;
     use tower::ServiceExt;
 
@@ -122,10 +120,7 @@ mod tests {
         let metrics = collector.registry().gather();
         let family = find_metric_family(&metrics, "tideway_http_requests_total")
             .expect("metrics family not found");
-        let metric = family
-            .get_metric()
-            .get(0)
-            .expect("metric not recorded");
+        let metric = family.get_metric().get(0).expect("metric not recorded");
         let path = find_label_value(metric, "path").expect("path label missing");
         assert_eq!(path, "/users/{id}");
     }

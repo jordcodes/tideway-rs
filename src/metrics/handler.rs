@@ -1,7 +1,7 @@
-use axum::response::Response;
+use crate::app::AppContext;
 use axum::body::Body;
 use axum::http::StatusCode;
-use crate::app::AppContext;
+use axum::response::Response;
 
 /// Handler for the /metrics endpoint
 pub async fn metrics_handler(
@@ -9,14 +9,14 @@ pub async fn metrics_handler(
 ) -> Result<Response<Body>, StatusCode> {
     use prometheus::Encoder;
 
-    let collector = ctx.metrics_opt()
-        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let collector = ctx.metrics_opt().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     let encoder = prometheus::TextEncoder::new();
     let metric_families = collector.registry().gather();
 
     let mut buffer = Vec::new();
-    encoder.encode(&metric_families, &mut buffer)
+    encoder
+        .encode(&metric_families, &mut buffer)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let response = Response::builder()
@@ -27,4 +27,3 @@ pub async fn metrics_handler(
 
     Ok(response)
 }
-

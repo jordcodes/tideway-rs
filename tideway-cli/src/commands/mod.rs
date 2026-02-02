@@ -1,13 +1,13 @@
 //! CLI commands
 
-pub mod backend;
 pub mod add;
+pub mod backend;
 pub mod dev;
-pub mod migrate;
-pub mod resource;
+pub mod doctor;
 pub mod generate;
 pub mod init;
-pub mod doctor;
+pub mod migrate;
 pub mod new;
+pub mod resource;
 pub mod setup;
 pub mod templates;

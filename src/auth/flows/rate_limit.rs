@@ -10,16 +10,14 @@
 
 use crate::error::{Result, TidewayError};
 use governor::{
-    clock::DefaultClock,
-    middleware::NoOpMiddleware,
+    Quota, RateLimiter, clock::DefaultClock, middleware::NoOpMiddleware,
     state::keyed::DashMapStateStore,
-    Quota, RateLimiter,
 };
 use std::{
     num::NonZeroU32,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -78,8 +76,7 @@ impl LoginRateLimitConfig {
 }
 
 /// Type alias for the keyed rate limiter
-type KeyedLimiter =
-    RateLimiter<String, DashMapStateStore<String>, DefaultClock, NoOpMiddleware>;
+type KeyedLimiter = RateLimiter<String, DashMapStateStore<String>, DefaultClock, NoOpMiddleware>;
 
 /// Rate limiter for login attempts, keyed by IP address.
 ///
@@ -116,8 +113,8 @@ pub struct LoginRateLimiter {
 impl LoginRateLimiter {
     /// Create a new login rate limiter with the given configuration.
     pub fn new(config: LoginRateLimitConfig) -> Self {
-        let max_attempts = NonZeroU32::new(config.max_attempts.max(1))
-            .expect("max_attempts should be positive");
+        let max_attempts =
+            NonZeroU32::new(config.max_attempts.max(1)).expect("max_attempts should be positive");
 
         // Create quota: max_attempts per window_seconds
         let quota = Quota::with_period(Duration::from_secs(config.window_seconds))
@@ -144,8 +141,8 @@ impl LoginRateLimiter {
         match self.limiter.check_key(&ip.to_string()) {
             Ok(_) => Ok(()),
             Err(not_until) => {
-                let wait = not_until
-                    .wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+                let wait =
+                    not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
                 Err(wait.as_secs().max(1))
             }
         }

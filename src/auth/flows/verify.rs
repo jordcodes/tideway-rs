@@ -7,7 +7,7 @@
 
 use crate::auth::storage::VerificationStore;
 use crate::error::{Result, TidewayError};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime};
 
@@ -155,7 +155,10 @@ mod tests {
         }
 
         fn is_user_verified(&self, user_id: &str) -> bool {
-            self.verified_users.read().unwrap().contains(&user_id.to_string())
+            self.verified_users
+                .read()
+                .unwrap()
+                .contains(&user_id.to_string())
         }
     }
 
@@ -206,9 +209,7 @@ mod tests {
         let store = TestVerificationStore::new();
         let flow = EmailVerificationFlow::new(store);
 
-        let result = flow
-            .send_verification("user-123", "test@example.com")
-            .await;
+        let result = flow.send_verification("user-123", "test@example.com").await;
 
         assert!(result.is_ok());
 
@@ -235,7 +236,11 @@ mod tests {
         let token = &emails[0].2;
 
         // Verify
-        let result = flow.verify(EmailVerifyRequest { token: token.clone() }).await;
+        let result = flow
+            .verify(EmailVerifyRequest {
+                token: token.clone(),
+            })
+            .await;
 
         assert!(result.is_ok());
 
@@ -274,12 +279,18 @@ mod tests {
         let token = &emails[0].2;
 
         // Verify first time
-        flow.verify(EmailVerifyRequest { token: token.clone() })
-            .await
-            .unwrap();
+        flow.verify(EmailVerifyRequest {
+            token: token.clone(),
+        })
+        .await
+        .unwrap();
 
         // Try to verify again
-        let result = flow.verify(EmailVerifyRequest { token: token.clone() }).await;
+        let result = flow
+            .verify(EmailVerifyRequest {
+                token: token.clone(),
+            })
+            .await;
 
         assert!(result.is_err());
     }
@@ -314,9 +325,7 @@ mod tests {
         let store = TestVerificationStore::new();
         let flow = EmailVerificationFlow::new(store).with_ttl(Duration::from_secs(60));
 
-        let result = flow
-            .send_verification("user-123", "test@example.com")
-            .await;
+        let result = flow.send_verification("user-123", "test@example.com").await;
 
         assert!(result.is_ok());
     }
@@ -361,9 +370,11 @@ mod tests {
         let token1 = &emails[0].2;
 
         // Verify with user-1's token
-        flow.verify(EmailVerifyRequest { token: token1.clone() })
-            .await
-            .unwrap();
+        flow.verify(EmailVerifyRequest {
+            token: token1.clone(),
+        })
+        .await
+        .unwrap();
 
         // Only user-1 should be verified
         let verified = flow.store.get_verified_users();

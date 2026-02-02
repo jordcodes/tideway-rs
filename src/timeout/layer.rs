@@ -8,7 +8,10 @@ pub fn build_timeout_layer(config: &TimeoutConfig) -> Option<TimeoutLayer> {
         return None;
     }
 
-    Some(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, config.duration()))
+    Some(TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        config.duration(),
+    ))
 }
 
 #[cfg(test)]

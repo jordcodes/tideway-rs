@@ -3,18 +3,18 @@
 //! This module provides Axum integration for WebSocket connections, including
 //! the upgrade handler and route creation helpers.
 
-use crate::app::AppContext;
 use super::connection::Connection;
-use super::manager::{ConnectionManager, ConnectionHandle};
+use super::manager::{ConnectionHandle, ConnectionManager};
 use super::message::Message;
 use super::traits::WebSocketHandler;
+use crate::app::AppContext;
 use axum::{
-    extract::{ws::WebSocketUpgrade, State},
-    routing::get,
     Router,
+    extract::{State, ws::WebSocketUpgrade},
+    routing::get,
 };
-use futures::StreamExt;
 use futures::SinkExt;
+use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -50,28 +50,24 @@ use uuid::Uuid;
 /// let manager = Arc::new(ConnectionManager::new());
 /// let _router = ws("/ws", MyHandler, manager);
 /// ```
-pub fn ws<H>(
-    path: &str,
-    handler: H,
-    manager: Arc<ConnectionManager>,
-) -> Router<AppContext>
+pub fn ws<H>(path: &str, handler: H, manager: Arc<ConnectionManager>) -> Router<AppContext>
 where
     H: WebSocketHandler,
 {
     let handler = Arc::new(handler);
     Router::new().route(
         path,
-        get(move |upgrade: WebSocketUpgrade, State(ctx): State<AppContext>| {
-            let handler = handler.clone();
-            let manager = manager.clone();
-            let ctx = Arc::new(ctx);
+        get(
+            move |upgrade: WebSocketUpgrade, State(ctx): State<AppContext>| {
+                let handler = handler.clone();
+                let manager = manager.clone();
+                let ctx = Arc::new(ctx);
 
-            async move {
-                upgrade.on_upgrade(move |socket| {
-                    handle_socket(socket, handler, manager, ctx)
-                })
-            }
-        }),
+                async move {
+                    upgrade.on_upgrade(move |socket| handle_socket(socket, handler, manager, ctx))
+                }
+            },
+        ),
     )
 }
 
@@ -92,9 +88,10 @@ async fn handle_socket<H: WebSocketHandler>(
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
     // Create connection wrapper
-    let conn_handle: ConnectionHandle = Arc::new(tokio::sync::RwLock::new(
-        Connection::new(conn_id.clone(), tx.clone()),
-    ));
+    let conn_handle: ConnectionHandle = Arc::new(tokio::sync::RwLock::new(Connection::new(
+        conn_id.clone(),
+        tx.clone(),
+    )));
 
     // Register connection with manager (check connection limit)
     if let Err(e) = manager.register(conn_handle.clone()).await {

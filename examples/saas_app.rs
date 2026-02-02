@@ -1,3 +1,5 @@
+use axum::{Json, Router, extract::State, routing::get};
+use serde::{Deserialize, Serialize};
 /// Complete SaaS application example demonstrating Tideway features
 ///
 /// This example shows:
@@ -10,9 +12,7 @@
 /// - Route modules
 ///
 /// Run with: cargo run --example saas_app --features database,openapi
-use tideway::{App, ConfigBuilder, CorsConfig, RateLimitConfig, RouteModule, Result, AppContext};
-use axum::{Router, routing::get, Json, extract::State};
-use serde::{Deserialize, Serialize};
+use tideway::{App, AppContext, ConfigBuilder, CorsConfig, RateLimitConfig, Result, RouteModule};
 
 // Mock database entity (would use SeaORM in real app)
 #[derive(Serialize, Deserialize, Clone)]
@@ -32,13 +32,11 @@ struct Database {
 impl Database {
     fn new() -> Self {
         Self {
-            users: vec![
-                User {
-                    id: 1,
-                    email: "alice@example.com".to_string(),
-                    name: "Alice".to_string(),
-                },
-            ],
+            users: vec![User {
+                id: 1,
+                email: "alice@example.com".to_string(),
+                name: "Alice".to_string(),
+            }],
         }
     }
 
@@ -85,9 +83,7 @@ impl From<User> for UserResponse {
 }
 
 // Route handlers (simplified for example - in real app use proper state management)
-async fn get_user(
-    axum::extract::Path(id): axum::extract::Path<u64>,
-) -> Result<Json<UserResponse>> {
+async fn get_user(axum::extract::Path(id): axum::extract::Path<u64>) -> Result<Json<UserResponse>> {
     // In real app, extract state and query database
     if id == 1 {
         Ok(Json(UserResponse {
@@ -100,9 +96,7 @@ async fn get_user(
     }
 }
 
-async fn create_user(
-    Json(req): Json<CreateUserRequest>,
-) -> Result<Json<UserResponse>> {
+async fn create_user(Json(req): Json<CreateUserRequest>) -> Result<Json<UserResponse>> {
     // In real app, create user in database
     Ok(Json(UserResponse {
         id: 1,
@@ -113,13 +107,11 @@ async fn create_user(
 
 async fn list_users(State(_ctx): State<AppContext>) -> Result<Json<Vec<UserResponse>>> {
     // In real app, query database
-    Ok(Json(vec![
-        UserResponse {
-            id: 1,
-            email: "alice@example.com".to_string(),
-            name: "Alice".to_string(),
-        },
-    ]))
+    Ok(Json(vec![UserResponse {
+        id: 1,
+        email: "alice@example.com".to_string(),
+        name: "Alice".to_string(),
+    }]))
 }
 
 // Route module
@@ -146,7 +138,10 @@ async fn main() {
     let cors = CorsConfig::builder()
         .allow_origin("https://app.example.com")
         .allow_methods(vec!["GET".to_string(), "POST".to_string()])
-        .allow_headers(vec!["content-type".to_string(), "authorization".to_string()])
+        .allow_headers(vec![
+            "content-type".to_string(),
+            "authorization".to_string(),
+        ])
         .allow_credentials(true)
         .build();
 
@@ -168,8 +163,7 @@ async fn main() {
         .build();
 
     // Create app
-    let app = App::with_config(config.unwrap())
-        .register_module(UsersModule);
+    let app = App::with_config(config.unwrap()).register_module(UsersModule);
 
     tracing::info!("SaaS application starting on http://0.0.0.0:8000");
     tracing::info!("API endpoints:");

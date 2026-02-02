@@ -28,7 +28,7 @@ mod console;
 mod smtp;
 
 pub use console::ConsoleMailer;
-pub use smtp::{SmtpMailer, SmtpConfig};
+pub use smtp::{SmtpConfig, SmtpMailer};
 
 // Re-export Email from traits for convenience
 pub use crate::traits::mailer::Email;

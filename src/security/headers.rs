@@ -1,9 +1,9 @@
 use super::config::{ReferrerPolicy, SecurityConfig, XFrameOptions};
+use axum::body::Body;
 use axum::{
     extract::Request,
     http::{HeaderValue, Response},
 };
-use axum::body::Body;
 use futures::future::BoxFuture;
 use tower::Service;
 
@@ -89,7 +89,10 @@ fn add_security_headers<B>(response: &mut Response<B>, config: &SecurityConfig) 
 
     // X-Content-Type-Options
     if config.nosniff {
-        headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+        headers.insert(
+            "x-content-type-options",
+            HeaderValue::from_static("nosniff"),
+        );
     }
 
     // X-Frame-Options

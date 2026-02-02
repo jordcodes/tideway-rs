@@ -525,7 +525,9 @@ impl<S: SessionStore> SessionManager<S> {
         }
 
         // Create the new session
-        self.store.create_session(session_id, user_id, metadata).await?;
+        self.store
+            .create_session(session_id, user_id, metadata)
+            .await?;
 
         tracing::info!(
             target: "auth.session.created",
@@ -647,7 +649,10 @@ impl<S: SessionStore> SessionManager<S> {
         user_id: &str,
         current_session_id: &str,
     ) -> Result<usize> {
-        let count = self.store.revoke_other_sessions(user_id, current_session_id).await?;
+        let count = self
+            .store
+            .revoke_other_sessions(user_id, current_session_id)
+            .await?;
 
         tracing::info!(
             target: "auth.session.revoke_others",
@@ -675,7 +680,10 @@ impl<S: SessionStore> SessionManager<S> {
         offset: usize,
         limit: usize,
     ) -> Result<Vec<SessionInfo>> {
-        let mut sessions = self.store.list_sessions_paginated(user_id, offset, limit).await?;
+        let mut sessions = self
+            .store
+            .list_sessions_paginated(user_id, offset, limit)
+            .await?;
 
         // Mark the current session
         if let Some(current_id) = current_session_id {
@@ -863,8 +871,8 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test::InMemorySessionStore;
+    use super::*;
 
     #[tokio::test]
     async fn test_create_and_get_session() {
@@ -874,7 +882,10 @@ mod tests {
             .with_ip("192.168.1.1")
             .with_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0");
 
-        store.create_session("session-1", "user-1", metadata).await.unwrap();
+        store
+            .create_session("session-1", "user-1", metadata)
+            .await
+            .unwrap();
 
         let session = store.get_session("session-1").await.unwrap().unwrap();
         assert_eq!(session.id, "session-1");
@@ -887,9 +898,18 @@ mod tests {
     async fn test_list_sessions() {
         let store = InMemorySessionStore::new();
 
-        store.create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
-        store.create_session("session-2", "user-1", SessionMetadata::new()).await.unwrap();
-        store.create_session("session-3", "user-2", SessionMetadata::new()).await.unwrap();
+        store
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+        store
+            .create_session("session-2", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+        store
+            .create_session("session-3", "user-2", SessionMetadata::new())
+            .await
+            .unwrap();
 
         let sessions = store.list_sessions("user-1").await.unwrap();
         assert_eq!(sessions.len(), 2);
@@ -902,7 +922,10 @@ mod tests {
     async fn test_revoke_session() {
         let store = InMemorySessionStore::new();
 
-        store.create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
+        store
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
 
         assert!(store.get_session("session-1").await.unwrap().is_some());
 
@@ -916,9 +939,18 @@ mod tests {
     async fn test_revoke_all_sessions() {
         let store = InMemorySessionStore::new();
 
-        store.create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
-        store.create_session("session-2", "user-1", SessionMetadata::new()).await.unwrap();
-        store.create_session("session-3", "user-2", SessionMetadata::new()).await.unwrap();
+        store
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+        store
+            .create_session("session-2", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+        store
+            .create_session("session-3", "user-2", SessionMetadata::new())
+            .await
+            .unwrap();
 
         let count = store.revoke_all_sessions("user-1").await.unwrap();
         assert_eq!(count, 2);
@@ -935,11 +967,23 @@ mod tests {
     async fn test_revoke_other_sessions() {
         let store = InMemorySessionStore::new();
 
-        store.create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
-        store.create_session("session-2", "user-1", SessionMetadata::new()).await.unwrap();
-        store.create_session("session-3", "user-1", SessionMetadata::new()).await.unwrap();
+        store
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+        store
+            .create_session("session-2", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+        store
+            .create_session("session-3", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
 
-        let count = store.revoke_other_sessions("user-1", "session-2").await.unwrap();
+        let count = store
+            .revoke_other_sessions("user-1", "session-2")
+            .await
+            .unwrap();
         assert_eq!(count, 2);
 
         let sessions = store.list_sessions("user-1").await.unwrap();
@@ -951,7 +995,10 @@ mod tests {
     async fn test_touch_session() {
         let store = InMemorySessionStore::new();
 
-        store.create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
+        store
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
 
         let session1 = store.get_session("session-1").await.unwrap().unwrap();
         let last_used1 = session1.last_used_at;
@@ -971,9 +1018,15 @@ mod tests {
         let manager = SessionManager::new(store);
 
         let metadata = SessionMetadata::new().with_ip("10.0.0.1");
-        manager.create_session("session-1", "user-1", metadata).await.unwrap();
+        manager
+            .create_session("session-1", "user-1", metadata)
+            .await
+            .unwrap();
 
-        let sessions = manager.list_sessions("user-1", Some("session-1")).await.unwrap();
+        let sessions = manager
+            .list_sessions("user-1", Some("session-1"))
+            .await
+            .unwrap();
         assert_eq!(sessions.len(), 1);
         assert!(sessions[0].is_current);
 
@@ -1006,21 +1059,24 @@ mod tests {
     #[test]
     fn test_parse_user_agent() {
         assert_eq!(
-            parse_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0"),
+            parse_user_agent(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0"
+            ),
             "Chrome on macOS"
         );
         assert_eq!(
-            parse_user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"),
+            parse_user_agent(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"
+            ),
             "Firefox on Windows"
         );
         assert_eq!(
-            parse_user_agent("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/605.1.15"),
+            parse_user_agent(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/605.1.15"
+            ),
             "Safari on iOS"
         );
-        assert_eq!(
-            parse_user_agent("curl/7.88.1"),
-            "curl on Unknown OS"
-        );
+        assert_eq!(parse_user_agent("curl/7.88.1"), "curl on Unknown OS");
     }
 
     #[test]
@@ -1068,8 +1124,7 @@ mod tests {
     #[tokio::test]
     async fn test_session_limit_revoke_oldest() {
         let store = InMemorySessionStore::new();
-        let manager = SessionManager::new(store)
-            .with_session_limit(SessionLimitConfig::new(3));
+        let manager = SessionManager::new(store).with_session_limit(SessionLimitConfig::new(3));
 
         // Create 3 sessions (at limit)
         for i in 1..=3 {
@@ -1102,8 +1157,8 @@ mod tests {
     #[tokio::test]
     async fn test_session_limit_reject_new() {
         let store = InMemorySessionStore::new();
-        let manager = SessionManager::new(store)
-            .with_session_limit(SessionLimitConfig::new(2).reject_new());
+        let manager =
+            SessionManager::new(store).with_session_limit(SessionLimitConfig::new(2).reject_new());
 
         // Create 2 sessions (at limit)
         for i in 1..=2 {
@@ -1131,16 +1186,27 @@ mod tests {
     #[tokio::test]
     async fn test_session_limit_per_user() {
         let store = InMemorySessionStore::new();
-        let manager = SessionManager::new(store)
-            .with_session_limit(SessionLimitConfig::new(2));
+        let manager = SessionManager::new(store).with_session_limit(SessionLimitConfig::new(2));
 
         // Create 2 sessions for user-1
-        manager.create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
-        manager.create_session("session-2", "user-1", SessionMetadata::new()).await.unwrap();
+        manager
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+        manager
+            .create_session("session-2", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
 
         // Create 2 sessions for user-2 (separate limit)
-        manager.create_session("session-3", "user-2", SessionMetadata::new()).await.unwrap();
-        manager.create_session("session-4", "user-2", SessionMetadata::new()).await.unwrap();
+        manager
+            .create_session("session-3", "user-2", SessionMetadata::new())
+            .await
+            .unwrap();
+        manager
+            .create_session("session-4", "user-2", SessionMetadata::new())
+            .await
+            .unwrap();
 
         // Each user has their own limit
         let sessions_1 = manager.list_sessions("user-1", None).await.unwrap();
@@ -1152,17 +1218,32 @@ mod tests {
     #[tokio::test]
     async fn test_session_limit_evict_multiple() {
         let store = InMemorySessionStore::new();
-        let manager = SessionManager::new(store)
-            .with_session_limit(SessionLimitConfig::new(2));
+        let manager = SessionManager::new(store).with_session_limit(SessionLimitConfig::new(2));
 
         // Create 4 sessions directly via store (bypassing limit)
-        manager.store().create_session("session-1", "user-1", SessionMetadata::new()).await.unwrap();
+        manager
+            .store()
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        manager.store().create_session("session-2", "user-1", SessionMetadata::new()).await.unwrap();
+        manager
+            .store()
+            .create_session("session-2", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        manager.store().create_session("session-3", "user-1", SessionMetadata::new()).await.unwrap();
+        manager
+            .store()
+            .create_session("session-3", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        manager.store().create_session("session-4", "user-1", SessionMetadata::new()).await.unwrap();
+        manager
+            .store()
+            .create_session("session-4", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
 
         // Now create via manager - should evict 3 oldest to get down to limit
         let result = manager
@@ -1199,19 +1280,23 @@ mod tests {
 
     #[test]
     fn test_session_limit_config_builder() {
-        let config = SessionLimitConfig::new(5)
-            .reject_new();
+        let config = SessionLimitConfig::new(5).reject_new();
         assert_eq!(config.max_sessions, 5);
         assert_eq!(config.overflow_behavior, SessionOverflowBehavior::RejectNew);
 
-        let config = SessionLimitConfig::new(10)
-            .revoke_oldest();
+        let config = SessionLimitConfig::new(10).revoke_oldest();
         assert_eq!(config.max_sessions, 10);
-        assert_eq!(config.overflow_behavior, SessionOverflowBehavior::RevokeOldest);
+        assert_eq!(
+            config.overflow_behavior,
+            SessionOverflowBehavior::RevokeOldest
+        );
 
         let config = SessionLimitConfig::default();
         assert_eq!(config.max_sessions, 5); // DEFAULT_MAX_SESSIONS
-        assert_eq!(config.overflow_behavior, SessionOverflowBehavior::RevokeOldest);
+        assert_eq!(
+            config.overflow_behavior,
+            SessionOverflowBehavior::RevokeOldest
+        );
     }
 
     #[test]

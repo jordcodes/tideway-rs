@@ -332,9 +332,7 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
         }
 
         // Truncate reason to prevent DoS
-        let reason = req
-            .reason
-            .map(|r| truncate_string(&r, MAX_REASON_LENGTH));
+        let reason = req.reason.map(|r| truncate_string(&r, MAX_REASON_LENGTH));
 
         // If grace period, schedule deletion
         if let Some(grace_period) = self.config.grace_period {
@@ -382,7 +380,9 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
         }
 
         // Immediate deletion
-        let result = self.execute_deletion(&req.user_id, reason.as_deref()).await?;
+        let result = self
+            .execute_deletion(&req.user_id, reason.as_deref())
+            .await?;
 
         Ok(DeletionResult::Deleted {
             notification_sent: result.notification_sent,
@@ -411,9 +411,7 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
                 user_id = %user_id,
                 "No pending deletion to cancel"
             );
-            Err(TidewayError::NotFound(
-                "No pending deletion found".into(),
-            ))
+            Err(TidewayError::NotFound("No pending deletion found".into()))
         }
     }
 
@@ -682,12 +680,7 @@ pub mod test {
         }
 
         async fn get_pending_deletion(&self, user_id: &str) -> Result<Option<PendingDeletion>> {
-            Ok(self
-                .pending_deletions
-                .read()
-                .unwrap()
-                .get(user_id)
-                .cloned())
+            Ok(self.pending_deletions.read().unwrap().get(user_id).cloned())
         }
 
         async fn get_due_deletions(&self) -> Result<Vec<PendingDeletion>> {
@@ -845,7 +838,11 @@ mod tests {
     #[tokio::test]
     async fn test_scheduled_deletion() {
         let store = InMemoryDeletionStore::new();
-        store.add_user("user-1", "user@example.com", &create_test_hash("password123"));
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("password123"),
+        );
 
         let config = DeletionConfig::new()
             .grace_period(Some(Duration::from_secs(86400)))
@@ -884,7 +881,11 @@ mod tests {
     #[tokio::test]
     async fn test_immediate_soft_deletion() {
         let store = InMemoryDeletionStore::new();
-        store.add_user("user-1", "user@example.com", &create_test_hash("password123"));
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("password123"),
+        );
 
         let config = DeletionConfig::new()
             .grace_period(None)
@@ -917,7 +918,11 @@ mod tests {
     #[tokio::test]
     async fn test_immediate_hard_deletion() {
         let store = InMemoryDeletionStore::new();
-        store.add_user("user-1", "user@example.com", &create_test_hash("password123"));
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("password123"),
+        );
 
         let config = DeletionConfig::immediate().require_password(false);
 
@@ -938,7 +943,11 @@ mod tests {
     #[tokio::test]
     async fn test_password_verification() {
         let store = InMemoryDeletionStore::new();
-        store.add_user("user-1", "user@example.com", &create_test_hash("correct-password"));
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("correct-password"),
+        );
 
         let config = DeletionConfig::immediate(); // require_password is true
 
@@ -971,7 +980,11 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_deletion() {
         let store = InMemoryDeletionStore::new();
-        store.add_user("user-1", "user@example.com", &create_test_hash("password123"));
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("password123"),
+        );
 
         let config = DeletionConfig::new()
             .grace_period(Some(Duration::from_secs(86400)))
@@ -1017,7 +1030,11 @@ mod tests {
     #[tokio::test]
     async fn test_emails_sent() {
         let store = InMemoryDeletionStore::new();
-        store.add_user("user-1", "user@example.com", &create_test_hash("password123"));
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("password123"),
+        );
 
         let config = DeletionConfig::immediate().require_password(false);
 

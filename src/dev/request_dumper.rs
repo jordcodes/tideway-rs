@@ -2,12 +2,7 @@
 //!
 //! Logs complete request and response details in JSON format for debugging.
 
-use axum::{
-    body::Body,
-    extract::Request,
-    http::HeaderMap,
-    response::Response,
-};
+use axum::{body::Body, extract::Request, http::HeaderMap, response::Response};
 use serde_json::json;
 use std::sync::Arc;
 use tower::Service;
@@ -48,9 +43,14 @@ where
 {
     type Response = Response<Body>;
     type Error = S::Error;
-    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
 
-    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
@@ -91,7 +91,10 @@ where
                 "headers": format_headers(&headers),
             });
 
-            tracing::debug!("{}", serde_json::to_string_pretty(&request_info).unwrap_or_default());
+            tracing::debug!(
+                "{}",
+                serde_json::to_string_pretty(&request_info).unwrap_or_default()
+            );
 
             let response = inner.call(req).await?;
 
@@ -106,7 +109,10 @@ where
                 "headers": format_headers(response_headers),
             });
 
-            tracing::debug!("{}", serde_json::to_string_pretty(&response_info).unwrap_or_default());
+            tracing::debug!(
+                "{}",
+                serde_json::to_string_pretty(&response_info).unwrap_or_default()
+            );
 
             Ok(response)
         })

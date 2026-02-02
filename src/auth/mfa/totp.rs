@@ -163,9 +163,11 @@ mod tests {
         let code = manager
             .generate_current(&setup.secret, "user@example.com")
             .unwrap();
-        assert!(manager
-            .verify(&setup.secret, &code, "user@example.com")
-            .unwrap());
+        assert!(
+            manager
+                .verify(&setup.secret, &code, "user@example.com")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -178,9 +180,11 @@ mod tests {
             .unwrap();
         // Add spaces like some users might copy
         let code_with_spaces = format!("{} {}", &code[..3], &code[3..]);
-        assert!(manager
-            .verify(&setup.secret, &code_with_spaces, "user@example.com")
-            .unwrap());
+        assert!(
+            manager
+                .verify(&setup.secret, &code_with_spaces, "user@example.com")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -188,9 +192,11 @@ mod tests {
         let manager = TotpManager::new(TotpConfig::new("TestApp"));
         let setup = manager.generate_setup("user@example.com").unwrap();
 
-        assert!(!manager
-            .verify(&setup.secret, "000000", "user@example.com")
-            .unwrap());
+        assert!(
+            !manager
+                .verify(&setup.secret, "000000", "user@example.com")
+                .unwrap()
+        );
     }
 
     #[test]

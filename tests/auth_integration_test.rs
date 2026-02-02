@@ -3,24 +3,18 @@
 //! These tests verify the complete HTTP request/response cycle for all auth operations.
 
 use async_trait::async_trait;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::post,
-    Json, Router,
-};
+use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
+use tideway::Result;
 use tideway::auth::{
-    JwtIssuer, JwtIssuerConfig, LoginFlow, LoginFlowConfig, LoginRateLimitConfig,
-    LoginRateLimiter, LoginRequest, LoginResponse, MfaTokenStore, PasswordHasher,
-    RefreshTokenStore, RegisterRequest, RegistrationFlow, TokenIssuer, TokenIssuance,
-    TokenSubject, UserCreator, UserStore,
+    JwtIssuer, JwtIssuerConfig, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter,
+    LoginRequest, LoginResponse, MfaTokenStore, PasswordHasher, RefreshTokenStore, RegisterRequest,
+    RegistrationFlow, TokenIssuance, TokenIssuer, TokenSubject, UserCreator, UserStore,
 };
 use tideway::testing::post as test_post;
-use tideway::Result;
 
 // =============================================================================
 // Test User and In-Memory Store
@@ -73,7 +67,10 @@ impl InMemoryUserStore {
             #[cfg(feature = "auth-mfa")]
             backup_codes: vec![],
         };
-        self.users.write().unwrap().insert(email.to_lowercase(), user);
+        self.users
+            .write()
+            .unwrap()
+            .insert(email.to_lowercase(), user);
         id
     }
 
@@ -96,7 +93,10 @@ impl InMemoryUserStore {
 
     fn get_failed_attempts(&self, email: &str) -> u32 {
         let users = self.users.read().unwrap();
-        users.get(&email.to_lowercase()).map(|u| u.failed_attempts).unwrap_or(0)
+        users
+            .get(&email.to_lowercase())
+            .map(|u| u.failed_attempts)
+            .unwrap_or(0)
     }
 }
 
@@ -230,7 +230,10 @@ impl UserCreator for InMemoryUserStore {
             #[cfg(feature = "auth-mfa")]
             backup_codes: vec![],
         };
-        self.users.write().unwrap().insert(email.to_lowercase(), user.clone());
+        self.users
+            .write()
+            .unwrap()
+            .insert(email.to_lowercase(), user.clone());
         Ok(user)
     }
 
@@ -259,7 +262,10 @@ impl InMemoryMfaTokenStore {
 impl MfaTokenStore for InMemoryMfaTokenStore {
     async fn store(&self, token: &str, user_id: &str, ttl: Duration) -> Result<()> {
         let expires = SystemTime::now() + ttl;
-        self.tokens.write().unwrap().insert(token.to_string(), (user_id.to_string(), expires));
+        self.tokens
+            .write()
+            .unwrap()
+            .insert(token.to_string(), (user_id.to_string(), expires));
         Ok(())
     }
 
@@ -408,7 +414,10 @@ async fn login_handler(
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>> {
     // Simulate extracting IP from request (use a fixed IP for testing)
-    let response = state.login_flow.login_with_ip(req, Some("127.0.0.1".to_string())).await?;
+    let response = state
+        .login_flow
+        .login_with_ip(req, Some("127.0.0.1".to_string()))
+        .await?;
     Ok(Json(response))
 }
 
@@ -429,14 +438,9 @@ fn create_test_app(user_store: InMemoryUserStore) -> (Router, AppState) {
 
     let login_config = LoginFlowConfig::new("TestApp").require_verification(true);
     let login_flow = Arc::new(
-        LoginFlow::new(
-            user_store.clone(),
-            mfa_store,
-            token_issuer,
-            login_config,
-        )
-        .with_refresh_store(refresh_store)
-        .with_rate_limiter(rate_limiter),
+        LoginFlow::new(user_store.clone(), mfa_store, token_issuer, login_config)
+            .with_refresh_store(refresh_store)
+            .with_rate_limiter(rate_limiter),
     );
 
     let registration_flow = Arc::new(RegistrationFlow::new(user_store.clone()));
@@ -694,7 +698,7 @@ async fn test_login_clears_failed_attempts_on_success() {
 #[cfg(feature = "auth-mfa")]
 mod mfa_tests {
     use super::*;
-    use tideway::auth::mfa::{TotpManager, TotpConfig};
+    use tideway::auth::mfa::{TotpConfig, TotpManager};
 
     #[tokio::test]
     async fn test_login_mfa_required() {
@@ -726,7 +730,9 @@ mod mfa_tests {
 
         let totp = TotpManager::new(TotpConfig::default());
         let setup = totp.generate_setup("mfa@example.com").unwrap();
-        let code = totp.generate_current(&setup.secret, "mfa@example.com").unwrap();
+        let code = totp
+            .generate_current(&setup.secret, "mfa@example.com")
+            .unwrap();
         user_store.enable_mfa("mfa@example.com", &setup.secret, vec![]);
 
         let (app, _) = create_test_app(user_store);
@@ -823,12 +829,23 @@ async fn test_login_response_contains_tokens() {
         .await;
 
     let body = response.response();
-    let bytes = axum::body::to_bytes(body.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(body.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-    assert!(json.get("access_token").is_some(), "Response should contain access_token");
-    assert!(json.get("refresh_token").is_some(), "Response should contain refresh_token");
-    assert!(json.get("expires_in").is_some(), "Response should contain expires_in");
+    assert!(
+        json.get("access_token").is_some(),
+        "Response should contain access_token"
+    );
+    assert!(
+        json.get("refresh_token").is_some(),
+        "Response should contain refresh_token"
+    );
+    assert!(
+        json.get("expires_in").is_some(),
+        "Response should contain expires_in"
+    );
 }
 
 #[tokio::test]
@@ -846,10 +863,15 @@ async fn test_login_error_response_structure() {
         .await;
 
     let body = response.response();
-    let bytes = axum::body::to_bytes(body.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(body.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-    assert!(json.get("message").is_some(), "Error response should contain message");
+    assert!(
+        json.get("message").is_some(),
+        "Error response should contain message"
+    );
 }
 
 // =============================================================================
@@ -917,7 +939,9 @@ async fn test_email_enumeration_prevention() {
         .execute()
         .await;
     let body1 = response1.response();
-    let bytes1 = axum::body::to_bytes(body1.into_body(), usize::MAX).await.unwrap();
+    let bytes1 = axum::body::to_bytes(body1.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json1: serde_json::Value = serde_json::from_slice(&bytes1).unwrap();
 
     // Non-existent user
@@ -929,7 +953,9 @@ async fn test_email_enumeration_prevention() {
         .execute()
         .await;
     let body2 = response2.response();
-    let bytes2 = axum::body::to_bytes(body2.into_body(), usize::MAX).await.unwrap();
+    let bytes2 = axum::body::to_bytes(body2.into_body(), usize::MAX)
+        .await
+        .unwrap();
     let json2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
 
     // Both should return the same error message

@@ -37,13 +37,9 @@ struct OrgContext<M: MembershipStore> {
 impl<M: MembershipStore + Clone + 'static> OrgContext<M> {
     /// Extract organization context from request extensions.
     fn from_request(request: &Request) -> Result<Self, TidewayError> {
-        let store = request
-            .extensions()
-            .get::<M>()
-            .cloned()
-            .ok_or_else(|| {
-                TidewayError::internal("MembershipStore not found in request extensions")
-            })?;
+        let store = request.extensions().get::<M>().cloned().ok_or_else(|| {
+            TidewayError::internal("MembershipStore not found in request extensions")
+        })?;
 
         let org_claims = request
             .extensions()
@@ -222,26 +218,26 @@ where
     }
 
     /// Middleware that requires `can_manage_members` permission.
-    pub fn can_manage_members(
-    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
+    pub fn can_manage_members()
+    -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
         Self::check(|store, role| store.can_manage_members(role))
     }
 
     /// Middleware that requires `can_manage_settings` permission.
-    pub fn can_manage_settings(
-    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
+    pub fn can_manage_settings()
+    -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
         Self::check(|store, role| store.can_manage_settings(role))
     }
 
     /// Middleware that requires `can_delete_org` permission.
-    pub fn can_delete_org(
-    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
+    pub fn can_delete_org()
+    -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
         Self::check(|store, role| store.can_delete_org(role))
     }
 
     /// Middleware that requires `is_owner` permission.
-    pub fn is_owner(
-    ) -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static {
+    pub fn is_owner() -> impl Fn(Request, Next) -> MiddlewareFuture + Clone + Send + Sync + 'static
+    {
         Self::check(|store, role| store.is_owner(role))
     }
 }

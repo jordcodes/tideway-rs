@@ -3,9 +3,9 @@
 //! This module provides a high-level Room abstraction for grouping connections
 //! and broadcasting messages to specific channels.
 
-use crate::error::Result;
 use super::manager::ConnectionManager;
 use super::message::Message;
+use crate::error::Result;
 use serde::Serialize;
 use std::sync::Arc;
 

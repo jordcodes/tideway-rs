@@ -11,8 +11,8 @@
 
 use crate::error::Result;
 use secrecy::{ExposeSecret, SecretString};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use super::checkout::{
@@ -21,13 +21,9 @@ use super::checkout::{
 };
 use super::customer::{CreateCustomerRequest, StripeClient, UpdateCustomerRequest};
 use super::error::BillingError;
-use super::invoice::{
-    Invoice, InvoiceLineItem, InvoiceList, InvoiceStatus, StripeInvoiceClient,
-};
+use super::invoice::{Invoice, InvoiceLineItem, InvoiceList, InvoiceStatus, StripeInvoiceClient};
 use super::payment::{PaymentMethod, PaymentMethodList, StripePaymentMethodClient};
-use super::portal::{
-    CreatePortalSessionRequest, PortalFlow, PortalSession, StripePortalClient,
-};
+use super::portal::{CreatePortalSessionRequest, PortalFlow, PortalSession, StripePortalClient};
 use super::refund::{CreateRefundRequest, Refund, RefundReason, RefundStatus, StripeRefundClient};
 use super::subscription::{
     ProrationBehavior, StripeSubscriptionClient, StripeSubscriptionData, SubscriptionMetadata,
@@ -381,8 +377,7 @@ fn validate_api_key(key: &str) -> std::result::Result<(), InvalidApiKeyError> {
     let valid_prefixes = ["sk_test_", "sk_live_", "rk_test_", "rk_live_"];
     if !valid_prefixes.iter().any(|prefix| key.starts_with(prefix)) {
         return Err(InvalidApiKeyError {
-            reason: "API key must start with sk_test_, sk_live_, rk_test_, or rk_live_"
-                .to_string(),
+            reason: "API key must start with sk_test_, sk_live_, rk_test_, or rk_live_".to_string(),
         });
     }
 
@@ -396,9 +391,8 @@ fn validate_api_key(key: &str) -> std::result::Result<(), InvalidApiKeyError> {
 /// Parse a customer ID string into a Stripe CustomerId.
 #[inline]
 fn parse_customer_id(id: &str) -> Result<stripe::CustomerId> {
-    id.parse().map_err(|_| {
-        crate::error::TidewayError::BadRequest(format!("Invalid customer ID: {}", id))
-    })
+    id.parse()
+        .map_err(|_| crate::error::TidewayError::BadRequest(format!("Invalid customer ID: {}", id)))
 }
 
 /// Parse a subscription ID string into a Stripe SubscriptionId.
@@ -412,9 +406,8 @@ fn parse_subscription_id(id: &str) -> Result<stripe::SubscriptionId> {
 /// Parse an invoice ID string into a Stripe InvoiceId.
 #[inline]
 fn parse_invoice_id(id: &str) -> Result<stripe::InvoiceId> {
-    id.parse().map_err(|_| {
-        crate::error::TidewayError::BadRequest(format!("Invalid invoice ID: {}", id))
-    })
+    id.parse()
+        .map_err(|_| crate::error::TidewayError::BadRequest(format!("Invalid invoice ID: {}", id)))
 }
 
 // ============================================================================
@@ -636,7 +629,12 @@ where
 
 /// Log a retry attempt.
 #[inline]
-fn log_retry(operation: &str, attempts: u32, error: &stripe::StripeError, config: &LiveStripeClientConfig) {
+fn log_retry(
+    operation: &str,
+    attempts: u32,
+    error: &stripe::StripeError,
+    config: &LiveStripeClientConfig,
+) {
     let delay = calculate_backoff_delay(attempts, config.base_delay_ms, config.max_delay_ms);
     tracing::warn!(
         target: "tideway::billing::stripe",
@@ -760,11 +758,16 @@ impl StripeClient for LiveStripeClient {
             params.metadata = Some(meta);
         }
 
-        let customer = with_retry_cb(&self.config, &self.circuit_breaker, "create_customer", || {
-            let client = client.clone();
-            let params = params.clone();
-            async move { stripe::Customer::create(&client, params).await }
-        })
+        let customer = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "create_customer",
+            || {
+                let client = client.clone();
+                let params = params.clone();
+                async move { stripe::Customer::create(&client, params).await }
+            },
+        )
         .await?;
 
         Ok(customer.id.to_string())
@@ -786,12 +789,17 @@ impl StripeClient for LiveStripeClient {
             params.name = Some(name);
         }
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "update_customer", || {
-            let client = client.clone();
-            let customer_id = customer_id.clone();
-            let params = params.clone();
-            async move { stripe::Customer::update(&client, &customer_id, params).await }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "update_customer",
+            || {
+                let client = client.clone();
+                let customer_id = customer_id.clone();
+                let params = params.clone();
+                async move { stripe::Customer::update(&client, &customer_id, params).await }
+            },
+        )
         .await?;
 
         Ok(())
@@ -800,11 +808,16 @@ impl StripeClient for LiveStripeClient {
     async fn delete_customer(&self, customer_id: &str) -> Result<()> {
         let customer_id = parse_customer_id(customer_id)?;
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "delete_customer", || {
-            let client = self.client.clone();
-            let customer_id = customer_id.clone();
-            async move { stripe::Customer::delete(&client, &customer_id).await }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "delete_customer",
+            || {
+                let client = self.client.clone();
+                let customer_id = customer_id.clone();
+                async move { stripe::Customer::delete(&client, &customer_id).await }
+            },
+        )
         .await?;
 
         Ok(())
@@ -813,11 +826,16 @@ impl StripeClient for LiveStripeClient {
     async fn get_default_payment_method(&self, customer_id: &str) -> Result<Option<String>> {
         let customer_id = parse_customer_id(customer_id)?;
 
-        let customer = with_retry_cb(&self.config, &self.circuit_breaker, "get_default_payment_method", || {
-            let client = self.client.clone();
-            let customer_id = customer_id.clone();
-            async move { stripe::Customer::retrieve(&client, &customer_id, &[]).await }
-        })
+        let customer = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "get_default_payment_method",
+            || {
+                let client = self.client.clone();
+                let customer_id = customer_id.clone();
+                async move { stripe::Customer::retrieve(&client, &customer_id, &[]).await }
+            },
+        )
         .await?;
 
         Ok(customer
@@ -890,9 +908,8 @@ impl StripeCheckoutClient for LiveStripeClient {
 
         // Tax and billing options
         if request.tax_id_collection {
-            params.tax_id_collection = Some(stripe::CreateCheckoutSessionTaxIdCollection {
-                enabled: true,
-            });
+            params.tax_id_collection =
+                Some(stripe::CreateCheckoutSessionTaxIdCollection { enabled: true });
         }
 
         if request.billing_address_collection {
@@ -920,11 +937,16 @@ impl StripeCheckoutClient for LiveStripeClient {
             });
         }
 
-        let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_checkout_session", || {
-            let client = client.clone();
-            let params = params.clone();
-            async move { stripe::CheckoutSession::create(&client, params).await }
-        })
+        let session = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "create_checkout_session",
+            || {
+                let client = client.clone();
+                let params = params.clone();
+                async move { stripe::CheckoutSession::create(&client, params).await }
+            },
+        )
         .await?;
 
         Ok(CheckoutSession {
@@ -944,18 +966,23 @@ impl StripeSubscriptionClient for LiveStripeClient {
     async fn cancel_subscription(&self, subscription_id: &str) -> Result<()> {
         let sub_id = parse_subscription_id(subscription_id)?;
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "cancel_subscription", || {
-            let client = self.client.clone();
-            let sub_id = sub_id.clone();
-            async move {
-                stripe::Subscription::cancel(
-                    &client,
-                    &sub_id,
-                    stripe::CancelSubscription::default(),
-                )
-                .await
-            }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "cancel_subscription",
+            || {
+                let client = self.client.clone();
+                let sub_id = sub_id.clone();
+                async move {
+                    stripe::Subscription::cancel(
+                        &client,
+                        &sub_id,
+                        stripe::CancelSubscription::default(),
+                    )
+                    .await
+                }
+            },
+        )
         .await?;
 
         Ok(())
@@ -968,12 +995,17 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let mut params = stripe::UpdateSubscription::new();
         params.cancel_at_period_end = Some(true);
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "cancel_subscription_at_period_end", || {
-            let client = client.clone();
-            let sub_id = sub_id.clone();
-            let params = params.clone();
-            async move { stripe::Subscription::update(&client, &sub_id, params).await }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "cancel_subscription_at_period_end",
+            || {
+                let client = client.clone();
+                let sub_id = sub_id.clone();
+                let params = params.clone();
+                async move { stripe::Subscription::update(&client, &sub_id, params).await }
+            },
+        )
         .await?;
 
         Ok(())
@@ -986,12 +1018,17 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let mut params = stripe::UpdateSubscription::new();
         params.cancel_at_period_end = Some(false);
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "resume_subscription", || {
-            let client = client.clone();
-            let sub_id = sub_id.clone();
-            let params = params.clone();
-            async move { stripe::Subscription::update(&client, &sub_id, params).await }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "resume_subscription",
+            || {
+                let client = client.clone();
+                let sub_id = sub_id.clone();
+                let params = params.clone();
+                async move { stripe::Subscription::update(&client, &sub_id, params).await }
+            },
+        )
         .await?;
 
         Ok(())
@@ -1000,11 +1037,16 @@ impl StripeSubscriptionClient for LiveStripeClient {
     async fn get_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData> {
         let sub_id = parse_subscription_id(subscription_id)?;
 
-        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "get_subscription", || {
-            let client = self.client.clone();
-            let sub_id = sub_id.clone();
-            async move { stripe::Subscription::retrieve(&client, &sub_id, &[]).await }
-        })
+        let subscription = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "get_subscription",
+            || {
+                let client = self.client.clone();
+                let sub_id = sub_id.clone();
+                async move { stripe::Subscription::retrieve(&client, &sub_id, &[]).await }
+            },
+        )
         .await?;
 
         map_subscription_to_data(subscription)
@@ -1063,12 +1105,17 @@ impl StripeSubscriptionClient for LiveStripeClient {
             }
         }
 
-        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "update_subscription", || {
-            let client = client.clone();
-            let sub_id = sub_id.clone();
-            let params = params.clone();
-            async move { stripe::Subscription::update(&client, &sub_id, params).await }
-        })
+        let subscription = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "update_subscription",
+            || {
+                let client = client.clone();
+                let sub_id = sub_id.clone();
+                let params = params.clone();
+                async move { stripe::Subscription::update(&client, &sub_id, params).await }
+            },
+        )
         .await?;
 
         map_subscription_to_data(subscription)
@@ -1085,13 +1132,14 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let mut params = stripe::UpdateSubscription::new();
         params.trial_end = Some(stripe::Scheduled::Timestamp(new_trial_end as i64));
 
-        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "extend_trial", || {
-            let client = client.clone();
-            let sub_id = sub_id.clone();
-            let params = params.clone();
-            async move { stripe::Subscription::update(&client, &sub_id, params).await }
-        })
-        .await?;
+        let subscription =
+            with_retry_cb(&self.config, &self.circuit_breaker, "extend_trial", || {
+                let client = client.clone();
+                let sub_id = sub_id.clone();
+                let params = params.clone();
+                async move { stripe::Subscription::update(&client, &sub_id, params).await }
+            })
+            .await?;
 
         map_subscription_to_data(subscription)
     }
@@ -1101,7 +1149,8 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let sub_id = parse_subscription_id(subscription_id)?;
 
         // First, verify the subscription is not already paused
-        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[]).await
+        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
+            .await
             .map_err(|e| BillingError::StripeApiError {
                 operation: "get_subscription_for_pause".to_string(),
                 message: e.to_string(),
@@ -1112,7 +1161,8 @@ impl StripeSubscriptionClient for LiveStripeClient {
         if current.pause_collection.is_some() {
             return Err(BillingError::SubscriptionAlreadyPaused {
                 billable_id: subscription_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         let mut params = stripe::UpdateSubscription::new();
@@ -1123,23 +1173,32 @@ impl StripeSubscriptionClient for LiveStripeClient {
             resumes_at: None, // Pause indefinitely until explicitly resumed
         });
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "pause_subscription", || {
-            let client = client.clone();
-            let sub_id = sub_id.clone();
-            let params = params.clone();
-            async move { stripe::Subscription::update(&client, &sub_id, params).await }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "pause_subscription",
+            || {
+                let client = client.clone();
+                let sub_id = sub_id.clone();
+                let params = params.clone();
+                async move { stripe::Subscription::update(&client, &sub_id, params).await }
+            },
+        )
         .await?;
 
         Ok(())
     }
 
-    async fn resume_paused_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData> {
+    async fn resume_paused_subscription(
+        &self,
+        subscription_id: &str,
+    ) -> Result<StripeSubscriptionData> {
         let client = self.idempotent_client("resume_paused_subscription");
         let sub_id = parse_subscription_id(subscription_id)?;
 
         // First, verify the subscription is actually paused
-        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[]).await
+        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
+            .await
             .map_err(|e| BillingError::StripeApiError {
                 operation: "get_subscription_for_resume".to_string(),
                 message: e.to_string(),
@@ -1150,7 +1209,8 @@ impl StripeSubscriptionClient for LiveStripeClient {
         if current.pause_collection.is_none() {
             return Err(BillingError::SubscriptionNotPaused {
                 billable_id: subscription_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         // To resume a paused subscription in Stripe:
@@ -1173,12 +1233,17 @@ impl StripeSubscriptionClient for LiveStripeClient {
             resumes_at: Some(now as i64),
         });
 
-        let subscription = with_retry_cb(&self.config, &self.circuit_breaker, "resume_paused_subscription", || {
-            let client = client.clone();
-            let sub_id = sub_id.clone();
-            let params = params.clone();
-            async move { stripe::Subscription::update(&client, &sub_id, params).await }
-        })
+        let subscription = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "resume_paused_subscription",
+            || {
+                let client = client.clone();
+                let sub_id = sub_id.clone();
+                let params = params.clone();
+                async move { stripe::Subscription::update(&client, &sub_id, params).await }
+            },
+        )
         .await?;
 
         // Verify the subscription was actually resumed
@@ -1207,10 +1272,12 @@ impl StripePaymentMethodClient for LiveStripeClient {
         limit: u8,
     ) -> Result<PaymentMethodList> {
         let client = self.client.clone();
-        let customer_id = customer_id.parse::<stripe::CustomerId>()
-            .map_err(|_| BillingError::NoCustomer {
-                billable_id: customer_id.to_string(),
-            })?;
+        let customer_id =
+            customer_id
+                .parse::<stripe::CustomerId>()
+                .map_err(|_| BillingError::NoCustomer {
+                    billable_id: customer_id.to_string(),
+                })?;
 
         // Get customer to find default payment method
         let customer = with_retry_cb(&self.config, &self.circuit_breaker, "get_customer", || {
@@ -1220,7 +1287,8 @@ impl StripePaymentMethodClient for LiveStripeClient {
         })
         .await?;
 
-        let default_pm_id = customer.invoice_settings
+        let default_pm_id = customer
+            .invoice_settings
             .and_then(|s| s.default_payment_method)
             .map(|pm| match pm {
                 stripe::Expandable::Id(id) => id.to_string(),
@@ -1233,24 +1301,36 @@ impl StripePaymentMethodClient for LiveStripeClient {
         params.type_ = Some(stripe::PaymentMethodTypeFilter::Card);
         params.limit = Some(limit.into());
 
-        let list = with_retry_cb(&self.config, &self.circuit_breaker, "list_payment_methods", || {
-            let client = client.clone();
-            let params = params.clone();
-            async move { stripe::PaymentMethod::list(&client, &params).await }
-        })
+        let list = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "list_payment_methods",
+            || {
+                let client = client.clone();
+                let params = params.clone();
+                async move { stripe::PaymentMethod::list(&client, &params).await }
+            },
+        )
         .await?;
 
-        let methods = list.data.into_iter().map(|pm| {
-            let card = pm.card.as_ref();
-            PaymentMethod {
-                id: pm.id.to_string(),
-                card_brand: card.map(|c| format!("{:?}", c.brand).to_lowercase()),
-                card_last4: card.map(|c| c.last4.clone()),
-                card_exp_month: card.map(|c| c.exp_month as u32),
-                card_exp_year: card.map(|c| c.exp_year as u32),
-                is_default: default_pm_id.as_ref().map(|d| d == &pm.id.to_string()).unwrap_or(false),
-            }
-        }).collect();
+        let methods = list
+            .data
+            .into_iter()
+            .map(|pm| {
+                let card = pm.card.as_ref();
+                PaymentMethod {
+                    id: pm.id.to_string(),
+                    card_brand: card.map(|c| format!("{:?}", c.brand).to_lowercase()),
+                    card_last4: card.map(|c| c.last4.clone()),
+                    card_exp_month: card.map(|c| c.exp_month as u32),
+                    card_exp_year: card.map(|c| c.exp_year as u32),
+                    is_default: default_pm_id
+                        .as_ref()
+                        .map(|d| d == &pm.id.to_string())
+                        .unwrap_or(false),
+                }
+            })
+            .collect();
 
         Ok(PaymentMethodList {
             methods,
@@ -1264,27 +1344,38 @@ impl StripePaymentMethodClient for LiveStripeClient {
         customer_id: &str,
     ) -> Result<PaymentMethod> {
         let client = self.client.clone();
-        let pm_id = payment_method_id.parse::<stripe::PaymentMethodId>()
+        let pm_id = payment_method_id
+            .parse::<stripe::PaymentMethodId>()
             .map_err(|_| BillingError::PaymentMethodNotFound {
                 payment_method_id: payment_method_id.to_string(),
             })?;
-        let customer_id = customer_id.parse::<stripe::CustomerId>()
-            .map_err(|_| BillingError::NoCustomer {
-                billable_id: customer_id.to_string(),
-            })?;
+        let customer_id =
+            customer_id
+                .parse::<stripe::CustomerId>()
+                .map_err(|_| BillingError::NoCustomer {
+                    billable_id: customer_id.to_string(),
+                })?;
 
-        let pm = with_retry_cb(&self.config, &self.circuit_breaker, "attach_payment_method", || {
-            let client = client.clone();
-            let pm_id = pm_id.clone();
-            let customer_id = customer_id.clone();
-            async move {
-                stripe::PaymentMethod::attach(
-                    &client,
-                    &pm_id,
-                    stripe::AttachPaymentMethod { customer: customer_id },
-                ).await
-            }
-        })
+        let pm = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "attach_payment_method",
+            || {
+                let client = client.clone();
+                let pm_id = pm_id.clone();
+                let customer_id = customer_id.clone();
+                async move {
+                    stripe::PaymentMethod::attach(
+                        &client,
+                        &pm_id,
+                        stripe::AttachPaymentMethod {
+                            customer: customer_id,
+                        },
+                    )
+                    .await
+                }
+            },
+        )
         .await?;
 
         let card = pm.card.as_ref();
@@ -1298,21 +1389,24 @@ impl StripePaymentMethodClient for LiveStripeClient {
         })
     }
 
-    async fn detach_payment_method(
-        &self,
-        payment_method_id: &str,
-    ) -> Result<()> {
+    async fn detach_payment_method(&self, payment_method_id: &str) -> Result<()> {
         let client = self.client.clone();
-        let pm_id = payment_method_id.parse::<stripe::PaymentMethodId>()
+        let pm_id = payment_method_id
+            .parse::<stripe::PaymentMethodId>()
             .map_err(|_| BillingError::PaymentMethodNotFound {
                 payment_method_id: payment_method_id.to_string(),
             })?;
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "detach_payment_method", || {
-            let client = client.clone();
-            let pm_id = pm_id.clone();
-            async move { stripe::PaymentMethod::detach(&client, &pm_id).await }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "detach_payment_method",
+            || {
+                let client = client.clone();
+                let pm_id = pm_id.clone();
+                async move { stripe::PaymentMethod::detach(&client, &pm_id).await }
+            },
+        )
         .await?;
 
         Ok(())
@@ -1324,11 +1418,14 @@ impl StripePaymentMethodClient for LiveStripeClient {
         payment_method_id: &str,
     ) -> Result<()> {
         let client = self.idempotent_client("set_default_payment_method");
-        let customer_id = customer_id.parse::<stripe::CustomerId>()
-            .map_err(|_| BillingError::NoCustomer {
-                billable_id: customer_id.to_string(),
-            })?;
-        let pm_id = payment_method_id.parse::<stripe::PaymentMethodId>()
+        let customer_id =
+            customer_id
+                .parse::<stripe::CustomerId>()
+                .map_err(|_| BillingError::NoCustomer {
+                    billable_id: customer_id.to_string(),
+                })?;
+        let pm_id = payment_method_id
+            .parse::<stripe::PaymentMethodId>()
             .map_err(|_| BillingError::PaymentMethodNotFound {
                 payment_method_id: payment_method_id.to_string(),
             })?;
@@ -1339,12 +1436,17 @@ impl StripePaymentMethodClient for LiveStripeClient {
             ..Default::default()
         });
 
-        with_retry_cb(&self.config, &self.circuit_breaker, "set_default_payment_method", || {
-            let client = client.clone();
-            let customer_id = customer_id.clone();
-            let params = params.clone();
-            async move { stripe::Customer::update(&client, &customer_id, params).await }
-        })
+        with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "set_default_payment_method",
+            || {
+                let client = client.clone();
+                let customer_id = customer_id.clone();
+                let params = params.clone();
+                async move { stripe::Customer::update(&client, &customer_id, params).await }
+            },
+        )
         .await?;
 
         Ok(())
@@ -1362,15 +1464,20 @@ impl StripeRefundClient for LiveStripeClient {
         let mut params = stripe::CreateRefund::new();
 
         if let Some(ref charge_id) = request.charge_id {
-            params.charge = Some(charge_id.parse().map_err(|_| BillingError::ChargeNotFound {
-                charge_id: charge_id.clone(),
-            })?);
+            params.charge = Some(
+                charge_id
+                    .parse()
+                    .map_err(|_| BillingError::ChargeNotFound {
+                        charge_id: charge_id.clone(),
+                    })?,
+            );
         }
 
         if let Some(ref pi_id) = request.payment_intent_id {
-            params.payment_intent = Some(pi_id.parse().map_err(|_| BillingError::RefundFailed {
-                reason: format!("Invalid payment intent ID: {}", pi_id),
-            })?);
+            params.payment_intent =
+                Some(pi_id.parse().map_err(|_| BillingError::RefundFailed {
+                    reason: format!("Invalid payment intent ID: {}", pi_id),
+                })?);
         }
 
         if let Some(amount) = request.amount {
@@ -1381,7 +1488,9 @@ impl StripeRefundClient for LiveStripeClient {
             params.reason = Some(match reason {
                 RefundReason::Duplicate => stripe::RefundReasonFilter::Duplicate,
                 RefundReason::Fraudulent => stripe::RefundReasonFilter::Fraudulent,
-                RefundReason::RequestedByCustomer => stripe::RefundReasonFilter::RequestedByCustomer,
+                RefundReason::RequestedByCustomer => {
+                    stripe::RefundReasonFilter::RequestedByCustomer
+                }
             });
         }
 
@@ -1397,10 +1506,12 @@ impl StripeRefundClient for LiveStripeClient {
 
     async fn get_refund(&self, refund_id: &str) -> Result<Refund> {
         let client = self.client.clone();
-        let refund_id = refund_id.parse::<stripe::RefundId>()
-            .map_err(|_| BillingError::RefundNotFound {
-                refund_id: refund_id.to_string(),
-            })?;
+        let refund_id =
+            refund_id
+                .parse::<stripe::RefundId>()
+                .map_err(|_| BillingError::RefundNotFound {
+                    refund_id: refund_id.to_string(),
+                })?;
 
         let refund = with_retry_cb(&self.config, &self.circuit_breaker, "get_refund", || {
             let client = client.clone();
@@ -1416,9 +1527,13 @@ impl StripeRefundClient for LiveStripeClient {
         let client = self.client.clone();
 
         let mut params = stripe::ListRefunds::new();
-        params.charge = Some(charge_id.parse().map_err(|_| BillingError::ChargeNotFound {
-            charge_id: charge_id.to_string(),
-        })?);
+        params.charge = Some(
+            charge_id
+                .parse()
+                .map_err(|_| BillingError::ChargeNotFound {
+                    charge_id: charge_id.to_string(),
+                })?,
+        );
         params.limit = Some(limit.into());
 
         let list = with_retry_cb(&self.config, &self.circuit_breaker, "list_refunds", || {
@@ -1433,10 +1548,12 @@ impl StripeRefundClient for LiveStripeClient {
 
     async fn get_charge_customer_id(&self, charge_id: &str) -> Result<String> {
         let client = self.client.clone();
-        let charge_id = charge_id.parse::<stripe::ChargeId>()
-            .map_err(|_| BillingError::ChargeNotFound {
-                charge_id: charge_id.to_string(),
-            })?;
+        let charge_id =
+            charge_id
+                .parse::<stripe::ChargeId>()
+                .map_err(|_| BillingError::ChargeNotFound {
+                    charge_id: charge_id.to_string(),
+                })?;
 
         let charge = with_retry_cb(&self.config, &self.circuit_breaker, "get_charge", || {
             let client = client.clone();
@@ -1446,28 +1563,38 @@ impl StripeRefundClient for LiveStripeClient {
         .await?;
 
         // Extract customer ID from charge
-        charge.customer
+        charge
+            .customer
             .map(|c| match c {
                 stripe::Expandable::Id(id) => id.to_string(),
                 stripe::Expandable::Object(customer) => customer.id.to_string(),
             })
-            .ok_or_else(|| BillingError::ChargeNotFound {
-                charge_id: charge_id.to_string(),
-            }.into())
+            .ok_or_else(|| {
+                BillingError::ChargeNotFound {
+                    charge_id: charge_id.to_string(),
+                }
+                .into()
+            })
     }
 
     async fn get_payment_intent_customer_id(&self, payment_intent_id: &str) -> Result<String> {
         let client = self.client.clone();
-        let pi_id = payment_intent_id.parse::<stripe::PaymentIntentId>()
+        let pi_id = payment_intent_id
+            .parse::<stripe::PaymentIntentId>()
             .map_err(|_| BillingError::RefundFailed {
                 reason: format!("Invalid payment intent ID: {}", payment_intent_id),
             })?;
 
-        let pi = with_retry_cb(&self.config, &self.circuit_breaker, "get_payment_intent", || {
-            let client = client.clone();
-            let pi_id = pi_id.clone();
-            async move { stripe::PaymentIntent::retrieve(&client, &pi_id, &[]).await }
-        })
+        let pi = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "get_payment_intent",
+            || {
+                let client = client.clone();
+                let pi_id = pi_id.clone();
+                async move { stripe::PaymentIntent::retrieve(&client, &pi_id, &[]).await }
+            },
+        )
         .await?;
 
         // Extract customer ID from payment intent
@@ -1476,9 +1603,12 @@ impl StripeRefundClient for LiveStripeClient {
                 stripe::Expandable::Id(id) => id.to_string(),
                 stripe::Expandable::Object(customer) => customer.id.to_string(),
             })
-            .ok_or_else(|| BillingError::RefundFailed {
-                reason: "Payment intent has no customer".to_string(),
-            }.into())
+            .ok_or_else(|| {
+                BillingError::RefundFailed {
+                    reason: "Payment intent has no customer".to_string(),
+                }
+                .into()
+            })
     }
 }
 
@@ -1494,7 +1624,11 @@ fn map_refund(refund: stripe::Refund) -> Refund {
         stripe::Expandable::Object(pi) => pi.id.to_string(),
     });
 
-    let status = refund.status.as_deref().map(RefundStatus::from_stripe).unwrap_or(RefundStatus::Pending);
+    let status = refund
+        .status
+        .as_deref()
+        .map(RefundStatus::from_stripe)
+        .unwrap_or(RefundStatus::Pending);
 
     let reason = refund.reason.and_then(|r| {
         let reason_str = match r {
@@ -1651,11 +1785,16 @@ impl StripePortalClient for LiveStripeClient {
             params.configuration = Some(config_id.as_str());
         }
 
-        let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_portal_session", || {
-            let client = self.client.clone();
-            let params = params.clone();
-            async move { stripe::BillingPortalSession::create(&client, params).await }
-        })
+        let session = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "create_portal_session",
+            || {
+                let client = self.client.clone();
+                let params = params.clone();
+                async move { stripe::BillingPortalSession::create(&client, params).await }
+            },
+        )
         .await?;
 
         Ok(PortalSession {
@@ -1710,11 +1849,16 @@ impl StripePortalClient for LiveStripeClient {
         };
         params.flow_data = Some(flow_data);
 
-        let session = with_retry_cb(&self.config, &self.circuit_breaker, "create_portal_session_with_flow", || {
-            let client = self.client.clone();
-            let params = params.clone();
-            async move { stripe::BillingPortalSession::create(&client, params).await }
-        })
+        let session = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "create_portal_session_with_flow",
+            || {
+                let client = self.client.clone();
+                let params = params.clone();
+                async move { stripe::BillingPortalSession::create(&client, params).await }
+            },
+        )
         .await?;
 
         Ok(PortalSession {
@@ -1809,11 +1953,16 @@ impl StripeInvoiceClient for LiveStripeClient {
         // Fetch the invoice and extract line items from it
         let invoice_id = parse_invoice_id(invoice_id)?;
 
-        let invoice = with_retry_cb(&self.config, &self.circuit_breaker, "get_invoice_for_lines", || {
-            let client = self.client.clone();
-            let invoice_id = invoice_id.clone();
-            async move { stripe::Invoice::retrieve(&client, &invoice_id, &[]).await }
-        })
+        let invoice = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "get_invoice_for_lines",
+            || {
+                let client = self.client.clone();
+                let invoice_id = invoice_id.clone();
+                async move { stripe::Invoice::retrieve(&client, &invoice_id, &[]).await }
+            },
+        )
         .await?;
 
         let items = invoice
@@ -1933,9 +2082,8 @@ fn map_stripe_line_item(item: stripe::InvoiceLineItem) -> InvoiceLineItem {
 /// Parse a price ID string into a Stripe PriceId.
 #[inline]
 fn parse_price_id(id: &str) -> Result<stripe::PriceId> {
-    id.parse().map_err(|_| {
-        crate::error::TidewayError::BadRequest(format!("Invalid price ID: {}", id))
-    })
+    id.parse()
+        .map_err(|_| crate::error::TidewayError::BadRequest(format!("Invalid price ID: {}", id)))
 }
 
 #[async_trait::async_trait]
@@ -1976,7 +2124,10 @@ impl StripePriceValidator for LiveStripeClient {
                 Ok(Some(StripePrice {
                     id: price.id.to_string(),
                     active: price.active.unwrap_or(true),
-                    currency: price.currency.map(|c| c.to_string()).unwrap_or_else(|| "usd".to_string()),
+                    currency: price
+                        .currency
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "usd".to_string()),
                     unit_amount: price.unit_amount,
                     interval,
                     product_id,
@@ -2011,14 +2162,15 @@ impl StripeUsageClient for LiveStripeClient {
         use stripe::SubscriptionItemId;
 
         // Validate subscription item ID
-        let _item_id: SubscriptionItemId = subscription_item_id.parse().map_err(|_| {
-            BillingError::StripeApiError {
-                operation: "create_usage_record".to_string(),
-                message: format!("Invalid subscription item ID: {}", subscription_item_id),
-                code: None,
-                http_status: Some(400),
-            }
-        })?;
+        let _item_id: SubscriptionItemId =
+            subscription_item_id
+                .parse()
+                .map_err(|_| BillingError::StripeApiError {
+                    operation: "create_usage_record".to_string(),
+                    message: format!("Invalid subscription item ID: {}", subscription_item_id),
+                    code: None,
+                    http_status: Some(400),
+                })?;
 
         let timestamp_val = timestamp.unwrap_or_else(|| {
             std::time::SystemTime::now()
@@ -2098,14 +2250,15 @@ impl StripeUsageClient for LiveStripeClient {
         use stripe::SubscriptionItemId;
 
         // Validate subscription item ID
-        let _item_id: SubscriptionItemId = subscription_item_id.parse().map_err(|_| {
-            BillingError::StripeApiError {
-                operation: "list_usage_records".to_string(),
-                message: format!("Invalid subscription item ID: {}", subscription_item_id),
-                code: None,
-                http_status: Some(400),
-            }
-        })?;
+        let _item_id: SubscriptionItemId =
+            subscription_item_id
+                .parse()
+                .map_err(|_| BillingError::StripeApiError {
+                    operation: "list_usage_records".to_string(),
+                    message: format!("Invalid subscription item ID: {}", subscription_item_id),
+                    code: None,
+                    http_status: Some(400),
+                })?;
 
         // Use Stripe's REST API directly
         let url = format!(
@@ -2437,8 +2590,14 @@ mod tests {
         metadata.insert("key1".to_string(), "value1".to_string());
         metadata.insert("key2".to_string(), "  trimmed  ".to_string());
 
-        assert_eq!(get_sanitized_metadata(&metadata, "key1"), Some("value1".to_string()));
-        assert_eq!(get_sanitized_metadata(&metadata, "key2"), Some("trimmed".to_string()));
+        assert_eq!(
+            get_sanitized_metadata(&metadata, "key1"),
+            Some("value1".to_string())
+        );
+        assert_eq!(
+            get_sanitized_metadata(&metadata, "key2"),
+            Some("trimmed".to_string())
+        );
         assert_eq!(get_sanitized_metadata(&metadata, "missing"), None);
     }
 

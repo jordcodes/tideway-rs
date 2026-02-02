@@ -12,7 +12,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
     let src_dir = project_dir.join("src");
     if !src_dir.exists() {
-        return Err(anyhow::anyhow!("src/ not found in {}", project_dir.display()));
+        return Err(anyhow::anyhow!(
+            "src/ not found in {}",
+            project_dir.display()
+        ));
     }
 
     let resource_name = normalize_name(&args.name);
@@ -141,7 +144,12 @@ pub fn run(args: ResourceArgs) -> Result<()> {
             )?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
-                generate_repository_tests(&project_dir, &project_name, &resource_name, args.id_type)?;
+                generate_repository_tests(
+                    &project_dir,
+                    &project_name,
+                    &resource_name,
+                    args.id_type,
+                )?;
             }
             if args.service {
                 generate_service(
@@ -192,9 +200,7 @@ fn detect_db_backend(project_dir: &Path) -> Result<DbBackend> {
         .context("Failed to parse Cargo.toml")?;
 
     let deps = doc.get("dependencies");
-    let has_sea_orm = deps
-        .and_then(|deps| deps.get("sea-orm"))
-        .is_some();
+    let has_sea_orm = deps.and_then(|deps| deps.get("sea-orm")).is_some();
     let has_tideway_db = deps
         .and_then(|deps| deps.get("tideway"))
         .and_then(|item| item.get("features"))
@@ -339,7 +345,11 @@ mod openapi_docs {{
 "#,
             resource_plural = resource_plural,
             resource_pascal = resource_pascal,
-            pagination_params = if paginate { "params(PaginationParams)," } else { "" },
+            pagination_params = if paginate {
+                "params(PaginationParams),"
+            } else {
+                ""
+            },
         )
     } else {
         String::new()
@@ -419,9 +429,13 @@ mod openapi_docs {{
     };
     let sea_orm_imports = if with_db {
         match (paginate, search) {
-            (true, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};\n",
+            (true, true) => {
+                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};\n"
+            }
             (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};\n",
-            (false, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};\n",
+            (false, true) => {
+                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};\n"
+            }
             (false, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, Set};\n",
         }
     } else {
@@ -891,7 +905,10 @@ fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str)
         return Ok(());
     }
 
-    let mut lines = contents.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+    let mut lines = contents
+        .lines()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
     let mut start = None;
     let mut end = None;
 
@@ -1040,8 +1057,8 @@ fn generate_sea_orm_scaffold(
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let entities_dir = src_dir.join("entities");
-        ensure_dir(&entities_dir)
-            .with_context(|| format!("Failed to create {}", entities_dir.display()))?;
+    ensure_dir(&entities_dir)
+        .with_context(|| format!("Failed to create {}", entities_dir.display()))?;
 
     let entities_mod = entities_dir.join("mod.rs");
     if !entities_mod.exists() {
@@ -1065,8 +1082,7 @@ fn generate_sea_orm_scaffold(
         print_warning("migration/Cargo.toml not found (run `sea-orm-cli migrate init` if needed)");
     }
 
-    let (migration_mod, migration_file) =
-        next_migration_name(&migration_src, resource_plural)?;
+    let (migration_mod, migration_file) = next_migration_name(&migration_src, resource_plural)?;
     let migration_contents = render_sea_orm_migration(resource_plural, id_type);
     let migration_path = migration_src.join(&migration_file);
     write_file_with_force(&migration_path, &migration_contents, false)?;
@@ -1153,11 +1169,7 @@ fn next_migration_name(migration_src: &Path, resource_plural: &str) -> Result<(S
                 continue;
             }
             let stem = name.trim_end_matches(".rs");
-            let number_part = stem
-                .trim_start_matches('m')
-                .split('_')
-                .next()
-                .unwrap_or("");
+            let number_part = stem.trim_start_matches('m').split('_').next().unwrap_or("");
             if number_part.chars().all(|c| c.is_ascii_digit()) && !number_part.is_empty() {
                 if let Ok(num) = number_part.parse::<u64>() {
                     max_num = max_num.max(num);
@@ -1249,12 +1261,15 @@ impl MigratorTrait for Migrator {{
 }
 
 fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
-    let mut contents = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let mut contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
 
     let mod_line = format!("mod {};", mod_name);
     if !contents.contains(&mod_line) {
-        let mut lines = contents.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+        let mut lines = contents
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
         let mut insert_at = None;
         for (idx, line) in lines.iter().enumerate() {
             if line.trim_start().starts_with("mod ") {
@@ -1277,7 +1292,10 @@ fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
     }
 
     if !contents.contains(&format!("{}::Migration", mod_name)) {
-        let mut lines = contents.lines().map(|line| line.to_string()).collect::<Vec<_>>();
+        let mut lines = contents
+            .lines()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
         let mut vec_start = None;
         let mut vec_end = None;
         for (idx, line) in lines.iter().enumerate() {
@@ -1296,7 +1314,10 @@ fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
                 .take_while(|c| c.is_whitespace())
                 .collect::<String>();
             let entry_indent = format!("{base_indent}    ");
-            lines.insert(end, format!("{entry_indent}Box::new({}::Migration),", mod_name));
+            lines.insert(
+                end,
+                format!("{entry_indent}Box::new({}::Migration),", mod_name),
+            );
             contents = lines.join("\n");
             if !contents.ends_with('\n') {
                 contents.push('\n');
@@ -1306,8 +1327,7 @@ fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
         }
     }
 
-    write_file(path, &contents)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, &contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
@@ -1337,8 +1357,7 @@ fn generate_repository(
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
-    ensure_dir(&repos_dir)
-        .with_context(|| format!("Failed to create {}", repos_dir.display()))?;
+    ensure_dir(&repos_dir).with_context(|| format!("Failed to create {}", repos_dir.display()))?;
 
     let repos_mod = repos_dir.join("mod.rs");
     if !repos_mod.exists() {
@@ -1386,16 +1405,22 @@ fn render_repository(
     };
     let list_signature = if paginate {
         if search {
-            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{")
+            format!(
+                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
+            )
         } else {
-            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{")
+            format!(
+                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
+            )
         }
     } else {
         format!("pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{")
     };
     let list_params = if paginate {
         let search_query = if search {
-            format!("        if let Some(search) = search.as_deref() {{ query = query.filter({resource_name}::Column::Name.contains(search)); }}\n")
+            format!(
+                "        if let Some(search) = search.as_deref() {{ query = query.filter({resource_name}::Column::Name.contains(search)); }}\n"
+            )
         } else {
             String::new()
         };
@@ -1407,9 +1432,13 @@ fn render_repository(
         format!("        Ok({resource_name}::Entity::find().all(&self.db).await?)")
     };
     let sea_orm_imports = match (paginate, search) {
-        (true, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};",
+        (true, true) => {
+            "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};"
+        }
         (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};",
-        (false, true) => "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};",
+        (false, true) => {
+            "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
+        }
         (false, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, Set};",
     };
     format!(
@@ -1533,12 +1562,18 @@ fn render_service(
     };
     let list_signature = if paginate {
         if search {
-            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{")
+            format!(
+                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+            )
         } else {
-            format!("pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{")
+            format!(
+                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+            )
         }
     } else {
-        format!("pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{")
+        format!(
+            "pub async fn list(&self) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+        )
     };
     let list_body = if paginate {
         if search {
@@ -1605,8 +1640,7 @@ fn generate_repository_tests(
     id_type: ResourceIdType,
 ) -> Result<()> {
     let tests_dir = project_dir.join("tests");
-    ensure_dir(&tests_dir)
-        .with_context(|| format!("Failed to create {}", tests_dir.display()))?;
+    ensure_dir(&tests_dir).with_context(|| format!("Failed to create {}", tests_dir.display()))?;
 
     let file_path = tests_dir.join(format!("repository_{}.rs", resource_name));
     let contents = render_repository_tests(project_name, resource_name, id_type);
@@ -1689,11 +1723,9 @@ fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()>
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        ensure_dir(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
+        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
     }
-    write_file(path, contents)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -1730,10 +1762,7 @@ fn has_feature(cargo_path: &Path, feature: &str) -> bool {
         return false;
     };
 
-    let Some(tideway) = doc
-        .get("dependencies")
-        .and_then(|deps| deps.get("tideway"))
-    else {
+    let Some(tideway) = doc.get("dependencies").and_then(|deps| deps.get("tideway")) else {
         return false;
     };
 

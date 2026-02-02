@@ -4,11 +4,11 @@
 //! - Making organizations billable entities
 //! - Enforcing seat limits based on subscription plans
 
+use super::seats::SeatChecker;
 use crate::billing::seats::SeatManager;
 use crate::billing::storage::BillingStore;
 use crate::billing::subscription::StripeSubscriptionClient;
 use crate::error::Result;
-use super::seats::SeatChecker;
 use async_trait::async_trait;
 
 /// Helper trait for organizations that want billing integration.
@@ -117,7 +117,9 @@ where
     C: StripeSubscriptionClient + Send + Sync,
 {
     async fn has_seat_available(&self, org_id: &str, current_count: u32) -> Result<bool> {
-        self.seat_manager.has_seat_available(org_id, current_count).await
+        self.seat_manager
+            .has_seat_available(org_id, current_count)
+            .await
     }
 
     async fn get_seat_limit(&self, org_id: &str) -> Result<Option<u32>> {
@@ -161,7 +163,10 @@ mod tests {
         };
 
         assert_eq!(BillableOrganization::billable_id(&org), "org_123");
-        assert_eq!(BillableOrganization::contact_email(&org), "test@example.com");
+        assert_eq!(
+            BillableOrganization::contact_email(&org),
+            "test@example.com"
+        );
         assert_eq!(BillableOrganization::name(&org), "Test Org");
     }
 

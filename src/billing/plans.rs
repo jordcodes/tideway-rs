@@ -134,9 +134,7 @@ impl Plans {
     /// Find plan by Stripe price ID.
     #[must_use]
     pub fn find_by_stripe_price(&self, price_id: &str) -> Option<&PlanConfig> {
-        self.plans
-            .values()
-            .find(|p| p.stripe_price_id == price_id)
+        self.plans.values().find(|p| p.stripe_price_id == price_id)
     }
 
     /// Get all Stripe price IDs (for validation).
@@ -768,15 +766,16 @@ pub enum PlanDowngradeError {
         new_seats: u32,
     },
     /// Extra seats are needed but the new plan doesn't support them.
-    ExtraSeatsRequired {
-        extra_needed: u32,
-    },
+    ExtraSeatsRequired { extra_needed: u32 },
 }
 
 impl std::fmt::Display for PlanDowngradeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InsufficientSeats { current_members, new_seats } => {
+            Self::InsufficientSeats {
+                current_members,
+                new_seats,
+            } => {
                 write!(
                     f,
                     "Cannot downgrade: you have {} members but the new plan only supports {} seats",
@@ -1162,7 +1161,10 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            PlanDowngradeError::InsufficientSeats { current_members: 8, new_seats: 3 }
+            PlanDowngradeError::InsufficientSeats {
+                current_members: 8,
+                new_seats: 3
+            }
         ));
     }
 

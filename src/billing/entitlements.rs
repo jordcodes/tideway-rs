@@ -2,9 +2,9 @@
 //!
 //! Provides functionality for checking feature access based on subscription plans.
 
-use crate::error::Result;
-use super::plans::{Plans, LimitCheckResult};
+use super::plans::{LimitCheckResult, Plans};
 use super::storage::BillingStore;
+use crate::error::Result;
 
 /// Entitlements manager for checking feature access.
 ///
@@ -124,7 +124,10 @@ impl Entitlements {
     #[must_use]
     pub fn check_limit(&self, limit_name: &str, current_usage: u64) -> LimitCheckResult {
         if !self.is_active {
-            return LimitCheckResult::AtLimit { current: current_usage, max: 0 };
+            return LimitCheckResult::AtLimit {
+                current: current_usage,
+                max: 0,
+            };
         }
 
         let limit = match limit_name {
@@ -138,9 +141,15 @@ impl Entitlements {
             None => LimitCheckResult::Unlimited,
             Some(max) => {
                 if current_usage < max {
-                    LimitCheckResult::WithinLimit { current: current_usage, max }
+                    LimitCheckResult::WithinLimit {
+                        current: current_usage,
+                        max,
+                    }
                 } else {
-                    LimitCheckResult::AtLimit { current: current_usage, max }
+                    LimitCheckResult::AtLimit {
+                        current: current_usage,
+                        max,
+                    }
                 }
             }
         }
@@ -336,7 +345,9 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
 
     /// Perform periodic maintenance (cleanup expired entries, enforce max size).
     fn maybe_cleanup(&self) {
-        let count = self.operation_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let count = self
+            .operation_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count % CLEANUP_INTERVAL == 0 {
             self.cleanup_expired();
             self.enforce_max_entries();
@@ -354,7 +365,9 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
             }
 
             // Collect entries with their last_accessed time
-            let mut entries: Vec<_> = cache.entries.iter()
+            let mut entries: Vec<_> = cache
+                .entries
+                .iter()
                 .map(|(k, v)| (k.clone(), v.last_accessed))
                 .collect();
 
@@ -490,24 +503,28 @@ mod tests {
     fn create_test_plans() -> Plans {
         Plans::builder()
             .plan("starter")
-                .stripe_price("price_starter")
-                .included_seats(3)
-                .features(["reports", "email_support"])
-                .max_projects(5)
-                .max_storage_mb(1000)
-                .done()
+            .stripe_price("price_starter")
+            .included_seats(3)
+            .features(["reports", "email_support"])
+            .max_projects(5)
+            .max_storage_mb(1000)
+            .done()
             .plan("pro")
-                .stripe_price("price_pro")
-                .included_seats(5)
-                .features(["reports", "email_support", "api_access", "priority_support"])
-                .max_projects(50)
-                .max_storage_mb(10000)
-                .max_api_calls(100000)
-                .done()
+            .stripe_price("price_pro")
+            .included_seats(5)
+            .features(["reports", "email_support", "api_access", "priority_support"])
+            .max_projects(50)
+            .max_storage_mb(10000)
+            .max_api_calls(100000)
+            .done()
             .build()
     }
 
-    fn create_test_subscription(plan_id: &str, status: SubscriptionStatus, extra_seats: u32) -> StoredSubscription {
+    fn create_test_subscription(
+        plan_id: &str,
+        status: SubscriptionStatus,
+        extra_seats: u32,
+    ) -> StoredSubscription {
         StoredSubscription {
             stripe_subscription_id: "sub_123".to_string(),
             stripe_customer_id: "cus_123".to_string(),
@@ -584,7 +601,12 @@ mod tests {
 
         assert!(manager.has_feature("org_pro", "api_access").await.unwrap());
         assert!(manager.has_feature("org_pro", "reports").await.unwrap());
-        assert!(!manager.has_feature("org_pro", "nonexistent_feature").await.unwrap());
+        assert!(
+            !manager
+                .has_feature("org_pro", "nonexistent_feature")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -598,15 +620,27 @@ mod tests {
         let manager = EntitlementsManager::new(store, plans);
 
         // Under limit
-        let result = manager.check_limit("org_limit", "projects", 3).await.unwrap();
-        assert!(matches!(result, LimitCheckResult::WithinLimit { current: 3, max: 5 }));
+        let result = manager
+            .check_limit("org_limit", "projects", 3)
+            .await
+            .unwrap();
+        assert!(matches!(
+            result,
+            LimitCheckResult::WithinLimit { current: 3, max: 5 }
+        ));
 
         // At limit
-        let result = manager.check_limit("org_limit", "projects", 5).await.unwrap();
+        let result = manager
+            .check_limit("org_limit", "projects", 5)
+            .await
+            .unwrap();
         assert!(matches!(result, LimitCheckResult::AtLimit { .. }));
 
         // Over limit
-        let result = manager.check_limit("org_limit", "projects", 10).await.unwrap();
+        let result = manager
+            .check_limit("org_limit", "projects", 10)
+            .await
+            .unwrap();
         assert!(matches!(result, LimitCheckResult::AtLimit { .. }));
     }
 
@@ -741,7 +775,10 @@ mod tests {
         // Create subscriptions for 5 orgs
         let sub = create_test_subscription("starter", SubscriptionStatus::Active, 0);
         for i in 0..5 {
-            store.save_subscription(&format!("org_{}", i), &sub).await.unwrap();
+            store
+                .save_subscription(&format!("org_{}", i), &sub)
+                .await
+                .unwrap();
         }
 
         let inner = EntitlementsManager::new(store, plans);
@@ -754,7 +791,10 @@ mod tests {
 
         // Populate cache with 5 entries
         for i in 0..5 {
-            let _ = cached.get_entitlements(&format!("org_{}", i)).await.unwrap();
+            let _ = cached
+                .get_entitlements(&format!("org_{}", i))
+                .await
+                .unwrap();
         }
 
         // Force cleanup (happens every 100 operations, so trigger manually)

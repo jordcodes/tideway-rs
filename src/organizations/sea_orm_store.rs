@@ -69,16 +69,16 @@
 
 use async_trait::async_trait;
 use sea_orm::{
-    entity::prelude::*, sea_query::OnConflict, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, Set, TransactionTrait,
+    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set, TransactionTrait,
+    entity::prelude::*, sea_query::OnConflict,
 };
 use std::str::FromStr;
 
 use super::storage::{InvitationStore, MembershipStore, OrganizationStore};
 use super::types::DefaultOrgRole;
 use super::utils::current_timestamp;
-use crate::error::Result;
 use crate::TidewayError;
+use crate::error::Result;
 
 // =============================================================================
 // SeaORM Entities
@@ -682,7 +682,11 @@ impl MembershipStore for SeaOrmOrgStore {
         Ok(())
     }
 
-    async fn get_membership(&self, org_id: &str, user_id: &str) -> Result<Option<Self::Membership>> {
+    async fn get_membership(
+        &self,
+        org_id: &str,
+        user_id: &str,
+    ) -> Result<Option<Self::Membership>> {
         tracing::debug!(org_id = %org_id, user_id = %user_id, "getting membership");
 
         let m = membership::Entity::find()
@@ -1040,12 +1044,27 @@ mod tests {
         assert_eq!(InvitationStatus::Accepted.as_str(), "accepted");
         assert_eq!(InvitationStatus::Revoked.as_str(), "revoked");
 
-        assert_eq!("pending".parse::<InvitationStatus>().unwrap(), InvitationStatus::Pending);
-        assert_eq!("accepted".parse::<InvitationStatus>().unwrap(), InvitationStatus::Accepted);
-        assert_eq!("revoked".parse::<InvitationStatus>().unwrap(), InvitationStatus::Revoked);
-        assert_eq!("unknown".parse::<InvitationStatus>().unwrap(), InvitationStatus::Pending);
+        assert_eq!(
+            "pending".parse::<InvitationStatus>().unwrap(),
+            InvitationStatus::Pending
+        );
+        assert_eq!(
+            "accepted".parse::<InvitationStatus>().unwrap(),
+            InvitationStatus::Accepted
+        );
+        assert_eq!(
+            "revoked".parse::<InvitationStatus>().unwrap(),
+            InvitationStatus::Revoked
+        );
+        assert_eq!(
+            "unknown".parse::<InvitationStatus>().unwrap(),
+            InvitationStatus::Pending
+        );
         // Case insensitive
-        assert_eq!("ACCEPTED".parse::<InvitationStatus>().unwrap(), InvitationStatus::Accepted);
+        assert_eq!(
+            "ACCEPTED".parse::<InvitationStatus>().unwrap(),
+            InvitationStatus::Accepted
+        );
     }
 
     #[test]

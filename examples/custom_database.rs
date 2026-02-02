@@ -6,11 +6,11 @@
 //! Run with: cargo run --example custom_database --features database
 
 #[cfg(feature = "database")]
-use tideway::{DatabasePool, DatabaseConnection, Result};
-#[cfg(feature = "database")]
 use async_trait::async_trait;
 #[cfg(feature = "database")]
 use std::sync::Arc;
+#[cfg(feature = "database")]
+use tideway::{DatabaseConnection, DatabasePool, Result};
 
 #[cfg(not(feature = "database"))]
 fn main() {
@@ -72,9 +72,8 @@ async fn main() -> Result<()> {
     tideway::init_tracing();
 
     // Create custom pool
-    let pool: Arc<dyn DatabasePool> = Arc::new(
-        CustomDatabasePool::new("custom://database/url".to_string())
-    );
+    let pool: Arc<dyn DatabasePool> =
+        Arc::new(CustomDatabasePool::new("custom://database/url".to_string()));
 
     // Use it in AppContext
     let _context = tideway::AppContext::builder()

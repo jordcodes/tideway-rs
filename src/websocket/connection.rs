@@ -3,11 +3,11 @@
 //! This module provides a Connection struct that wraps the WebSocket connection
 //! with additional state, metadata, and room tracking.
 
-use crate::error::{Result, TidewayError};
 use super::message::Message;
+use crate::error::{Result, TidewayError};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
-use serde::Serialize;
 
 /// WebSocket connection wrapper with state and metadata
 ///

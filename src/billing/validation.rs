@@ -17,10 +17,10 @@
 //! validate_plan_with_stripe(&plan, &client).await?;
 //! ```
 
-use crate::error::Result;
-use async_trait::async_trait;
 use super::error::BillingError;
 use super::storage::StoredPlan;
+use crate::error::Result;
+use async_trait::async_trait;
 
 /// Maximum length for billable IDs.
 const MAX_BILLABLE_ID_LENGTH: usize = 256;
@@ -53,17 +53,25 @@ pub fn validate_billable_id(id: &str) -> Result<()> {
         return Err(BillingError::InvalidBillableId {
             id: id.to_string(),
             reason: "billable_id cannot be empty".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     if id.len() > MAX_BILLABLE_ID_LENGTH {
         return Err(BillingError::InvalidBillableId {
             id: truncate_for_error(id),
-            reason: format!("billable_id exceeds maximum length of {}", MAX_BILLABLE_ID_LENGTH),
-        }.into());
+            reason: format!(
+                "billable_id exceeds maximum length of {}",
+                MAX_BILLABLE_ID_LENGTH
+            ),
+        }
+        .into());
     }
 
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(BillingError::InvalidBillableId {
             id: sanitize_for_error(id),
             reason: "billable_id contains invalid characters (only alphanumeric, underscore, and hyphen allowed)".to_string(),
@@ -88,21 +96,27 @@ pub fn validate_plan_id(id: &str) -> Result<()> {
         return Err(BillingError::InvalidPlanId {
             id: id.to_string(),
             reason: "plan_id cannot be empty".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     if id.len() > MAX_PLAN_ID_LENGTH {
         return Err(BillingError::InvalidPlanId {
             id: truncate_for_error(id),
             reason: format!("plan_id exceeds maximum length of {}", MAX_PLAN_ID_LENGTH),
-        }.into());
+        }
+        .into());
     }
 
-    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(BillingError::InvalidPlanId {
             id: sanitize_for_error(id),
             reason: "plan_id contains invalid characters".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     Ok(())
@@ -110,8 +124,8 @@ pub fn validate_plan_id(id: &str) -> Result<()> {
 
 /// Valid ISO 4217 currency codes (lowercase).
 const VALID_CURRENCIES: &[&str] = &[
-    "usd", "eur", "gbp", "cad", "aud", "jpy", "chf", "sek", "nok", "dkk",
-    "nzd", "sgd", "hkd", "inr", "brl", "mxn", "pln", "czk", "huf", "ron",
+    "usd", "eur", "gbp", "cad", "aud", "jpy", "chf", "sek", "nok", "dkk", "nzd", "sgd", "hkd",
+    "inr", "brl", "mxn", "pln", "czk", "huf", "ron",
 ];
 
 /// Maximum length for plan name.
@@ -155,14 +169,19 @@ pub fn validate_plan(plan: &StoredPlan) -> Result<()> {
         return Err(BillingError::InvalidPlanId {
             id: plan.id.clone(),
             reason: "plan name cannot be empty".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     if plan.name.len() > MAX_PLAN_NAME_LENGTH {
         return Err(BillingError::InvalidPlanId {
             id: plan.id.clone(),
-            reason: format!("plan name exceeds maximum length of {}", MAX_PLAN_NAME_LENGTH),
-        }.into());
+            reason: format!(
+                "plan name exceeds maximum length of {}",
+                MAX_PLAN_NAME_LENGTH
+            ),
+        }
+        .into());
     }
 
     // Validate description length
@@ -170,8 +189,12 @@ pub fn validate_plan(plan: &StoredPlan) -> Result<()> {
         if desc.len() > MAX_PLAN_DESCRIPTION_LENGTH {
             return Err(BillingError::InvalidPlanId {
                 id: plan.id.clone(),
-                reason: format!("plan description exceeds maximum length of {}", MAX_PLAN_DESCRIPTION_LENGTH),
-            }.into());
+                reason: format!(
+                    "plan description exceeds maximum length of {}",
+                    MAX_PLAN_DESCRIPTION_LENGTH
+                ),
+            }
+            .into());
         }
     }
 
@@ -188,7 +211,8 @@ pub fn validate_plan(plan: &StoredPlan) -> Result<()> {
         return Err(BillingError::InvalidPlanId {
             id: plan.id.clone(),
             reason: "price_cents cannot be negative".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     // Validate currency
@@ -196,8 +220,12 @@ pub fn validate_plan(plan: &StoredPlan) -> Result<()> {
     if !VALID_CURRENCIES.contains(&currency_lower.as_str()) {
         return Err(BillingError::InvalidPlanId {
             id: plan.id.clone(),
-            reason: format!("invalid currency '{}', must be a valid ISO 4217 code", plan.currency),
-        }.into());
+            reason: format!(
+                "invalid currency '{}', must be a valid ISO 4217 code",
+                plan.currency
+            ),
+        }
+        .into());
     }
 
     // Validate included seats
@@ -205,7 +233,8 @@ pub fn validate_plan(plan: &StoredPlan) -> Result<()> {
         return Err(BillingError::InvalidPlanId {
             id: plan.id.clone(),
             reason: "included_seats must be at least 1".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     Ok(())
@@ -217,14 +246,19 @@ fn validate_stripe_price_id(price_id: &str, plan_id: &str) -> Result<()> {
         return Err(BillingError::InvalidPlanId {
             id: plan_id.to_string(),
             reason: "stripe_price_id cannot be empty".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     if price_id.len() > MAX_STRIPE_PRICE_ID_LENGTH {
         return Err(BillingError::InvalidPlanId {
             id: plan_id.to_string(),
-            reason: format!("stripe_price_id exceeds maximum length of {}", MAX_STRIPE_PRICE_ID_LENGTH),
-        }.into());
+            reason: format!(
+                "stripe_price_id exceeds maximum length of {}",
+                MAX_STRIPE_PRICE_ID_LENGTH
+            ),
+        }
+        .into());
     }
 
     // Stripe price IDs should start with "price_"
@@ -232,7 +266,8 @@ fn validate_stripe_price_id(price_id: &str, plan_id: &str) -> Result<()> {
         return Err(BillingError::InvalidPlanId {
             id: plan_id.to_string(),
             reason: "stripe_price_id should start with 'price_'".to_string(),
-        }.into());
+        }
+        .into());
     }
 
     Ok(())
@@ -252,7 +287,13 @@ fn sanitize_for_error(s: &str) -> String {
     let sanitized: String = s
         .chars()
         .take(50)
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '?' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '?'
+            }
+        })
         .collect();
 
     if s.len() > 50 {
@@ -349,7 +390,8 @@ pub async fn validate_plan_with_stripe<V: StripePriceValidator>(
             return Err(BillingError::InvalidStripePrice {
                 price_id: plan.stripe_price_id.clone(),
                 reason: "price does not exist in Stripe".to_string(),
-            }.into());
+            }
+            .into());
         }
         Some(stripe_price) => {
             // Check price is active
@@ -357,7 +399,8 @@ pub async fn validate_plan_with_stripe<V: StripePriceValidator>(
                 return Err(BillingError::InvalidStripePrice {
                     price_id: plan.stripe_price_id.clone(),
                     reason: "price is not active in Stripe".to_string(),
-                }.into());
+                }
+                .into());
             }
 
             // Validate currency matches
@@ -368,7 +411,8 @@ pub async fn validate_plan_with_stripe<V: StripePriceValidator>(
                         "currency mismatch: plan has '{}' but Stripe price has '{}'",
                         plan.currency, stripe_price.currency
                     ),
-                }.into());
+                }
+                .into());
             }
         }
     }
@@ -381,14 +425,16 @@ pub async fn validate_plan_with_stripe<V: StripePriceValidator>(
                 return Err(BillingError::InvalidStripePrice {
                     price_id: seat_price_id.clone(),
                     reason: "seat price does not exist in Stripe".to_string(),
-                }.into());
+                }
+                .into());
             }
             Some(stripe_price) => {
                 if !stripe_price.active {
                     return Err(BillingError::InvalidStripePrice {
                         price_id: seat_price_id.clone(),
                         reason: "seat price is not active in Stripe".to_string(),
-                    }.into());
+                    }
+                    .into());
                 }
 
                 // Seat price should use the same currency
@@ -399,7 +445,8 @@ pub async fn validate_plan_with_stripe<V: StripePriceValidator>(
                             "seat price currency mismatch: plan has '{}' but Stripe price has '{}'",
                             plan.currency, stripe_price.currency
                         ),
-                    }.into());
+                    }
+                    .into());
                 }
             }
         }
@@ -596,7 +643,11 @@ mod tests {
         // Test valid currencies
         for currency in &["usd", "EUR", "GBP", "cad", "aud"] {
             plan.currency = currency.to_string();
-            assert!(validate_plan(&plan).is_ok(), "Currency {} should be valid", currency);
+            assert!(
+                validate_plan(&plan).is_ok(),
+                "Currency {} should be valid",
+                currency
+            );
         }
     }
 

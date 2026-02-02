@@ -3,10 +3,10 @@
 //! Handles creating Stripe Checkout sessions for new subscriptions
 //! and plan changes.
 
-use crate::error::Result;
 use super::customer::{CustomerManager, StripeClient};
 use super::plans::Plans;
 use super::storage::{BillableEntity, BillingStore};
+use crate::error::Result;
 use url::Url;
 
 /// Checkout session management.
@@ -19,7 +19,9 @@ pub struct CheckoutManager<S: BillingStore, C: StripeClient + StripeCheckoutClie
     config: CheckoutConfig,
 }
 
-impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> CheckoutManager<S, C> {
+impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone>
+    CheckoutManager<S, C>
+{
     /// Create a new checkout manager.
     #[must_use]
     pub fn new(store: S, client: C, plans: Plans, config: CheckoutConfig) -> Self {
@@ -45,38 +47,39 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
 
         // Validate coupon and promotion codes are not both enabled
         // Stripe doesn't allow both a pre-applied coupon and promotion code entry
-        let allow_promos = request.allow_promotion_codes.unwrap_or(self.config.allow_promotion_codes);
+        let allow_promos = request
+            .allow_promotion_codes
+            .unwrap_or(self.config.allow_promotion_codes);
         if request.coupon.is_some() && allow_promos {
             return Err(crate::error::TidewayError::BadRequest(
                 "Cannot use both a coupon and allow_promotion_codes. \
-                 Either apply a specific coupon or let users enter promotion codes, not both.".to_string()
+                 Either apply a specific coupon or let users enter promotion codes, not both."
+                    .to_string(),
             ));
         }
 
         // Validate plan exists
-        let plan = self.plans.get(&request.plan_id)
-            .ok_or_else(|| crate::error::TidewayError::BadRequest(
-                format!("Unknown plan: {}", request.plan_id)
-            ))?;
+        let plan = self.plans.get(&request.plan_id).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest(format!("Unknown plan: {}", request.plan_id))
+        })?;
 
         // Get or create customer
         let customer_id = self.customer_manager.get_or_create_customer(entity).await?;
 
         // Build line items
-        let mut line_items = vec![
-            CheckoutLineItem {
-                price_id: plan.stripe_price_id.clone(),
-                quantity: 1,
-            }
-        ];
+        let mut line_items = vec![CheckoutLineItem {
+            price_id: plan.stripe_price_id.clone(),
+            quantity: 1,
+        }];
 
         // Add extra seats if requested
         if let Some(extra_seats) = request.extra_seats {
             if extra_seats > 0 {
-                let seat_price = plan.extra_seat_price_id.as_ref()
-                    .ok_or_else(|| crate::error::TidewayError::BadRequest(
-                        "Plan does not support extra seats".to_string()
-                    ))?;
+                let seat_price = plan.extra_seat_price_id.as_ref().ok_or_else(|| {
+                    crate::error::TidewayError::BadRequest(
+                        "Plan does not support extra seats".to_string(),
+                    )
+                })?;
                 line_items.push(CheckoutLineItem {
                     price_id: seat_price.clone(),
                     quantity: extra_seats,
@@ -88,24 +91,29 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
         let trial_days = request.trial_days.or(plan.trial_days);
 
         // Create the Stripe checkout session
-        let session = self.client.create_checkout_session(CreateCheckoutSessionRequest {
-            customer_id,
-            line_items,
-            success_url: request.success_url,
-            cancel_url: request.cancel_url,
-            mode: CheckoutMode::Subscription,
-            allow_promotion_codes: request.allow_promotion_codes.unwrap_or(self.config.allow_promotion_codes),
-            trial_period_days: trial_days,
-            metadata: CheckoutMetadata {
-                billable_id: entity.billable_id().to_string(),
-                billable_type: entity.billable_type().to_string(),
-                plan_id: request.plan_id,
-            },
-            tax_id_collection: self.config.collect_tax_id,
-            billing_address_collection: self.config.collect_billing_address,
-            coupon: request.coupon,
-            payment_method_collection: request.payment_method_collection,
-        }).await?;
+        let session = self
+            .client
+            .create_checkout_session(CreateCheckoutSessionRequest {
+                customer_id,
+                line_items,
+                success_url: request.success_url,
+                cancel_url: request.cancel_url,
+                mode: CheckoutMode::Subscription,
+                allow_promotion_codes: request
+                    .allow_promotion_codes
+                    .unwrap_or(self.config.allow_promotion_codes),
+                trial_period_days: trial_days,
+                metadata: CheckoutMetadata {
+                    billable_id: entity.billable_id().to_string(),
+                    billable_type: entity.billable_type().to_string(),
+                    plan_id: request.plan_id,
+                },
+                tax_id_collection: self.config.collect_tax_id,
+                billing_address_collection: self.config.collect_billing_address,
+                coupon: request.coupon,
+                payment_method_collection: request.payment_method_collection,
+            })
+            .await?;
 
         Ok(session)
     }
@@ -122,7 +130,8 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone> Ch
     ) -> Result<CheckoutSession> {
         let _ = (entity, request);
         Err(crate::error::TidewayError::BadRequest(
-            "Seat add-ons via Checkout are not supported. Use SeatManager::add_seats instead.".to_string()
+            "Seat add-ons via Checkout are not supported. Use SeatManager::add_seats instead."
+                .to_string(),
         ))
     }
 }
@@ -246,7 +255,7 @@ impl CheckoutConfig {
 
         if !is_https && !is_localhost_http {
             return Err(crate::error::TidewayError::BadRequest(
-                "Redirect URL must use HTTPS".to_string()
+                "Redirect URL must use HTTPS".to_string(),
             ));
         }
 
@@ -262,9 +271,10 @@ impl CheckoutConfig {
             });
 
             if !domain_allowed {
-                return Err(crate::error::TidewayError::BadRequest(
-                    format!("Redirect URL domain '{}' is not allowed", host)
-                ));
+                return Err(crate::error::TidewayError::BadRequest(format!(
+                    "Redirect URL domain '{}' is not allowed",
+                    host
+                )));
             }
         }
 
@@ -322,7 +332,11 @@ pub struct CheckoutRequest {
 impl CheckoutRequest {
     /// Create a new checkout request.
     #[must_use]
-    pub fn new(plan_id: impl Into<String>, success_url: impl Into<String>, cancel_url: impl Into<String>) -> Self {
+    pub fn new(
+        plan_id: impl Into<String>,
+        success_url: impl Into<String>,
+        cancel_url: impl Into<String>,
+    ) -> Self {
         Self {
             plan_id: plan_id.into(),
             success_url: success_url.into(),
@@ -501,7 +515,10 @@ pub struct CreateCheckoutSessionRequest {
 #[allow(async_fn_in_trait)]
 pub trait StripeCheckoutClient: Send + Sync {
     /// Create a Stripe checkout session.
-    async fn create_checkout_session(&self, request: CreateCheckoutSessionRequest) -> Result<CheckoutSession>;
+    async fn create_checkout_session(
+        &self,
+        request: CreateCheckoutSessionRequest,
+    ) -> Result<CheckoutSession>;
 }
 
 /// Mock Stripe checkout client for testing.
@@ -525,8 +542,14 @@ pub mod test {
     }
 
     impl StripeCheckoutClient for MockStripeCheckoutClient {
-        async fn create_checkout_session(&self, _request: CreateCheckoutSessionRequest) -> Result<CheckoutSession> {
-            let id = format!("cs_test_{}", self.session_counter.fetch_add(1, Ordering::SeqCst));
+        async fn create_checkout_session(
+            &self,
+            _request: CreateCheckoutSessionRequest,
+        ) -> Result<CheckoutSession> {
+            let id = format!(
+                "cs_test_{}",
+                self.session_counter.fetch_add(1, Ordering::SeqCst)
+            );
             Ok(CheckoutSession {
                 id: id.clone(),
                 url: format!("https://checkout.stripe.com/c/pay/{}", id),
@@ -550,11 +573,18 @@ pub mod test {
     }
 
     impl super::super::customer::StripeClient for MockFullStripeClient {
-        async fn create_customer(&self, request: super::super::customer::CreateCustomerRequest) -> Result<String> {
+        async fn create_customer(
+            &self,
+            request: super::super::customer::CreateCustomerRequest,
+        ) -> Result<String> {
             self.customer.create_customer(request).await
         }
 
-        async fn update_customer(&self, customer_id: &str, request: super::super::customer::UpdateCustomerRequest) -> Result<()> {
+        async fn update_customer(
+            &self,
+            customer_id: &str,
+            request: super::super::customer::UpdateCustomerRequest,
+        ) -> Result<()> {
             self.customer.update_customer(customer_id, request).await
         }
 
@@ -568,7 +598,10 @@ pub mod test {
     }
 
     impl StripeCheckoutClient for MockFullStripeClient {
-        async fn create_checkout_session(&self, request: CreateCheckoutSessionRequest) -> Result<CheckoutSession> {
+        async fn create_checkout_session(
+            &self,
+            request: CreateCheckoutSessionRequest,
+        ) -> Result<CheckoutSession> {
             self.checkout.create_checkout_session(request).await
         }
     }
@@ -584,10 +617,10 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test::MockFullStripeClient;
-    use crate::billing::storage::test::InMemoryBillingStore;
+    use super::*;
     use crate::billing::storage::BillableEntity;
+    use crate::billing::storage::test::InMemoryBillingStore;
 
     struct TestEntity {
         id: String,
@@ -615,15 +648,15 @@ mod tests {
     fn create_test_plans() -> Plans {
         Plans::builder()
             .plan("starter")
-                .stripe_price("price_starter")
-                .extra_seat_price("price_seat")
-                .included_seats(3)
-                .trial_days(14)
-                .done()
+            .stripe_price("price_starter")
+            .extra_seat_price("price_seat")
+            .included_seats(3)
+            .trial_days(14)
+            .done()
             .plan("pro")
-                .stripe_price("price_pro")
-                .included_seats(5)
-                .done()
+            .stripe_price("price_pro")
+            .included_seats(5)
+            .done()
             .build()
     }
 
@@ -647,7 +680,10 @@ mod tests {
             "https://example.com/cancel",
         );
 
-        let session = manager.create_checkout_session(&entity, request).await.unwrap();
+        let session = manager
+            .create_checkout_session(&entity, request)
+            .await
+            .unwrap();
         assert!(session.id.starts_with("cs_test_"));
         assert!(session.url.contains("checkout.stripe.com"));
     }
@@ -670,9 +706,13 @@ mod tests {
             "starter",
             "https://example.com/success",
             "https://example.com/cancel",
-        ).with_extra_seats(5);
+        )
+        .with_extra_seats(5);
 
-        let session = manager.create_checkout_session(&entity, request).await.unwrap();
+        let session = manager
+            .create_checkout_session(&entity, request)
+            .await
+            .unwrap();
         assert!(session.id.starts_with("cs_test_"));
     }
 
@@ -719,7 +759,8 @@ mod tests {
             "pro",
             "https://example.com/success",
             "https://example.com/cancel",
-        ).with_extra_seats(5);
+        )
+        .with_extra_seats(5);
 
         let result = manager.create_checkout_session(&entity, request).await;
         assert!(result.is_err());
@@ -730,7 +771,11 @@ mod tests {
         let config = CheckoutConfig::new();
 
         // HTTPS should pass
-        assert!(config.validate_redirect_url("https://example.com/success").is_ok());
+        assert!(
+            config
+                .validate_redirect_url("https://example.com/success")
+                .is_ok()
+        );
 
         // HTTP should fail
         let result = config.validate_redirect_url("http://example.com/success");
@@ -750,16 +795,32 @@ mod tests {
 
     #[test]
     fn test_url_validation_allowed_domains() {
-        let config = CheckoutConfig::new()
-            .allowed_redirect_domains(["example.com", "app.mysite.com"]);
+        let config =
+            CheckoutConfig::new().allowed_redirect_domains(["example.com", "app.mysite.com"]);
 
         // Exact match should pass
-        assert!(config.validate_redirect_url("https://example.com/success").is_ok());
-        assert!(config.validate_redirect_url("https://app.mysite.com/cancel").is_ok());
+        assert!(
+            config
+                .validate_redirect_url("https://example.com/success")
+                .is_ok()
+        );
+        assert!(
+            config
+                .validate_redirect_url("https://app.mysite.com/cancel")
+                .is_ok()
+        );
 
         // Subdomain of allowed domain should pass
-        assert!(config.validate_redirect_url("https://app.example.com/success").is_ok());
-        assert!(config.validate_redirect_url("https://staging.app.mysite.com/success").is_ok());
+        assert!(
+            config
+                .validate_redirect_url("https://app.example.com/success")
+                .is_ok()
+        );
+        assert!(
+            config
+                .validate_redirect_url("https://staging.app.mysite.com/success")
+                .is_ok()
+        );
 
         // Different domain should fail
         let result = config.validate_redirect_url("https://evil.com/redirect");
@@ -775,8 +836,16 @@ mod tests {
         let config = CheckoutConfig::new();
 
         // Any HTTPS URL should pass when no allowed list is configured
-        assert!(config.validate_redirect_url("https://example.com/success").is_ok());
-        assert!(config.validate_redirect_url("https://any-domain.com/path").is_ok());
+        assert!(
+            config
+                .validate_redirect_url("https://example.com/success")
+                .is_ok()
+        );
+        assert!(
+            config
+                .validate_redirect_url("https://any-domain.com/path")
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -784,8 +853,7 @@ mod tests {
         let store = InMemoryBillingStore::new();
         let client = MockFullStripeClient::new();
         let plans = create_test_plans();
-        let config = CheckoutConfig::new()
-            .allowed_redirect_domains(["example.com"]);
+        let config = CheckoutConfig::new().allowed_redirect_domains(["example.com"]);
 
         let manager = CheckoutManager::new(store, client, plans, config);
 
@@ -800,7 +868,12 @@ mod tests {
             "https://example.com/success",
             "https://example.com/cancel",
         );
-        assert!(manager.create_checkout_session(&entity, request).await.is_ok());
+        assert!(
+            manager
+                .create_checkout_session(&entity, request)
+                .await
+                .is_ok()
+        );
 
         // Invalid domain should fail
         let request = CheckoutRequest::new(
@@ -808,7 +881,12 @@ mod tests {
             "https://evil.com/success",
             "https://example.com/cancel",
         );
-        assert!(manager.create_checkout_session(&entity, request).await.is_err());
+        assert!(
+            manager
+                .create_checkout_session(&entity, request)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -849,7 +927,10 @@ mod tests {
         .with_coupon("WELCOME50")
         .with_promotion_codes(false);
 
-        let session = manager.create_checkout_session(&entity, request).await.unwrap();
+        let session = manager
+            .create_checkout_session(&entity, request)
+            .await
+            .unwrap();
         assert!(session.id.starts_with("cs_test_"));
     }
 
@@ -914,19 +995,47 @@ mod tests {
     fn test_url_validation_localhost_http() {
         // Without flag, HTTP localhost should fail
         let config = CheckoutConfig::new();
-        assert!(config.validate_redirect_url("http://localhost:5173/success").is_err());
-        assert!(config.validate_redirect_url("http://127.0.0.1:3000/cancel").is_err());
+        assert!(
+            config
+                .validate_redirect_url("http://localhost:5173/success")
+                .is_err()
+        );
+        assert!(
+            config
+                .validate_redirect_url("http://127.0.0.1:3000/cancel")
+                .is_err()
+        );
 
         // With flag enabled, HTTP localhost should pass
         let config = CheckoutConfig::new().allow_localhost_http(true);
-        assert!(config.validate_redirect_url("http://localhost:5173/success").is_ok());
-        assert!(config.validate_redirect_url("http://127.0.0.1:3000/cancel").is_ok());
-        assert!(config.validate_redirect_url("http://[::1]:8080/success").is_ok());
+        assert!(
+            config
+                .validate_redirect_url("http://localhost:5173/success")
+                .is_ok()
+        );
+        assert!(
+            config
+                .validate_redirect_url("http://127.0.0.1:3000/cancel")
+                .is_ok()
+        );
+        assert!(
+            config
+                .validate_redirect_url("http://[::1]:8080/success")
+                .is_ok()
+        );
 
         // HTTP on non-localhost should still fail
-        assert!(config.validate_redirect_url("http://example.com/success").is_err());
+        assert!(
+            config
+                .validate_redirect_url("http://example.com/success")
+                .is_err()
+        );
 
         // HTTPS should always work
-        assert!(config.validate_redirect_url("https://example.com/success").is_ok());
+        assert!(
+            config
+                .validate_redirect_url("https://example.com/success")
+                .is_ok()
+        );
     }
 }

@@ -64,14 +64,14 @@
 //! api.post_json("/api/items", &payload).send().await.assert_json_ok();
 //! ```
 
+mod app;
 #[cfg(feature = "database")]
 mod database;
-mod app;
-mod scenario;
 mod fixtures;
+mod scenario;
 
+pub use app::{AuthTestApp, TestApp};
 #[cfg(feature = "database")]
 pub use database::TestDb;
-pub use app::{AuthTestApp, TestApp};
-pub use scenario::{Scenario, ScenarioAssert, delete, get, patch, post, put};
 pub use fixtures::{TestFactory, TestUser, fake};
+pub use scenario::{Scenario, ScenarioAssert, delete, get, patch, post, put};

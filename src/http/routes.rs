@@ -1,5 +1,5 @@
-use axum::Router;
 use crate::app::AppContext;
+use axum::Router;
 
 /// Trait for composable route modules
 ///

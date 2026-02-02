@@ -69,6 +69,5 @@ pub fn extract_id(path: &str) -> Result<i64, String> {
 /// ```
 #[allow(dead_code)]
 pub fn extract_uuid(path: &str) -> Result<Uuid, String> {
-    Uuid::parse_str(path)
-        .map_err(|_| format!("Invalid UUID: {}", path))
+    Uuid::parse_str(path).map_err(|_| format!("Invalid UUID: {}", path))
 }

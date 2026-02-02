@@ -162,8 +162,7 @@ mod tests {
     #[tokio::test]
     async fn test_console_mailer_sends_without_error() {
         let mailer = ConsoleMailer::new();
-        let email = Email::new("from@test.com", "to@test.com", "Test Subject")
-            .text("Test body");
+        let email = Email::new("from@test.com", "to@test.com", "Test Subject").text("Test body");
 
         let result = mailer.send(&email).await;
         assert!(result.is_ok());

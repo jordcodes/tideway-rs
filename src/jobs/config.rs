@@ -119,4 +119,3 @@ fn default_max_retries() -> u32 {
 fn default_retry_backoff_seconds() -> u64 {
     60
 }
-

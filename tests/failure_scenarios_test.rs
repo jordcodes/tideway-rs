@@ -1,19 +1,15 @@
-use tideway::{
-    ErrorContext, TidewayError, ConfigBuilder,
-};
 use axum::response::IntoResponse;
-
+use tideway::{ConfigBuilder, ErrorContext, TidewayError};
 
 #[tokio::test]
 async fn test_error_with_context() {
-    let error = TidewayError::not_found("User not found")
-        .with_context(
-            ErrorContext::new()
-                .with_error_id("err-123")
-                .with_detail("User ID 42 does not exist")
-                .with_context("user_id", "42")
-                .with_context("operation", "get_user"),
-        );
+    let error = TidewayError::not_found("User not found").with_context(
+        ErrorContext::new()
+            .with_error_id("err-123")
+            .with_detail("User ID 42 does not exist")
+            .with_context("user_id", "42")
+            .with_context("operation", "get_user"),
+    );
 
     // Verify error can be converted to TidewayError
     let tideway_error: TidewayError = error.into();
@@ -31,13 +27,13 @@ async fn test_error_with_context_display() {
 
     // With details
     let error = TidewayError::bad_request("Validation failed")
-        .with_context(
-            ErrorContext::new()
-                .with_detail("Email format is invalid")
-        );
+        .with_context(ErrorContext::new().with_detail("Email format is invalid"));
 
     let display = format!("{}", error);
-    assert_eq!(display, "Bad request: Validation failed (Email format is invalid)");
+    assert_eq!(
+        display,
+        "Bad request: Validation failed (Email format is invalid)"
+    );
 }
 
 #[tokio::test]
@@ -76,30 +72,34 @@ async fn test_config_validation_failures() {
         .build();
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Invalid server address"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid server address")
+    );
 
     // Test invalid log level
-    let result = ConfigBuilder::new()
-        .with_log_level("invalid_level")
-        .build();
+    let result = ConfigBuilder::new().with_log_level("invalid_level").build();
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Invalid log level"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid log level")
+    );
 
     // Test zero port
     let result = ConfigBuilder::new().with_port(0).build();
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("Server port must be greater than 0"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("Server port must be greater than 0")
+    );
 }
 
 #[tokio::test]
@@ -113,9 +113,7 @@ async fn test_config_validation_timeout() {
         .build();
 
     // This should be caught by ConfigBuilder validation
-    let config_result = ConfigBuilder::new()
-        .with_timeout(result)
-        .build();
+    let config_result = ConfigBuilder::new().with_timeout(result).build();
 
     assert!(config_result.is_err());
 }
@@ -130,15 +128,15 @@ async fn test_config_validation_rate_limit() {
         .max_requests(0)
         .build();
 
-    let config_result = ConfigBuilder::new()
-        .with_rate_limit(rate_limit)
-        .build();
+    let config_result = ConfigBuilder::new().with_rate_limit(rate_limit).build();
 
     assert!(config_result.is_err());
-    assert!(config_result
-        .unwrap_err()
-        .to_string()
-        .contains("Rate limit max_requests"));
+    assert!(
+        config_result
+            .unwrap_err()
+            .to_string()
+            .contains("Rate limit max_requests")
+    );
 
     // Test invalid strategy
     let rate_limit = RateLimitConfigBuilder::new()
@@ -146,28 +144,22 @@ async fn test_config_validation_rate_limit() {
         .strategy("invalid_strategy")
         .build();
 
-    let config_result = ConfigBuilder::new()
-        .with_rate_limit(rate_limit)
-        .build();
+    let config_result = ConfigBuilder::new().with_rate_limit(rate_limit).build();
 
     assert!(config_result.is_err());
-    assert!(config_result
-        .unwrap_err()
-        .to_string()
-        .contains("strategy"));
+    assert!(config_result.unwrap_err().to_string().contains("strategy"));
 }
 
 #[tokio::test]
 async fn test_error_response_format() {
-    let error = TidewayError::bad_request("Invalid input")
-        .with_context(
-            ErrorContext::new()
-                .with_error_id("test-error-id")
-                .with_detail("Detailed error message")
-                .with_field_error("field1", "error1")
-                .with_field_error("field1", "error2")
-                .with_field_error("field2", "error3"),
-        );
+    let error = TidewayError::bad_request("Invalid input").with_context(
+        ErrorContext::new()
+            .with_error_id("test-error-id")
+            .with_detail("Detailed error message")
+            .with_field_error("field1", "error1")
+            .with_field_error("field1", "error2")
+            .with_field_error("field2", "error3"),
+    );
 
     let response = error.into_response();
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
@@ -263,7 +255,9 @@ async fn test_from_serde_json_error() {
     // Missing field (data error) -> BadRequest
     #[derive(Debug, serde::Deserialize)]
     #[allow(dead_code)]
-    struct Test { field: String }
+    struct Test {
+        field: String,
+    }
     let json_err = serde_json::from_str::<Test>("{}").unwrap_err();
     let error: TidewayError = json_err.into();
     assert!(matches!(error, TidewayError::BadRequest(_)));

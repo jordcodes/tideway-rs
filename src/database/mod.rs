@@ -19,8 +19,8 @@ pub use config::{DatabaseConfig, redact_database_url};
 #[cfg(feature = "database")]
 pub use connection::DatabaseConnection;
 #[cfg(feature = "database")]
-pub use sea_orm_pool::SeaOrmPool;
+pub use migration::{migration_status, reset_database, rollback_migration, run_migrations};
 #[cfg(feature = "database")]
 pub use sea_orm;
 #[cfg(feature = "database")]
-pub use migration::{run_migrations, migration_status, rollback_migration, reset_database};
+pub use sea_orm_pool::SeaOrmPool;

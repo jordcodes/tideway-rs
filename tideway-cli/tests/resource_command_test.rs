@@ -157,10 +157,7 @@ async fn main() {
 
     let docs_path = project_dir.join("src/openapi_docs.rs");
     assert!(docs_path.exists());
-    assert_file_contains(
-        &docs_path,
-        "crate::routes::user::list_users",
-    );
+    assert_file_contains(&docs_path, "crate::routes::user::list_users");
 }
 
 #[test]
@@ -326,7 +323,10 @@ async fn main() {
     tideway_cli::commands::resource::run(args).expect("run resource command");
 
     assert!(project_dir.join("src/repositories/user.rs").exists());
-    assert_file_contains(&project_dir.join("src/repositories/mod.rs"), "pub mod user;");
+    assert_file_contains(
+        &project_dir.join("src/repositories/mod.rs"),
+        "pub mod user;",
+    );
     assert_file_contains(&project_dir.join("src/routes/user.rs"), "Repository");
     let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated_main.contains("mod repositories;"));

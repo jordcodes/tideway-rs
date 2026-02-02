@@ -16,13 +16,15 @@
 
 use async_trait::async_trait;
 use sea_orm::{
-    entity::prelude::*, sea_query::OnConflict, ActiveModelTrait, ColumnTrait, DatabaseConnection,
-    EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set, TransactionTrait,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
+    QuerySelect, Set, TransactionTrait, entity::prelude::*, sea_query::OnConflict,
 };
 
-use super::storage::{BillingStore, PlanInterval, PlanStore, StoredPlan, StoredSubscription, SubscriptionStatus};
-use crate::error::Result;
+use super::storage::{
+    BillingStore, PlanInterval, PlanStore, StoredPlan, StoredSubscription, SubscriptionStatus,
+};
 use crate::TidewayError;
+use crate::error::Result;
 
 // =============================================================================
 // SeaORM Entities
@@ -649,10 +651,7 @@ impl BillingStore for SeaOrmBillingStore {
 
         let count = billing_subscription::Entity::find()
             .filter(billing_subscription::Column::PlanId.eq(plan_id))
-            .filter(
-                billing_subscription::Column::Status
-                    .is_in(["active", "trialing"]),
-            )
+            .filter(billing_subscription::Column::Status.is_in(["active", "trialing"]))
             .count(&self.db)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
@@ -735,18 +734,48 @@ impl PlanStore for SeaOrmBillingStore {
 
         billing_plan::Entity::update_many()
             .col_expr(billing_plan::Column::Name, Expr::value(&plan.name))
-            .col_expr(billing_plan::Column::Description, Expr::value(plan.description.clone()))
-            .col_expr(billing_plan::Column::StripePriceId, Expr::value(&plan.stripe_price_id))
-            .col_expr(billing_plan::Column::StripeSeatPriceId, Expr::value(plan.stripe_seat_price_id.clone()))
-            .col_expr(billing_plan::Column::PriceCents, Expr::value(plan.price_cents))
+            .col_expr(
+                billing_plan::Column::Description,
+                Expr::value(plan.description.clone()),
+            )
+            .col_expr(
+                billing_plan::Column::StripePriceId,
+                Expr::value(&plan.stripe_price_id),
+            )
+            .col_expr(
+                billing_plan::Column::StripeSeatPriceId,
+                Expr::value(plan.stripe_seat_price_id.clone()),
+            )
+            .col_expr(
+                billing_plan::Column::PriceCents,
+                Expr::value(plan.price_cents),
+            )
             .col_expr(billing_plan::Column::Currency, Expr::value(&plan.currency))
-            .col_expr(billing_plan::Column::Interval, Expr::value(plan.interval.as_str()))
-            .col_expr(billing_plan::Column::IncludedSeats, Expr::value(u32_to_i32(plan.included_seats)))
-            .col_expr(billing_plan::Column::Features, Expr::value(plan.features.clone()))
-            .col_expr(billing_plan::Column::Limits, Expr::value(plan.limits.clone()))
-            .col_expr(billing_plan::Column::TrialDays, Expr::value(plan.trial_days.map(|d| u32_to_i32(d))))
+            .col_expr(
+                billing_plan::Column::Interval,
+                Expr::value(plan.interval.as_str()),
+            )
+            .col_expr(
+                billing_plan::Column::IncludedSeats,
+                Expr::value(u32_to_i32(plan.included_seats)),
+            )
+            .col_expr(
+                billing_plan::Column::Features,
+                Expr::value(plan.features.clone()),
+            )
+            .col_expr(
+                billing_plan::Column::Limits,
+                Expr::value(plan.limits.clone()),
+            )
+            .col_expr(
+                billing_plan::Column::TrialDays,
+                Expr::value(plan.trial_days.map(|d| u32_to_i32(d))),
+            )
             .col_expr(billing_plan::Column::IsActive, Expr::value(plan.is_active))
-            .col_expr(billing_plan::Column::SortOrder, Expr::value(plan.sort_order))
+            .col_expr(
+                billing_plan::Column::SortOrder,
+                Expr::value(plan.sort_order),
+            )
             .col_expr(billing_plan::Column::UpdatedAt, Expr::value(now))
             .filter(billing_plan::Column::Id.eq(&plan.id))
             .exec(&self.db)

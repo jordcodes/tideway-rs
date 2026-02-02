@@ -755,7 +755,12 @@ pub mod test {
         }
 
         async fn is_ip_locked(&self, ip: &str) -> Result<Option<SystemTime>> {
-            Ok(self.ips.read().unwrap().get(ip).and_then(|(_, until)| *until))
+            Ok(self
+                .ips
+                .read()
+                .unwrap()
+                .get(ip)
+                .and_then(|(_, until)| *until))
         }
 
         async fn clear_ip_lockout(&self, ip: &str) -> Result<()> {

@@ -24,18 +24,12 @@ async fn main() -> tideway::Result<()> {
     };
 
     // Build app context with mailer
-    let context = AppContext::builder()
-        .with_mailer(mailer.clone())
-        .build();
+    let context = AppContext::builder().with_mailer(mailer.clone()).build();
 
     // Demo: Send an email
-    let email = Email::new(
-        "noreply@myapp.com",
-        "user@example.com",
-        "Welcome to MyApp!",
-    )
-    .text("Thanks for signing up! We're excited to have you.")
-    .html("<h1>Welcome!</h1><p>Thanks for signing up! We're excited to have you.</p>");
+    let email = Email::new("noreply@myapp.com", "user@example.com", "Welcome to MyApp!")
+        .text("Thanks for signing up! We're excited to have you.")
+        .html("<h1>Welcome!</h1><p>Thanks for signing up! We're excited to have you.</p>");
 
     println!("\nSending welcome email...\n");
     mailer.send(&email).await?;

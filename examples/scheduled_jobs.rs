@@ -5,13 +5,14 @@
 #[cfg(feature = "jobs")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use tideway::{
-        App, AppContext, ConfigBuilder, InMemoryJobQueue, Job, JobQueue, JobRegistry, Result, TidewayError,
-    };
     use async_trait::async_trait;
     use chrono::{Duration, Utc};
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+    use tideway::{
+        App, AppContext, ConfigBuilder, InMemoryJobQueue, Job, JobQueue, JobRegistry, Result,
+        TidewayError,
+    };
 
     // Initialize logging
     tideway::init_tracing();
@@ -52,23 +53,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let registry = Arc::new(JobRegistry::new());
 
     // Register job handler
-    registry.register("generate_report", |data, ctx| {
-        Box::pin(async move {
-            let job: GenerateReportJob = serde_json::from_value(data.payload)
-                .map_err(|e| TidewayError::internal(format!("Failed to deserialize job: {}", e)))?;
-            job.execute(&ctx).await
+    registry
+        .register("generate_report", |data, ctx| {
+            Box::pin(async move {
+                let job: GenerateReportJob = serde_json::from_value(data.payload).map_err(|e| {
+                    TidewayError::internal(format!("Failed to deserialize job: {}", e))
+                })?;
+                job.execute(&ctx).await
+            })
         })
-    }).await;
+        .await;
 
     // Create app context with job queue
-    let ctx = AppContext::builder()
-        .with_job_queue(queue.clone())
-        .build();
+    let ctx = AppContext::builder().with_job_queue(queue.clone()).build();
 
     // Create config
-    let config = ConfigBuilder::new()
-        .with_log_level("info")
-        .build()?;
+    let config = ConfigBuilder::new().with_log_level("info").build()?;
 
     // Create app with context and start workers
     let app = App::with_config(config)

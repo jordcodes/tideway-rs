@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::utils::get_env_with_prefix;
+use serde::{Deserialize, Serialize};
 
 /// Compression algorithm selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -14,7 +14,6 @@ pub enum CompressionAlgorithm {
     #[default]
     Both,
 }
-
 
 /// Compression configuration for Tideway applications
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -199,10 +198,7 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let config = CompressionConfig::builder()
-            .gzip()
-            .level(9)
-            .build();
+        let config = CompressionConfig::builder().gzip().level(9).build();
 
         assert_eq!(config.algorithm, CompressionAlgorithm::Gzip);
         assert_eq!(config.level, 9);
@@ -234,4 +230,3 @@ mod tests {
         assert_eq!(config.brotli_quality, 1);
     }
 }
-

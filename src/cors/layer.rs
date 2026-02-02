@@ -118,9 +118,7 @@ mod tests {
     #[test]
     fn test_empty_origins_enabled() {
         // If explicitly enabled but no origins, still creates a layer
-        let config = CorsConfig::builder()
-            .enabled(true)
-            .build();
+        let config = CorsConfig::builder().enabled(true).build();
         let layer = build_cors_layer(&config);
         assert!(layer.is_some());
     }

@@ -1,9 +1,12 @@
-use tideway::{ensure, TidewayError};
+use tideway::{TidewayError, ensure};
 
 #[test]
 fn test_ensure_macro_err_expr() {
     fn check(value: i32) -> Result<(), TidewayError> {
-        ensure!(value > 0, TidewayError::bad_request("Value must be positive"));
+        ensure!(
+            value > 0,
+            TidewayError::bad_request("Value must be positive")
+        );
         Ok(())
     }
 

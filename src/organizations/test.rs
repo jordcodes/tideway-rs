@@ -117,15 +117,27 @@ impl InMemoryOrgStore {
     /// Helper to insert a membership directly (for test setup).
     pub fn insert_membership(&self, membership: TestMembership) {
         let key = (membership.org_id.clone(), membership.user_id.clone());
-        self.inner.memberships.write().unwrap().insert(key, membership);
+        self.inner
+            .memberships
+            .write()
+            .unwrap()
+            .insert(key, membership);
     }
 
     /// Helper to insert an invitation directly (for test setup).
     pub fn insert_invitation(&self, invitation: TestInvitation) {
         let id = invitation.id.clone();
         let token = invitation.token.clone();
-        self.inner.invitations.write().unwrap().insert(id.clone(), invitation);
-        self.inner.invitations_by_token.write().unwrap().insert(token, id);
+        self.inner
+            .invitations
+            .write()
+            .unwrap()
+            .insert(id.clone(), invitation);
+        self.inner
+            .invitations_by_token
+            .write()
+            .unwrap()
+            .insert(token, id);
     }
 
     /// Get current timestamp.
@@ -178,9 +190,17 @@ impl OrganizationStore for InMemoryOrgStore {
             self.inner.orgs_by_slug.write().unwrap().remove(&org.slug);
         }
         // Also remove all memberships for this org
-        self.inner.memberships.write().unwrap().retain(|k, _| k.0 != id);
+        self.inner
+            .memberships
+            .write()
+            .unwrap()
+            .retain(|k, _| k.0 != id);
         // And invitations
-        self.inner.invitations.write().unwrap().retain(|_, v| v.org_id != id);
+        self.inner
+            .invitations
+            .write()
+            .unwrap()
+            .retain(|_, v| v.org_id != id);
         Ok(())
     }
 
@@ -269,7 +289,11 @@ impl MembershipStore for InMemoryOrgStore {
 
     async fn update_membership(&self, membership: &Self::Membership) -> Result<()> {
         let key = (membership.org_id.clone(), membership.user_id.clone());
-        self.inner.memberships.write().unwrap().insert(key, membership.clone());
+        self.inner
+            .memberships
+            .write()
+            .unwrap()
+            .insert(key, membership.clone());
         Ok(())
     }
 
@@ -327,7 +351,13 @@ impl InvitationStore for InMemoryOrgStore {
     }
 
     async fn find_by_token(&self, token: &str) -> Result<Option<Self::Invitation>> {
-        let id = self.inner.invitations_by_token.read().unwrap().get(token).cloned();
+        let id = self
+            .inner
+            .invitations_by_token
+            .read()
+            .unwrap()
+            .get(token)
+            .cloned();
         match id {
             Some(id) => Ok(self.inner.invitations.read().unwrap().get(&id).cloned()),
             None => Ok(None),
@@ -343,9 +373,7 @@ impl InvitationStore for InMemoryOrgStore {
         let now = Self::now();
         let result: Vec<_> = invitations
             .values()
-            .filter(|i| {
-                i.org_id == org_id && !i.accepted && !i.revoked && i.expires_at > now
-            })
+            .filter(|i| i.org_id == org_id && !i.accepted && !i.revoked && i.expires_at > now)
             .cloned()
             .collect();
         Ok(result)
@@ -421,12 +449,12 @@ impl InvitationStore for InMemoryOrgStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::organizations::error::OrganizationError;
+    use crate::organizations::seats::SeatChecker;
     use crate::organizations::{
         InvitationConfig, InvitationManager, MembershipManager, OrganizationConfig,
         OrganizationManager, UnlimitedSeats,
     };
-    use crate::organizations::error::OrganizationError;
-    use crate::organizations::seats::SeatChecker;
 
     /// Helper to create a test organization.
     fn make_org(p: crate::organizations::manager::OrgCreateParams) -> TestOrganization {
@@ -689,26 +717,32 @@ mod tests {
     async fn test_create_org_max_orgs_limit() {
         let store = InMemoryOrgStore::new();
         let config = OrganizationConfig::default().max_orgs_per_user(Some(1));
-        let manager = OrganizationManager::new(
-            store.clone(),
-            store.clone(),
-            UnlimitedSeats,
-            config,
-        );
+        let manager =
+            OrganizationManager::new(store.clone(), store.clone(), UnlimitedSeats, config);
 
         // Create first org - should succeed
         let _org1 = manager
-            .create("user_1", "Org 1", Some("org-1"), "test@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "user_1",
+                "Org 1",
+                Some("org-1"),
+                "test@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
         // Create second org - should fail (max 1 per user)
         let result = manager
-            .create("user_1", "Org 2", Some("org-2"), "test@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "user_1",
+                "Org 2",
+                Some("org-2"),
+                "test@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await;
 
         assert!(matches!(
@@ -721,17 +755,18 @@ mod tests {
     async fn test_create_org_creation_disabled() {
         let store = InMemoryOrgStore::new();
         let config = OrganizationConfig::default().allow_user_creation(false);
-        let manager = OrganizationManager::new(
-            store.clone(),
-            store.clone(),
-            UnlimitedSeats,
-            config,
-        );
+        let manager =
+            OrganizationManager::new(store.clone(), store.clone(), UnlimitedSeats, config);
 
         let result = manager
-            .create("user_1", "My Org", None, "test@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "user_1",
+                "My Org",
+                None,
+                "test@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await;
 
         assert!(matches!(
@@ -752,9 +787,14 @@ mod tests {
 
         // Create org with owner
         let org = manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -792,9 +832,14 @@ mod tests {
 
         // Create org
         let org = manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -834,9 +879,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -873,9 +923,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -886,7 +941,10 @@ mod tests {
             })
             .await;
 
-        assert!(matches!(result.unwrap_err(), OrganizationError::AlreadyMember));
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::AlreadyMember
+        ));
     }
 
     #[tokio::test]
@@ -902,9 +960,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), LimitedSeats(1));
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -933,9 +996,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -954,7 +1022,9 @@ mod tests {
         });
 
         // Member1 tries to remove member2 - should fail
-        let result = mem_manager.remove_member(&org.id, "member2", "member1").await;
+        let result = mem_manager
+            .remove_member(&org.id, "member2", "member1")
+            .await;
 
         assert!(matches!(
             result.unwrap_err(),
@@ -974,9 +1044,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1014,9 +1089,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1069,9 +1149,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1107,9 +1192,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1134,9 +1224,14 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1175,9 +1270,14 @@ mod tests {
         );
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1191,17 +1291,19 @@ mod tests {
 
         // Member tries to invite - should fail
         let result = inv_manager
-            .invite(&org.id, "invitee@example.com", "member", |p| TestInvitation {
-                id: p.id,
-                org_id: p.org_id,
-                email: p.email,
-                role: DefaultOrgRole::Member,
-                invited_by: p.invited_by,
-                token: p.token,
-                expires_at: p.expires_at,
-                created_at: p.created_at,
-                accepted: false,
-                revoked: false,
+            .invite(&org.id, "invitee@example.com", "member", |p| {
+                TestInvitation {
+                    id: p.id,
+                    org_id: p.org_id,
+                    email: p.email,
+                    role: DefaultOrgRole::Member,
+                    invited_by: p.invited_by,
+                    token: p.token,
+                    expires_at: p.expires_at,
+                    created_at: p.created_at,
+                    accepted: false,
+                    revoked: false,
+                }
             })
             .await;
 
@@ -1229,9 +1331,14 @@ mod tests {
         );
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1275,9 +1382,14 @@ mod tests {
         );
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1338,9 +1450,14 @@ mod tests {
         );
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1392,9 +1509,14 @@ mod tests {
         );
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1452,25 +1574,32 @@ mod tests {
         );
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
         // Create invitation
         let invitation = inv_manager
-            .invite(&org.id, "invitee@example.com", "owner", |p| TestInvitation {
-                id: p.id,
-                org_id: p.org_id,
-                email: p.email,
-                role: DefaultOrgRole::Member,
-                invited_by: p.invited_by,
-                token: p.token,
-                expires_at: p.expires_at,
-                created_at: p.created_at,
-                accepted: false,
-                revoked: false,
+            .invite(&org.id, "invitee@example.com", "owner", |p| {
+                TestInvitation {
+                    id: p.id,
+                    org_id: p.org_id,
+                    email: p.email,
+                    role: DefaultOrgRole::Member,
+                    invited_by: p.invited_by,
+                    token: p.token,
+                    expires_at: p.expires_at,
+                    created_at: p.created_at,
+                    accepted: false,
+                    revoked: false,
+                }
             })
             .await
             .unwrap();
@@ -1510,9 +1639,14 @@ mod tests {
         );
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
@@ -1560,25 +1694,32 @@ mod tests {
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
-            .create("owner", "Test Org", None, "owner@example.com", make_org, |p| {
-                make_membership(p, DefaultOrgRole::Owner)
-            })
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
             .await
             .unwrap();
 
         // Create invitation
         let invitation = inv_manager
-            .invite(&org.id, "invitee@example.com", "owner", |p| TestInvitation {
-                id: p.id,
-                org_id: p.org_id,
-                email: p.email,
-                role: DefaultOrgRole::Member,
-                invited_by: p.invited_by,
-                token: p.token,
-                expires_at: p.expires_at,
-                created_at: p.created_at,
-                accepted: false,
-                revoked: false,
+            .invite(&org.id, "invitee@example.com", "owner", |p| {
+                TestInvitation {
+                    id: p.id,
+                    org_id: p.org_id,
+                    email: p.email,
+                    role: DefaultOrgRole::Member,
+                    invited_by: p.invited_by,
+                    token: p.token,
+                    expires_at: p.expires_at,
+                    created_at: p.created_at,
+                    accepted: false,
+                    revoked: false,
+                }
             })
             .await
             .unwrap();

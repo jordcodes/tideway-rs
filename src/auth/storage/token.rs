@@ -176,7 +176,10 @@ pub mod test {
     impl MfaTokenStore for InMemoryMfaTokenStore {
         async fn store(&self, token: &str, user_id: &str, ttl: Duration) -> Result<()> {
             let mut tokens = self.tokens.write().unwrap();
-            tokens.insert(token.to_string(), (user_id.to_string(), Instant::now() + ttl));
+            tokens.insert(
+                token.to_string(),
+                (user_id.to_string(), Instant::now() + ttl),
+            );
             Ok(())
         }
 

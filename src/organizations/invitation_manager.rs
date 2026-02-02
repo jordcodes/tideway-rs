@@ -6,9 +6,14 @@ use super::audit::{OrgAuditEntry, OrgAuditEvent};
 use super::config::InvitationConfig;
 use super::error::{OrganizationError, Result};
 use super::manager::MembershipCreateParams;
-use super::rate_limit::{InvitationRateLimiter, OptionalInvitationRateLimiter, WithInvitationRateLimiter};
+use super::rate_limit::{
+    InvitationRateLimiter, OptionalInvitationRateLimiter, WithInvitationRateLimiter,
+};
 use super::seats::{SeatChecker, UnlimitedSeats};
-use super::storage::{InvitationStore, MembershipStore, OrgAuditStore, OptionalAuditStore, OrganizationStore, WithAuditStore};
+use super::storage::{
+    InvitationStore, MembershipStore, OptionalAuditStore, OrgAuditStore, OrganizationStore,
+    WithAuditStore,
+};
 use super::utils::{current_timestamp, is_valid_email};
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
@@ -406,12 +411,7 @@ where
         self.membership_store.add_member(&membership).await?;
         self.invitation_store.mark_accepted(&invitation_id).await?;
 
-        info!(
-            org_id,
-            user_id,
-            invitation_id,
-            "Invitation accepted"
-        );
+        info!(org_id, user_id, invitation_id, "Invitation accepted");
 
         // Record audit event (actor is the new member)
         self.audit_store

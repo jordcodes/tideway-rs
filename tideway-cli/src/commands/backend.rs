@@ -7,8 +7,8 @@ use std::path::Path;
 use crate::cli::{BackendArgs, BackendPreset};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
-    TIDEWAY_VERSION,
+    TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success, print_warning,
+    write_file,
 };
 
 /// Convert snake_case to PascalCase
@@ -122,7 +122,9 @@ pub fn run(args: BackendArgs) -> Result<()> {
             TIDEWAY_VERSION
         );
         println!("     axum = {{ version = \"0.8\", features = [\"macros\"] }}");
-        println!("     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}");
+        println!(
+            "     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}"
+        );
         println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");
         println!("     serde = {{ version = \"1\", features = [\"derive\"] }}");
         println!("     serde_json = \"1\"");

@@ -151,7 +151,13 @@ pub mod email {
 pub mod email {}
 pub mod testing;
 pub mod timeout;
-#[cfg(any(feature = "database", feature = "cache", feature = "sessions", feature = "jobs", feature = "email"))]
+#[cfg(any(
+    feature = "database",
+    feature = "cache",
+    feature = "sessions",
+    feature = "jobs",
+    feature = "email"
+))]
 pub mod traits;
 pub use testing::{TestFactory, TestUser, fake};
 pub mod dev;
@@ -192,7 +198,7 @@ pub use http::{
     RouteModule,
 };
 #[cfg(feature = "metrics")]
-pub use metrics::{MetricsConfig, MetricsConfigBuilder, MetricsCollector};
+pub use metrics::{MetricsCollector, MetricsConfig, MetricsConfigBuilder};
 pub use ratelimit::{RateLimitConfig, RateLimitConfigBuilder};
 pub use request_logging::{RequestLoggingConfig, RequestLoggingConfigBuilder};
 pub use security::{SecurityConfig, SecurityConfigBuilder};
@@ -419,27 +425,29 @@ macro_rules! module {
     };
 }
 #[cfg(feature = "database")]
-pub use traits::database::{DatabaseConnection, DatabasePool};
-#[cfg(feature = "database")]
 pub use database::SeaOrmPool;
-#[cfg(feature = "sessions")]
-pub use traits::session::{SessionData, SessionStore};
-#[cfg(feature = "jobs")]
-pub use traits::job::{Job, JobData, JobQueue};
-#[cfg(feature = "jobs")]
-pub use jobs::{JobBackend, JobRegistry, JobWorker, WorkerPool, InMemoryJobQueue};
+#[cfg(feature = "email")]
+pub use email::{ConsoleMailer, SmtpConfig, SmtpMailer};
 #[cfg(all(feature = "jobs", feature = "jobs-redis"))]
 pub use jobs::RedisJobQueue;
+#[cfg(feature = "jobs")]
+pub use jobs::{InMemoryJobQueue, JobBackend, JobRegistry, JobWorker, WorkerPool};
+#[cfg(feature = "database")]
+pub use traits::database::{DatabaseConnection, DatabasePool};
+#[cfg(feature = "jobs")]
+pub use traits::job::{Job, JobData, JobQueue};
 #[cfg(feature = "email")]
 pub use traits::mailer::{Email, Mailer};
-#[cfg(feature = "email")]
-pub use email::{ConsoleMailer, SmtpMailer, SmtpConfig};
+#[cfg(feature = "sessions")]
+pub use traits::session::{SessionData, SessionStore};
 #[cfg(feature = "validation")]
 pub use validation::{
     ValidatedForm, ValidatedJson, ValidatedQuery, validate_form, validate_json, validator,
 };
 #[cfg(feature = "websocket")]
-pub use websocket::{Connection, ConnectionManager, ConnectionMetrics, Message, Room, WebSocketHandler, ws};
+pub use websocket::{
+    Connection, ConnectionManager, ConnectionMetrics, Message, Room, WebSocketHandler, ws,
+};
 
 // Macro re-exports
 #[cfg(feature = "macros")]

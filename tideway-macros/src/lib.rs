@@ -47,7 +47,7 @@ mod parse;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use syn::{parse_macro_input, ItemFn};
+use syn::{ItemFn, parse_macro_input};
 
 use codegen::generate_api_macro;
 use inference::analyze_handler;

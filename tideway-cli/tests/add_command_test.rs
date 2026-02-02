@@ -29,10 +29,7 @@ tideway = "0.7"
 
     tideway_cli::commands::add::run(args).expect("run add command");
 
-    assert_file_contains(
-        &project_dir.join("Cargo.toml"),
-        "\"auth\"",
-    );
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"auth\"");
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert!(project_dir.join("src/auth/routes.rs").exists());
     assert!(project_dir.join("src/auth/provider.rs").exists());
@@ -65,18 +62,9 @@ tideway = "0.7"
 
     tideway_cli::commands::add::run(args).expect("run add command");
 
-    assert_file_contains(
-        &project_dir.join("Cargo.toml"),
-        "\"database\"",
-    );
-    assert_file_contains(
-        &project_dir.join("Cargo.toml"),
-        "sea-orm",
-    );
-    assert_file_contains(
-        &project_dir.join(".env.example"),
-        "DATABASE_URL=",
-    );
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"database\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "sea-orm");
+    assert_file_contains(&project_dir.join(".env.example"), "DATABASE_URL=");
 }
 
 #[test]

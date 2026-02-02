@@ -34,7 +34,10 @@ mod email_tests {
             .bcc("bcc1@test.com")
             .text("body");
 
-        assert_eq!(email.to, vec!["to1@test.com", "to2@test.com", "to3@test.com"]);
+        assert_eq!(
+            email.to,
+            vec!["to1@test.com", "to2@test.com", "to3@test.com"]
+        );
         assert_eq!(email.cc, vec!["cc1@test.com", "cc2@test.com"]);
         assert_eq!(email.bcc, vec!["bcc1@test.com"]);
     }
@@ -83,15 +86,13 @@ mod email_tests {
 
     #[test]
     fn test_email_validation_text_only() {
-        let email = Email::new("from@test.com", "to@test.com", "Test")
-            .text("text body");
+        let email = Email::new("from@test.com", "to@test.com", "Test").text("text body");
         assert!(email.validate().is_ok());
     }
 
     #[test]
     fn test_email_validation_html_only() {
-        let email = Email::new("from@test.com", "to@test.com", "Test")
-            .html("<p>html body</p>");
+        let email = Email::new("from@test.com", "to@test.com", "Test").html("<p>html body</p>");
         assert!(email.validate().is_ok());
     }
 
@@ -106,8 +107,7 @@ mod email_tests {
     #[tokio::test]
     async fn test_console_mailer_send() {
         let mailer = ConsoleMailer::new();
-        let email = Email::new("from@test.com", "to@test.com", "Test Subject")
-            .text("Test body");
+        let email = Email::new("from@test.com", "to@test.com", "Test Subject").text("Test body");
 
         let result = mailer.send(&email).await;
         assert!(result.is_ok());
@@ -166,9 +166,7 @@ mod email_tests {
     #[test]
     fn test_app_context_with_mailer() {
         let mailer: Arc<dyn Mailer> = Arc::new(ConsoleMailer::new());
-        let ctx = AppContext::builder()
-            .with_mailer(mailer)
-            .build();
+        let ctx = AppContext::builder().with_mailer(mailer).build();
 
         assert!(ctx.mailer_opt().is_some());
         assert!(ctx.mailer().is_ok());
@@ -185,12 +183,9 @@ mod email_tests {
     #[tokio::test]
     async fn test_mailer_from_context() {
         let mailer: Arc<dyn Mailer> = Arc::new(ConsoleMailer::new());
-        let ctx = AppContext::builder()
-            .with_mailer(mailer)
-            .build();
+        let ctx = AppContext::builder().with_mailer(mailer).build();
 
-        let email = Email::new("from@test.com", "to@test.com", "Test")
-            .text("body");
+        let email = Email::new("from@test.com", "to@test.com", "Test").text("body");
 
         // Get mailer from context and send
         let result = ctx.mailer().unwrap().send(&email).await;

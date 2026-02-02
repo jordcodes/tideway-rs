@@ -9,8 +9,8 @@
 use crate::error::Result;
 use crate::traits::cache::Cache;
 use async_trait::async_trait;
-use moka::future::Cache as MokaCache;
 use moka::Expiry;
+use moka::future::Cache as MokaCache;
 use std::time::{Duration, Instant};
 
 /// Default TTL for cache entries when none is specified (24 hours)
@@ -323,7 +323,10 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 for j in 0..100 {
                     let key = format!("key{}_{}", i, j);
-                    cache.set(&key, &format!("value{}_{}", i, j), None).await.unwrap();
+                    cache
+                        .set(&key, &format!("value{}_{}", i, j), None)
+                        .await
+                        .unwrap();
                     let _: Option<String> = cache.get(&key).await.unwrap();
                 }
             }));

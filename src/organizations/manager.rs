@@ -6,7 +6,9 @@ use super::audit::{OrgAuditEntry, OrgAuditEvent};
 use super::config::OrganizationConfig;
 use super::error::{OrganizationError, Result};
 use super::seats::{SeatChecker, UnlimitedSeats};
-use super::storage::{MembershipStore, OptionalAuditStore, OrganizationStore, WithAuditStore, OrgAuditStore};
+use super::storage::{
+    MembershipStore, OptionalAuditStore, OrgAuditStore, OrganizationStore, WithAuditStore,
+};
 use super::utils::current_timestamp;
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
@@ -178,7 +180,6 @@ where
     S: SeatChecker,
     A: OptionalAuditStore,
 {
-
     /// Get a reference to the organization store.
     pub fn org_store(&self) -> &O {
         &self.org_store
@@ -234,9 +235,7 @@ where
         }
 
         // Generate or validate slug
-        let slug = slug
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| slugify(name));
+        let slug = slug.map(|s| s.to_string()).unwrap_or_else(|| slugify(name));
 
         // Check slug availability
         if !self.org_store.is_slug_available(&slug).await? {
@@ -338,7 +337,12 @@ where
     /// ).await?;
     /// ```
     #[instrument(skip(self, updater))]
-    pub async fn update<F>(&self, org_id: &str, actor_id: &str, updater: F) -> Result<O::Organization>
+    pub async fn update<F>(
+        &self,
+        org_id: &str,
+        actor_id: &str,
+        updater: F,
+    ) -> Result<O::Organization>
     where
         F: FnOnce(O::Organization) -> O::Organization,
     {
@@ -381,7 +385,11 @@ where
 
         // Record audit event
         self.audit_store
-            .record(OrgAuditEntry::new(OrgAuditEvent::OrgUpdated, org_id, actor_id))
+            .record(OrgAuditEntry::new(
+                OrgAuditEvent::OrgUpdated,
+                org_id,
+                actor_id,
+            ))
             .await;
 
         Ok(updated)
@@ -409,7 +417,11 @@ where
 
         // Record audit event
         self.audit_store
-            .record(OrgAuditEntry::new(OrgAuditEvent::OrgDeleted, org_id, actor_id))
+            .record(OrgAuditEntry::new(
+                OrgAuditEvent::OrgDeleted,
+                org_id,
+                actor_id,
+            ))
             .await;
 
         Ok(())
@@ -426,7 +438,10 @@ where
 
     /// Check if a user is a member of an organization.
     pub async fn is_member(&self, org_id: &str, user_id: &str) -> Result<bool> {
-        self.membership_store.is_member(org_id, user_id).await.map_err(Into::into)
+        self.membership_store
+            .is_member(org_id, user_id)
+            .await
+            .map_err(Into::into)
     }
 }
 

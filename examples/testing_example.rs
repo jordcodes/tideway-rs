@@ -1,3 +1,5 @@
+use axum::{Json, Router, extract::State, routing::get};
+use serde::{Deserialize, Serialize};
 /// Testing example demonstrating Tideway's testing utilities
 ///
 /// This example shows:
@@ -7,9 +9,7 @@
 /// - Testing error cases
 ///
 /// Run tests with: cargo test --example testing_example
-use tideway::{App, RouteModule, Result, AppContext};
-use axum::{Router, routing::get, Json, extract::State};
-use serde::{Deserialize, Serialize};
+use tideway::{App, AppContext, Result, RouteModule};
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Todo {
@@ -85,13 +85,11 @@ async fn get_todo(axum::extract::Path(id): axum::extract::Path<u64>) -> Result<J
 
 async fn list_todos(State(_ctx): State<AppContext>) -> Result<Json<Vec<Todo>>> {
     // In real app, this would query database
-    Ok(Json(vec![
-        Todo {
-            id: 1,
-            title: "Todo 1".to_string(),
-            completed: false,
-        },
-    ]))
+    Ok(Json(vec![Todo {
+        id: 1,
+        title: "Todo 1".to_string(),
+        completed: false,
+    }]))
 }
 
 struct TodosModule;
@@ -120,8 +118,8 @@ fn create_app() -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tideway::testing::{get, post};
     use serde_json::json;
+    use tideway::testing::{get, post};
 
     #[tokio::test]
     async fn test_create_todo() {
@@ -206,8 +204,7 @@ mod tests {
 #[tokio::main]
 async fn main() {
     tideway::init_tracing();
-    let app = App::new()
-        .register_module(TodosModule);
+    let app = App::new().register_module(TodosModule);
     tracing::info!("Testing example server starting on http://0.0.0.0:8000");
     app.serve().await.unwrap();
 }

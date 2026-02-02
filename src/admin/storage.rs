@@ -108,10 +108,7 @@ pub trait AdminStore: Send + Sync {
     ///
     /// Default implementation returns an empty list.
     /// Override this if your application tracks admin actions.
-    async fn get_audit_log(
-        &self,
-        _params: AuditLogParams,
-    ) -> Result<Vec<AuditEntry>, AdminError> {
+    async fn get_audit_log(&self, _params: AuditLogParams) -> Result<Vec<AuditEntry>, AdminError> {
         Ok(vec![])
     }
 
@@ -161,7 +158,10 @@ pub trait AdminStore: Send + Sync {
     /// Get a platform invitation by ID.
     ///
     /// Default implementation returns None.
-    async fn get_platform_invite(&self, _invite_id: &str) -> Result<Option<PlatformInvite>, AdminError> {
+    async fn get_platform_invite(
+        &self,
+        _invite_id: &str,
+    ) -> Result<Option<PlatformInvite>, AdminError> {
         Ok(None)
     }
 

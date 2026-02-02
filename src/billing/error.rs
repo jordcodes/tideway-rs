@@ -25,7 +25,10 @@ pub enum BillingError {
     /// The requested feature is not available on this plan.
     FeatureNotIncluded { feature: String, plan_id: String },
     /// Cannot delete a plan that has active subscriptions.
-    PlanHasActiveSubscriptions { plan_id: String, subscription_count: u32 },
+    PlanHasActiveSubscriptions {
+        plan_id: String,
+        subscription_count: u32,
+    },
     /// The Stripe price ID is invalid or does not exist.
     InvalidStripePrice { price_id: String, reason: String },
 
@@ -123,10 +126,21 @@ impl fmt::Display for BillingError {
                 write!(f, "Plan '{}' does not support extra seats", plan_id)
             }
             Self::FeatureNotIncluded { feature, plan_id } => {
-                write!(f, "Feature '{}' is not included in plan '{}'", feature, plan_id)
+                write!(
+                    f,
+                    "Feature '{}' is not included in plan '{}'",
+                    feature, plan_id
+                )
             }
-            Self::PlanHasActiveSubscriptions { plan_id, subscription_count } => {
-                write!(f, "Cannot delete plan '{}': {} active subscription(s) exist", plan_id, subscription_count)
+            Self::PlanHasActiveSubscriptions {
+                plan_id,
+                subscription_count,
+            } => {
+                write!(
+                    f,
+                    "Cannot delete plan '{}': {} active subscription(s) exist",
+                    plan_id, subscription_count
+                )
             }
             Self::InvalidStripePrice { price_id, reason } => {
                 write!(f, "Invalid Stripe price '{}': {}", price_id, reason)
@@ -138,7 +152,11 @@ impl fmt::Display for BillingError {
                 write!(f, "Subscription for '{}' is not active", billable_id)
             }
             Self::SubscriptionCancelling { billable_id } => {
-                write!(f, "Subscription for '{}' is scheduled for cancellation", billable_id)
+                write!(
+                    f,
+                    "Subscription for '{}' is scheduled for cancellation",
+                    billable_id
+                )
             }
             Self::StripeSubscriptionNotFound { subscription_id } => {
                 write!(f, "Stripe subscription not found: {}", subscription_id)
@@ -161,17 +179,32 @@ impl fmt::Display for BillingError {
             Self::ChargeNotFound { charge_id } => {
                 write!(f, "Charge not found: {}", charge_id)
             }
-            Self::InsufficientSeats { requested, available } => {
-                write!(f, "Cannot remove {} seats, only {} extra seats available", requested, available)
+            Self::InsufficientSeats {
+                requested,
+                available,
+            } => {
+                write!(
+                    f,
+                    "Cannot remove {} seats, only {} extra seats available",
+                    requested, available
+                )
             }
             Self::InvalidSeatCount { message } => {
                 write!(f, "Invalid seat count: {}", message)
             }
             Self::ConcurrentModification { billable_id } => {
-                write!(f, "Concurrent modification detected for '{}', please retry", billable_id)
+                write!(
+                    f,
+                    "Concurrent modification detected for '{}', please retry",
+                    billable_id
+                )
             }
             Self::SubscriptionNotTrialing { billable_id } => {
-                write!(f, "Subscription for '{}' is not in trialing state", billable_id)
+                write!(
+                    f,
+                    "Subscription for '{}' is not in trialing state",
+                    billable_id
+                )
             }
             Self::SubscriptionNotPaused { billable_id } => {
                 write!(f, "Subscription for '{}' is not paused", billable_id)
@@ -194,7 +227,12 @@ impl fmt::Display for BillingError {
             Self::InvalidWebhookPayload { message } => {
                 write!(f, "Invalid webhook payload: {}", message)
             }
-            Self::StripeApiError { operation, message, code, http_status } => {
+            Self::StripeApiError {
+                operation,
+                message,
+                code,
+                http_status,
+            } => {
                 write!(f, "Stripe API error during '{}': {}", operation, message)?;
                 if let Some(code) = code {
                     write!(f, " (code: {})", code)?;
@@ -266,12 +304,10 @@ impl From<BillingError> for crate::error::TidewayError {
             }
 
             // Map Stripe API errors based on HTTP status
-            BillingError::StripeApiError { http_status, .. } => {
-                match http_status {
-                    Some(400..=499) => crate::error::TidewayError::BadRequest(err.to_string()),
-                    _ => crate::error::TidewayError::Internal(err.to_string()),
-                }
-            }
+            BillingError::StripeApiError { http_status, .. } => match http_status {
+                Some(400..=499) => crate::error::TidewayError::BadRequest(err.to_string()),
+                _ => crate::error::TidewayError::Internal(err.to_string()),
+            },
         }
     }
 }
@@ -387,16 +423,25 @@ mod tests {
             billable_id: "org_123".to_string(),
         };
         let tideway_err: crate::error::TidewayError = err.into();
-        assert!(matches!(tideway_err, crate::error::TidewayError::NotFound(_)));
+        assert!(matches!(
+            tideway_err,
+            crate::error::TidewayError::NotFound(_)
+        ));
 
         let err = BillingError::InvalidWebhookSignature;
         let tideway_err: crate::error::TidewayError = err.into();
-        assert!(matches!(tideway_err, crate::error::TidewayError::BadRequest(_)));
+        assert!(matches!(
+            tideway_err,
+            crate::error::TidewayError::BadRequest(_)
+        ));
 
         let err = BillingError::SubscriptionInactive {
             billable_id: "org_123".to_string(),
         };
         let tideway_err: crate::error::TidewayError = err.into();
-        assert!(matches!(tideway_err, crate::error::TidewayError::Forbidden(_)));
+        assert!(matches!(
+            tideway_err,
+            crate::error::TidewayError::Forbidden(_)
+        ));
     }
 }

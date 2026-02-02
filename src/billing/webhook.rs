@@ -59,39 +59,46 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         let timestamp_diff = (now - sig_parts.timestamp).abs();
         if timestamp_diff > 300 {
             return Err(crate::error::TidewayError::BadRequest(
-                "Webhook timestamp too old".to_string()
+                "Webhook timestamp too old".to_string(),
             ));
         }
 
         // Compute expected signature
-        let signed_payload = format!("{}.{}", sig_parts.timestamp, String::from_utf8_lossy(payload));
-        let expected_sig = compute_signature(self.webhook_secret.expose_secret(), signed_payload.as_bytes())?;
+        let signed_payload = format!(
+            "{}.{}",
+            sig_parts.timestamp,
+            String::from_utf8_lossy(payload)
+        );
+        let expected_sig = compute_signature(
+            self.webhook_secret.expose_secret(),
+            signed_payload.as_bytes(),
+        )?;
 
         // Verify signature matches (constant-time comparison)
         let expected_bytes = hex::decode(&expected_sig)
             .map_err(|_| crate::error::TidewayError::Internal("Hex decode error".to_string()))?;
-        let provided_bytes = hex::decode(&sig_parts.signature)
-            .map_err(|_| crate::error::TidewayError::BadRequest("Invalid signature format".to_string()))?;
+        let provided_bytes = hex::decode(&sig_parts.signature).map_err(|_| {
+            crate::error::TidewayError::BadRequest("Invalid signature format".to_string())
+        })?;
 
         if expected_bytes.ct_eq(&provided_bytes).unwrap_u8() != 1 {
             return Err(crate::error::TidewayError::BadRequest(
-                "Invalid webhook signature".to_string()
+                "Invalid webhook signature".to_string(),
             ));
         }
 
         // Parse the JSON payload
         // Log detailed error internally but return generic message to prevent information leakage
-        let event: WebhookEvent = serde_json::from_slice(payload)
-            .map_err(|e| {
-                tracing::warn!(
-                    target: "tideway::billing::webhook",
-                    error = %e,
-                    "Failed to parse webhook payload"
-                );
-                BillingError::InvalidWebhookPayload {
-                    message: "malformed JSON payload".to_string(),
-                }
-            })?;
+        let event: WebhookEvent = serde_json::from_slice(payload).map_err(|e| {
+            tracing::warn!(
+                target: "tideway::billing::webhook",
+                error = %e,
+                "Failed to parse webhook payload"
+            );
+            BillingError::InvalidWebhookPayload {
+                message: "malformed JSON payload".to_string(),
+            }
+        })?;
 
         Ok(event)
     }
@@ -128,12 +135,12 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
     /// Handle checkout.session.completed event.
     async fn handle_checkout_completed(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
         // Extract subscription data from checkout session
-        let session = event.data.object.as_object()
-            .ok_or_else(|| crate::error::TidewayError::BadRequest("Invalid event data".to_string()))?;
+        let session = event.data.object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid event data".to_string())
+        })?;
 
         // Get subscription ID from the completed checkout
-        let subscription_id = session.get("subscription")
-            .and_then(|v| v.as_str());
+        let subscription_id = session.get("subscription").and_then(|v| v.as_str());
 
         if subscription_id.is_none() {
             // Not a subscription checkout (maybe one-time payment)
@@ -161,11 +168,14 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
 
     /// Handle subscription deleted event.
     async fn handle_subscription_deleted(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
-        let subscription_id = event.data.object.get("id")
+        let subscription_id = event
+            .data
+            .object
+            .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| crate::error::TidewayError::BadRequest(
-                "Missing subscription ID".to_string()
-            ))?;
+            .ok_or_else(|| {
+                crate::error::TidewayError::BadRequest("Missing subscription ID".to_string())
+            })?;
 
         let sub_manager = SubscriptionManager::new(
             self.store.clone(),
@@ -183,7 +193,10 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         // The subscription.updated webhook will handle the actual update
         // This is mainly for triggering any custom logic on successful payment
 
-        let _subscription_id = event.data.object.get("subscription")
+        let _subscription_id = event
+            .data
+            .object
+            .get("subscription")
             .and_then(|v| v.as_str());
 
         // Could emit custom event here for app-specific logic
@@ -195,7 +208,10 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         // Payment failed - the subscription.updated webhook will mark it past_due
         // This is mainly for triggering notifications
 
-        let _subscription_id = event.data.object.get("subscription")
+        let _subscription_id = event
+            .data
+            .object
+            .get("subscription")
             .and_then(|v| v.as_str());
 
         // Could emit custom event here for app-specific notification logic
@@ -203,49 +219,70 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
     }
 
     /// Parse subscription data from Stripe webhook payload.
-    fn parse_subscription_data(&self, object: &serde_json::Value) -> Result<StripeSubscriptionData> {
-        let obj = object.as_object()
-            .ok_or_else(|| crate::error::TidewayError::BadRequest("Invalid subscription data".to_string()))?;
+    fn parse_subscription_data(
+        &self,
+        object: &serde_json::Value,
+    ) -> Result<StripeSubscriptionData> {
+        let obj = object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid subscription data".to_string())
+        })?;
 
-        let id = obj.get("id")
+        let id = obj
+            .get("id")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| crate::error::TidewayError::BadRequest("Missing subscription ID".to_string()))?
+            .ok_or_else(|| {
+                crate::error::TidewayError::BadRequest("Missing subscription ID".to_string())
+            })?
             .to_string();
 
-        let customer_id = obj.get("customer")
+        let customer_id = obj
+            .get("customer")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| crate::error::TidewayError::BadRequest("Missing customer ID".to_string()))?
+            .ok_or_else(|| {
+                crate::error::TidewayError::BadRequest("Missing customer ID".to_string())
+            })?
             .to_string();
 
-        let status = obj.get("status")
+        let status = obj
+            .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("active")
             .to_string();
 
-        let current_period_start = obj.get("current_period_start")
+        let current_period_start = obj
+            .get("current_period_start")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        let current_period_end = obj.get("current_period_end")
+        let current_period_end = obj
+            .get("current_period_end")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
 
-        let trial_end = obj.get("trial_end")
-            .and_then(|v| v.as_u64());
+        let trial_end = obj.get("trial_end").and_then(|v| v.as_u64());
 
-        let cancel_at_period_end = obj.get("cancel_at_period_end")
+        let cancel_at_period_end = obj
+            .get("cancel_at_period_end")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         // Parse items to get plan and seat info
-        let (plan_id, base_item_id, seat_item_id, extra_seats) = self.parse_subscription_items(obj)?;
+        let (plan_id, base_item_id, seat_item_id, extra_seats) =
+            self.parse_subscription_items(obj)?;
 
         // Get metadata
-        let metadata = obj.get("metadata")
+        let metadata = obj
+            .get("metadata")
             .and_then(|v| v.as_object())
             .map(|m| SubscriptionMetadata {
-                billable_id: m.get("billable_id").and_then(|v| v.as_str()).map(String::from),
-                billable_type: m.get("billable_type").and_then(|v| v.as_str()).map(String::from),
+                billable_id: m
+                    .get("billable_id")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                billable_type: m
+                    .get("billable_type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
             })
             .unwrap_or_default();
 
@@ -266,11 +303,17 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
     }
 
     /// Parse subscription items to extract plan and seat information.
-    fn parse_subscription_items(&self, obj: &serde_json::Map<String, serde_json::Value>) -> Result<(String, Option<String>, Option<String>, u32)> {
-        let items = obj.get("items")
+    fn parse_subscription_items(
+        &self,
+        obj: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(String, Option<String>, Option<String>, u32)> {
+        let items = obj
+            .get("items")
             .and_then(|v| v.get("data"))
             .and_then(|v| v.as_array())
-            .ok_or_else(|| crate::error::TidewayError::BadRequest("Missing subscription items".to_string()))?;
+            .ok_or_else(|| {
+                crate::error::TidewayError::BadRequest("Missing subscription items".to_string())
+            })?;
 
         let mut plan_id = String::new();
         let mut base_item_id = None;
@@ -278,7 +321,9 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         let mut extra_seats = 0u32;
 
         // Get all seat price IDs for lookup
-        let seat_prices: std::collections::HashSet<_> = self.plans.iter()
+        let seat_prices: std::collections::HashSet<_> = self
+            .plans
+            .iter()
             .filter_map(|(_, p)| p.extra_seat_price_id.clone())
             .collect();
 
@@ -287,16 +332,19 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
                 crate::error::TidewayError::BadRequest("Invalid item".to_string())
             })?;
 
-            let item_id = item_obj.get("id")
+            let item_id = item_obj
+                .get("id")
                 .and_then(|v| v.as_str())
                 .map(String::from);
 
-            let price_id = item_obj.get("price")
+            let price_id = item_obj
+                .get("price")
                 .and_then(|v| v.get("id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            let quantity = item_obj.get("quantity")
+            let quantity = item_obj
+                .get("quantity")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(1) as u32;
 
@@ -317,7 +365,7 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
 
         if plan_id.is_empty() {
             return Err(crate::error::TidewayError::BadRequest(
-                "Could not determine plan from subscription".to_string()
+                "Could not determine plan from subscription".to_string(),
             ));
         }
 
@@ -369,10 +417,9 @@ fn parse_signature_header(header: &str) -> Result<SignatureParts> {
     let mut signature = None;
 
     for part in header.split(',') {
-        let (key, value) = part.split_once('=')
-            .ok_or_else(|| crate::error::TidewayError::BadRequest(
-                "Invalid signature header format".to_string()
-            ))?;
+        let (key, value) = part.split_once('=').ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid signature header format".to_string())
+        })?;
 
         match key.trim() {
             "t" => timestamp = value.parse().ok(),
@@ -382,12 +429,12 @@ fn parse_signature_header(header: &str) -> Result<SignatureParts> {
     }
 
     Ok(SignatureParts {
-        timestamp: timestamp.ok_or_else(|| crate::error::TidewayError::BadRequest(
-            "Missing timestamp in signature".to_string()
-        ))?,
-        signature: signature.ok_or_else(|| crate::error::TidewayError::BadRequest(
-            "Missing v1 signature".to_string()
-        ))?,
+        timestamp: timestamp.ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing timestamp in signature".to_string())
+        })?,
+        signature: signature.ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing v1 signature".to_string())
+        })?,
     })
 }
 
@@ -421,7 +468,9 @@ impl super::subscription::StripeSubscriptionClient for NullSubscriptionClient {
     }
 
     async fn get_subscription(&self, _subscription_id: &str) -> Result<StripeSubscriptionData> {
-        Err(crate::error::TidewayError::Internal("Not implemented".to_string()))
+        Err(crate::error::TidewayError::Internal(
+            "Not implemented".to_string(),
+        ))
     }
 
     async fn update_subscription(
@@ -429,7 +478,9 @@ impl super::subscription::StripeSubscriptionClient for NullSubscriptionClient {
         _subscription_id: &str,
         _update: super::subscription::UpdateSubscriptionRequest,
     ) -> Result<StripeSubscriptionData> {
-        Err(crate::error::TidewayError::Internal("Not implemented".to_string()))
+        Err(crate::error::TidewayError::Internal(
+            "Not implemented".to_string(),
+        ))
     }
 
     async fn extend_trial(
@@ -437,31 +488,38 @@ impl super::subscription::StripeSubscriptionClient for NullSubscriptionClient {
         _subscription_id: &str,
         _new_trial_end: u64,
     ) -> Result<StripeSubscriptionData> {
-        Err(crate::error::TidewayError::Internal("Not implemented".to_string()))
+        Err(crate::error::TidewayError::Internal(
+            "Not implemented".to_string(),
+        ))
     }
 
     async fn pause_subscription(&self, _subscription_id: &str) -> Result<()> {
         Ok(())
     }
 
-    async fn resume_paused_subscription(&self, _subscription_id: &str) -> Result<StripeSubscriptionData> {
-        Err(crate::error::TidewayError::Internal("Not implemented".to_string()))
+    async fn resume_paused_subscription(
+        &self,
+        _subscription_id: &str,
+    ) -> Result<StripeSubscriptionData> {
+        Err(crate::error::TidewayError::Internal(
+            "Not implemented".to_string(),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::billing::storage::test::InMemoryBillingStore;
     use crate::billing::Plans;
+    use crate::billing::storage::test::InMemoryBillingStore;
 
     fn create_test_plans() -> Plans {
         Plans::builder()
             .plan("starter")
-                .stripe_price("price_starter")
-                .extra_seat_price("price_seat")
-                .included_seats(3)
-                .done()
+            .stripe_price("price_starter")
+            .extra_seat_price("price_seat")
+            .included_seats(3)
+            .done()
             .build()
     }
 

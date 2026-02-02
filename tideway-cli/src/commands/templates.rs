@@ -39,7 +39,10 @@ pub fn run() -> Result<()> {
     println!("  - useApi.ts            Base API composable");
 
     println!("\n{}", "Styling Options:".cyan());
-    println!("  --style shadcn     {} shadcn-vue components", "(default)".dimmed());
+    println!(
+        "  --style shadcn     {} shadcn-vue components",
+        "(default)".dimmed()
+    );
     println!("  --style tailwind   Plain Tailwind CSS classes");
     println!("  --style unstyled   Minimal HTML, no styling");
 

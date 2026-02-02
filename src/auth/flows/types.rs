@@ -62,11 +62,7 @@ pub enum LoginResponse {
 
 impl LoginResponse {
     /// Create a successful login response.
-    pub fn success(
-        access_token: String,
-        refresh_token: String,
-        expires_in: u64,
-    ) -> Self {
+    pub fn success(access_token: String, refresh_token: String, expires_in: u64) -> Self {
         Self::Success {
             access_token,
             refresh_token,

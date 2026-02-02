@@ -36,9 +36,9 @@
 mod audit;
 mod config;
 mod error;
+mod invitation_manager;
 mod manager;
 mod membership_manager;
-mod invitation_manager;
 mod rate_limit;
 mod seats;
 pub mod storage;
@@ -63,9 +63,9 @@ pub use config::{InvitationConfig, OrganizationConfig};
 pub use error::OrganizationError;
 
 // Manager exports
+pub use invitation_manager::{InvitationCreateParams, InvitationManager};
 pub use manager::{MembershipCreateParams, OrgCreateParams, OrganizationManager};
 pub use membership_manager::MembershipManager;
-pub use invitation_manager::{InvitationCreateParams, InvitationManager};
 
 // Seat checker exports
 pub use seats::{SeatChecker, UnlimitedSeats};
@@ -75,7 +75,7 @@ pub use storage::{InvitationStore, MembershipStore, OrganizationStore};
 
 // Audit exports
 pub use audit::{OrgAuditEntry, OrgAuditEvent};
-pub use storage::{OrgAuditStore, OptionalAuditStore, WithAuditStore};
+pub use storage::{OptionalAuditStore, OrgAuditStore, WithAuditStore};
 
 // Rate limiting exports
 pub use rate_limit::{
@@ -93,17 +93,15 @@ pub use billing::{BillableOrganization, BillingSeatChecker};
 // SeaORM exports (when organizations-seaorm feature enabled)
 #[cfg(feature = "organizations-seaorm")]
 pub use sea_orm_store::{
-    InvitationStatus, SeaOrmInvitation, SeaOrmMembership, SeaOrmOrganization, SeaOrmOrgStore,
+    InvitationStatus, SeaOrmInvitation, SeaOrmMembership, SeaOrmOrgStore, SeaOrmOrganization,
 };
 
 // Auth integration exports
 pub use auth::{
-    create_org_token_subject, AuthenticatedUserId, CurrentMembership, CurrentOrg, OrgClaims,
-    OrgStoreLayer, RequireOrgMembership, RequirePermission,
+    AuthenticatedUserId, CurrentMembership, CurrentOrg, OrgClaims, OrgStoreLayer,
+    RequireOrgMembership, RequirePermission, create_org_token_subject,
 };
 
 // Test exports
 #[cfg(any(test, feature = "test-organizations"))]
-pub use test::{
-    InMemoryOrgStore, TestInvitation, TestMembership, TestOrganization,
-};
+pub use test::{InMemoryOrgStore, TestInvitation, TestMembership, TestOrganization};

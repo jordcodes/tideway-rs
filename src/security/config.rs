@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::utils::get_env_with_prefix;
+use serde::{Deserialize, Serialize};
 
 /// X-Frame-Options header value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -12,7 +12,6 @@ pub enum XFrameOptions {
     /// SAMEORIGIN - Allow framing from same origin
     SameOrigin,
 }
-
 
 /// Referrer-Policy header value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -31,7 +30,6 @@ pub enum ReferrerPolicy {
     /// Send full referrer (not recommended)
     UnsafeUrl,
 }
-
 
 /// Security headers configuration for Tideway applications
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -148,7 +146,9 @@ impl SecurityConfig {
             config.referrer_policy = match referrer.to_lowercase().as_str() {
                 "no-referrer" => Some(ReferrerPolicy::NoReferrer),
                 "same-origin" => Some(ReferrerPolicy::SameOrigin),
-                "strict-origin-when-cross-origin" => Some(ReferrerPolicy::StrictOriginWhenCrossOrigin),
+                "strict-origin-when-cross-origin" => {
+                    Some(ReferrerPolicy::StrictOriginWhenCrossOrigin)
+                }
                 "strict-origin" => Some(ReferrerPolicy::StrictOrigin),
                 "unsafe-url" => Some(ReferrerPolicy::UnsafeUrl),
                 "disable" | "off" => None,
@@ -293,15 +293,10 @@ mod tests {
 
     #[test]
     fn test_framing_options() {
-        let config = SecurityConfig::builder()
-            .same_origin_framing()
-            .build();
+        let config = SecurityConfig::builder().same_origin_framing().build();
         assert_eq!(config.x_frame_options, Some(XFrameOptions::SameOrigin));
 
-        let config = SecurityConfig::builder()
-            .allow_framing()
-            .build();
+        let config = SecurityConfig::builder().allow_framing().build();
         assert_eq!(config.x_frame_options, None);
     }
 }
-

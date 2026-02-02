@@ -8,4 +8,3 @@ mod headers;
 
 pub use config::{SecurityConfig, SecurityConfigBuilder};
 pub use headers::build_security_headers_layer;
-

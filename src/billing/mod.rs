@@ -55,6 +55,7 @@ pub mod client;
 pub mod customer;
 pub mod entitlements;
 pub mod error;
+pub mod invoice;
 pub mod live_client;
 pub mod payment;
 pub mod plans;
@@ -65,15 +66,14 @@ pub mod sea_orm_store;
 pub mod seats;
 pub mod storage;
 pub mod subscription;
-pub mod invoice;
 pub mod usage;
 pub mod validation;
 pub mod webhook;
 
 // Plan exports
 pub use plans::{
-    can_downgrade, compare_plans, LimitCheckResult, PlanBuilder, PlanChangeType, PlanComparison,
-    PlanConfig, PlanDowngradeError, PlanLimits, Plans, PlansBuilder,
+    LimitCheckResult, PlanBuilder, PlanChangeType, PlanComparison, PlanConfig, PlanDowngradeError,
+    PlanLimits, Plans, PlansBuilder, can_downgrade, compare_plans,
 };
 
 // Storage exports
@@ -121,13 +121,14 @@ pub use seats::{SeatChangeResult, SeatInfo, SeatManager};
 
 // Usage exports
 pub use usage::{
-    check_usage, StripeUsageClient, UsageAction, UsageCheckResult, UsageItemSummary,
-    UsageManager, UsageRecord, UsageRecordResult, UsageRecordSummary, UsageSummary,
-    UsageThreshold, UsageTracker,
+    StripeUsageClient, UsageAction, UsageCheckResult, UsageItemSummary, UsageManager, UsageRecord,
+    UsageRecordResult, UsageRecordSummary, UsageSummary, UsageThreshold, UsageTracker, check_usage,
 };
 
 // Payment exports
-pub use payment::{PaymentMethod, PaymentMethodList, PaymentMethodManager, StripePaymentMethodClient};
+pub use payment::{
+    PaymentMethod, PaymentMethodList, PaymentMethodManager, StripePaymentMethodClient,
+};
 
 // Refund exports
 pub use refund::{
@@ -162,8 +163,8 @@ pub use sea_orm_store::SeaOrmBillingStore;
 
 // Validation exports
 pub use validation::{
-    validate_billable_id, validate_plan, validate_plan_id, validate_plan_with_stripe,
-    StripePrice, StripePriceValidator,
+    StripePrice, StripePriceValidator, validate_billable_id, validate_plan, validate_plan_id,
+    validate_plan_with_stripe,
 };
 
 #[cfg(any(test, feature = "test-billing"))]
@@ -180,7 +181,7 @@ pub use customer::test::MockStripeClient;
 pub use subscription::test::MockStripeSubscriptionClient;
 
 #[cfg(any(test, feature = "test-billing"))]
-pub use checkout::test::{MockStripeCheckoutClient, MockFullStripeClient};
+pub use checkout::test::{MockFullStripeClient, MockStripeCheckoutClient};
 
 #[cfg(any(test, feature = "test-billing"))]
 pub use portal::test::MockStripePortalClient;

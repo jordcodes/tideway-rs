@@ -1,8 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use axum::{Router, routing::get, Json};
+use axum::http::Request;
+use axum::{Json, Router, routing::get};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use serde_json::json;
 use tower::ServiceExt;
-use axum::http::Request;
 
 // Raw Axum hello world
 fn raw_axum_hello() -> Router {
@@ -17,17 +17,21 @@ fn tideway_hello() -> Router {
 
 // Raw Axum JSON response
 fn raw_axum_json() -> Router {
-    Router::new().route("/json", get(|| async {
-        Json(json!({"message": "Hello", "status": "ok"}))
-    }))
+    Router::new().route(
+        "/json",
+        get(|| async { Json(json!({"message": "Hello", "status": "ok"})) }),
+    )
 }
 
 // Tideway JSON response with ApiResponse
 fn tideway_json() -> Router {
-    Router::new().route("/json", get(|| async {
-        use tideway::ApiResponse;
-        Json(ApiResponse::success(json!({"message": "Hello"})))
-    }))
+    Router::new().route(
+        "/json",
+        get(|| async {
+            use tideway::ApiResponse;
+            Json(ApiResponse::success(json!({"message": "Hello"})))
+        }),
+    )
 }
 
 async fn make_request(router: &Router, path: &str) {

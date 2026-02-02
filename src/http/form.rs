@@ -63,7 +63,10 @@ impl FileConfig {
     /// Validate file size
     pub fn validate_size(&self, size: usize) -> Result<(), String> {
         if size > self.max_size {
-            return Err(format!("File size {} exceeds maximum {}", size, self.max_size));
+            return Err(format!(
+                "File size {} exceeds maximum {}",
+                size, self.max_size
+            ));
         }
         Ok(())
     }

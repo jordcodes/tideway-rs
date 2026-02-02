@@ -7,9 +7,7 @@ use std::path::Path;
 
 use crate::cli::{GenerateArgs, Module, Style};
 use crate::templates::{TemplateContext, TemplateEngine};
-use crate::{
-    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
-};
+use crate::{ensure_dir, is_json_output, print_info, print_success, print_warning, write_file};
 
 /// Run the generate command
 pub fn run(args: GenerateArgs) -> Result<()> {
@@ -75,8 +73,9 @@ pub fn run(args: GenerateArgs) -> Result<()> {
     if args.with_views {
         let views_path = Path::new(&args.views_output);
         if !views_path.exists() {
-            ensure_dir(views_path)
-                .with_context(|| format!("Failed to create views directory: {}", args.views_output))?;
+            ensure_dir(views_path).with_context(|| {
+                format!("Failed to create views directory: {}", args.views_output)
+            })?;
         }
 
         match args.module {
@@ -128,10 +127,7 @@ pub fn run(args: GenerateArgs) -> Result<()> {
                 );
             } else {
                 println!("\n{}", "Missing shadcn-vue components:".yellow().bold());
-                println!(
-                    "  npx shadcn-vue@latest add {}",
-                    missing.join(" ")
-                );
+                println!("  npx shadcn-vue@latest add {}", missing.join(" "));
             }
         }
     }
@@ -184,7 +180,13 @@ fn generate_auth(
     // Track shadcn components needed for auth
     if args.style == Style::Shadcn {
         shadcn_components.extend(&[
-            "button", "card", "input", "label", "form", "alert", "separator",
+            "button",
+            "card",
+            "input",
+            "label",
+            "form",
+            "alert",
+            "separator",
         ]);
     }
 
@@ -230,14 +232,30 @@ fn generate_billing(
 
     let plans_composable_content = engine.render("billing/composables/usePlans")?;
     let plans_composable_path = composables_path.join("usePlans.ts");
-    write_file_with_force(&plans_composable_path, &plans_composable_content, args.force)?;
+    write_file_with_force(
+        &plans_composable_path,
+        &plans_composable_content,
+        args.force,
+    )?;
     print_success("Generated billing/composables/usePlans.ts");
 
     // Track shadcn components needed for billing
     if args.style == Style::Shadcn {
         shadcn_components.extend(&[
-            "button", "card", "badge", "table", "skeleton", "alert", "separator",
-            "dropdown-menu", "select", "switch", "textarea", "tabs", "input", "label",
+            "button",
+            "card",
+            "badge",
+            "table",
+            "skeleton",
+            "alert",
+            "separator",
+            "dropdown-menu",
+            "select",
+            "switch",
+            "textarea",
+            "tabs",
+            "input",
+            "label",
         ]);
     }
 
@@ -364,7 +382,10 @@ fn generate_admin_views(
         ("AdminLayout.vue", "views/admin/AdminLayout"),
         ("AdminDashboardView.vue", "views/admin/AdminDashboardView"),
         ("AdminUsersView.vue", "views/admin/AdminUsersView"),
-        ("AdminOrganizationsView.vue", "views/admin/AdminOrganizationsView"),
+        (
+            "AdminOrganizationsView.vue",
+            "views/admin/AdminOrganizationsView",
+        ),
     ];
 
     for (filename, template_name) in views {
@@ -387,11 +408,26 @@ fn generate_auth_views(
 
     // Generate auth view files inline (simple wrappers around components)
     let views = [
-        ("LoginView.vue", include_str!("../templates_inline/views/auth/LoginView.vue")),
-        ("RegisterView.vue", include_str!("../templates_inline/views/auth/RegisterView.vue")),
-        ("ForgotPasswordView.vue", include_str!("../templates_inline/views/auth/ForgotPasswordView.vue")),
-        ("ResetPasswordView.vue", include_str!("../templates_inline/views/auth/ResetPasswordView.vue")),
-        ("MfaView.vue", include_str!("../templates_inline/views/auth/MfaView.vue")),
+        (
+            "LoginView.vue",
+            include_str!("../templates_inline/views/auth/LoginView.vue"),
+        ),
+        (
+            "RegisterView.vue",
+            include_str!("../templates_inline/views/auth/RegisterView.vue"),
+        ),
+        (
+            "ForgotPasswordView.vue",
+            include_str!("../templates_inline/views/auth/ForgotPasswordView.vue"),
+        ),
+        (
+            "ResetPasswordView.vue",
+            include_str!("../templates_inline/views/auth/ResetPasswordView.vue"),
+        ),
+        (
+            "MfaView.vue",
+            include_str!("../templates_inline/views/auth/MfaView.vue"),
+        ),
     ];
 
     for (filename, content) in views {
@@ -411,9 +447,10 @@ fn generate_billing_views(
     let billing_views_path = views_path.join("billing");
     ensure_dir(&billing_views_path)?;
 
-    let views = [
-        ("BillingView.vue", include_str!("../templates_inline/views/billing/BillingView.vue")),
-    ];
+    let views = [(
+        "BillingView.vue",
+        include_str!("../templates_inline/views/billing/BillingView.vue"),
+    )];
 
     for (filename, content) in views {
         let file_path = billing_views_path.join(filename);
@@ -433,8 +470,14 @@ fn generate_org_views(
     ensure_dir(&org_views_path)?;
 
     let views = [
-        ("OrganizationSettingsView.vue", include_str!("../templates_inline/views/settings/OrganizationSettingsView.vue")),
-        ("MembersView.vue", include_str!("../templates_inline/views/settings/MembersView.vue")),
+        (
+            "OrganizationSettingsView.vue",
+            include_str!("../templates_inline/views/settings/OrganizationSettingsView.vue"),
+        ),
+        (
+            "MembersView.vue",
+            include_str!("../templates_inline/views/settings/MembersView.vue"),
+        ),
     ];
 
     for (filename, content) in views {
@@ -495,7 +538,10 @@ fn update_router_all() -> Result<()> {
         content.replace("routes: [", &format!("routes: [{}", all_routes))
     } else if content.contains("const routes") {
         // Handle const routes = [ ... ] pattern
-        content.replace("const routes = [", &format!("const routes = [{}", all_routes))
+        content.replace(
+            "const routes = [",
+            &format!("const routes = [{}", all_routes),
+        )
     } else {
         print_warning("Could not find routes array in router file");
         if !is_json_output() {
@@ -544,10 +590,7 @@ fn update_app_vue() -> Result<()> {
 
     // Add Toaster component before </template>
     if updated.contains("</template>") {
-        updated = updated.replace(
-            "</template>",
-            "  <Toaster />\n</template>"
-        );
+        updated = updated.replace("</template>", "  <Toaster />\n</template>");
     }
 
     write_file(app_path, &updated)?;

@@ -1,7 +1,7 @@
-use axum::{Router, routing::get};
 use axum::http::HeaderValue;
-use tideway::{App, AppContext, RouteModule};
+use axum::{Router, routing::get};
 use tideway::testing::TestApp;
+use tideway::{App, AppContext, RouteModule};
 
 struct PingModule;
 
@@ -15,13 +15,14 @@ impl RouteModule for PingModule {
 async fn test_test_app_with_middleware() {
     let layer = axum::middleware::from_fn(
         |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
-        let mut response = next.run(req).await;
-        response.headers_mut().insert(
-            axum::http::header::HeaderName::from_static("x-test"),
-            HeaderValue::from_static("1"),
-        );
-        response
-    });
+            let mut response = next.run(req).await;
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-test"),
+                HeaderValue::from_static("1"),
+            );
+            response
+        },
+    );
 
     let app = App::new()
         .register_module(PingModule)
@@ -40,13 +41,14 @@ async fn test_test_app_with_middleware() {
 async fn test_test_app_without_middleware() {
     let layer = axum::middleware::from_fn(
         |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| async move {
-        let mut response = next.run(req).await;
-        response.headers_mut().insert(
-            axum::http::header::HeaderName::from_static("x-test"),
-            HeaderValue::from_static("1"),
-        );
-        response
-    });
+            let mut response = next.run(req).await;
+            response.headers_mut().insert(
+                axum::http::header::HeaderName::from_static("x-test"),
+                HeaderValue::from_static("1"),
+            );
+            response
+        },
+    );
 
     let app = App::new()
         .register_module(PingModule)
@@ -73,9 +75,7 @@ async fn test_auth_test_app_sets_bearer() {
             .unwrap()
     }
 
-    let app = App::new().merge_router(
-        Router::new().route("/auth", axum::routing::get(auth_echo)),
-    );
+    let app = App::new().merge_router(Router::new().route("/auth", axum::routing::get(auth_echo)));
     let test_app = TestApp::new(app);
 
     test_app

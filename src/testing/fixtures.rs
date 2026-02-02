@@ -49,9 +49,7 @@ pub mod fake {
 
     /// Generate a random string of the given length
     pub fn string(length: usize) -> String {
-        (0..length)
-            .map(|_| fastrand::alphabetic())
-            .collect()
+        (0..length).map(|_| fastrand::alphabetic()).collect()
     }
 }
 
@@ -177,4 +175,3 @@ mod tests {
         assert!(!user.username.is_empty());
     }
 }
-

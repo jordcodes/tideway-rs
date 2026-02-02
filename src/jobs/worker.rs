@@ -8,7 +8,7 @@ use crate::jobs::registry::JobRegistry;
 use crate::traits::job::JobQueue;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// A single worker that processes jobs from a queue
 pub struct JobWorker {

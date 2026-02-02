@@ -351,8 +351,10 @@ pub trait ImpersonationStore: Send + Sync {
     async fn get_session(&self, session_id: &str) -> Result<Option<ImpersonationSession>>;
 
     /// Get active impersonation session for a target user.
-    async fn get_session_for_user(&self, target_user_id: &str)
-        -> Result<Option<ImpersonationSession>>;
+    async fn get_session_for_user(
+        &self,
+        target_user_id: &str,
+    ) -> Result<Option<ImpersonationSession>>;
 
     /// Get all active sessions by an admin.
     async fn get_sessions_by_admin(&self, admin_id: &str) -> Result<Vec<ImpersonationSession>>;
@@ -479,11 +481,7 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
         }
 
         // Check for existing session
-        if let Some(existing) = self
-            .store
-            .get_session_for_user(&req.target_user_id)
-            .await?
-        {
+        if let Some(existing) = self.store.get_session_for_user(&req.target_user_id).await? {
             if !existing.is_expired() {
                 tracing::warn!(
                     target: "auth.impersonation.rejected",
@@ -911,12 +909,7 @@ pub mod test {
         }
 
         async fn end_session(&self, session_id: &str) -> Result<bool> {
-            Ok(self
-                .sessions
-                .write()
-                .unwrap()
-                .remove(session_id)
-                .is_some())
+            Ok(self.sessions.write().unwrap().remove(session_id).is_some())
         }
 
         async fn end_sessions_for_user(&self, target_user_id: &str) -> Result<usize> {
@@ -1156,7 +1149,10 @@ mod tests {
             .await
             .unwrap();
 
-        manager.end_impersonation(&session.session_id).await.unwrap();
+        manager
+            .end_impersonation(&session.session_id)
+            .await
+            .unwrap();
 
         // Session should be gone
         let active = manager.get_active_session("user-1").await.unwrap();
@@ -1207,7 +1203,10 @@ mod tests {
             .await
             .unwrap();
 
-        manager.end_impersonation(&session.session_id).await.unwrap();
+        manager
+            .end_impersonation(&session.session_id)
+            .await
+            .unwrap();
 
         let notifications = manager.store.get_notifications();
         assert_eq!(notifications.len(), 2); // Started + Ended
@@ -1228,7 +1227,10 @@ mod tests {
             .await
             .unwrap();
 
-        manager.end_impersonation(&session.session_id).await.unwrap();
+        manager
+            .end_impersonation(&session.session_id)
+            .await
+            .unwrap();
 
         let audit = manager.get_audit_log("admin-1", 10).await.unwrap();
         assert_eq!(audit.len(), 2);

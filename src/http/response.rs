@@ -42,7 +42,12 @@ impl<T: Serialize> ApiResponse<T> {
     }
 
     /// Create a paginated response
-    pub fn paginated(data: T, total: u64, page: u32, per_page: u32) -> ApiResponse<PaginatedData<T>> {
+    pub fn paginated(
+        data: T,
+        total: u64,
+        page: u32,
+        per_page: u32,
+    ) -> ApiResponse<PaginatedData<T>> {
         ApiResponse {
             success: true,
             data: Some(PaginatedData {
@@ -112,10 +117,9 @@ impl<T: Serialize> IntoResponse for CreatedResponse<T> {
         let body = Json(self.data);
         let mut response = (StatusCode::CREATED, body).into_response();
         if let Ok(location) = self.location.parse() {
-            response.headers_mut().insert(
-                axum::http::header::LOCATION,
-                location,
-            );
+            response
+                .headers_mut()
+                .insert(axum::http::header::LOCATION, location);
         } else {
             tracing::warn!(location = %self.location, "Invalid Location header value in CreatedResponse");
         }

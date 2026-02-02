@@ -4,11 +4,7 @@
 //! when development mode is enabled.
 
 use crate::error::{ErrorInfo, TidewayError};
-use axum::{
-    body::Body,
-    extract::Request,
-    http::Response,
-};
+use axum::{body::Body, extract::Request, http::Response};
 use std::sync::Arc;
 use tower::Service;
 
@@ -51,9 +47,14 @@ where
 {
     type Response = Response<Body>;
     type Error = S::Error;
-    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
 
-    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
@@ -92,8 +93,7 @@ pub fn create_dev_error_response(
         None
     };
 
-    let error_info = ErrorInfo::new()
-        .with_stack_trace(stack_trace.unwrap_or_default());
+    let error_info = ErrorInfo::new().with_stack_trace(stack_trace.unwrap_or_default());
 
     error.into_response_with_info(Some(error_info), config.enabled)
 }

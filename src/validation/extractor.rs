@@ -1,5 +1,5 @@
 use crate::error::{Result, TidewayError};
-use axum::{extract::Request, Json};
+use axum::{Json, extract::Request};
 use serde::Deserialize;
 use std::future::Future;
 use validator::Validate;
@@ -37,13 +37,10 @@ where
 {
     type Rejection = TidewayError;
 
-    async fn from_request(
-        req: Request,
-        state: &S,
-    ) -> std::result::Result<Self, Self::Rejection> {
-        let json: Json<T> = Json::from_request(req, state).await.map_err(|e| {
-            TidewayError::bad_request(format!("Invalid JSON: {}", e))
-        })?;
+    async fn from_request(req: Request, state: &S) -> std::result::Result<Self, Self::Rejection> {
+        let json: Json<T> = Json::from_request(req, state)
+            .await
+            .map_err(|e| TidewayError::bad_request(format!("Invalid JSON: {}", e)))?;
 
         json.0.validate().map_err(|errors| {
             let error_messages: Vec<String> = errors
@@ -61,10 +58,7 @@ where
                 })
                 .collect();
 
-            TidewayError::bad_request(format!(
-                "Validation failed: {}",
-                error_messages.join(", ")
-            ))
+            TidewayError::bad_request(format!("Validation failed: {}", error_messages.join(", ")))
         })?;
 
         Ok(ValidatedJson(json.0))
@@ -114,10 +108,7 @@ pub fn validate_json<T: Validate>(json: Json<T>) -> Result<ValidatedJson<T>> {
             })
             .collect();
 
-        TidewayError::bad_request(format!(
-            "Validation failed: {}",
-            error_messages.join(", ")
-        ))
+        TidewayError::bad_request(format!("Validation failed: {}", error_messages.join(", ")))
     })?;
 
     Ok(ValidatedJson(json.0))
@@ -266,10 +257,7 @@ pub fn validate_form<T: Validate>(form: axum::extract::Form<T>) -> Result<Valida
             })
             .collect();
 
-        TidewayError::bad_request(format!(
-            "Validation failed: {}",
-            error_messages.join(", ")
-        ))
+        TidewayError::bad_request(format!("Validation failed: {}", error_messages.join(", ")))
     })?;
 
     Ok(ValidatedForm(form.0))

@@ -8,7 +8,7 @@ mod invitation;
 mod membership;
 mod organization;
 
-pub use audit::{OrgAuditStore, OptionalAuditStore, WithAuditStore};
+pub use audit::{OptionalAuditStore, OrgAuditStore, WithAuditStore};
 pub use invitation::InvitationStore;
 pub use membership::MembershipStore;
 pub use organization::OrganizationStore;

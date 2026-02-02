@@ -65,21 +65,29 @@ impl SeaOrmPool {
     pub async fn from_config(config: &crate::database::DatabaseConfig) -> Result<Self> {
         // Validate configuration to prevent resource exhaustion
         if config.max_connections == 0 {
-            return Err(TidewayError::bad_request("max_connections must be greater than 0"));
+            return Err(TidewayError::bad_request(
+                "max_connections must be greater than 0",
+            ));
         }
         if config.max_connections > 1000 {
-            return Err(TidewayError::bad_request("max_connections cannot exceed 1000"));
+            return Err(TidewayError::bad_request(
+                "max_connections cannot exceed 1000",
+            ));
         }
         if config.min_connections > config.max_connections {
             return Err(TidewayError::bad_request(
-                "min_connections cannot be greater than max_connections"
+                "min_connections cannot be greater than max_connections",
             ));
         }
         if config.connect_timeout == 0 {
-            return Err(TidewayError::bad_request("connect_timeout must be greater than 0"));
+            return Err(TidewayError::bad_request(
+                "connect_timeout must be greater than 0",
+            ));
         }
         if config.connect_timeout > 300 {
-            return Err(TidewayError::bad_request("connect_timeout cannot exceed 300 seconds"));
+            return Err(TidewayError::bad_request(
+                "connect_timeout cannot exceed 300 seconds",
+            ));
         }
 
         let mut opt = ConnectOptions::new(&config.url);
@@ -126,12 +134,14 @@ impl SeaOrmPool {
     pub async fn ping(&self) -> bool {
         match self.conn.ping().await {
             Ok(()) => {
-                self.health_status.store(true, std::sync::atomic::Ordering::Release);
+                self.health_status
+                    .store(true, std::sync::atomic::Ordering::Release);
                 true
             }
             Err(e) => {
                 tracing::warn!("Database ping failed: {}", e);
-                self.health_status.store(false, std::sync::atomic::Ordering::Release);
+                self.health_status
+                    .store(false, std::sync::atomic::Ordering::Release);
                 false
             }
         }
@@ -152,7 +162,8 @@ impl DatabasePool for SeaOrmPool {
     fn is_healthy(&self) -> bool {
         // Return cached health status from last ping() call
         // Call ping() periodically via a background task for accurate status
-        self.health_status.load(std::sync::atomic::Ordering::Acquire)
+        self.health_status
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     async fn close(self: Box<Self>) -> Result<()> {

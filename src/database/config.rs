@@ -146,11 +146,7 @@ pub fn redact_database_url(url: &str) -> String {
                 if let Some(scheme_end) = url.find("://") {
                     if colon_pos > scheme_end + 3 {
                         // Found password pattern
-                        return format!(
-                            "{}[REDACTED]{}",
-                            &url[..colon_pos + 1],
-                            &url[at_pos..]
-                        );
+                        return format!("{}[REDACTED]{}", &url[..colon_pos + 1], &url[at_pos..]);
                     }
                 }
             }
@@ -206,9 +202,16 @@ mod tests {
         let redacted = redact_database_url(url);
         eprintln!("Original: {}", url);
         eprintln!("Redacted: {}", redacted);
-        assert!(redacted.contains("[REDACTED]") || redacted.contains("%5BREDACTED%5D"),
-            "Expected redaction marker, got: {}", redacted);
-        assert!(!redacted.contains("supersecret"), "Password leaked: {}", redacted);
+        assert!(
+            redacted.contains("[REDACTED]") || redacted.contains("%5BREDACTED%5D"),
+            "Expected redaction marker, got: {}",
+            redacted
+        );
+        assert!(
+            !redacted.contains("supersecret"),
+            "Password leaked: {}",
+            redacted
+        );
         assert!(redacted.contains("myuser"));
         assert!(redacted.contains("localhost"));
     }
@@ -237,9 +240,16 @@ mod tests {
         };
 
         let debug_output = format!("{:?}", config);
-        assert!(!debug_output.contains("hunter2"), "Password leaked in debug output!");
+        assert!(
+            !debug_output.contains("hunter2"),
+            "Password leaked in debug output!"
+        );
         // URL library may encode brackets as %5B and %5D
-        assert!(debug_output.contains("REDACTED"), "Missing redaction marker: {}", debug_output);
+        assert!(
+            debug_output.contains("REDACTED"),
+            "Missing redaction marker: {}",
+            debug_output
+        );
         assert!(debug_output.contains("admin")); // Username is OK
         assert!(debug_output.contains("db.example.com")); // Host is OK
     }
@@ -254,7 +264,11 @@ mod tests {
         let redacted = config.redacted_url();
         assert!(!redacted.contains("pass123"));
         // URL library may encode brackets as %5B and %5D
-        assert!(redacted.contains("REDACTED"), "Missing redaction marker: {}", redacted);
+        assert!(
+            redacted.contains("REDACTED"),
+            "Missing redaction marker: {}",
+            redacted
+        );
     }
 
     #[test]
@@ -265,8 +279,16 @@ mod tests {
         };
 
         let json = serde_json::to_string(&config).unwrap();
-        assert!(!json.contains("hunter2"), "Password leaked in JSON serialization: {}", json);
-        assert!(json.contains("REDACTED"), "Missing redaction marker in JSON: {}", json);
+        assert!(
+            !json.contains("hunter2"),
+            "Password leaked in JSON serialization: {}",
+            json
+        );
+        assert!(
+            json.contains("REDACTED"),
+            "Missing redaction marker in JSON: {}",
+            json
+        );
         assert!(json.contains("admin"), "Username should be preserved");
         assert!(json.contains("db.example.com"), "Host should be preserved");
     }

@@ -145,16 +145,34 @@ mod tests {
 
     #[test]
     fn test_health_status_serialization() {
-        assert_eq!(serde_json::to_string(&HealthStatus::Healthy).unwrap(), "\"healthy\"");
-        assert_eq!(serde_json::to_string(&HealthStatus::Degraded).unwrap(), "\"degraded\"");
-        assert_eq!(serde_json::to_string(&HealthStatus::Unhealthy).unwrap(), "\"unhealthy\"");
+        assert_eq!(
+            serde_json::to_string(&HealthStatus::Healthy).unwrap(),
+            "\"healthy\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HealthStatus::Degraded).unwrap(),
+            "\"degraded\""
+        );
+        assert_eq!(
+            serde_json::to_string(&HealthStatus::Unhealthy).unwrap(),
+            "\"unhealthy\""
+        );
     }
 
     #[test]
     fn test_health_status_deserialization() {
-        assert_eq!(serde_json::from_str::<HealthStatus>("\"healthy\"").unwrap(), HealthStatus::Healthy);
-        assert_eq!(serde_json::from_str::<HealthStatus>("\"degraded\"").unwrap(), HealthStatus::Degraded);
-        assert_eq!(serde_json::from_str::<HealthStatus>("\"unhealthy\"").unwrap(), HealthStatus::Unhealthy);
+        assert_eq!(
+            serde_json::from_str::<HealthStatus>("\"healthy\"").unwrap(),
+            HealthStatus::Healthy
+        );
+        assert_eq!(
+            serde_json::from_str::<HealthStatus>("\"degraded\"").unwrap(),
+            HealthStatus::Degraded
+        );
+        assert_eq!(
+            serde_json::from_str::<HealthStatus>("\"unhealthy\"").unwrap(),
+            HealthStatus::Unhealthy
+        );
     }
 
     #[test]
@@ -214,13 +232,11 @@ mod tests {
     fn test_health_response_creation() {
         let response = HealthResponse {
             status: HealthStatus::Healthy,
-            checks: vec![
-                ComponentHealth {
-                    name: "app".to_string(),
-                    status: HealthStatus::Healthy,
-                    message: None,
-                },
-            ],
+            checks: vec![ComponentHealth {
+                name: "app".to_string(),
+                status: HealthStatus::Healthy,
+                message: None,
+            }],
         };
 
         assert_eq!(response.status, HealthStatus::Healthy);
@@ -332,24 +348,30 @@ mod tests {
             &self.name
         }
 
-        fn check(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ComponentHealth> + Send + '_>> {
+        fn check(
+            &self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ComponentHealth> + Send + '_>>
+        {
             let name = self.name.clone();
             let status = self.status.clone();
             let message = self.message.clone();
             Box::pin(async move {
-                ComponentHealth { name, status, message }
+                ComponentHealth {
+                    name,
+                    status,
+                    message,
+                }
             })
         }
     }
 
     #[test]
     fn test_health_checker_with_check() {
-        let checker = HealthChecker::new()
-            .with_check(Arc::new(MockHealthCheck {
-                name: "database".to_string(),
-                status: HealthStatus::Healthy,
-                message: None,
-            }));
+        let checker = HealthChecker::new().with_check(Arc::new(MockHealthCheck {
+            name: "database".to_string(),
+            status: HealthStatus::Healthy,
+            message: None,
+        }));
 
         assert_eq!(checker.checks.len(), 2);
     }
@@ -519,13 +541,20 @@ mod tests {
         let app = health_routes();
 
         let response = app
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let health_response: HealthResponse = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(health_response.status, HealthStatus::Healthy);
@@ -540,7 +569,12 @@ mod tests {
         let app = health_routes();
 
         let response = app
-            .oneshot(Request::builder().uri("/not-health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/not-health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 

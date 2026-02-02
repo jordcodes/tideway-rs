@@ -77,7 +77,11 @@ impl std::fmt::Display for OrgAuditEvent {
 impl OrgAuditEntry {
     /// Create a new audit entry with the given event and organization.
     #[must_use]
-    pub fn new(event: OrgAuditEvent, org_id: impl Into<String>, actor_id: impl Into<String>) -> Self {
+    pub fn new(
+        event: OrgAuditEvent,
+        org_id: impl Into<String>,
+        actor_id: impl Into<String>,
+    ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             event,
@@ -117,7 +121,10 @@ mod tests {
         assert_eq!(entry.org_id, "org_123");
         assert_eq!(entry.actor_id, "user_456");
         assert!(entry.target_id.is_none());
-        assert_eq!(entry.details, Some("name=Test Org, slug=test-org".to_string()));
+        assert_eq!(
+            entry.details,
+            Some("name=Test Org, slug=test-org".to_string())
+        );
     }
 
     #[test]
@@ -133,7 +140,10 @@ mod tests {
     fn test_event_display() {
         assert_eq!(OrgAuditEvent::OrgCreated.to_string(), "org_created");
         assert_eq!(OrgAuditEvent::MemberAdded.to_string(), "member_added");
-        assert_eq!(OrgAuditEvent::OwnershipTransferred.to_string(), "ownership_transferred");
+        assert_eq!(
+            OrgAuditEvent::OwnershipTransferred.to_string(),
+            "ownership_transferred"
+        );
     }
 
     #[test]

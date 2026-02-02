@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::utils::get_env_with_prefix;
+use serde::{Deserialize, Serialize};
 
 /// Cache backend type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -65,7 +65,9 @@ impl CacheConfig {
                     }
                     #[cfg(not(feature = "cache-redis"))]
                     {
-                        tracing::warn!("Redis cache requested but cache-redis feature not enabled, using in-memory");
+                        tracing::warn!(
+                            "Redis cache requested but cache-redis feature not enabled, using in-memory"
+                        );
                         CacheBackend::InMemory
                     }
                 }

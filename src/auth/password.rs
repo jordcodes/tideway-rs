@@ -23,8 +23,11 @@ use crate::error::{Result, TidewayError};
 
 #[cfg(feature = "auth")]
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher as Argon2Hasher, PasswordVerifier, SaltString},
     Algorithm, Argon2, Params, Version,
+    password_hash::{
+        PasswordHash, PasswordHasher as Argon2Hasher, PasswordVerifier, SaltString,
+        rand_core::OsRng,
+    },
 };
 
 /// Configuration for password hashing.
@@ -422,7 +425,11 @@ mod tests {
         let hasher = fast_hasher();
         let hash = hasher.hash("correct-horse-battery-staple").unwrap();
 
-        assert!(hasher.verify("correct-horse-battery-staple", &hash).unwrap());
+        assert!(
+            hasher
+                .verify("correct-horse-battery-staple", &hash)
+                .unwrap()
+        );
         assert!(!hasher.verify("wrong-password", &hash).unwrap());
     }
 
@@ -502,7 +509,11 @@ mod tests {
         let policy = PasswordPolicy::strict();
         let errors = policy.validate("weak");
 
-        assert!(errors.iter().any(|e| matches!(e, PasswordError::TooShort { .. })));
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, PasswordError::TooShort { .. }))
+        );
     }
 
     #[test]

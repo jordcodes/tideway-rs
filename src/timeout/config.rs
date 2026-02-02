@@ -1,6 +1,6 @@
+use crate::utils::get_env_with_prefix;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use crate::utils::get_env_with_prefix;
 
 /// Timeout configuration for Tideway applications
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -127,9 +127,7 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let config = TimeoutConfig::builder()
-            .timeout_seconds(60)
-            .build();
+        let config = TimeoutConfig::builder().timeout_seconds(60).build();
 
         assert_eq!(config.timeout_seconds, 60);
         assert_eq!(config.duration(), Duration::from_secs(60));
@@ -144,4 +142,3 @@ mod tests {
         assert_eq!(config.timeout_seconds, 45);
     }
 }
-

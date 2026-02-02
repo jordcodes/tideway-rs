@@ -1,8 +1,8 @@
 #[cfg(feature = "metrics")]
 mod tests {
-    use tideway::{App, ConfigBuilder, MetricsCollector};
-    use tideway::testing::get as test_get;
     use std::sync::Arc;
+    use tideway::testing::get as test_get;
+    use tideway::{App, ConfigBuilder, MetricsCollector};
 
     #[tokio::test]
     async fn test_metrics_collector_creation() {
@@ -15,9 +15,24 @@ mod tests {
         let collector = Arc::new(MetricsCollector::new().unwrap());
 
         // Record some requests
-        collector.record_request("GET", "/api/test", 200, std::time::Duration::from_millis(50));
-        collector.record_request("POST", "/api/test", 201, std::time::Duration::from_millis(100));
-        collector.record_request("GET", "/api/test", 404, std::time::Duration::from_millis(10));
+        collector.record_request(
+            "GET",
+            "/api/test",
+            200,
+            std::time::Duration::from_millis(50),
+        );
+        collector.record_request(
+            "POST",
+            "/api/test",
+            201,
+            std::time::Duration::from_millis(100),
+        );
+        collector.record_request(
+            "GET",
+            "/api/test",
+            404,
+            std::time::Duration::from_millis(10),
+        );
 
         // Increment in-flight
         collector.increment_in_flight();
@@ -32,22 +47,27 @@ mod tests {
         use tideway::MetricsConfig;
 
         let config = ConfigBuilder::new()
-            .with_metrics(MetricsConfig::builder().enabled(true).path("/metrics").build())
+            .with_metrics(
+                MetricsConfig::builder()
+                    .enabled(true)
+                    .path("/metrics")
+                    .build(),
+            )
             .build()
             .unwrap();
 
         let app = App::with_config(config).into_router();
 
-        let response = test_get(app, "/metrics")
-            .execute()
-            .await
-            .assert_ok();
+        let response = test_get(app, "/metrics").execute().await.assert_ok();
 
         // Verify it returns Prometheus text format
         let body = response.body_string().await;
         // Prometheus metrics should contain HELP and TYPE comments
-        assert!(body.contains("# HELP") || body.contains("# TYPE") || body.is_empty(),
-            "Expected Prometheus format, got: {}", body);
+        assert!(
+            body.contains("# HELP") || body.contains("# TYPE") || body.is_empty(),
+            "Expected Prometheus format, got: {}",
+            body
+        );
     }
 
     #[tokio::test]
@@ -55,7 +75,12 @@ mod tests {
         use tideway::MetricsConfig;
 
         let config = ConfigBuilder::new()
-            .with_metrics(MetricsConfig::builder().enabled(true).path("/custom/metrics").build())
+            .with_metrics(
+                MetricsConfig::builder()
+                    .enabled(true)
+                    .path("/custom/metrics")
+                    .build(),
+            )
             .build()
             .unwrap();
 
@@ -68,10 +93,7 @@ mod tests {
             .assert_ok();
 
         // Should NOT be at default path
-        test_get(app, "/metrics")
-            .execute()
-            .await
-            .assert_not_found();
+        test_get(app, "/metrics").execute().await.assert_not_found();
     }
 
     #[tokio::test]
@@ -79,19 +101,18 @@ mod tests {
         use tideway::MetricsConfig;
 
         let config = ConfigBuilder::new()
-            .with_metrics(MetricsConfig::builder().enabled(true).path("/metrics").build())
+            .with_metrics(
+                MetricsConfig::builder()
+                    .enabled(true)
+                    .path("/metrics")
+                    .build(),
+            )
             .build()
             .unwrap();
 
-        let app = App::builder()
-            .with_config(config)
-            .build()
-            .into_router();
+        let app = App::builder().with_config(config).build().into_router();
 
-        test_get(app, "/metrics")
-            .execute()
-            .await
-            .assert_ok();
+        test_get(app, "/metrics").execute().await.assert_ok();
     }
 
     #[tokio::test]
@@ -100,7 +121,12 @@ mod tests {
 
         let config = ConfigBuilder::new()
             .with_port(8080) // Use a valid port
-            .with_metrics(MetricsConfig::builder().enabled(true).path("/metrics").build())
+            .with_metrics(
+                MetricsConfig::builder()
+                    .enabled(true)
+                    .path("/metrics")
+                    .build(),
+            )
             .build()
             .unwrap();
 

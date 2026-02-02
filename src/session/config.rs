@@ -1,6 +1,6 @@
+use crate::utils::get_env_with_prefix;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use crate::utils::get_env_with_prefix;
 
 /// Session backend type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -100,7 +100,9 @@ impl SessionConfig {
                     }
                     #[cfg(not(feature = "sessions"))]
                     {
-                        tracing::warn!("Cookie sessions requested but sessions feature not enabled, using in-memory");
+                        tracing::warn!(
+                            "Cookie sessions requested but sessions feature not enabled, using in-memory"
+                        );
                         SessionBackend::InMemory
                     }
                 }

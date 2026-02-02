@@ -24,28 +24,43 @@ use super::subscription::StripeSubscriptionClient;
 ///     // Can use client for any Stripe operation
 /// }
 /// ```
-pub trait FullStripeClient: StripeClient + StripeCheckoutClient + StripeSubscriptionClient + StripePortalClient + StripeInvoiceClient + StripePaymentMethodClient {}
+pub trait FullStripeClient:
+    StripeClient
+    + StripeCheckoutClient
+    + StripeSubscriptionClient
+    + StripePortalClient
+    + StripeInvoiceClient
+    + StripePaymentMethodClient
+{
+}
 
 /// Blanket implementation for any type that implements all traits.
-impl<T> FullStripeClient for T
-where
-    T: StripeClient + StripeCheckoutClient + StripeSubscriptionClient + StripePortalClient + StripeInvoiceClient + StripePaymentMethodClient,
-{}
+impl<T> FullStripeClient for T where
+    T: StripeClient
+        + StripeCheckoutClient
+        + StripeSubscriptionClient
+        + StripePortalClient
+        + StripeInvoiceClient
+        + StripePaymentMethodClient
+{
+}
 
 /// Mock Stripe client for testing that implements all client traits.
 #[cfg(any(test, feature = "test-billing"))]
 pub mod test {
-    use super::*;
     use super::super::checkout::{CheckoutSession, CreateCheckoutSessionRequest};
     use super::super::customer::{CreateCustomerRequest, UpdateCustomerRequest};
     use super::super::invoice::{Invoice, InvoiceLineItem, InvoiceList, InvoiceStatus};
     use super::super::payment::{PaymentMethod, PaymentMethodList};
     use super::super::portal::{CreatePortalSessionRequest, PortalFlow, PortalSession};
-    use super::super::subscription::{StripeSubscriptionData, SubscriptionMetadata, UpdateSubscriptionRequest};
+    use super::super::subscription::{
+        StripeSubscriptionData, SubscriptionMetadata, UpdateSubscriptionRequest,
+    };
+    use super::*;
     use crate::error::Result;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::RwLock;
     use std::collections::HashMap;
+    use std::sync::RwLock;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A comprehensive mock Stripe client that implements all client traits.
     ///
@@ -93,11 +108,18 @@ pub mod test {
 
     impl StripeClient for ComprehensiveMockStripeClient {
         async fn create_customer(&self, _request: CreateCustomerRequest) -> Result<String> {
-            let id = format!("cus_mock_{}", self.customer_counter.fetch_add(1, Ordering::SeqCst));
+            let id = format!(
+                "cus_mock_{}",
+                self.customer_counter.fetch_add(1, Ordering::SeqCst)
+            );
             Ok(id)
         }
 
-        async fn update_customer(&self, _customer_id: &str, _request: UpdateCustomerRequest) -> Result<()> {
+        async fn update_customer(
+            &self,
+            _customer_id: &str,
+            _request: UpdateCustomerRequest,
+        ) -> Result<()> {
             Ok(())
         }
 
@@ -111,8 +133,14 @@ pub mod test {
     }
 
     impl StripeCheckoutClient for ComprehensiveMockStripeClient {
-        async fn create_checkout_session(&self, _request: CreateCheckoutSessionRequest) -> Result<CheckoutSession> {
-            let id = format!("cs_mock_{}", self.session_counter.fetch_add(1, Ordering::SeqCst));
+        async fn create_checkout_session(
+            &self,
+            _request: CreateCheckoutSessionRequest,
+        ) -> Result<CheckoutSession> {
+            let id = format!(
+                "cs_mock_{}",
+                self.session_counter.fetch_add(1, Ordering::SeqCst)
+            );
             Ok(CheckoutSession {
                 id: id.clone(),
                 url: format!("https://checkout.stripe.com/c/pay/{}", id),
@@ -182,7 +210,10 @@ pub mod test {
             Ok(())
         }
 
-        async fn resume_paused_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData> {
+        async fn resume_paused_subscription(
+            &self,
+            subscription_id: &str,
+        ) -> Result<StripeSubscriptionData> {
             let mut data = self.get_subscription(subscription_id).await?;
             data.status = "active".to_string();
             Ok(data)
@@ -190,8 +221,14 @@ pub mod test {
     }
 
     impl StripePortalClient for ComprehensiveMockStripeClient {
-        async fn create_portal_session(&self, _request: CreatePortalSessionRequest) -> Result<PortalSession> {
-            let id = format!("bps_mock_{}", self.portal_counter.fetch_add(1, Ordering::SeqCst));
+        async fn create_portal_session(
+            &self,
+            _request: CreatePortalSessionRequest,
+        ) -> Result<PortalSession> {
+            let id = format!(
+                "bps_mock_{}",
+                self.portal_counter.fetch_add(1, Ordering::SeqCst)
+            );
             Ok(PortalSession {
                 id: id.clone(),
                 url: format!("https://billing.stripe.com/p/session/{}", id),
@@ -203,7 +240,10 @@ pub mod test {
             _request: CreatePortalSessionRequest,
             _flow: PortalFlow,
         ) -> Result<PortalSession> {
-            let id = format!("bps_mock_{}", self.portal_counter.fetch_add(1, Ordering::SeqCst));
+            let id = format!(
+                "bps_mock_{}",
+                self.portal_counter.fetch_add(1, Ordering::SeqCst)
+            );
             Ok(PortalSession {
                 id: id.clone(),
                 url: format!("https://billing.stripe.com/p/session/{}", id),
@@ -268,18 +308,16 @@ pub mod test {
                 .unwrap()
                 .as_secs();
 
-            Ok(vec![
-                InvoiceLineItem {
-                    id: format!("il_{}_1", invoice_id),
-                    description: Some("Pro Plan".to_string()),
-                    amount: 2999,
-                    currency: self.default_currency.clone(),
-                    quantity: Some(1),
-                    price_id: Some("price_pro".to_string()),
-                    period_start: now,
-                    period_end: now + 30 * 24 * 60 * 60,
-                },
-            ])
+            Ok(vec![InvoiceLineItem {
+                id: format!("il_{}_1", invoice_id),
+                description: Some("Pro Plan".to_string()),
+                amount: 2999,
+                currency: self.default_currency.clone(),
+                quantity: Some(1),
+                price_id: Some("price_pro".to_string()),
+                period_start: now,
+                period_end: now + 30 * 24 * 60 * 60,
+            }])
         }
     }
 
@@ -293,7 +331,8 @@ pub mod test {
             let defaults = self.default_payment_methods.read().unwrap();
             let default_id = defaults.get(customer_id);
 
-            let customer_methods = methods.get(customer_id)
+            let customer_methods = methods
+                .get(customer_id)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
@@ -324,17 +363,15 @@ pub mod test {
             };
 
             let mut methods = self.payment_methods.write().unwrap();
-            methods.entry(customer_id.to_string())
+            methods
+                .entry(customer_id.to_string())
                 .or_default()
                 .push(method.clone());
 
             Ok(method)
         }
 
-        async fn detach_payment_method(
-            &self,
-            payment_method_id: &str,
-        ) -> Result<()> {
+        async fn detach_payment_method(&self, payment_method_id: &str) -> Result<()> {
             let mut methods = self.payment_methods.write().unwrap();
             for customer_methods in methods.values_mut() {
                 customer_methods.retain(|m| m.id != payment_method_id);
@@ -367,42 +404,48 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use super::test::ComprehensiveMockStripeClient;
     use super::super::checkout::{CheckoutMetadata, CheckoutMode, CreateCheckoutSessionRequest};
     use super::super::customer::CreateCustomerRequest;
     use super::super::portal::CreatePortalSessionRequest;
+    use super::test::ComprehensiveMockStripeClient;
+    use super::*;
 
     #[tokio::test]
     async fn test_mock_client_implements_all_traits() {
         let client = ComprehensiveMockStripeClient::new();
 
         // Test StripeClient
-        let customer_id = client.create_customer(CreateCustomerRequest {
-            email: "test@example.com".to_string(),
-            name: None,
-            metadata: None,
-        }).await.unwrap();
+        let customer_id = client
+            .create_customer(CreateCustomerRequest {
+                email: "test@example.com".to_string(),
+                name: None,
+                metadata: None,
+            })
+            .await
+            .unwrap();
         assert!(customer_id.starts_with("cus_mock_"));
 
         // Test StripeCheckoutClient
-        let session = client.create_checkout_session(CreateCheckoutSessionRequest {
-            customer_id: customer_id.clone(),
-            line_items: vec![],
-            success_url: "https://example.com/success".to_string(),
-            cancel_url: "https://example.com/cancel".to_string(),
-            mode: CheckoutMode::Subscription,
-            allow_promotion_codes: false,
-            trial_period_days: None,
-            metadata: CheckoutMetadata {
-                billable_id: "org_test".to_string(),
-                billable_type: "org".to_string(),
-                plan_id: "starter".to_string(),
-            },
-            tax_id_collection: false,
-            billing_address_collection: false,
-            coupon: None,
-        }).await.unwrap();
+        let session = client
+            .create_checkout_session(CreateCheckoutSessionRequest {
+                customer_id: customer_id.clone(),
+                line_items: vec![],
+                success_url: "https://example.com/success".to_string(),
+                cancel_url: "https://example.com/cancel".to_string(),
+                mode: CheckoutMode::Subscription,
+                allow_promotion_codes: false,
+                trial_period_days: None,
+                metadata: CheckoutMetadata {
+                    billable_id: "org_test".to_string(),
+                    billable_type: "org".to_string(),
+                    plan_id: "starter".to_string(),
+                },
+                tax_id_collection: false,
+                billing_address_collection: false,
+                coupon: None,
+            })
+            .await
+            .unwrap();
         assert!(session.id.starts_with("cs_mock_"));
 
         // Test StripeSubscriptionClient
@@ -410,11 +453,14 @@ mod tests {
         assert_eq!(sub.id, "sub_123");
 
         // Test StripePortalClient
-        let portal = client.create_portal_session(CreatePortalSessionRequest {
-            customer_id,
-            return_url: "https://example.com/billing".to_string(),
-            configuration_id: None,
-        }).await.unwrap();
+        let portal = client
+            .create_portal_session(CreatePortalSessionRequest {
+                customer_id,
+                return_url: "https://example.com/billing".to_string(),
+                configuration_id: None,
+            })
+            .await
+            .unwrap();
         assert!(portal.id.starts_with("bps_mock_"));
     }
 

@@ -8,8 +8,8 @@ use crate::traits::job::{Job, JobData, JobQueue};
 use async_trait::async_trait;
 #[cfg(feature = "jobs")]
 use chrono::{DateTime, Duration, Utc};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 /// Redis-backed job queue implementation
@@ -53,7 +53,12 @@ impl RedisJobQueue {
     /// # Important
     ///
     /// Call `shutdown()` when done to cleanly stop background tasks.
-    pub fn new(url: &str, worker_id: Option<String>, max_retries: u32, retry_backoff_seconds: u64) -> Result<Self> {
+    pub fn new(
+        url: &str,
+        worker_id: Option<String>,
+        max_retries: u32,
+        retry_backoff_seconds: u64,
+    ) -> Result<Self> {
         let client = redis::Client::open(url)
             .map_err(|e| TidewayError::internal(format!("Failed to create Redis client: {}", e)))?;
 
@@ -96,10 +101,7 @@ impl RedisJobQueue {
         let mut handle_guard = self.scheduler_handle.lock().await;
         if let Some(handle) = handle_guard.take() {
             // Give the task a reasonable time to finish, then abort if needed
-            match tokio::time::timeout(
-                tokio::time::Duration::from_secs(5),
-                handle
-            ).await {
+            match tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await {
                 Ok(_) => tracing::debug!("Redis job queue scheduler stopped cleanly"),
                 Err(_) => tracing::warn!("Redis job queue scheduler did not stop within timeout"),
             }
@@ -127,9 +129,8 @@ impl RedisJobQueue {
     pub async fn ping(&self) -> bool {
         match self.get_connection().await {
             Ok(mut conn) => {
-                let result: redis::RedisResult<String> = redis::cmd("PING")
-                    .query_async(&mut conn)
-                    .await;
+                let result: redis::RedisResult<String> =
+                    redis::cmd("PING").query_async(&mut conn).await;
                 let healthy = result.is_ok();
                 self.health_status.store(healthy, Ordering::Release);
                 healthy
@@ -181,13 +182,14 @@ impl RedisJobQueue {
 
                     // Get all scheduled jobs with score <= now
                     let scheduled_key = "jobs:scheduled";
-                    let results: redis::RedisResult<Vec<(String, f64)>> = redis::cmd("ZRANGEBYSCORE")
-                        .arg(scheduled_key)
-                        .arg("-inf")
-                        .arg(now)
-                        .arg("WITHSCORES")
-                        .query_async(&mut conn)
-                        .await;
+                    let results: redis::RedisResult<Vec<(String, f64)>> =
+                        redis::cmd("ZRANGEBYSCORE")
+                            .arg(scheduled_key)
+                            .arg("-inf")
+                            .arg(now)
+                            .arg("WITHSCORES")
+                            .query_async(&mut conn)
+                            .await;
 
                     if let Ok(jobs) = results {
                         for (job_json, _score) in jobs {
@@ -290,7 +292,9 @@ impl JobQueue for RedisJobQueue {
             .arg(-1)
             .query_async(&mut conn)
             .await
-            .map_err(|e| TidewayError::internal(format!("Failed to list processing jobs: {}", e)))?;
+            .map_err(|e| {
+                TidewayError::internal(format!("Failed to list processing jobs: {}", e))
+            })?;
 
         for job_json in jobs {
             if let Ok(job_data) = serde_json::from_str::<JobData>(&job_json) {
@@ -302,7 +306,12 @@ impl JobQueue for RedisJobQueue {
                         .arg(&job_json)
                         .query_async::<()>(&mut conn)
                         .await
-                        .map_err(|e| TidewayError::internal(format!("Failed to remove job from processing: {}", e)))?;
+                        .map_err(|e| {
+                            TidewayError::internal(format!(
+                                "Failed to remove job from processing: {}",
+                                e
+                            ))
+                        })?;
 
                     // Optionally add to completed list (for history)
                     // redis::cmd("LPUSH").arg("jobs:completed").arg(&job_json).query_async(&mut conn).await?;
@@ -326,7 +335,9 @@ impl JobQueue for RedisJobQueue {
             .arg(-1)
             .query_async(&mut conn)
             .await
-            .map_err(|e| TidewayError::internal(format!("Failed to list processing jobs: {}", e)))?;
+            .map_err(|e| {
+                TidewayError::internal(format!("Failed to list processing jobs: {}", e))
+            })?;
 
         for job_json in jobs {
             if let Ok(mut job_data) = serde_json::from_str::<JobData>(&job_json) {
@@ -338,17 +349,27 @@ impl JobQueue for RedisJobQueue {
                         .arg(&job_json)
                         .query_async::<()>(&mut conn)
                         .await
-                        .map_err(|e| TidewayError::internal(format!("Failed to remove job from processing: {}", e)))?;
+                        .map_err(|e| {
+                            TidewayError::internal(format!(
+                                "Failed to remove job from processing: {}",
+                                e
+                            ))
+                        })?;
 
                     if job_data.should_retry() {
                         // Schedule retry with exponential backoff
-                        let backoff_seconds = self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
+                        let backoff_seconds =
+                            self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
                         let retry_at = Utc::now() + Duration::seconds(backoff_seconds as i64);
 
                         job_data.increment_retry();
 
-                        let retry_json = serde_json::to_string(&job_data)
-                            .map_err(|e| TidewayError::internal(format!("Failed to serialize job for retry: {}", e)))?;
+                        let retry_json = serde_json::to_string(&job_data).map_err(|e| {
+                            TidewayError::internal(format!(
+                                "Failed to serialize job for retry: {}",
+                                e
+                            ))
+                        })?;
 
                         // Add to scheduled set
                         redis::cmd("ZADD")
@@ -357,7 +378,9 @@ impl JobQueue for RedisJobQueue {
                             .arg(&retry_json)
                             .query_async::<()>(&mut conn)
                             .await
-                            .map_err(|e| TidewayError::internal(format!("Failed to schedule retry: {}", e)))?;
+                            .map_err(|e| {
+                                TidewayError::internal(format!("Failed to schedule retry: {}", e))
+                            })?;
                     } else {
                         // Max retries exceeded, move to failed
                         redis::cmd("LPUSH")
@@ -365,7 +388,12 @@ impl JobQueue for RedisJobQueue {
                             .arg(&job_json)
                             .query_async::<()>(&mut conn)
                             .await
-                            .map_err(|e| TidewayError::internal(format!("Failed to add to failed list: {}", e)))?;
+                            .map_err(|e| {
+                                TidewayError::internal(format!(
+                                    "Failed to add to failed list: {}",
+                                    e
+                                ))
+                            })?;
                     }
 
                     return Ok(());
@@ -387,7 +415,9 @@ impl JobQueue for RedisJobQueue {
             .arg(-1)
             .query_async(&mut conn)
             .await
-            .map_err(|e| TidewayError::internal(format!("Failed to list processing jobs: {}", e)))?;
+            .map_err(|e| {
+                TidewayError::internal(format!("Failed to list processing jobs: {}", e))
+            })?;
 
         for job_json in jobs {
             if let Ok(mut job_data) = serde_json::from_str::<JobData>(&job_json) {
@@ -399,12 +429,21 @@ impl JobQueue for RedisJobQueue {
                         .arg(&job_json)
                         .query_async::<()>(&mut conn)
                         .await
-                        .map_err(|e| TidewayError::internal(format!("Failed to remove job from processing: {}", e)))?;
+                        .map_err(|e| {
+                            TidewayError::internal(format!(
+                                "Failed to remove job from processing: {}",
+                                e
+                            ))
+                        })?;
 
                     if job_data.should_retry() {
                         job_data.increment_retry();
-                        let retry_json = serde_json::to_string(&job_data)
-                            .map_err(|e| TidewayError::internal(format!("Failed to serialize job for retry: {}", e)))?;
+                        let retry_json = serde_json::to_string(&job_data).map_err(|e| {
+                            TidewayError::internal(format!(
+                                "Failed to serialize job for retry: {}",
+                                e
+                            ))
+                        })?;
 
                         // Re-enqueue to pending
                         redis::cmd("LPUSH")
@@ -412,7 +451,9 @@ impl JobQueue for RedisJobQueue {
                             .arg(&retry_json)
                             .query_async::<()>(&mut conn)
                             .await
-                            .map_err(|e| TidewayError::internal(format!("Failed to retry job: {}", e)))?;
+                            .map_err(|e| {
+                                TidewayError::internal(format!("Failed to retry job: {}", e))
+                            })?;
                     } else {
                         // Max retries exceeded
                         redis::cmd("LPUSH")
@@ -420,7 +461,12 @@ impl JobQueue for RedisJobQueue {
                             .arg(&job_json)
                             .query_async::<()>(&mut conn)
                             .await
-                            .map_err(|e| TidewayError::internal(format!("Failed to add to failed list: {}", e)))?;
+                            .map_err(|e| {
+                                TidewayError::internal(format!(
+                                    "Failed to add to failed list: {}",
+                                    e
+                                ))
+                            })?;
                     }
 
                     return Ok(());

@@ -2,9 +2,9 @@
 //!
 //! Uses Handlebars templates embedded at compile time.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use handlebars::Handlebars;
-use include_dir::{include_dir, Dir};
+use include_dir::{Dir, include_dir};
 use serde::Serialize;
 
 use crate::cli::{BackendPreset, Style};
@@ -34,7 +34,10 @@ impl TemplateEngine {
         // Register all templates from embedded directory
         register_templates(&mut handlebars, &TEMPLATES_DIR, "")?;
 
-        Ok(Self { handlebars, context })
+        Ok(Self {
+            handlebars,
+            context,
+        })
     }
 
     /// Render a template by name
@@ -76,7 +79,11 @@ fn register_templates(
                 let new_prefix = if prefix.is_empty() {
                     subdir.path().to_string_lossy().to_string()
                 } else {
-                    format!("{}/{}", prefix, subdir.path().file_name().unwrap().to_string_lossy())
+                    format!(
+                        "{}/{}",
+                        prefix,
+                        subdir.path().file_name().unwrap().to_string_lossy()
+                    )
                 };
                 register_templates(handlebars, subdir, &new_prefix)?;
             }
@@ -157,7 +164,10 @@ impl BackendTemplateEngine {
         // Register all templates from embedded directory
         register_templates(&mut handlebars, &TEMPLATES_DIR, "")?;
 
-        Ok(Self { handlebars, context })
+        Ok(Self {
+            handlebars,
+            context,
+        })
     }
 
     /// Render a backend template by name

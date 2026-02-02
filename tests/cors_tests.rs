@@ -70,7 +70,8 @@ async fn test_cors_expose_headers() {
         .build();
 
     assert_eq!(cors.exposed_headers.len(), 2);
-    assert!(cors
-        .exposed_headers
-        .contains(&"x-custom-header".to_string()));
+    assert!(
+        cors.exposed_headers
+            .contains(&"x-custom-header".to_string())
+    );
 }

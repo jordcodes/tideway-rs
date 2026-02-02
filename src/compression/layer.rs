@@ -8,19 +8,9 @@ pub fn build_compression_layer(config: &CompressionConfig) -> Option<Compression
     }
 
     let layer = match config.algorithm {
-        CompressionAlgorithm::Gzip => {
-            CompressionLayer::new().gzip(true)
-        }
-        CompressionAlgorithm::Brotli => {
-            CompressionLayer::new()
-                .br(true)
-                .gzip(false)
-        }
-        CompressionAlgorithm::Both => {
-            CompressionLayer::new()
-                .br(true)
-                .gzip(true)
-        }
+        CompressionAlgorithm::Gzip => CompressionLayer::new().gzip(true),
+        CompressionAlgorithm::Brotli => CompressionLayer::new().br(true).gzip(false),
+        CompressionAlgorithm::Both => CompressionLayer::new().br(true).gzip(true),
     };
 
     Some(layer)

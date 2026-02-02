@@ -53,13 +53,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::env::var("RATE_LIMIT_MAX_REQUESTS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(100)
+                .unwrap_or(100),
         )
         .window_seconds(
             std::env::var("RATE_LIMIT_WINDOW_SECONDS")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(60)
+                .unwrap_or(60),
         )
         .per_ip() // Per-IP limiting in production
         .build();
@@ -79,7 +79,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Log startup information
     tracing::info!("Starting production server");
-    tracing::info!("Environment: {}", if cfg!(debug_assertions) { "development" } else { "production" });
+    tracing::info!(
+        "Environment: {}",
+        if cfg!(debug_assertions) {
+            "development"
+        } else {
+            "production"
+        }
+    );
     tracing::info!("Server ready and listening");
 
     // Start server with graceful shutdown

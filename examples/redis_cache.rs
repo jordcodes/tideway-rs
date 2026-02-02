@@ -6,13 +6,13 @@
 //! Run with: cargo run --example redis_cache --features cache-redis
 
 #[cfg(feature = "cache-redis")]
-use tideway::cache::RedisCache;
-#[cfg(feature = "cache-redis")]
-use tideway::{Cache, CacheExt};
-#[cfg(feature = "cache-redis")]
 use std::sync::Arc;
 #[cfg(feature = "cache-redis")]
 use std::time::Duration;
+#[cfg(feature = "cache-redis")]
+use tideway::cache::RedisCache;
+#[cfg(feature = "cache-redis")]
+use tideway::{Cache, CacheExt};
 
 #[cfg(not(feature = "cache-redis"))]
 fn main() {
@@ -35,7 +35,9 @@ async fn main() -> tideway::Result<()> {
         email: "alice@example.com".to_string(),
     };
 
-    cache.set("user:123", &user_data, Some(Duration::from_secs(1800))).await?;
+    cache
+        .set("user:123", &user_data, Some(Duration::from_secs(1800)))
+        .await?;
     println!("Stored user data in cache");
 
     // Retrieve data
@@ -44,7 +46,9 @@ async fn main() -> tideway::Result<()> {
     }
 
     // Use convenience methods for strings
-    cache.set_str("greeting", "Hello, World!", Some(Duration::from_secs(60))).await?;
+    cache
+        .set_str("greeting", "Hello, World!", Some(Duration::from_secs(60)))
+        .await?;
     if let Some(greeting) = cache.get_str("greeting").await? {
         println!("Greeting: {}", greeting);
     }
@@ -54,12 +58,11 @@ async fn main() -> tideway::Result<()> {
     println!("Deleted greeting from cache");
 
     // Use in AppContext (wrap in Arc for the context)
-    let cache_arc: Arc<dyn tideway::Cache> = Arc::new(
-        RedisCache::new("redis://127.0.0.1/", Duration::from_secs(3600))?
-    );
-    let _context = tideway::AppContext::builder()
-        .with_cache(cache_arc)
-        .build();
+    let cache_arc: Arc<dyn tideway::Cache> = Arc::new(RedisCache::new(
+        "redis://127.0.0.1/",
+        Duration::from_secs(3600),
+    )?);
+    let _context = tideway::AppContext::builder().with_cache(cache_arc).build();
 
     println!("Redis cache example completed!");
     Ok(())

@@ -44,11 +44,15 @@ impl TestApp {
     }
 
     pub fn get(&self, uri: &str) -> Scenario {
-        Scenario::new(self.router.clone()).method(Method::GET).uri(uri)
+        Scenario::new(self.router.clone())
+            .method(Method::GET)
+            .uri(uri)
     }
 
     pub fn post(&self, uri: &str) -> Scenario {
-        Scenario::new(self.router.clone()).method(Method::POST).uri(uri)
+        Scenario::new(self.router.clone())
+            .method(Method::POST)
+            .uri(uri)
     }
 
     pub fn post_json<T: serde::Serialize>(&self, uri: &str, body: &T) -> Scenario {
@@ -56,15 +60,21 @@ impl TestApp {
     }
 
     pub fn put(&self, uri: &str) -> Scenario {
-        Scenario::new(self.router.clone()).method(Method::PUT).uri(uri)
+        Scenario::new(self.router.clone())
+            .method(Method::PUT)
+            .uri(uri)
     }
 
     pub fn delete(&self, uri: &str) -> Scenario {
-        Scenario::new(self.router.clone()).method(Method::DELETE).uri(uri)
+        Scenario::new(self.router.clone())
+            .method(Method::DELETE)
+            .uri(uri)
     }
 
     pub fn patch(&self, uri: &str) -> Scenario {
-        Scenario::new(self.router.clone()).method(Method::PATCH).uri(uri)
+        Scenario::new(self.router.clone())
+            .method(Method::PATCH)
+            .uri(uri)
     }
 }
 

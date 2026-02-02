@@ -100,7 +100,11 @@ impl Scenario {
 
         // Add new parameters
         for (key, value) in params {
-            query_parts.push(format!("{}={}", urlencoding::encode(key), urlencoding::encode(value)));
+            query_parts.push(format!(
+                "{}={}",
+                urlencoding::encode(key),
+                urlencoding::encode(value)
+            ));
         }
 
         // Build new URI with query string
@@ -203,8 +207,8 @@ impl ScenarioAssert {
             .headers()
             .get(key)
             .unwrap_or_else(|| panic!("Header '{}' not found", key))
-        .to_str()
-        .unwrap();
+            .to_str()
+            .unwrap();
         assert_eq!(value, expected, "Header '{}' value mismatch", key);
         self
     }
@@ -288,8 +292,8 @@ impl ScenarioAssert {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
-        let actual =
-            json_path_get(&json, path).unwrap_or_else(|| panic!("Path '{}' not found in JSON", path));
+        let actual = json_path_get(&json, path)
+            .unwrap_or_else(|| panic!("Path '{}' not found in JSON", path));
 
         assert_eq!(actual, &expected, "JSON path '{}' value mismatch", path);
 
@@ -344,7 +348,8 @@ impl ScenarioAssert {
     /// Dump the request and response for debugging
     pub async fn dump(self) -> Self {
         let status = self.response.status();
-        let headers: Vec<(String, String)> = self.response
+        let headers: Vec<(String, String)> = self
+            .response
             .headers()
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<invalid>").to_string()))
@@ -400,7 +405,9 @@ fn json_contains(actual: &serde_json::Value, expected: &serde_json::Value) -> bo
         }
         (serde_json::Value::Array(actual_array), serde_json::Value::Array(expected_array)) => {
             expected_array.iter().all(|expected_value| {
-                actual_array.iter().any(|actual_value| json_contains(actual_value, expected_value))
+                actual_array
+                    .iter()
+                    .any(|actual_value| json_contains(actual_value, expected_value))
             })
         }
         _ => actual == expected,
@@ -435,14 +442,18 @@ pub fn patch(app: Router, uri: &str) -> Scenario {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{routing::get as axum_get, Router, Json};
+    use axum::{Json, Router, routing::get as axum_get};
     use serde_json::json;
 
     async fn hello_handler() -> Json<serde_json::Value> {
         Json(json!({"message": "Hello, World!"}))
     }
 
-    async fn echo_handler(axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>) -> Json<serde_json::Value> {
+    async fn echo_handler(
+        axum::extract::Query(params): axum::extract::Query<
+            std::collections::HashMap<String, String>,
+        >,
+    ) -> Json<serde_json::Value> {
         Json(json!({"params": params}))
     }
 
@@ -450,10 +461,7 @@ mod tests {
     async fn test_basic_get() {
         let app = Router::new().route("/hello", axum_get(hello_handler));
 
-        let response = get(app, "/hello")
-            .send()
-            .await
-            .assert_json_ok();
+        let response = get(app, "/hello").send().await.assert_json_ok();
 
         let body = response.json_value().await;
         assert_eq!(body["message"], "Hello, World!");
@@ -475,7 +483,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_json_alias() {
-        async fn post_handler(axum::Json(payload): axum::Json<serde_json::Value>) -> axum::Json<serde_json::Value> {
+        async fn post_handler(
+            axum::Json(payload): axum::Json<serde_json::Value>,
+        ) -> axum::Json<serde_json::Value> {
             axum::Json(payload)
         }
 
@@ -509,10 +519,7 @@ mod tests {
     async fn test_assert_json_path() {
         let app = Router::new().route("/hello", axum_get(hello_handler));
 
-        let response = get(app, "/hello")
-            .send()
-            .await
-            .assert_ok();
+        let response = get(app, "/hello").send().await.assert_ok();
 
         response
             .json_path_eq("message", json!("Hello, World!"))
@@ -523,14 +530,9 @@ mod tests {
     async fn test_assert_contains() {
         let app = Router::new().route("/hello", axum_get(hello_handler));
 
-        let response = get(app, "/hello")
-            .execute()
-            .await
-            .assert_ok();
+        let response = get(app, "/hello").execute().await.assert_ok();
 
-        response
-            .assert_contains("Hello")
-            .await;
+        response.assert_contains("Hello").await;
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::utils::get_env_with_prefix;
+use serde::{Deserialize, Serialize};
 
 /// Request logging configuration for Tideway applications
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -82,7 +82,9 @@ impl RequestLoggingConfig {
             config.include_headers = include_headers.parse().unwrap_or(false);
         }
 
-        if let Some(include_response) = get_env_with_prefix("REQUEST_LOGGING_INCLUDE_RESPONSE_HEADERS") {
+        if let Some(include_response) =
+            get_env_with_prefix("REQUEST_LOGGING_INCLUDE_RESPONSE_HEADERS")
+        {
             config.include_response_headers = include_response.parse().unwrap_or(false);
         }
 
@@ -228,4 +230,3 @@ mod tests {
         assert_eq!(config.success_level, LogLevel::Debug);
     }
 }
-

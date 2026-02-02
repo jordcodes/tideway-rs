@@ -10,7 +10,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use tideway::{
-        App, AppContext, ConfigBuilder, InMemoryJobQueue, Job, JobQueue, JobRegistry, Result, TidewayError,
+        App, AppContext, ConfigBuilder, InMemoryJobQueue, Job, JobQueue, JobRegistry, Result,
+        TidewayError,
     };
 
     // Initialize logging

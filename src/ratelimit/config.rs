@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::utils::get_env_with_prefix;
+use serde::{Deserialize, Serialize};
 
 /// Rate limiting configuration for Tideway applications
 #[derive(Debug, Clone, Deserialize, Serialize)]

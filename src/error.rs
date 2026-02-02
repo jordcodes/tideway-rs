@@ -290,7 +290,10 @@ impl TidewayError {
         }
 
         // Generate error ID if not provided
-        let error_id = response.error_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let error_id = response
+            .error_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         response.error_id = Some(error_id.clone());
 
         let body = Json(response);
@@ -386,8 +389,12 @@ impl From<reqwest::Error> for TidewayError {
                     401 => TidewayError::Unauthorized("Upstream authentication failed".to_string()),
                     403 => TidewayError::Forbidden("Upstream access denied".to_string()),
                     404 => TidewayError::NotFound("Upstream resource not found".to_string()),
-                    429 => TidewayError::TooManyRequests("Upstream rate limit exceeded".to_string()),
-                    503 => TidewayError::ServiceUnavailable("Upstream service unavailable".to_string()),
+                    429 => {
+                        TidewayError::TooManyRequests("Upstream rate limit exceeded".to_string())
+                    }
+                    503 => {
+                        TidewayError::ServiceUnavailable("Upstream service unavailable".to_string())
+                    }
                     _ => TidewayError::Internal(format!("Upstream error: {}", err)),
                 }
             } else {
@@ -493,7 +500,10 @@ mod tests {
     fn test_internal_error() {
         let err = TidewayError::internal("Something went wrong");
         assert!(matches!(err, TidewayError::Internal(_)));
-        assert_eq!(err.to_string(), "Internal server error: Something went wrong");
+        assert_eq!(
+            err.to_string(),
+            "Internal server error: Something went wrong"
+        );
         assert_eq!(err.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -617,7 +627,10 @@ mod tests {
     #[test]
     fn test_error_info_with_stack_trace() {
         let info = ErrorInfo::new().with_stack_trace("at line 42\nat line 100");
-        assert_eq!(info.stack_trace, Some("at line 42\nat line 100".to_string()));
+        assert_eq!(
+            info.stack_trace,
+            Some("at line 42\nat line 100".to_string())
+        );
     }
 
     // ============ ErrorWithContext tests ============
@@ -675,10 +688,11 @@ mod tests {
 
     #[test]
     fn test_tideway_error_with_context_method() {
-        let with_ctx = TidewayError::not_found("Item")
-            .with_context(ErrorContext::new()
+        let with_ctx = TidewayError::not_found("Item").with_context(
+            ErrorContext::new()
                 .with_error_id("ctx-001")
-                .with_detail("Item ID 5"));
+                .with_detail("Item ID 5"),
+        );
 
         assert!(matches!(with_ctx.error(), TidewayError::NotFound(_)));
         assert_eq!(with_ctx.context().error_id, Some("ctx-001".to_string()));
@@ -734,7 +748,8 @@ mod tests {
 
     #[test]
     fn test_from_serde_json_syntax_error() {
-        let result: std::result::Result<serde_json::Value, _> = serde_json::from_str("{ invalid json }");
+        let result: std::result::Result<serde_json::Value, _> =
+            serde_json::from_str("{ invalid json }");
         let json_err = result.unwrap_err();
         let err: TidewayError = json_err.into();
 
@@ -745,9 +760,12 @@ mod tests {
     #[test]
     fn test_from_serde_json_data_error() {
         #[derive(serde::Deserialize, Debug)]
-        struct Test { _value: i32 }
+        struct Test {
+            _value: i32,
+        }
 
-        let result: std::result::Result<Test, _> = serde_json::from_str(r#"{"_value": "not a number"}"#);
+        let result: std::result::Result<Test, _> =
+            serde_json::from_str(r#"{"_value": "not a number"}"#);
         let json_err = result.unwrap_err();
         let err: TidewayError = json_err.into();
 
@@ -807,8 +825,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_error_with_context_into_response() {
-        let with_ctx = TidewayError::not_found("Item")
-            .with_context(ErrorContext::new().with_detail("test"));
+        let with_ctx =
+            TidewayError::not_found("Item").with_context(ErrorContext::new().with_detail("test"));
         let response = with_ctx.into_response();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -823,13 +841,15 @@ mod tests {
             ErrorContext::new()
                 .with_error_id("custom-id")
                 .with_detail("More info")
-                .with_context("user", "123")
+                .with_context("user", "123"),
         );
 
         let response = err.into_response_with_info(Some(info), false);
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["error_id"], "custom-id");
@@ -845,7 +865,9 @@ mod tests {
             .with_stack_trace("stack trace here");
 
         let response = err.into_response_with_info(Some(info), true);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["stack_trace"], "stack trace here");
@@ -859,7 +881,9 @@ mod tests {
             .with_stack_trace("stack trace here");
 
         let response = err.into_response_with_info(Some(info), false);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert!(json.get("stack_trace").is_none());
@@ -871,7 +895,9 @@ mod tests {
         let info = ErrorInfo::new().with_context(ErrorContext::new());
 
         let response = err.into_response_with_info(Some(info), false);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         // Should have a UUID-like error_id
@@ -886,15 +912,27 @@ mod tests {
         let info = ErrorInfo::new().with_context(
             ErrorContext::new()
                 .with_field_error("email", "Invalid format")
-                .with_field_error("password", "Too short")
+                .with_field_error("password", "Too short"),
         );
 
         let response = err.into_response_with_info(Some(info), false);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        assert!(json["field_errors"]["email"].as_array().unwrap().contains(&serde_json::json!("Invalid format")));
-        assert!(json["field_errors"]["password"].as_array().unwrap().contains(&serde_json::json!("Too short")));
+        assert!(
+            json["field_errors"]["email"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("Invalid format"))
+        );
+        assert!(
+            json["field_errors"]["password"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("Too short"))
+        );
     }
 
     #[tokio::test]
@@ -904,7 +942,9 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(json["error"], "Not found: Item");
@@ -955,7 +995,8 @@ mod tests {
             "Internal server error"
         );
         assert_eq!(
-            TidewayError::service_unavailable("Redis at cache.internal:6379 unreachable").safe_message(),
+            TidewayError::service_unavailable("Redis at cache.internal:6379 unreachable")
+                .safe_message(),
             "Service unavailable"
         );
 
@@ -967,7 +1008,8 @@ mod tests {
     #[cfg(feature = "database")]
     #[test]
     fn test_safe_message_database_errors_hidden() {
-        let err = TidewayError::Database("Query error: relation \"users\" does not exist".to_string());
+        let err =
+            TidewayError::Database("Query error: relation \"users\" does not exist".to_string());
         assert_eq!(err.safe_message(), "Database error");
     }
 
@@ -976,7 +1018,9 @@ mod tests {
         let err = TidewayError::internal("Sensitive: db password is 'secret123'");
         let response = err.into_response_with_info(None, false); // dev_mode = false
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         // Should NOT contain the sensitive details
@@ -989,10 +1033,17 @@ mod tests {
         let err = TidewayError::internal("Debug info: connection pool exhausted");
         let response = err.into_response_with_info(None, true); // dev_mode = true
 
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         // Should contain the full error in dev mode
-        assert!(json["error"].as_str().unwrap().contains("connection pool exhausted"));
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("connection pool exhausted")
+        );
     }
 }

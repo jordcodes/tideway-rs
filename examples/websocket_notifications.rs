@@ -8,15 +8,15 @@
 #[cfg(feature = "websocket")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use tideway::{
-        App, AppContext, ConfigBuilder, Result,
-        websocket::{ws, ConnectionManager, WebSocketHandler, Connection, Message},
-    };
-    use axum::Router;
     use async_trait::async_trait;
+    use axum::Router;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use std::time::Duration;
+    use tideway::{
+        App, AppContext, ConfigBuilder, Result,
+        websocket::{Connection, ConnectionManager, Message, WebSocketHandler, ws},
+    };
     use tokio::time::sleep;
 
     // Initialize logging
@@ -61,12 +61,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap()
                     .as_secs(),
-            }).await?;
+            })
+            .await?;
 
             Ok(())
         }
 
-        async fn on_message(&self, conn: &mut Connection, msg: Message, _ctx: &tideway::AppContext) -> Result<()> {
+        async fn on_message(
+            &self,
+            conn: &mut Connection,
+            msg: Message,
+            _ctx: &tideway::AppContext,
+        ) -> Result<()> {
             match msg {
                 Message::Text(text) => {
                     // Handle ping/pong for keepalive
@@ -93,9 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     // Create config
-    let config = ConfigBuilder::new()
-        .with_log_level("info")
-        .build()?;
+    let config = ConfigBuilder::new().with_log_level("info").build()?;
 
     // Create WebSocket router (returns Router<AppContext>)
     let ws_router = ws("/notifications", NotificationHandler, manager.clone());
@@ -108,8 +112,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Helper module to wrap WebSocket router
     struct WsModule(Router<tideway::AppContext>);
     impl tideway::RouteModule for WsModule {
-        fn routes(&self) -> Router<tideway::AppContext> { self.0.clone() }
-        fn prefix(&self) -> Option<&str> { None }
+        fn routes(&self) -> Router<tideway::AppContext> {
+            self.0.clone()
+        }
+        fn prefix(&self) -> Option<&str> {
+            None
+        }
     }
 
     // Spawn background task to send periodic notifications

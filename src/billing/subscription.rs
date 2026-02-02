@@ -3,9 +3,9 @@
 //! Handles subscription lifecycle including creation, updates, cancellation,
 //! and syncing state from Stripe webhooks.
 
-use crate::error::Result;
 use super::plans::Plans;
 use super::storage::{BillingStore, StoredSubscription, SubscriptionStatus};
+use crate::error::Result;
 
 /// Subscription management operations.
 ///
@@ -20,7 +20,11 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
     /// Create a new subscription manager.
     #[must_use]
     pub fn new(store: S, client: C, plans: Plans) -> Self {
-        Self { store, client, plans }
+        Self {
+            store,
+            client,
+            plans,
+        }
     }
 
     /// Get the current subscription for a billable entity.
@@ -48,20 +52,23 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
     ///
     /// By default, the subscription will cancel at the end of the current billing period.
     /// Set `immediate` to true to cancel immediately (no refund).
-    pub async fn cancel_subscription(
-        &self,
-        billable_id: &str,
-        immediate: bool,
-    ) -> Result<()> {
-        let sub = self.store.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No active subscription".to_string()
-            ))?;
+    pub async fn cancel_subscription(&self, billable_id: &str, immediate: bool) -> Result<()> {
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::NotFound("No active subscription".to_string())
+            })?;
 
         if immediate {
-            self.client.cancel_subscription(&sub.stripe_subscription_id).await?;
+            self.client
+                .cancel_subscription(&sub.stripe_subscription_id)
+                .await?;
         } else {
-            self.client.cancel_subscription_at_period_end(&sub.stripe_subscription_id).await?;
+            self.client
+                .cancel_subscription_at_period_end(&sub.stripe_subscription_id)
+                .await?;
         }
 
         // Update local state (webhook will also update, but this is immediate feedback)
@@ -78,18 +85,23 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
 
     /// Resume a subscription that was set to cancel at period end.
     pub async fn resume_subscription(&self, billable_id: &str) -> Result<()> {
-        let sub = self.store.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No subscription found".to_string()
-            ))?;
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::NotFound("No subscription found".to_string())
+            })?;
 
         if !sub.cancel_at_period_end {
             return Err(crate::error::TidewayError::BadRequest(
-                "Subscription is not scheduled for cancellation".to_string()
+                "Subscription is not scheduled for cancellation".to_string(),
             ));
         }
 
-        self.client.resume_subscription(&sub.stripe_subscription_id).await?;
+        self.client
+            .resume_subscription(&sub.stripe_subscription_id)
+            .await?;
 
         // Update local state
         let mut updated = sub;
@@ -122,11 +134,14 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         // Validate additional_days is at least 1
         if additional_days == 0 {
             return Err(crate::error::TidewayError::BadRequest(
-                "Trial extension must be at least 1 day".to_string()
+                "Trial extension must be at least 1 day".to_string(),
             ));
         }
 
-        let sub = self.store.get_subscription(billable_id).await?
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
@@ -134,7 +149,8 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         if sub.status != SubscriptionStatus::Trialing {
             return Err(super::error::BillingError::SubscriptionNotTrialing {
                 billable_id: billable_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         // Calculate new trial end
@@ -148,16 +164,20 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         let new_trial_end = current_trial_end.saturating_add(additional_seconds);
 
         // Update in Stripe
-        let stripe_data = self.client.extend_trial(&sub.stripe_subscription_id, new_trial_end).await?;
+        let stripe_data = self
+            .client
+            .extend_trial(&sub.stripe_subscription_id, new_trial_end)
+            .await?;
 
         // Update local state
         self.sync_from_stripe(stripe_data).await?;
 
         // Return updated subscription
-        self.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::Internal(
-                "Subscription disappeared after extension".to_string()
-            ))
+        self.get_subscription(billable_id).await?.ok_or_else(|| {
+            crate::error::TidewayError::Internal(
+                "Subscription disappeared after extension".to_string(),
+            )
+        })
     }
 
     /// Check if a subscription is paused.
@@ -177,7 +197,10 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
     ///
     /// Returns an error if the subscription is not found, not active, or already paused.
     pub async fn pause_subscription(&self, billable_id: &str) -> Result<()> {
-        let sub = self.store.get_subscription(billable_id).await?
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
@@ -185,16 +208,20 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         if sub.status == SubscriptionStatus::Paused {
             return Err(super::error::BillingError::SubscriptionAlreadyPaused {
                 billable_id: billable_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         if !sub.is_active() {
             return Err(super::error::BillingError::SubscriptionInactive {
                 billable_id: billable_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
-        self.client.pause_subscription(&sub.stripe_subscription_id).await?;
+        self.client
+            .pause_subscription(&sub.stripe_subscription_id)
+            .await?;
 
         // Update local state
         let mut updated = sub;
@@ -213,7 +240,10 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
     ///
     /// Returns an error if the subscription is not found or not in paused state.
     pub async fn resume_paused_subscription(&self, billable_id: &str) -> Result<Subscription> {
-        let sub = self.store.get_subscription(billable_id).await?
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
@@ -221,20 +251,25 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         if sub.status != SubscriptionStatus::Paused {
             return Err(super::error::BillingError::SubscriptionNotPaused {
                 billable_id: billable_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         // Resume in Stripe
-        let stripe_data = self.client.resume_paused_subscription(&sub.stripe_subscription_id).await?;
+        let stripe_data = self
+            .client
+            .resume_paused_subscription(&sub.stripe_subscription_id)
+            .await?;
 
         // Update local state
         self.sync_from_stripe(stripe_data).await?;
 
         // Return updated subscription
-        self.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::Internal(
-                "Subscription disappeared after resuming".to_string()
-            ))
+        self.get_subscription(billable_id).await?.ok_or_else(|| {
+            crate::error::TidewayError::Internal(
+                "Subscription disappeared after resuming".to_string(),
+            )
+        })
     }
 
     /// Update subscription from a Stripe webhook event.
@@ -245,17 +280,23 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         stripe_subscription: StripeSubscriptionData,
     ) -> Result<()> {
         // Find the billable entity for this subscription
-        let billable_id = match self.store
+        let billable_id = match self
+            .store
             .get_subscription_by_stripe_id(&stripe_subscription.id)
             .await?
         {
             Some((id, _)) => id,
             None => {
                 // New subscription - extract billable_id from metadata
-                stripe_subscription.metadata.billable_id.clone()
-                    .ok_or_else(|| crate::error::TidewayError::BadRequest(
-                        "Subscription missing billable_id metadata".to_string()
-                    ))?
+                stripe_subscription
+                    .metadata
+                    .billable_id
+                    .clone()
+                    .ok_or_else(|| {
+                        crate::error::TidewayError::BadRequest(
+                            "Subscription missing billable_id metadata".to_string(),
+                        )
+                    })?
             }
         };
 
@@ -284,7 +325,8 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
 
     /// Delete subscription record (called when subscription is deleted in Stripe).
     pub async fn delete_subscription(&self, stripe_subscription_id: &str) -> Result<()> {
-        if let Some((billable_id, _)) = self.store
+        if let Some((billable_id, _)) = self
+            .store
             .get_subscription_by_stripe_id(stripe_subscription_id)
             .await?
         {
@@ -315,7 +357,10 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         };
 
         // Fetch fresh data from Stripe
-        let stripe_data = self.client.get_subscription(&stored.stripe_subscription_id).await?;
+        let stripe_data = self
+            .client
+            .get_subscription(&stored.stripe_subscription_id)
+            .await?;
 
         // Update local state
         self.sync_from_stripe(stripe_data).await?;
@@ -344,7 +389,11 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         };
 
         // Fetch current state from Stripe
-        let stripe_data = match self.client.get_subscription(&stored.stripe_subscription_id).await {
+        let stripe_data = match self
+            .client
+            .get_subscription(&stored.stripe_subscription_id)
+            .await
+        {
             Ok(data) => data,
             Err(_) => return Ok(ReconcileResult::NotFoundInStripe),
         };
@@ -513,7 +562,10 @@ impl Subscription {
     /// Check if a feature is available.
     #[must_use]
     pub fn has_feature(&self, feature: &str) -> bool {
-        self.plan.as_ref().map(|p| p.has_feature(feature)).unwrap_or(false)
+        self.plan
+            .as_ref()
+            .map(|p| p.has_feature(feature))
+            .unwrap_or(false)
     }
 
     /// Get days remaining in trial.
@@ -626,7 +678,10 @@ pub trait StripeSubscriptionClient: Send + Sync {
     /// Resume a paused subscription.
     ///
     /// Reactivates billing for a paused subscription.
-    async fn resume_paused_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData>;
+    async fn resume_paused_subscription(
+        &self,
+        subscription_id: &str,
+    ) -> Result<StripeSubscriptionData>;
 }
 
 /// Request to update a subscription.
@@ -717,8 +772,8 @@ impl ProrationBehavior {
 #[cfg(any(test, feature = "test-billing"))]
 pub mod test {
     use super::*;
-    use std::sync::RwLock;
     use std::collections::HashMap;
+    use std::sync::RwLock;
 
     /// Mock Stripe subscription client.
     #[derive(Default, Clone)]
@@ -740,10 +795,10 @@ pub mod test {
 
         /// Add a subscription for testing.
         pub fn add_subscription(&self, data: StripeSubscriptionData) {
-            self.subscriptions.write().unwrap().insert(
-                data.id.clone(),
-                MockSubscription { data },
-            );
+            self.subscriptions
+                .write()
+                .unwrap()
+                .insert(data.id.clone(), MockSubscription { data });
         }
     }
 
@@ -754,9 +809,10 @@ pub mod test {
                 sub.data.status = "canceled".to_string();
                 Ok(())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Subscription not found: {}",
+                    subscription_id
+                )))
             }
         }
 
@@ -766,9 +822,10 @@ pub mod test {
                 sub.data.cancel_at_period_end = true;
                 Ok(())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Subscription not found: {}",
+                    subscription_id
+                )))
             }
         }
 
@@ -778,9 +835,10 @@ pub mod test {
                 sub.data.cancel_at_period_end = false;
                 Ok(())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Subscription not found: {}",
+                    subscription_id
+                )))
             }
         }
 
@@ -788,9 +846,12 @@ pub mod test {
             let subs = self.subscriptions.read().unwrap();
             subs.get(subscription_id)
                 .map(|s| s.data.clone())
-                .ok_or_else(|| crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                .ok_or_else(|| {
+                    crate::error::TidewayError::NotFound(format!(
+                        "Subscription not found: {}",
+                        subscription_id
+                    ))
+                })
         }
 
         async fn update_subscription(
@@ -805,9 +866,10 @@ pub mod test {
                 }
                 Ok(sub.data.clone())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Subscription not found: {}",
+                    subscription_id
+                )))
             }
         }
 
@@ -821,9 +883,10 @@ pub mod test {
                 sub.data.trial_end = Some(new_trial_end);
                 Ok(sub.data.clone())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Subscription not found: {}",
+                    subscription_id
+                )))
             }
         }
 
@@ -833,21 +896,26 @@ pub mod test {
                 sub.data.status = "paused".to_string();
                 Ok(())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Subscription not found: {}",
+                    subscription_id
+                )))
             }
         }
 
-        async fn resume_paused_subscription(&self, subscription_id: &str) -> Result<StripeSubscriptionData> {
+        async fn resume_paused_subscription(
+            &self,
+            subscription_id: &str,
+        ) -> Result<StripeSubscriptionData> {
             let mut subs = self.subscriptions.write().unwrap();
             if let Some(sub) = subs.get_mut(subscription_id) {
                 sub.data.status = "active".to_string();
                 Ok(sub.data.clone())
             } else {
-                Err(crate::error::TidewayError::NotFound(
-                    format!("Subscription not found: {}", subscription_id)
-                ))
+                Err(crate::error::TidewayError::NotFound(format!(
+                    "Subscription not found: {}",
+                    subscription_id
+                )))
             }
         }
     }
@@ -855,23 +923,23 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test::MockStripeSubscriptionClient;
-    use crate::billing::storage::test::InMemoryBillingStore;
+    use super::*;
     use crate::billing::plans::Plans;
+    use crate::billing::storage::test::InMemoryBillingStore;
 
     fn create_test_plans() -> Plans {
         Plans::builder()
             .plan("starter")
-                .stripe_price("price_starter")
-                .included_seats(3)
-                .features(["reports"])
-                .done()
+            .stripe_price("price_starter")
+            .included_seats(3)
+            .features(["reports"])
+            .done()
             .plan("pro")
-                .stripe_price("price_pro")
-                .included_seats(5)
-                .features(["reports", "api"])
-                .done()
+            .stripe_price("price_pro")
+            .included_seats(5)
+            .features(["reports", "api"])
+            .done()
             .build()
     }
 
@@ -1048,7 +1116,11 @@ mod tests {
         client.add_subscription(updated_stripe);
 
         // Refresh from Stripe
-        let sub = manager.refresh_from_stripe("org_123").await.unwrap().unwrap();
+        let sub = manager
+            .refresh_from_stripe("org_123")
+            .await
+            .unwrap()
+            .unwrap();
 
         // Should reflect Stripe's current state
         assert_eq!(sub.extra_seats, 10);
@@ -1095,10 +1167,25 @@ mod tests {
         let result = manager.reconcile("org_123", false).await.unwrap();
 
         match result {
-            ReconcileResult::Diverged { differences, updated_local } => {
+            ReconcileResult::Diverged {
+                differences,
+                updated_local,
+            } => {
                 assert!(!updated_local);
-                assert!(differences.iter().any(|d| matches!(d, ReconcileDifference::Seats { local: 2, remote: 5 })));
-                assert!(differences.iter().any(|d| matches!(d, ReconcileDifference::CancelAtPeriodEnd { local: false, remote: true })));
+                assert!(differences.iter().any(|d| matches!(
+                    d,
+                    ReconcileDifference::Seats {
+                        local: 2,
+                        remote: 5
+                    }
+                )));
+                assert!(differences.iter().any(|d| matches!(
+                    d,
+                    ReconcileDifference::CancelAtPeriodEnd {
+                        local: false,
+                        remote: true
+                    }
+                )));
             }
             _ => panic!("Expected Diverged result"),
         }

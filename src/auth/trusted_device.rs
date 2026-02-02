@@ -658,15 +658,24 @@ mod tests {
             .with_user_agent("Mozilla/5.0 Chrome/120");
 
         // Trust the device
-        let token = manager.trust_device("user-1", fingerprint.clone()).await.unwrap();
+        let token = manager
+            .trust_device("user-1", fingerprint.clone())
+            .await
+            .unwrap();
         assert!(!token.is_empty());
 
         // Verify trust
-        let is_trusted = manager.is_trusted("user-1", &token, Some(fingerprint)).await.unwrap();
+        let is_trusted = manager
+            .is_trusted("user-1", &token, Some(fingerprint))
+            .await
+            .unwrap();
         assert!(is_trusted);
 
         // Wrong token should fail
-        let is_trusted = manager.is_trusted("user-1", "wrong-token", None).await.unwrap();
+        let is_trusted = manager
+            .is_trusted("user-1", "wrong-token", None)
+            .await
+            .unwrap();
         assert!(!is_trusted);
 
         // Wrong user should fail
@@ -684,7 +693,10 @@ mod tests {
             .with_ip("192.168.1.1")
             .with_user_agent("Mozilla/5.0 Chrome/120");
 
-        let token = manager.trust_device("user-1", fingerprint.clone()).await.unwrap();
+        let token = manager
+            .trust_device("user-1", fingerprint.clone())
+            .await
+            .unwrap();
 
         // Same fingerprint should work
         let is_trusted = manager
@@ -801,8 +813,7 @@ mod tests {
     #[tokio::test]
     async fn test_expired_device() {
         let store = InMemoryTrustedDeviceStore::new();
-        let config = TrustedDeviceConfig::default()
-            .trust_duration(Duration::from_millis(50)); // Very short for testing
+        let config = TrustedDeviceConfig::default().trust_duration(Duration::from_millis(50)); // Very short for testing
         let manager = TrustedDeviceManager::new(store, config);
 
         let token = manager

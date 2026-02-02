@@ -1,18 +1,16 @@
 use super::config::{LogLevel, RequestLoggingConfig};
+use axum::body::Body;
 use axum::{
     extract::{MatchedPath, Request},
     http::{HeaderMap, StatusCode},
     response::Response,
 };
-use axum::body::Body;
 use futures::future::BoxFuture;
 use std::time::Instant;
 use tower::Service;
 
 /// Build a Tower layer for request/response logging
-pub fn build_request_logging_layer(
-    config: &RequestLoggingConfig,
-) -> Option<RequestLoggingLayer> {
+pub fn build_request_logging_layer(config: &RequestLoggingConfig) -> Option<RequestLoggingLayer> {
     if !config.enabled {
         return None;
     }
@@ -329,9 +327,7 @@ mod tests {
 
     #[test]
     fn test_log_level_enabled_guard() {
-        let subscriber = Subscriber::builder()
-            .with_max_level(Level::INFO)
-            .finish();
+        let subscriber = Subscriber::builder().with_max_level(Level::INFO).finish();
         let dispatch = tracing::Dispatch::new(subscriber);
         tracing::dispatcher::with_default(&dispatch, || {
             assert!(!is_log_level_enabled(LogLevel::Debug));

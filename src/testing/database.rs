@@ -267,7 +267,8 @@ impl TestDb {
         // For SQLite, drop all tables
         let drop_tables_stmt = Statement::from_string(
             sea_orm::DatabaseBackend::Sqlite,
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'".to_string(),
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                .to_string(),
         );
 
         let result = self.connection.query_all(drop_tables_stmt).await;

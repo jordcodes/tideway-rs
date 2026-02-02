@@ -100,7 +100,9 @@ impl QueryParams {
             let parts: Vec<&str> = pair.splitn(2, '=').collect();
             if parts.len() == 2 && parts[0] == key {
                 if let Ok(decoded) = urlencoding::decode(parts[1]) {
-                    if let Ok(value) = serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded)) {
+                    if let Ok(value) =
+                        serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
+                    {
                         return Some(value);
                     }
                 }
@@ -111,7 +113,10 @@ impl QueryParams {
 
     /// Get an optional query parameter value
     #[allow(dead_code)] // Public API method
-    pub fn get_optional<T: for<'de> Deserialize<'de>>(query_string: &str, key: &str) -> Option<Option<T>> {
+    pub fn get_optional<T: for<'de> Deserialize<'de>>(
+        query_string: &str,
+        key: &str,
+    ) -> Option<Option<T>> {
         Self::get(query_string, key).map(Some)
     }
 
@@ -124,7 +129,9 @@ impl QueryParams {
             let parts: Vec<&str> = pair.splitn(2, '=').collect();
             if parts.len() == 2 && parts[0] == key {
                 if let Ok(decoded) = urlencoding::decode(parts[1]) {
-                    if let Ok(value) = serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded)) {
+                    if let Ok(value) =
+                        serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
+                    {
                         values.push(value);
                     }
                 }

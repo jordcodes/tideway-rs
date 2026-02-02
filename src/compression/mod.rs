@@ -8,4 +8,3 @@ mod layer;
 
 pub use config::{CompressionConfig, CompressionConfigBuilder};
 pub use layer::build_compression_layer;
-

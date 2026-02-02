@@ -21,8 +21,8 @@
 //! ```
 
 use crate::error::{Result, TidewayError};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -267,11 +267,8 @@ impl JwtIssuer {
     pub fn new(config: JwtIssuerConfig) -> Result<Self> {
         let encoding_key = match &config.secret {
             SecretKey::Symmetric(secret) => EncodingKey::from_secret(secret),
-            SecretKey::Rsa { private_pem } => {
-                EncodingKey::from_rsa_pem(private_pem).map_err(|e| {
-                    TidewayError::Internal(format!("Invalid RSA private key: {}", e))
-                })?
-            }
+            SecretKey::Rsa { private_pem } => EncodingKey::from_rsa_pem(private_pem)
+                .map_err(|e| TidewayError::Internal(format!("Invalid RSA private key: {}", e)))?,
         };
 
         Ok(Self {
@@ -344,8 +341,9 @@ impl JwtIssuer {
         let access_token = encode(&header, &access_claims, &self.encoding_key)
             .map_err(|e| TidewayError::Internal(format!("Failed to encode access token: {}", e)))?;
 
-        let refresh_token = encode(&header, &refresh_claims, &self.encoding_key)
-            .map_err(|e| TidewayError::Internal(format!("Failed to encode refresh token: {}", e)))?;
+        let refresh_token = encode(&header, &refresh_claims, &self.encoding_key).map_err(|e| {
+            TidewayError::Internal(format!("Failed to encode refresh token: {}", e))
+        })?;
 
         Ok(TokenPair {
             access_token,
@@ -463,7 +461,7 @@ fn generate_token_family() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonwebtoken::{decode, DecodingKey, Validation};
+    use jsonwebtoken::{DecodingKey, Validation, decode};
 
     fn test_issuer() -> JwtIssuer {
         JwtIssuer::new(JwtIssuerConfig::with_secret(

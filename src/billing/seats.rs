@@ -2,11 +2,11 @@
 //!
 //! Handles adding and removing seats from subscriptions with prorated billing.
 
-use crate::error::Result;
 use super::plans::Plans;
 use super::storage::BillingStore;
-use super::subscription::{StripeSubscriptionClient, UpdateSubscriptionRequest, ProrationBehavior};
+use super::subscription::{ProrationBehavior, StripeSubscriptionClient, UpdateSubscriptionRequest};
 use super::validation::validate_billable_id;
+use crate::error::Result;
 
 /// Get current Unix timestamp in seconds.
 fn current_timestamp() -> u64 {
@@ -29,7 +29,11 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
     /// Create a new seat manager.
     #[must_use]
     pub fn new(store: S, client: C, plans: Plans) -> Self {
-        Self { store, client, plans }
+        Self {
+            store,
+            client,
+            plans,
+        }
     }
 
     /// Save seat update to local store after successful Stripe update.
@@ -48,11 +52,10 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
         updated_sub.extra_seats = updated_extra_seats;
         updated_sub.updated_at = current_timestamp();
 
-        let saved = self.store.compare_and_save_subscription(
-            billable_id,
-            &updated_sub,
-            original_version,
-        ).await?;
+        let saved = self
+            .store
+            .compare_and_save_subscription(billable_id, &updated_sub, original_version)
+            .await?;
 
         if saved {
             return Ok(SeatChangeResult {
@@ -91,7 +94,8 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
 
         Err(crate::error::TidewayError::Internal(
             "Seat update succeeded in Stripe but local state update failed. \
-             Please retry or contact support if the issue persists.".to_string()
+             Please retry or contact support if the issue persists."
+                .to_string(),
         ))
     }
 
@@ -99,15 +103,18 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
     pub async fn get_seat_info(&self, billable_id: &str) -> Result<SeatInfo> {
         validate_billable_id(billable_id)?;
 
-        let sub = self.store.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No subscription found".to_string()
-            ))?;
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::NotFound("No subscription found".to_string())
+            })?;
 
-        let plan = self.plans.get(&sub.plan_id)
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "Plan not found".to_string()
-            ))?;
+        let plan = self
+            .plans
+            .get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound("Plan not found".to_string()))?;
 
         Ok(SeatInfo {
             included_seats: plan.included_seats,
@@ -134,32 +141,31 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
     ///
     /// This will update the subscription in Stripe and prorate the charge.
     /// Uses optimistic locking to handle concurrent modifications.
-    pub async fn add_seats(
-        &self,
-        billable_id: &str,
-        count: u32,
-    ) -> Result<SeatChangeResult> {
+    pub async fn add_seats(&self, billable_id: &str, count: u32) -> Result<SeatChangeResult> {
         validate_billable_id(billable_id)?;
 
         if count == 0 {
             return Err(crate::error::TidewayError::BadRequest(
-                "Must add at least 1 seat".to_string()
+                "Must add at least 1 seat".to_string(),
             ));
         }
 
-        let sub = self.store.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No subscription found".to_string()
-            ))?;
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::NotFound("No subscription found".to_string())
+            })?;
 
-        let plan = self.plans.get(&sub.plan_id)
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "Plan not found".to_string()
-            ))?;
+        let plan = self
+            .plans
+            .get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound("Plan not found".to_string()))?;
 
         if plan.extra_seat_price_id.is_none() {
             return Err(crate::error::TidewayError::BadRequest(
-                "Plan does not support extra seats".to_string()
+                "Plan does not support extra seats".to_string(),
             ));
         }
 
@@ -167,14 +173,17 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
         let new_seat_count = sub.extra_seats + count;
 
         // Update in Stripe
-        let updated = self.client.update_subscription(
-            &sub.stripe_subscription_id,
-            UpdateSubscriptionRequest {
-                seat_quantity: Some(new_seat_count),
-                proration_behavior: Some(ProrationBehavior::CreateProrations),
-                ..Default::default()
-            },
-        ).await?;
+        let updated = self
+            .client
+            .update_subscription(
+                &sub.stripe_subscription_id,
+                UpdateSubscriptionRequest {
+                    seat_quantity: Some(new_seat_count),
+                    proration_behavior: Some(ProrationBehavior::CreateProrations),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
         // Save locally - this handles reconciliation if version conflict occurs
         self.save_seat_update_after_stripe(
@@ -183,54 +192,58 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             plan,
             updated.extra_seats,
             original_version,
-        ).await
+        )
+        .await
     }
 
     /// Remove seats from a subscription.
     ///
     /// Cannot reduce below 0 extra seats. This will credit the account via proration.
     /// Uses optimistic locking to handle concurrent modifications.
-    pub async fn remove_seats(
-        &self,
-        billable_id: &str,
-        count: u32,
-    ) -> Result<SeatChangeResult> {
+    pub async fn remove_seats(&self, billable_id: &str, count: u32) -> Result<SeatChangeResult> {
         validate_billable_id(billable_id)?;
 
         if count == 0 {
             return Err(crate::error::TidewayError::BadRequest(
-                "Must remove at least 1 seat".to_string()
+                "Must remove at least 1 seat".to_string(),
             ));
         }
 
-        let sub = self.store.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No subscription found".to_string()
-            ))?;
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::NotFound("No subscription found".to_string())
+            })?;
 
-        let plan = self.plans.get(&sub.plan_id)
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "Plan not found".to_string()
-            ))?;
+        let plan = self
+            .plans
+            .get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound("Plan not found".to_string()))?;
 
         if count > sub.extra_seats {
-            return Err(crate::error::TidewayError::BadRequest(
-                format!("Cannot remove {} seats, only {} extra seats on subscription", count, sub.extra_seats)
-            ));
+            return Err(crate::error::TidewayError::BadRequest(format!(
+                "Cannot remove {} seats, only {} extra seats on subscription",
+                count, sub.extra_seats
+            )));
         }
 
         let original_version = sub.updated_at;
         let new_seat_count = sub.extra_seats - count;
 
         // Update in Stripe
-        let updated = self.client.update_subscription(
-            &sub.stripe_subscription_id,
-            UpdateSubscriptionRequest {
-                seat_quantity: Some(new_seat_count),
-                proration_behavior: Some(ProrationBehavior::CreateProrations),
-                ..Default::default()
-            },
-        ).await?;
+        let updated = self
+            .client
+            .update_subscription(
+                &sub.stripe_subscription_id,
+                UpdateSubscriptionRequest {
+                    seat_quantity: Some(new_seat_count),
+                    proration_behavior: Some(ProrationBehavior::CreateProrations),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
         // Save locally - this handles reconciliation if version conflict occurs
         self.save_seat_update_after_stripe(
@@ -239,33 +252,33 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             plan,
             updated.extra_seats,
             original_version,
-        ).await
+        )
+        .await
     }
 
     /// Set seats to a specific count.
     ///
     /// More convenient than add/remove for absolute seat management.
     /// Uses optimistic locking to handle concurrent modifications.
-    pub async fn set_seats(
-        &self,
-        billable_id: &str,
-        count: u32,
-    ) -> Result<SeatChangeResult> {
+    pub async fn set_seats(&self, billable_id: &str, count: u32) -> Result<SeatChangeResult> {
         validate_billable_id(billable_id)?;
 
-        let sub = self.store.get_subscription(billable_id).await?
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "No subscription found".to_string()
-            ))?;
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::NotFound("No subscription found".to_string())
+            })?;
 
-        let plan = self.plans.get(&sub.plan_id)
-            .ok_or_else(|| crate::error::TidewayError::NotFound(
-                "Plan not found".to_string()
-            ))?;
+        let plan = self
+            .plans
+            .get(&sub.plan_id)
+            .ok_or_else(|| crate::error::TidewayError::NotFound("Plan not found".to_string()))?;
 
         if plan.extra_seat_price_id.is_none() {
             return Err(crate::error::TidewayError::BadRequest(
-                "Plan does not support extra seats".to_string()
+                "Plan does not support extra seats".to_string(),
             ));
         }
 
@@ -280,14 +293,17 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
         let original_version = sub.updated_at;
 
         // Update in Stripe
-        let updated = self.client.update_subscription(
-            &sub.stripe_subscription_id,
-            UpdateSubscriptionRequest {
-                seat_quantity: Some(count),
-                proration_behavior: Some(ProrationBehavior::CreateProrations),
-                ..Default::default()
-            },
-        ).await?;
+        let updated = self
+            .client
+            .update_subscription(
+                &sub.stripe_subscription_id,
+                UpdateSubscriptionRequest {
+                    seat_quantity: Some(count),
+                    proration_behavior: Some(ProrationBehavior::CreateProrations),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
         // Save locally - this handles reconciliation if version conflict occurs
         self.save_seat_update_after_stripe(
@@ -296,7 +312,8 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             plan,
             updated.extra_seats,
             original_version,
-        ).await
+        )
+        .await
     }
 }
 
@@ -331,25 +348,29 @@ mod tests {
     use super::*;
     use crate::billing::storage::test::InMemoryBillingStore;
     use crate::billing::storage::{BillingStore, StoredSubscription, SubscriptionStatus};
-    use crate::billing::subscription::test::MockStripeSubscriptionClient;
     use crate::billing::subscription::StripeSubscriptionData;
     use crate::billing::subscription::SubscriptionMetadata;
+    use crate::billing::subscription::test::MockStripeSubscriptionClient;
 
     fn create_test_plans() -> Plans {
         Plans::builder()
             .plan("starter")
-                .stripe_price("price_starter")
-                .extra_seat_price("price_seat")
-                .included_seats(3)
-                .done()
+            .stripe_price("price_starter")
+            .extra_seat_price("price_seat")
+            .included_seats(3)
+            .done()
             .plan("basic")
-                .stripe_price("price_basic")
-                .included_seats(1)
-                .done()
+            .stripe_price("price_basic")
+            .included_seats(1)
+            .done()
             .build()
     }
 
-    fn create_test_subscription(billable_id: &str, plan_id: &str, extra_seats: u32) -> StoredSubscription {
+    fn create_test_subscription(
+        billable_id: &str,
+        plan_id: &str,
+        extra_seats: u32,
+    ) -> StoredSubscription {
         StoredSubscription {
             stripe_subscription_id: format!("sub_{}", billable_id),
             stripe_customer_id: format!("cus_{}", billable_id),
@@ -593,7 +614,10 @@ mod tests {
         updated.extra_seats = 5;
         updated.updated_at = 1700000001;
 
-        let result = store.compare_and_save_subscription("org_cas", &updated, sub.updated_at).await.unwrap();
+        let result = store
+            .compare_and_save_subscription("org_cas", &updated, sub.updated_at)
+            .await
+            .unwrap();
         assert!(result);
 
         // Verify the update was saved
@@ -604,7 +628,10 @@ mod tests {
         let mut another = loaded.clone();
         another.extra_seats = 10;
 
-        let result = store.compare_and_save_subscription("org_cas", &another, sub.updated_at).await.unwrap();
+        let result = store
+            .compare_and_save_subscription("org_cas", &another, sub.updated_at)
+            .await
+            .unwrap();
         assert!(!result);
 
         // Verify the update was not saved

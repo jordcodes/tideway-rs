@@ -73,11 +73,8 @@ pub trait MembershipStore: Send + Sync {
     async fn remove_member(&self, org_id: &str, user_id: &str) -> Result<()>;
 
     /// Get a specific membership.
-    async fn get_membership(
-        &self,
-        org_id: &str,
-        user_id: &str,
-    ) -> Result<Option<Self::Membership>>;
+    async fn get_membership(&self, org_id: &str, user_id: &str)
+    -> Result<Option<Self::Membership>>;
 
     /// List all members of an organization.
     async fn list_members(&self, org_id: &str) -> Result<Vec<Self::Membership>>;

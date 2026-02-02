@@ -57,7 +57,12 @@ pub struct JobData {
 impl JobData {
     /// Create a new JobData instance
     #[cfg(feature = "jobs")]
-    pub fn new(job_id: String, job_type: String, payload: serde_json::Value, max_retries: u32) -> Self {
+    pub fn new(
+        job_id: String,
+        job_type: String,
+        payload: serde_json::Value,
+        max_retries: u32,
+    ) -> Self {
         Self {
             job_id,
             job_type,

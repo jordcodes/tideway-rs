@@ -59,7 +59,9 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     let detected = detect_modules(&src_dir);
 
     if detected.is_empty() {
-        report.info.push("No Tideway modules detected in src/".to_string());
+        report
+            .info
+            .push("No Tideway modules detected in src/".to_string());
     }
 
     for module in &detected {
@@ -73,7 +75,9 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     }
 
     if !tideway_dependency_present(&cargo_toml) {
-        report.warnings.push("Cargo.toml is missing a tideway dependency".to_string());
+        report
+            .warnings
+            .push("Cargo.toml is missing a tideway dependency".to_string());
     }
 
     if let Some(message) = validate_package_metadata(&cargo_toml) {
@@ -157,15 +161,21 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     if needs_database {
         check_migration_setup(project_dir, &mut report);
         check_database_wiring(&src_dir, &mut report);
-        check_migration_execution_hint(project_dir, &src_dir, &env_vars, &env_example_vars, &mut report);
+        check_migration_execution_hint(
+            project_dir,
+            &src_dir,
+            &env_vars,
+            &env_example_vars,
+            &mut report,
+        );
     }
 
     Ok(report)
 }
 
 fn read_cargo_toml(path: &Path) -> Result<toml::Value> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
     contents
         .parse::<toml::Value>()
         .with_context(|| format!("Failed to parse {}", path.display()))
@@ -239,8 +249,8 @@ fn module_to_feature(module: &str) -> &str {
 }
 
 fn read_env_map(path: &Path) -> Result<BTreeMap<String, String>> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
     Ok(parse_env_map(&contents))
 }
 
@@ -283,10 +293,9 @@ fn check_env_var(
     }
 
     if env_path.exists() || env_example_path.exists() {
-        report.warnings.push(format!(
-            "{} missing in .env and .env.example",
-            key
-        ));
+        report
+            .warnings
+            .push(format!("{} missing in .env and .env.example", key));
         return None;
     }
 
@@ -308,10 +317,7 @@ fn validate_database_url(value: &str) -> Option<String> {
         || lower.starts_with("sqlite:");
 
     if !valid {
-        return Some(format!(
-            "DATABASE_URL scheme looks invalid: {}",
-            value
-        ));
+        return Some(format!("DATABASE_URL scheme looks invalid: {}", value));
     }
 
     None
@@ -349,10 +355,7 @@ fn validate_package_metadata(cargo_toml: &toml::Value) -> Option<String> {
         return None;
     }
 
-    Some(format!(
-        "Package metadata missing: {}",
-        missing.join(", ")
-    ))
+    Some(format!("Package metadata missing: {}", missing.join(", ")))
 }
 
 fn env_example_template(
@@ -383,11 +386,7 @@ fn env_example_template(
         lines.push(String::new());
     }
 
-    if lines.is_empty() {
-        None
-    } else {
-        Some(lines)
-    }
+    if lines.is_empty() { None } else { Some(lines) }
 }
 
 fn project_name_from_cargo(cargo_toml: &toml::Value, project_dir: &Path) -> String {
@@ -407,8 +406,7 @@ fn project_name_from_cargo(cargo_toml: &toml::Value, project_dir: &Path) -> Stri
 }
 fn write_env_example(path: &Path, lines: &[String]) -> Result<()> {
     let contents = lines.join("\n");
-    write_file(path, &contents)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, &contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 
@@ -424,8 +422,8 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
     let main_rs = src_dir.join("main.rs");
     if let Ok(contents) = fs::read_to_string(&main_rs) {
         let has_module = contents.contains("mod openapi_docs;");
-        let has_router = contents.contains("openapi_merge_module")
-            || contents.contains("create_openapi_router");
+        let has_router =
+            contents.contains("openapi_merge_module") || contents.contains("create_openapi_router");
         if !has_module || !has_router {
             report.warnings.push(
                 "OpenAPI is enabled but main.rs is not wired (run `tideway add openapi --wire`)"
@@ -433,7 +431,9 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
             );
         }
     } else if project_dir.join("src").join("main.rs").exists() {
-        report.warnings.push("Failed to read src/main.rs for OpenAPI wiring check".to_string());
+        report
+            .warnings
+            .push("Failed to read src/main.rs for OpenAPI wiring check".to_string());
     }
 }
 
@@ -444,7 +444,9 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
     }
 
     let Ok(docs_contents) = fs::read_to_string(&openapi_docs) else {
-        report.warnings.push("Failed to read src/openapi_docs.rs".to_string());
+        report
+            .warnings
+            .push("Failed to read src/openapi_docs.rs".to_string());
         return;
     };
 
@@ -480,7 +482,10 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
             }
 
             let expected_prefix = format!("crate::routes::{}::", file_name);
-            if !paths_block.iter().any(|path| path.starts_with(&expected_prefix)) {
+            if !paths_block
+                .iter()
+                .any(|path| path.starts_with(&expected_prefix))
+            {
                 missing.push(file_name.to_string());
             }
         }
@@ -557,7 +562,9 @@ fn check_database_wiring(src_dir: &Path, report: &mut DoctorReport) {
 
     let main_path = src_dir.join("main.rs");
     let Ok(contents) = fs::read_to_string(&main_path) else {
-        report.warnings.push("Failed to read src/main.rs for database wiring check".to_string());
+        report
+            .warnings
+            .push("Failed to read src/main.rs for database wiring check".to_string());
         return;
     };
 
@@ -585,8 +592,8 @@ fn check_migration_execution_hint(
         || env_example_vars.contains_key("DATABASE_AUTO_MIGRATE");
     let main_path = src_dir.join("main.rs");
     let main_contents = fs::read_to_string(&main_path).unwrap_or_default();
-    let has_migration_call = main_contents.contains("run_migrations(")
-        || main_contents.contains("run_migrations_now(");
+    let has_migration_call =
+        main_contents.contains("run_migrations(") || main_contents.contains("run_migrations_now(");
 
     if !has_auto_migrate && !has_migration_call {
         report.info.push(

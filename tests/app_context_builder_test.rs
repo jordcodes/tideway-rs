@@ -84,9 +84,7 @@ mod database_tests {
             .build();
         assert!(ctx.database_opt().is_some());
 
-        let ctx = AppContext::builder()
-            .with_optional_database(None)
-            .build();
+        let ctx = AppContext::builder().with_optional_database(None).build();
         assert!(ctx.database_opt().is_none());
     }
 }

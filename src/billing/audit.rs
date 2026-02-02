@@ -115,59 +115,196 @@ pub enum BillingAuditEvent {
 impl fmt::Display for BillingAuditEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::CheckoutCreated { billable_id, plan_id, session_id } => {
-                write!(f, "Checkout created: billable={}, plan={}, session={}", billable_id, plan_id, session_id)
+            Self::CheckoutCreated {
+                billable_id,
+                plan_id,
+                session_id,
+            } => {
+                write!(
+                    f,
+                    "Checkout created: billable={}, plan={}, session={}",
+                    billable_id, plan_id, session_id
+                )
             }
-            Self::SubscriptionCreated { billable_id, subscription_id, plan_id } => {
-                write!(f, "Subscription created: billable={}, sub={}, plan={}", billable_id, subscription_id, plan_id)
+            Self::SubscriptionCreated {
+                billable_id,
+                subscription_id,
+                plan_id,
+            } => {
+                write!(
+                    f,
+                    "Subscription created: billable={}, sub={}, plan={}",
+                    billable_id, subscription_id, plan_id
+                )
             }
-            Self::SubscriptionUpdated { billable_id, subscription_id, plan_id, status } => {
-                write!(f, "Subscription updated: billable={}, sub={}, plan={}, status={}", billable_id, subscription_id, plan_id, status)
+            Self::SubscriptionUpdated {
+                billable_id,
+                subscription_id,
+                plan_id,
+                status,
+            } => {
+                write!(
+                    f,
+                    "Subscription updated: billable={}, sub={}, plan={}, status={}",
+                    billable_id, subscription_id, plan_id, status
+                )
             }
-            Self::SubscriptionCancelled { billable_id, subscription_id, immediate } => {
-                write!(f, "Subscription cancelled: billable={}, sub={}, immediate={}", billable_id, subscription_id, immediate)
+            Self::SubscriptionCancelled {
+                billable_id,
+                subscription_id,
+                immediate,
+            } => {
+                write!(
+                    f,
+                    "Subscription cancelled: billable={}, sub={}, immediate={}",
+                    billable_id, subscription_id, immediate
+                )
             }
-            Self::SubscriptionResumed { billable_id, subscription_id } => {
-                write!(f, "Subscription resumed: billable={}, sub={}", billable_id, subscription_id)
+            Self::SubscriptionResumed {
+                billable_id,
+                subscription_id,
+            } => {
+                write!(
+                    f,
+                    "Subscription resumed: billable={}, sub={}",
+                    billable_id, subscription_id
+                )
             }
-            Self::SubscriptionDeleted { billable_id, subscription_id } => {
-                write!(f, "Subscription deleted: billable={}, sub={}", billable_id, subscription_id)
+            Self::SubscriptionDeleted {
+                billable_id,
+                subscription_id,
+            } => {
+                write!(
+                    f,
+                    "Subscription deleted: billable={}, sub={}",
+                    billable_id, subscription_id
+                )
             }
-            Self::SeatsAdded { billable_id, count, new_total } => {
-                write!(f, "Seats added: billable={}, count={}, new_total={}", billable_id, count, new_total)
+            Self::SeatsAdded {
+                billable_id,
+                count,
+                new_total,
+            } => {
+                write!(
+                    f,
+                    "Seats added: billable={}, count={}, new_total={}",
+                    billable_id, count, new_total
+                )
             }
-            Self::SeatsRemoved { billable_id, count, new_total } => {
-                write!(f, "Seats removed: billable={}, count={}, new_total={}", billable_id, count, new_total)
+            Self::SeatsRemoved {
+                billable_id,
+                count,
+                new_total,
+            } => {
+                write!(
+                    f,
+                    "Seats removed: billable={}, count={}, new_total={}",
+                    billable_id, count, new_total
+                )
             }
-            Self::PortalSessionCreated { billable_id, session_id } => {
-                write!(f, "Portal session created: billable={}, session={}", billable_id, session_id)
+            Self::PortalSessionCreated {
+                billable_id,
+                session_id,
+            } => {
+                write!(
+                    f,
+                    "Portal session created: billable={}, session={}",
+                    billable_id, session_id
+                )
             }
-            Self::WebhookReceived { event_id, event_type } => {
-                write!(f, "Webhook received: event={}, type={}", event_id, event_type)
+            Self::WebhookReceived {
+                event_id,
+                event_type,
+            } => {
+                write!(
+                    f,
+                    "Webhook received: event={}, type={}",
+                    event_id, event_type
+                )
             }
-            Self::WebhookProcessed { event_id, event_type, outcome } => {
-                write!(f, "Webhook processed: event={}, type={}, outcome={}", event_id, event_type, outcome)
+            Self::WebhookProcessed {
+                event_id,
+                event_type,
+                outcome,
+            } => {
+                write!(
+                    f,
+                    "Webhook processed: event={}, type={}, outcome={}",
+                    event_id, event_type, outcome
+                )
             }
-            Self::CustomerCreated { billable_id, customer_id } => {
-                write!(f, "Customer created: billable={}, customer={}", billable_id, customer_id)
+            Self::CustomerCreated {
+                billable_id,
+                customer_id,
+            } => {
+                write!(
+                    f,
+                    "Customer created: billable={}, customer={}",
+                    billable_id, customer_id
+                )
             }
-            Self::PlanCreated { plan_id, name, admin_id } => {
-                write!(f, "Plan created: plan={}, name={}, admin={}", plan_id, name, admin_id.as_deref().unwrap_or("system"))
+            Self::PlanCreated {
+                plan_id,
+                name,
+                admin_id,
+            } => {
+                write!(
+                    f,
+                    "Plan created: plan={}, name={}, admin={}",
+                    plan_id,
+                    name,
+                    admin_id.as_deref().unwrap_or("system")
+                )
             }
-            Self::PlanUpdated { plan_id, admin_id, changes } => {
-                write!(f, "Plan updated: plan={}, admin={}, changes=[{}]", plan_id, admin_id.as_deref().unwrap_or("system"), changes.join(", "))
+            Self::PlanUpdated {
+                plan_id,
+                admin_id,
+                changes,
+            } => {
+                write!(
+                    f,
+                    "Plan updated: plan={}, admin={}, changes=[{}]",
+                    plan_id,
+                    admin_id.as_deref().unwrap_or("system"),
+                    changes.join(", ")
+                )
             }
             Self::PlanDeleted { plan_id, admin_id } => {
-                write!(f, "Plan deleted: plan={}, admin={}", plan_id, admin_id.as_deref().unwrap_or("system"))
+                write!(
+                    f,
+                    "Plan deleted: plan={}, admin={}",
+                    plan_id,
+                    admin_id.as_deref().unwrap_or("system")
+                )
             }
             Self::PlanActivated { plan_id, admin_id } => {
-                write!(f, "Plan activated: plan={}, admin={}", plan_id, admin_id.as_deref().unwrap_or("system"))
+                write!(
+                    f,
+                    "Plan activated: plan={}, admin={}",
+                    plan_id,
+                    admin_id.as_deref().unwrap_or("system")
+                )
             }
             Self::PlanDeactivated { plan_id, admin_id } => {
-                write!(f, "Plan deactivated: plan={}, admin={}", plan_id, admin_id.as_deref().unwrap_or("system"))
+                write!(
+                    f,
+                    "Plan deactivated: plan={}, admin={}",
+                    plan_id,
+                    admin_id.as_deref().unwrap_or("system")
+                )
             }
-            Self::PlanDeletionBlocked { plan_id, subscription_count, admin_id } => {
-                write!(f, "Plan deletion blocked: plan={}, active_subscriptions={}, admin={}", plan_id, subscription_count, admin_id.as_deref().unwrap_or("system"))
+            Self::PlanDeletionBlocked {
+                plan_id,
+                subscription_count,
+                admin_id,
+            } => {
+                write!(
+                    f,
+                    "Plan deletion blocked: plan={}, active_subscriptions={}, admin={}",
+                    plan_id,
+                    subscription_count,
+                    admin_id.as_deref().unwrap_or("system")
+                )
             }
         }
     }
@@ -269,11 +406,13 @@ mod tests {
     #[tokio::test]
     async fn test_noop_logger() {
         let logger = NoOpAuditLogger;
-        logger.log(BillingAuditEvent::CheckoutCreated {
-            billable_id: "org_123".to_string(),
-            plan_id: "starter".to_string(),
-            session_id: "cs_123".to_string(),
-        }).await;
+        logger
+            .log(BillingAuditEvent::CheckoutCreated {
+                billable_id: "org_123".to_string(),
+                plan_id: "starter".to_string(),
+                session_id: "cs_123".to_string(),
+            })
+            .await;
         // Just verifies it doesn't panic
     }
 
@@ -281,22 +420,32 @@ mod tests {
     async fn test_test_logger() {
         let logger = TestAuditLogger::new();
 
-        logger.log(BillingAuditEvent::CheckoutCreated {
-            billable_id: "org_123".to_string(),
-            plan_id: "starter".to_string(),
-            session_id: "cs_123".to_string(),
-        }).await;
+        logger
+            .log(BillingAuditEvent::CheckoutCreated {
+                billable_id: "org_123".to_string(),
+                plan_id: "starter".to_string(),
+                session_id: "cs_123".to_string(),
+            })
+            .await;
 
-        logger.log(BillingAuditEvent::SubscriptionCreated {
-            billable_id: "org_123".to_string(),
-            subscription_id: "sub_123".to_string(),
-            plan_id: "starter".to_string(),
-        }).await;
+        logger
+            .log(BillingAuditEvent::SubscriptionCreated {
+                billable_id: "org_123".to_string(),
+                subscription_id: "sub_123".to_string(),
+                plan_id: "starter".to_string(),
+            })
+            .await;
 
         let events = logger.events().await;
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0], BillingAuditEvent::CheckoutCreated { .. }));
-        assert!(matches!(events[1], BillingAuditEvent::SubscriptionCreated { .. }));
+        assert!(matches!(
+            events[0],
+            BillingAuditEvent::CheckoutCreated { .. }
+        ));
+        assert!(matches!(
+            events[1],
+            BillingAuditEvent::SubscriptionCreated { .. }
+        ));
     }
 
     #[test]
@@ -314,16 +463,22 @@ mod tests {
 
     #[test]
     fn test_event_kind() {
-        assert_eq!(event_kind(&BillingAuditEvent::CheckoutCreated {
-            billable_id: String::new(),
-            plan_id: String::new(),
-            session_id: String::new(),
-        }), "checkout_created");
+        assert_eq!(
+            event_kind(&BillingAuditEvent::CheckoutCreated {
+                billable_id: String::new(),
+                plan_id: String::new(),
+                session_id: String::new(),
+            }),
+            "checkout_created"
+        );
 
-        assert_eq!(event_kind(&BillingAuditEvent::WebhookProcessed {
-            event_id: String::new(),
-            event_type: String::new(),
-            outcome: String::new(),
-        }), "webhook_processed");
+        assert_eq!(
+            event_kind(&BillingAuditEvent::WebhookProcessed {
+                event_id: String::new(),
+                event_type: String::new(),
+                outcome: String::new(),
+            }),
+            "webhook_processed"
+        );
     }
 }

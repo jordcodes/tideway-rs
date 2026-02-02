@@ -245,7 +245,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestClaims {

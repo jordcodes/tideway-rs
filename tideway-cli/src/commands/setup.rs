@@ -2,10 +2,14 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::path::Path;
 use std::process::Command;
 
 use crate::cli::{Framework, SetupArgs, Style};
-use crate::{is_json_output, is_plan_mode, print_error, print_info, print_success, print_warning};
+use crate::{
+    is_json_output, is_plan_mode, print_error, print_info, print_success, print_warning,
+    remove_dir, remove_file, write_file,
+};
 
 /// Components required for tideway frontend
 const SHADCN_VUE_COMPONENTS: &[&str] = &[
@@ -31,10 +35,6 @@ const SHADCN_VUE_COMPONENTS: &[&str] = &[
 
 /// Run the setup command
 pub fn run(args: SetupArgs) -> Result<()> {
-    if is_plan_mode() {
-        print_info("Plan: would set up frontend dependencies");
-        return Ok(());
-    }
     if !is_json_output() {
         println!(
             "\n{} Setting up frontend dependencies...\n",
@@ -59,10 +59,7 @@ pub fn run(args: SetupArgs) -> Result<()> {
     }
 
     if !is_json_output() {
-        println!(
-            "\n{} Frontend setup complete!\n",
-            "✓".green().bold()
-        );
+        println!("\n{} Frontend setup complete!\n", "✓".green().bold());
 
         println!("{}", "Next steps:".yellow().bold());
         println!("  1. Generate components:");
@@ -108,20 +105,20 @@ fn cleanup_vue_starter() -> Result<()> {
     ];
 
     for file in default_files {
-        if std::path::Path::new(file).exists() {
-            let _ = std::fs::remove_file(file);
+        if Path::new(file).exists() {
+            let _ = remove_file(Path::new(file));
         }
     }
 
     // Remove icons directory if empty
-    if std::path::Path::new("src/components/icons").exists() {
-        let _ = std::fs::remove_dir("src/components/icons");
+    if Path::new("src/components/icons").exists() {
+        let _ = remove_dir(Path::new("src/components/icons"));
     }
 
     // Replace HomeView with a simple redirect
-    if std::path::Path::new("src/views/HomeView.vue").exists() {
-        std::fs::write(
-            "src/views/HomeView.vue",
+    if Path::new("src/views/HomeView.vue").exists() {
+        write_file(
+            Path::new("src/views/HomeView.vue"),
             r#"<script setup lang="ts">
 import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
@@ -144,14 +141,14 @@ onMounted(() => {
     }
 
     // Remove AboutView if it exists
-    if std::path::Path::new("src/views/AboutView.vue").exists() {
-        let _ = std::fs::remove_file("src/views/AboutView.vue");
+    if Path::new("src/views/AboutView.vue").exists() {
+        let _ = remove_file(Path::new("src/views/AboutView.vue"));
     }
 
     // Clean up App.vue
-    if std::path::Path::new("src/App.vue").exists() {
-        std::fs::write(
-            "src/App.vue",
+    if Path::new("src/App.vue").exists() {
+        write_file(
+            Path::new("src/App.vue"),
             r#"<script setup lang="ts">
 import { RouterView } from 'vue-router'
 </script>
@@ -165,7 +162,7 @@ import { RouterView } from 'vue-router'
     }
 
     // Clean up main.css - remove default styles and base.css import
-    if std::path::Path::new("src/assets/main.css").exists() {
+    if Path::new("src/assets/main.css").exists() {
         let content = std::fs::read_to_string("src/assets/main.css")?;
         // Keep only @import lines that are NOT base.css
         let imports: Vec<&str> = content
@@ -177,14 +174,17 @@ import { RouterView } from 'vue-router'
             .collect();
 
         if !imports.is_empty() {
-            std::fs::write("src/assets/main.css", imports.join("\n") + "\n")?;
+            write_file(
+                Path::new("src/assets/main.css"),
+                &(imports.join("\n") + "\n"),
+            )?;
             print_success("Cleaned up main.css");
         }
     }
 
     // Remove base.css if it exists (default Vue styles)
-    if std::path::Path::new("src/assets/base.css").exists() {
-        let _ = std::fs::remove_file("src/assets/base.css");
+    if Path::new("src/assets/base.css").exists() {
+        let _ = remove_file(Path::new("src/assets/base.css"));
         print_success("Removed base.css");
     }
 
@@ -195,13 +195,13 @@ import { RouterView } from 'vue-router'
 }
 
 fn cleanup_router() -> Result<()> {
-    let router_path = std::path::Path::new("src/router/index.ts");
+    let router_path = Path::new("src/router/index.ts");
     if !router_path.exists() {
         return Ok(());
     }
 
     // Replace with a clean router template - tideway generate will add routes
-    std::fs::write(
+    write_file(
         router_path,
         r#"import { createRouter, createWebHistory } from 'vue-router'
 
@@ -222,9 +222,9 @@ fn setup_tailwind() -> Result<()> {
     print_info("Setting up Tailwind CSS v4...");
 
     // Check if vite.config exists
-    let vite_config_path = if std::path::Path::new("vite.config.ts").exists() {
+    let vite_config_path = if Path::new("vite.config.ts").exists() {
         "vite.config.ts"
-    } else if std::path::Path::new("vite.config.js").exists() {
+    } else if Path::new("vite.config.js").exists() {
         "vite.config.js"
     } else {
         print_warning("No vite.config found. Tailwind v4 setup requires Vite.");
@@ -233,12 +233,11 @@ fn setup_tailwind() -> Result<()> {
 
     // Install Tailwind v4 with Vite plugin
     print_info("Installing @tailwindcss/vite...");
-    let status = Command::new("npm")
-        .args(["install", "-D", "tailwindcss", "@tailwindcss/vite"])
-        .status()
-        .context("Failed to run npm install")?;
-
-    if !status.success() {
+    if !run_external_command(
+        "npm",
+        &["install", "-D", "tailwindcss", "@tailwindcss/vite"],
+        "install tailwind dependencies",
+    )? {
         print_warning("Failed to install Tailwind CSS");
         return Ok(());
     }
@@ -253,18 +252,15 @@ fn setup_tailwind() -> Result<()> {
         let updated = vite_config
             .replace(
                 "import vue from '@vitejs/plugin-vue'",
-                "import vue from '@vitejs/plugin-vue'\nimport tailwindcss from '@tailwindcss/vite'"
+                "import vue from '@vitejs/plugin-vue'\nimport tailwindcss from '@tailwindcss/vite'",
             )
-            .replace(
-                "plugins: [vue()]",
-                "plugins: [vue(), tailwindcss()]"
-            )
+            .replace("plugins: [vue()]", "plugins: [vue(), tailwindcss()]")
             .replace(
                 "plugins: [\n    vue()",
-                "plugins: [\n    vue(),\n    tailwindcss()"
+                "plugins: [\n    vue(),\n    tailwindcss()",
             );
 
-        std::fs::write(vite_config_path, updated)?;
+        write_file(Path::new(vite_config_path), &updated)?;
         print_success("Updated vite.config with tailwindcss plugin");
     } else {
         print_info("Tailwind already in vite.config");
@@ -273,11 +269,13 @@ fn setup_tailwind() -> Result<()> {
     // Update main CSS file
     let css_paths = ["src/assets/main.css", "src/style.css", "src/index.css"];
     for css_path in css_paths {
-        if std::path::Path::new(css_path).exists() {
+        if Path::new(css_path).exists() {
             let css_content = std::fs::read_to_string(css_path)?;
-            if !css_content.contains("@import \"tailwindcss\"") && !css_content.contains("@import 'tailwindcss'") {
+            if !css_content.contains("@import \"tailwindcss\"")
+                && !css_content.contains("@import 'tailwindcss'")
+            {
                 let updated = format!("@import \"tailwindcss\";\n\n{}", css_content);
-                std::fs::write(css_path, updated)?;
+                write_file(Path::new(css_path), &updated)?;
                 print_success(&format!("Added Tailwind import to {}", css_path));
             }
             break;
@@ -294,17 +292,16 @@ fn setup_shadcn_vue() -> Result<()> {
     setup_tsconfig_alias()?;
 
     // Check if shadcn is already initialized (components.json exists)
-    let has_shadcn = std::path::Path::new("components.json").exists();
+    let has_shadcn = Path::new("components.json").exists();
 
     if !has_shadcn {
         print_info("Initializing shadcn-vue...");
 
-        let status = Command::new("npx")
-            .args(["shadcn-vue@latest", "init", "-y", "-d"])
-            .status()
-            .context("Failed to run shadcn-vue init")?;
-
-        if !status.success() {
+        if !run_external_command(
+            "npx",
+            &["shadcn-vue@latest", "init", "-y", "-d"],
+            "initialize shadcn-vue",
+        )? {
             print_error("Failed to initialize shadcn-vue");
             if !is_json_output() {
                 println!("You can try running manually: npx shadcn-vue@latest init");
@@ -325,16 +322,16 @@ fn setup_shadcn_vue() -> Result<()> {
 
     let components = SHADCN_VUE_COMPONENTS.join(" ");
 
-    let status = Command::new("npx")
-        .args(["shadcn-vue@latest", "add", "-y"])
-        .args(SHADCN_VUE_COMPONENTS)
-        .status()
-        .context("Failed to install shadcn components")?;
+    let mut add_args = vec!["shadcn-vue@latest", "add", "-y"];
+    add_args.extend(SHADCN_VUE_COMPONENTS);
 
-    if !status.success() {
+    if !run_external_command("npx", &add_args, "install shadcn components")? {
         print_warning("Some components may have failed to install");
         if !is_json_output() {
-            println!("You can try running manually: npx shadcn-vue@latest add {}", components);
+            println!(
+                "You can try running manually: npx shadcn-vue@latest add {}",
+                components
+            );
         }
         return Ok(());
     }
@@ -343,12 +340,11 @@ fn setup_shadcn_vue() -> Result<()> {
 
     // Install tw-animate-css (required by shadcn-vue animations)
     print_info("Installing tw-animate-css...");
-    let status = Command::new("npm")
-        .args(["install", "tw-animate-css"])
-        .status()
-        .context("Failed to install tw-animate-css")?;
-
-    if status.success() {
+    if run_external_command(
+        "npm",
+        &["install", "tw-animate-css"],
+        "install tw-animate-css",
+    )? {
         print_success("tw-animate-css installed");
     }
 
@@ -360,7 +356,7 @@ fn setup_tsconfig_alias() -> Result<()> {
     let configs = ["tsconfig.json", "tsconfig.app.json"];
 
     for tsconfig_path in configs {
-        if !std::path::Path::new(tsconfig_path).exists() {
+        if !Path::new(tsconfig_path).exists() {
             continue;
         }
 
@@ -391,7 +387,7 @@ fn setup_tsconfig_alias() -> Result<()> {
             content
         };
 
-        std::fs::write(tsconfig_path, updated)?;
+        write_file(Path::new(tsconfig_path), &updated)?;
         print_success(&format!("Added @ import alias to {}", tsconfig_path));
     }
 
@@ -406,17 +402,17 @@ fn setup_tsconfig_alias() -> Result<()> {
 
 fn setup_tailwind_config_stub() -> Result<()> {
     // shadcn-vue requires a tailwind.config file even though Tailwind v4 doesn't need one
-    let config_exists = std::path::Path::new("tailwind.config.ts").exists()
-        || std::path::Path::new("tailwind.config.js").exists();
+    let config_exists =
+        Path::new("tailwind.config.ts").exists() || Path::new("tailwind.config.js").exists();
 
     if config_exists {
         return Ok(());
     }
 
     print_info("Creating tailwind.config.ts for shadcn-vue compatibility...");
-    std::fs::write(
-        "tailwind.config.ts",
-        "// Tailwind v4 uses CSS-based configuration, but shadcn-vue needs this file\nexport default {}\n"
+    write_file(
+        Path::new("tailwind.config.ts"),
+        "// Tailwind v4 uses CSS-based configuration, but shadcn-vue needs this file\nexport default {}\n",
     )?;
     print_success("Created tailwind.config.ts");
 
@@ -426,14 +422,16 @@ fn setup_tailwind_config_stub() -> Result<()> {
 fn setup_vite_path_resolution() -> Result<()> {
     // Install @types/node if needed
     print_info("Installing @types/node for path resolution...");
-    let _ = Command::new("npm")
-        .args(["install", "-D", "@types/node"])
-        .status();
+    let _ = run_external_command(
+        "npm",
+        &["install", "-D", "@types/node"],
+        "install @types/node",
+    );
 
     // Update vite.config to add resolve.alias
-    let vite_config_path = if std::path::Path::new("vite.config.ts").exists() {
+    let vite_config_path = if Path::new("vite.config.ts").exists() {
         "vite.config.ts"
-    } else if std::path::Path::new("vite.config.js").exists() {
+    } else if Path::new("vite.config.js").exists() {
         "vite.config.js"
     } else {
         return Ok(());
@@ -466,8 +464,33 @@ fn setup_vite_path_resolution() -> Result<()> {
         );
     }
 
-    std::fs::write(vite_config_path, updated)?;
+    write_file(Path::new(vite_config_path), &updated)?;
     print_success("Added path resolution to vite.config");
 
     Ok(())
+}
+
+fn run_external_command(program: &str, args: &[&str], context: &str) -> Result<bool> {
+    if is_plan_mode() {
+        print_info(&format!(
+            "Plan: run command `{}`",
+            format_command(program, args)
+        ));
+        return Ok(true);
+    }
+
+    let status = Command::new(program)
+        .args(args)
+        .status()
+        .with_context(|| format!("Failed to {}", context))?;
+
+    Ok(status.success())
+}
+
+fn format_command(program: &str, args: &[&str]) -> String {
+    if args.is_empty() {
+        program.to_string()
+    } else {
+        format!("{} {}", program, args.join(" "))
+    }
 }

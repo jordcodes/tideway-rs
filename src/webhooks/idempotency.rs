@@ -210,8 +210,8 @@ mod tests {
             "stripe:pi_xyz",
             "123",
             "event-with-special-chars-!@#$%",
-            "",  // Empty string is valid
-            long_id.as_str(),  // Long event ID
+            "",               // Empty string is valid
+            long_id.as_str(), // Long event ID
         ];
 
         for event_id in event_ids {
@@ -240,8 +240,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_custom_store_trait_impl() {
-        let always_true = CustomIdempotencyStore { always_processed: true };
-        let always_false = CustomIdempotencyStore { always_processed: false };
+        let always_true = CustomIdempotencyStore {
+            always_processed: true,
+        };
+        let always_false = CustomIdempotencyStore {
+            always_processed: false,
+        };
 
         assert!(always_true.is_processed("any").await.unwrap());
         assert!(!always_false.is_processed("any").await.unwrap());
@@ -263,7 +267,10 @@ mod tests {
         // Clone arc and use from multiple "tasks"
         let store2 = Arc::clone(&store);
 
-        store.mark_processed("shared-event".to_string()).await.unwrap();
+        store
+            .mark_processed("shared-event".to_string())
+            .await
+            .unwrap();
         assert!(store2.is_processed("shared-event").await.unwrap());
     }
 

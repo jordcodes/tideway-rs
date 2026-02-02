@@ -110,7 +110,13 @@ pub fn analyze_handler(func: &ItemFn) -> InferenceResult {
     for arg in &func.sig.inputs {
         if let FnArg::Typed(pat_type) = arg {
             let ty = &*pat_type.ty;
-            analyze_extractor(ty, &mut path_params, &mut query_params, &mut request_body, &mut security);
+            analyze_extractor(
+                ty,
+                &mut path_params,
+                &mut query_params,
+                &mut request_body,
+                &mut security,
+            );
         }
     }
 
@@ -266,7 +272,8 @@ fn analyze_extractor(
         }
 
         // State and other extractors - ignored
-        "State" | "Extension" | "Request" | "Headers" | "HeaderMap" | "ConnectInfo" | "MatchedPath" | "OriginalUri" => {
+        "State" | "Extension" | "Request" | "Headers" | "HeaderMap" | "ConnectInfo"
+        | "MatchedPath" | "OriginalUri" => {
             // These don't affect OpenAPI spec
         }
 

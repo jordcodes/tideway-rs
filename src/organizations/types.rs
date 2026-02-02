@@ -15,8 +15,8 @@ use std::str::FromStr;
 ///
 /// # Example
 ///
-    /// ```rust
-    /// use tideway::organizations::{DefaultOrgRole, OrgRolePermissions};
+/// ```rust
+/// use tideway::organizations::{DefaultOrgRole, OrgRolePermissions};
 ///
 /// let role = DefaultOrgRole::Admin;
 /// assert!(role.can_manage_members());
@@ -70,7 +70,11 @@ pub struct ParseRoleError {
 
 impl fmt::Display for ParseRoleError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid role: '{}' (expected: owner, admin, or member)", self.invalid_value)
+        write!(
+            f,
+            "invalid role: '{}' (expected: owner, admin, or member)",
+            self.invalid_value
+        )
     }
 }
 
@@ -225,9 +229,18 @@ mod tests {
 
     #[test]
     fn test_role_parsing() {
-        assert_eq!("owner".parse::<DefaultOrgRole>().unwrap(), DefaultOrgRole::Owner);
-        assert_eq!("ADMIN".parse::<DefaultOrgRole>().unwrap(), DefaultOrgRole::Admin);
-        assert_eq!("Member".parse::<DefaultOrgRole>().unwrap(), DefaultOrgRole::Member);
+        assert_eq!(
+            "owner".parse::<DefaultOrgRole>().unwrap(),
+            DefaultOrgRole::Owner
+        );
+        assert_eq!(
+            "ADMIN".parse::<DefaultOrgRole>().unwrap(),
+            DefaultOrgRole::Admin
+        );
+        assert_eq!(
+            "Member".parse::<DefaultOrgRole>().unwrap(),
+            DefaultOrgRole::Member
+        );
         assert!("invalid".parse::<DefaultOrgRole>().is_err());
     }
 

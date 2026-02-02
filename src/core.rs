@@ -1,19 +1,13 @@
 use crate::{
-    app::AppContext,
-    config::Config,
-    compression::build_compression_layer,
-    error::TidewayError,
-    http::RouteModule,
-    middleware::MakeRequestUuid,
-    ratelimit::build_rate_limit_layer,
-    request_logging::build_request_logging_layer,
-    security::build_security_headers_layer,
+    app::AppContext, compression::build_compression_layer, config::Config, error::TidewayError,
+    http::RouteModule, middleware::MakeRequestUuid, ratelimit::build_rate_limit_layer,
+    request_logging::build_request_logging_layer, security::build_security_headers_layer,
     timeout::build_timeout_layer,
 };
 
+use axum::{Router, extract::DefaultBodyLimit};
 #[cfg(feature = "database")]
 use sea_orm_migration::MigratorTrait;
-use axum::{extract::DefaultBodyLimit, Router};
 use std::time::Duration;
 use tokio::signal;
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
@@ -23,7 +17,7 @@ use tower_http::trace::TraceLayer;
 use std::sync::Arc;
 
 #[cfg(feature = "metrics")]
-use crate::metrics::{build_metrics_layer, metrics_handler, MetricsCollector};
+use crate::metrics::{MetricsCollector, build_metrics_layer, metrics_handler};
 
 #[cfg(feature = "jobs")]
 use crate::jobs::{JobRegistry, WorkerPool};
@@ -61,7 +55,10 @@ impl App {
             match MetricsCollector::new() {
                 Ok(collector) => Some(Arc::new(collector)),
                 Err(e) => {
-                    tracing::error!("Failed to create metrics collector: {}. Metrics disabled.", e);
+                    tracing::error!(
+                        "Failed to create metrics collector: {}. Metrics disabled.",
+                        e
+                    );
                     None
                 }
             }
@@ -105,11 +102,10 @@ impl App {
     }
 
     fn build_router(_config: &Config) -> Router<AppContext> {
-        use axum::routing::get;
         use crate::health;
+        use axum::routing::get;
 
-        Router::<AppContext>::new()
-            .route("/health", get(health::health_handler))
+        Router::<AppContext>::new().route("/health", get(health::health_handler))
     }
 
     /// Register a route module with the application
@@ -220,7 +216,9 @@ impl App {
             let conn = self.context.sea_orm_connection()?;
             crate::database::migration::run_migrations::<M>(&conn).await?;
         } else {
-            return Err(TidewayError::internal("Cannot run migrations: no database configured"));
+            return Err(TidewayError::internal(
+                "Cannot run migrations: no database configured",
+            ));
         }
         Ok(self)
     }
@@ -232,9 +230,15 @@ impl App {
     pub fn layer<L>(mut self, layer: L) -> Self
     where
         L: tower::Layer<axum::routing::Route> + Clone + Send + Sync + 'static,
-        L::Service: tower::Service<axum::http::Request<axum::body::Body>, Error = std::convert::Infallible> + Clone + Send + Sync + 'static,
-        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Response: axum::response::IntoResponse + 'static,
-        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future: Send + 'static,
+        L::Service: tower::Service<axum::http::Request<axum::body::Body>, Error = std::convert::Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Response:
+            axum::response::IntoResponse + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future:
+            Send + 'static,
     {
         self.router = self.router.layer(layer);
         self
@@ -254,7 +258,8 @@ impl App {
             + 'static,
         <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Response:
             axum::response::IntoResponse + 'static,
-        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future: Send + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future:
+            Send + 'static,
     {
         self.global_layers
             .push(Box::new(move |router: Router| router.layer(layer.clone())));
@@ -397,14 +402,12 @@ impl App {
 
     /// Start the application server
     pub async fn serve(self) -> Result<(), std::io::Error> {
-        let addr = self
-            .config
-            .server
-            .addr()
-            .map_err(|e| std::io::Error::new(
+        let addr = self.config.server.addr().map_err(|e| {
+            std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                format!("Invalid server address in config: {}", e)
-            ))?;
+                format!("Invalid server address in config: {}", e),
+            )
+        })?;
 
         #[allow(unused_mut)] // Needed for worker_pool.take() when jobs feature is enabled
         let mut app = self.with_middleware();
@@ -538,7 +541,8 @@ impl AppBuilder {
             + 'static,
         <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Response:
             axum::response::IntoResponse + 'static,
-        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future: Send + 'static,
+        <L::Service as tower::Service<axum::http::Request<axum::body::Body>>>::Future:
+            Send + 'static,
     {
         self.global_layers
             .push(Box::new(move |router: Router| router.layer(layer.clone())));

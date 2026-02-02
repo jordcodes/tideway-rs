@@ -13,16 +13,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use governor::{
+    Quota, RateLimiter,
     clock::DefaultClock,
     middleware::NoOpMiddleware,
     state::{InMemoryState, NotKeyed},
-    Quota, RateLimiter,
 };
 use std::{
     num::NonZeroU32,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 use tower::{Layer, Service};
@@ -54,7 +54,12 @@ impl IntoResponse for RateLimitError {
 type GlobalLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
 /// Type alias for a per-IP (keyed) rate limiter
-type KeyedLimiter = RateLimiter<String, governor::state::keyed::DashMapStateStore<String>, DefaultClock, NoOpMiddleware>;
+type KeyedLimiter = RateLimiter<
+    String,
+    governor::state::keyed::DashMapStateStore<String>,
+    DefaultClock,
+    NoOpMiddleware,
+>;
 
 /// Rate limiter state that can be either global or per-IP
 #[derive(Clone)]
@@ -74,8 +79,8 @@ struct RateLimitState {
 
 impl RateLimitState {
     fn new(config: RateLimitConfig) -> Self {
-        let max_requests = NonZeroU32::new(config.max_requests.max(1))
-            .expect("max_requests should be positive");
+        let max_requests =
+            NonZeroU32::new(config.max_requests.max(1)).expect("max_requests should be positive");
 
         // Create quota: max_requests per window_seconds
         let quota = Quota::with_period(std::time::Duration::from_secs(config.window_seconds))
@@ -109,7 +114,9 @@ impl RateLimitState {
                     match limiter.check_key(&ip.to_string()) {
                         Ok(_) => Ok(()),
                         Err(not_until) => {
-                            let wait = not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+                            let wait = not_until.wait_time_from(governor::clock::Clock::now(
+                                &DefaultClock::default(),
+                            ));
                             Err(wait.as_secs().max(1))
                         }
                     }
@@ -118,15 +125,14 @@ impl RateLimitState {
                     Ok(())
                 }
             }
-            LimiterState::Global(limiter) => {
-                match limiter.check() {
-                    Ok(_) => Ok(()),
-                    Err(not_until) => {
-                        let wait = not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
-                        Err(wait.as_secs().max(1))
-                    }
+            LimiterState::Global(limiter) => match limiter.check() {
+                Ok(_) => Ok(()),
+                Err(not_until) => {
+                    let wait = not_until
+                        .wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+                    Err(wait.as_secs().max(1))
                 }
-            }
+            },
         }
     }
 }

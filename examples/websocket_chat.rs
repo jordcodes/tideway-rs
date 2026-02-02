@@ -8,14 +8,14 @@
 #[cfg(feature = "websocket")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    use tideway::{
-        App, AppContext, ConfigBuilder, Result,
-        websocket::{ws, ConnectionManager, WebSocketHandler, Connection, Message},
-    };
-    use axum::Router;
     use async_trait::async_trait;
+    use axum::Router;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
+    use tideway::{
+        App, AppContext, ConfigBuilder, Result,
+        websocket::{Connection, ConnectionManager, Message, WebSocketHandler, ws},
+    };
 
     // Initialize logging
     tideway::init_tracing();
@@ -40,15 +40,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             manager.add_to_room(conn.id(), "general");
 
             // Notify others in the room
-            manager.broadcast_text_to_room(
-                "general",
-                format!("User {} joined the room", conn.id())
-            ).await?;
+            manager
+                .broadcast_text_to_room("general", format!("User {} joined the room", conn.id()))
+                .await?;
 
             Ok(())
         }
 
-        async fn on_message(&self, conn: &mut Connection, msg: Message, ctx: &tideway::AppContext) -> Result<()> {
+        async fn on_message(
+            &self,
+            conn: &mut Connection,
+            msg: Message,
+            ctx: &tideway::AppContext,
+        ) -> Result<()> {
             match msg {
                 Message::Text(text) => {
                     let manager = ctx.websocket_manager()?;
@@ -58,7 +62,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let room_name = text.strip_prefix("/join ").unwrap().trim();
                         if !room_name.is_empty() {
                             // Leave current rooms
-                            let rooms_to_leave: Vec<String> = conn.rooms().iter().cloned().collect();
+                            let rooms_to_leave: Vec<String> =
+                                conn.rooms().iter().cloned().collect();
                             for room in &rooms_to_leave {
                                 manager.remove_from_room(conn.id(), room);
                                 conn.leave_room(room);
@@ -67,13 +72,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             // Join new room
                             conn.join_room(room_name);
                             manager.add_to_room(conn.id(), room_name);
-                            conn.send_text(format!("Joined room: {}", room_name)).await?;
+                            conn.send_text(format!("Joined room: {}", room_name))
+                                .await?;
 
                             // Notify room
-                            manager.broadcast_text_to_room(
-                                room_name,
-                                format!("User {} joined the room", conn.id())
-                            ).await?;
+                            manager
+                                .broadcast_text_to_room(
+                                    room_name,
+                                    format!("User {} joined the room", conn.id()),
+                                )
+                                .await?;
                         }
                     } else if text.starts_with("/rooms") {
                         // List rooms
@@ -81,7 +89,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         conn.send_json(&serde_json::json!({
                             "type": "rooms",
                             "rooms": rooms
-                        })).await?;
+                        }))
+                        .await?;
                     } else {
                         // Broadcast message to all rooms this connection is in
                         let message = format!("{}: {}", conn.id(), text);
@@ -112,10 +121,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Notify rooms
             if let Ok(manager) = ctx.websocket_manager() {
                 for room in conn.rooms().iter() {
-                    let _ = manager.broadcast_text_to_room(
-                        room,
-                        format!("User {} left the room", conn.id())
-                    ).await;
+                    let _ = manager
+                        .broadcast_text_to_room(room, format!("User {} left the room", conn.id()))
+                        .await;
                 }
             }
         }
@@ -127,9 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     // Create config
-    let config = ConfigBuilder::new()
-        .with_log_level("info")
-        .build()?;
+    let config = ConfigBuilder::new().with_log_level("info").build()?;
 
     // Create WebSocket router (returns Router<AppContext>)
     let ws_router = ws("/ws", ChatHandler, manager);
@@ -137,8 +143,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Helper module to wrap WebSocket router
     struct WsModule(Router<tideway::AppContext>);
     impl tideway::RouteModule for WsModule {
-        fn routes(&self) -> Router<tideway::AppContext> { self.0.clone() }
-        fn prefix(&self) -> Option<&str> { None }
+        fn routes(&self) -> Router<tideway::AppContext> {
+            self.0.clone()
+        }
+        fn prefix(&self) -> Option<&str> {
+            None
+        }
     }
 
     // Create app with WebSocket route

@@ -14,7 +14,7 @@ use crate::auth::jwt_issuer::{JwtIssuer, RefreshTokenClaims, TokenPair, TokenSub
 use crate::auth::storage::RefreshTokenStore;
 use crate::error::{Result, TidewayError};
 use async_trait::async_trait;
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 
 /// Trait for loading user data during token refresh.
 #[async_trait]
@@ -149,16 +149,17 @@ where
     /// Returns a new token pair with a rotated refresh token.
     pub async fn refresh(&self, refresh_token: &str) -> Result<TokenPair> {
         // Decode refresh token
-        let claims = decode::<RefreshTokenClaims>(refresh_token, &self.decoding_key, &self.validation)
-            .map_err(|e| {
-                tracing::warn!(
-                    target: "auth.token.invalid",
-                    error = %e,
-                    "Invalid refresh token presented"
-                );
-                TidewayError::Unauthorized(format!("Invalid refresh token: {}", e))
-            })?
-            .claims;
+        let claims =
+            decode::<RefreshTokenClaims>(refresh_token, &self.decoding_key, &self.validation)
+                .map_err(|e| {
+                    tracing::warn!(
+                        target: "auth.token.invalid",
+                        error = %e,
+                        "Invalid refresh token presented"
+                    );
+                    TidewayError::Unauthorized(format!("Invalid refresh token: {}", e))
+                })?
+                .claims;
 
         let user_id = &claims.standard.sub;
         let family = &claims.family;
@@ -237,7 +238,8 @@ where
             }
 
             if let Some(custom) = custom_claims {
-                self.issuer.issue_access_token(subject.with_custom(custom))?
+                self.issuer
+                    .issue_access_token(subject.with_custom(custom))?
             } else {
                 self.issuer.issue_access_token(subject)?
             }
@@ -266,9 +268,10 @@ where
 
     /// Revoke a specific refresh token (logout).
     pub async fn revoke(&self, refresh_token: &str) -> Result<()> {
-        let claims = decode::<RefreshTokenClaims>(refresh_token, &self.decoding_key, &self.validation)
-            .map_err(|e| TidewayError::Unauthorized(format!("Invalid refresh token: {}", e)))?
-            .claims;
+        let claims =
+            decode::<RefreshTokenClaims>(refresh_token, &self.decoding_key, &self.validation)
+                .map_err(|e| TidewayError::Unauthorized(format!("Invalid refresh token: {}", e)))?
+                .claims;
 
         self.store.revoke_family(&claims.family).await?;
 
@@ -428,7 +431,10 @@ mod tests {
         // Associate family with user
         let subject = TokenSubject::new("user-123");
         let initial = issuer.issue(subject, false).unwrap();
-        store.associate_family_with_user(&initial.family, "user-123").await.unwrap();
+        store
+            .associate_family_with_user(&initial.family, "user-123")
+            .await
+            .unwrap();
 
         let flow = TokenRefreshFlow::new(issuer.clone(), store, user_loader, secret);
 

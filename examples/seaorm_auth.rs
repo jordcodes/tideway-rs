@@ -18,13 +18,10 @@
 //! - Run migrations from examples/auth_migrations/
 
 use async_trait::async_trait;
-use axum::{
-    routing::post,
-    Extension, Json, Router,
-};
+use axum::{Extension, Json, Router, routing::post};
 use sea_orm::{
-    entity::prelude::*, ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait,
-    QueryFilter, Set,
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set,
+    entity::prelude::*,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -510,8 +507,7 @@ impl tideway::auth::storage::RefreshTokenStore for SeaOrmRefreshTokenStore {
     }
 
     async fn revoke_all_for_user(&self, user_id: &str) -> AppResult<()> {
-        let uuid =
-            Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
 
         refresh_token_family::Entity::update_many()
             .filter(refresh_token_family::Column::UserId.eq(uuid))
@@ -524,8 +520,7 @@ impl tideway::auth::storage::RefreshTokenStore for SeaOrmRefreshTokenStore {
     }
 
     async fn associate_family_with_user(&self, family: &str, user_id: &str) -> AppResult<()> {
-        let uuid =
-            Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
 
         // Check if family already exists
         let existing = refresh_token_family::Entity::find_by_id(family)
@@ -586,8 +581,7 @@ impl tideway::auth::storage::PasswordResetStore for SeaOrmPasswordResetStore {
         token_hash: &str,
         expires: SystemTime,
     ) -> AppResult<()> {
-        let uuid =
-            Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
 
         let token = verification_token::ActiveModel {
             id: Set(Uuid::new_v4()),
@@ -638,8 +632,7 @@ impl tideway::auth::storage::PasswordResetStore for SeaOrmPasswordResetStore {
     }
 
     async fn update_password(&self, user_id: &str, hash: &str) -> AppResult<()> {
-        let uuid =
-            Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
 
         user::Entity::update_many()
             .filter(user::Column::Id.eq(uuid))
@@ -657,8 +650,7 @@ impl tideway::auth::storage::PasswordResetStore for SeaOrmPasswordResetStore {
 
     async fn invalidate_sessions(&self, user_id: &str) -> AppResult<()> {
         // Revoke all refresh tokens for this user
-        let uuid =
-            Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
 
         refresh_token_family::Entity::update_many()
             .filter(refresh_token_family::Column::UserId.eq(uuid))
@@ -708,8 +700,7 @@ impl tideway::auth::storage::VerificationStore for SeaOrmVerificationStore {
         token_hash: &str,
         expires: SystemTime,
     ) -> AppResult<()> {
-        let uuid =
-            Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
 
         let token = verification_token::ActiveModel {
             id: Set(Uuid::new_v4()),
@@ -760,8 +751,7 @@ impl tideway::auth::storage::VerificationStore for SeaOrmVerificationStore {
     }
 
     async fn mark_user_verified(&self, user_id: &str) -> AppResult<()> {
-        let uuid =
-            Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
 
         user::Entity::update_many()
             .filter(user::Column::Id.eq(uuid))
@@ -922,8 +912,7 @@ async fn login(
         issuer: auth_state.jwt_issuer.clone(),
     };
 
-    let config = tideway::auth::flows::LoginFlowConfig::new("MyApp")
-        .require_verification(false); // Set to true in production
+    let config = tideway::auth::flows::LoginFlowConfig::new("MyApp").require_verification(false); // Set to true in production
 
     let flow = tideway::auth::flows::LoginFlow::new(
         auth_state.user_store.clone(),
@@ -1014,8 +1003,7 @@ impl tideway::auth::flows::TokenIssuer for JwtTokenIssuer {
         remember_me: bool,
     ) -> AppResult<tideway::auth::flows::TokenIssuance> {
         let user_id = user.id.to_string();
-        let mut subject = tideway::auth::TokenSubject::new(&user_id)
-            .with_email(&user.email);
+        let mut subject = tideway::auth::TokenSubject::new(&user_id).with_email(&user.email);
 
         if let Some(ref name) = user.name {
             subject = subject.with_name(name);
@@ -1112,8 +1100,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     });
 
     // Build app
-    let app = App::new()
-        .register_module(AuthModule { auth_state });
+    let app = App::new().register_module(AuthModule { auth_state });
 
     tracing::info!("SeaORM Auth example starting on http://0.0.0.0:8000");
     tracing::info!("Endpoints:");

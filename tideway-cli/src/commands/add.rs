@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{AddArgs, AddFeature};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{
-    ensure_dir, print_info, print_success, print_warning, write_file, TIDEWAY_VERSION,
-};
+use crate::{TIDEWAY_VERSION, ensure_dir, print_info, print_success, print_warning, write_file};
 
 pub fn run(args: AddArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
@@ -32,7 +30,12 @@ pub fn run(args: AddArgs) -> Result<()> {
     update_env_example(&project_dir, args.feature, &project_name)?;
 
     if args.feature == AddFeature::Auth {
-        scaffold_auth(&project_dir, &project_name, &project_name_pascal, args.force)?;
+        scaffold_auth(
+            &project_dir,
+            &project_name,
+            &project_name_pascal,
+            args.force,
+        )?;
         print_info("Auth scaffold created in src/auth/");
         if args.wire {
             wire_auth_in_main(&project_dir, &project_name)?;
@@ -79,11 +82,7 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
         }
         toml_edit::Entry::Occupied(mut entry) => {
             if entry.get().is_str() {
-                let version = entry
-                    .get()
-                    .as_str()
-                    .unwrap_or(TIDEWAY_VERSION)
-                    .to_string();
+                let version = entry.get().as_str().unwrap_or(TIDEWAY_VERSION).to_string();
                 let mut table = toml_edit::InlineTable::new();
                 table.get_or_insert("version", version);
                 table.get_or_insert("features", array_value(&[feature_name.as_str()]));
@@ -91,7 +90,9 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
             } else {
                 let item = entry.get_mut();
                 let features = item["features"]
-                    .or_insert(toml_edit::Item::Value(toml_edit::Value::Array(toml_edit::Array::new())))
+                    .or_insert(toml_edit::Item::Value(toml_edit::Value::Array(
+                        toml_edit::Array::new(),
+                    )))
                     .as_array_mut()
                     .expect("features should be an array");
 
@@ -106,17 +107,15 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
         let deps_table = deps.as_table_mut().expect("dependencies should be a table");
         deps_table
             .entry("sea-orm")
-            .or_insert(toml_edit::Item::Value(toml_edit::Value::InlineTable(
-                {
-                    let mut table = toml_edit::InlineTable::new();
-                    table.get_or_insert("version", "1.1");
-                    table.get_or_insert(
-                        "features",
-                        array_value(&["sqlx-postgres", "runtime-tokio-rustls"]),
-                    );
-                    table
-                },
-            )));
+            .or_insert(toml_edit::Item::Value(toml_edit::Value::InlineTable({
+                let mut table = toml_edit::InlineTable::new();
+                table.get_or_insert("version", "1.1");
+                table.get_or_insert(
+                    "features",
+                    array_value(&["sqlx-postgres", "runtime-tokio-rustls"]),
+                );
+                table
+            })));
     }
 
     if feature == AddFeature::Auth {
@@ -126,14 +125,12 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
             .or_insert(toml_edit::value("0.1"));
         deps_table
             .entry("serde")
-            .or_insert(toml_edit::Item::Value(toml_edit::Value::InlineTable(
-                {
-                    let mut table = toml_edit::InlineTable::new();
-                    table.get_or_insert("version", "1.0");
-                    table.get_or_insert("features", array_value(&["derive"]));
-                    table
-                },
-            )));
+            .or_insert(toml_edit::Item::Value(toml_edit::Value::InlineTable({
+                let mut table = toml_edit::InlineTable::new();
+                table.get_or_insert("version", "1.0");
+                table.get_or_insert("features", array_value(&["derive"]));
+                table
+            })));
         deps_table
             .entry("serde_json")
             .or_insert(toml_edit::value("1.0"));
@@ -255,11 +252,7 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
         }
     }
 
-    contents = ensure_use_line(
-        contents,
-        "use axum::Extension;",
-        "use tideway::auth",
-    );
+    contents = ensure_use_line(contents, "use axum::Extension;", "use tideway::auth");
     contents = ensure_use_line(
         contents,
         "use crate::auth::{AuthModule, SimpleAuthProvider};",
@@ -432,7 +425,9 @@ fn wire_openapi_in_main(project_dir: &Path) -> Result<()> {
     let mut contents = fs::read_to_string(&main_path)
         .with_context(|| format!("Failed to read {}", main_path.display()))?;
 
-    if contents.contains("openapi::create_openapi_router") || contents.contains("openapi_merge_module") {
+    if contents.contains("openapi::create_openapi_router")
+        || contents.contains("openapi_merge_module")
+    {
         print_info("OpenAPI already appears wired in main.rs");
         return Ok(());
     }
@@ -453,8 +448,8 @@ fn wire_openapi_in_main(project_dir: &Path) -> Result<()> {
 
     let has_config_var = contents.contains("let config = ConfigBuilder::new()")
         || contents.contains("let config = AppConfig::from_env()");
-    let config_available = contents.contains("ConfigBuilder::new()")
-        || contents.contains("AppConfig::from_env()");
+    let config_available =
+        contents.contains("ConfigBuilder::new()") || contents.contains("AppConfig::from_env()");
 
     if !has_config_var && config_available {
         let config_block = "    let config = ConfigBuilder::new()\n        .from_env()\n        .build()\n        .expect(\"Invalid TIDEWAY_* config\");\n\n";
@@ -516,7 +511,6 @@ tideway::openapi_doc!(pub(crate) ApiDoc, paths());
     Ok(())
 }
 
-
 fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
@@ -530,8 +524,7 @@ fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()>
         ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
     }
 
-    write_file(path, contents)
-        .with_context(|| format!("Failed to write {}", path.display()))?;
+    write_file(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 

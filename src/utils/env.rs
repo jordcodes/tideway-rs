@@ -28,7 +28,10 @@ mod tests {
         unsafe {
             std::env::set_var("TIDEWAY_TEST_VAR", "prefixed_value");
         }
-        assert_eq!(get_env_with_prefix("TEST_VAR"), Some("prefixed_value".to_string()));
+        assert_eq!(
+            get_env_with_prefix("TEST_VAR"),
+            Some("prefixed_value".to_string())
+        );
         unsafe {
             std::env::remove_var("TIDEWAY_TEST_VAR");
         }
@@ -37,7 +40,10 @@ mod tests {
         unsafe {
             std::env::set_var("FALLBACK_VAR", "unprefixed_value");
         }
-        assert_eq!(get_env_with_prefix("FALLBACK_VAR"), Some("unprefixed_value".to_string()));
+        assert_eq!(
+            get_env_with_prefix("FALLBACK_VAR"),
+            Some("unprefixed_value".to_string())
+        );
         unsafe {
             std::env::remove_var("FALLBACK_VAR");
         }

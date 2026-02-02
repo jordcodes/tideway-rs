@@ -159,12 +159,14 @@ impl<C: StripeUsageClient> UsageManager<C> {
     /// }).await?;
     /// ```
     pub async fn report_usage(&self, record: UsageRecord) -> Result<UsageRecordResult> {
-        self.client.create_usage_record(
-            &record.subscription_item_id,
-            record.quantity,
-            record.timestamp,
-            record.action,
-        ).await
+        self.client
+            .create_usage_record(
+                &record.subscription_item_id,
+                record.quantity,
+                record.timestamp,
+                record.action,
+            )
+            .await
     }
 
     /// Report multiple usage records in a batch.
@@ -281,15 +283,9 @@ pub enum UsageCheckResult {
     /// Usage is within normal limits.
     Ok,
     /// Usage has exceeded warning threshold.
-    Warning {
-        current: u64,
-        threshold: u64,
-    },
+    Warning { current: u64, threshold: u64 },
     /// Usage has exceeded hard limit.
-    Exceeded {
-        current: u64,
-        limit: u64,
-    },
+    Exceeded { current: u64, limit: u64 },
 }
 
 impl UsageCheckResult {
@@ -311,10 +307,7 @@ impl UsageCheckResult {
 pub fn check_usage(current: u64, threshold: &UsageThreshold) -> UsageCheckResult {
     if let Some(limit) = threshold.hard_limit {
         if current >= limit {
-            return UsageCheckResult::Exceeded {
-                current,
-                limit,
-            };
+            return UsageCheckResult::Exceeded { current, limit };
         }
     }
 
@@ -480,12 +473,24 @@ mod tests {
         assert!(check_usage(50, &threshold).is_allowed());
 
         let warning = check_usage(85, &threshold);
-        assert!(matches!(warning, UsageCheckResult::Warning { current: 85, threshold: 80 }));
+        assert!(matches!(
+            warning,
+            UsageCheckResult::Warning {
+                current: 85,
+                threshold: 80
+            }
+        ));
         assert!(warning.is_allowed());
         assert!(warning.is_warning());
 
         let exceeded = check_usage(100, &threshold);
-        assert!(matches!(exceeded, UsageCheckResult::Exceeded { current: 100, limit: 100 }));
+        assert!(matches!(
+            exceeded,
+            UsageCheckResult::Exceeded {
+                current: 100,
+                limit: 100
+            }
+        ));
         assert!(!exceeded.is_allowed());
     }
 

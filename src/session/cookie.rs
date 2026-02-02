@@ -65,12 +65,13 @@ impl CookieSessionStore {
         let key = if let Some(ref key_str) = config.encryption_key {
             // Parse hex-encoded key (128 hex chars = 64 bytes = 512 bits)
             // The cookie crate requires 64 bytes for its private cookie encryption
-            let key_bytes = hex::decode(key_str)
-                .map_err(|e| TidewayError::internal(format!("Invalid encryption key format: {}", e)))?;
+            let key_bytes = hex::decode(key_str).map_err(|e| {
+                TidewayError::internal(format!("Invalid encryption key format: {}", e))
+            })?;
 
             if key_bytes.len() != 64 {
                 return Err(TidewayError::internal(
-                    "Encryption key must be 64 bytes (128 hex characters). Generate with: openssl rand -hex 64"
+                    "Encryption key must be 64 bytes (128 hex characters). Generate with: openssl rand -hex 64",
                 ));
             }
 
@@ -117,7 +118,7 @@ impl CookieSessionStore {
                 "Cookie sessions require an encryption key. \
                 Set SESSION_ENCRYPTION_KEY environment variable or config.session.encryption_key. \
                 Generate a key with: openssl rand -hex 64. \
-                For development only, set SESSION_ALLOW_INSECURE_KEY=true."
+                For development only, set SESSION_ALLOW_INSECURE_KEY=true.",
             ));
         };
 
@@ -163,8 +164,9 @@ impl CookieSessionStore {
 
         match decrypted {
             Some(cookie) => {
-                let data: SessionData = serde_json::from_str(cookie.value())
-                    .map_err(|e| TidewayError::internal(format!("Failed to deserialize session: {}", e)))?;
+                let data: SessionData = serde_json::from_str(cookie.value()).map_err(|e| {
+                    TidewayError::internal(format!("Failed to deserialize session: {}", e))
+                })?;
                 Ok(Some(data))
             }
             None => {
@@ -186,7 +188,7 @@ impl CookieSessionStore {
             .secure(self.config.cookie_secure)
             .same_site(SameSite::Lax)
             .max_age(cookie::time::Duration::seconds(
-                self.config.default_ttl().as_secs() as i64
+                self.config.default_ttl().as_secs() as i64,
             ))
             .build();
 
@@ -333,7 +335,9 @@ mod tests {
     fn test_invalid_hex_rejected() {
         let config = SessionConfig {
             // Contains 'g' which is not valid hex
-            encryption_key: Some("0123456789abcdefg123456789abcdef0123456789abcdef0123456789abcdef".to_string()),
+            encryption_key: Some(
+                "0123456789abcdefg123456789abcdef0123456789abcdef0123456789abcdef".to_string(),
+            ),
             allow_insecure_key: false,
             ..Default::default()
         };
@@ -401,7 +405,10 @@ mod tests {
         // Load using encrypted value as session_id
         let loaded = store.load(&encrypted).await.unwrap();
         assert!(loaded.is_some());
-        assert_eq!(loaded.unwrap().get("session_key"), Some(&"session_value".to_string()));
+        assert_eq!(
+            loaded.unwrap().get("session_key"),
+            Some(&"session_value".to_string())
+        );
 
         // Invalid session_id returns None
         let loaded = store.load("invalid").await.unwrap();

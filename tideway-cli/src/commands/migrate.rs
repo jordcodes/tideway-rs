@@ -56,9 +56,7 @@ fn detect_backend(project_dir: &Path) -> Result<MigrateBackend> {
         .context("Failed to parse Cargo.toml")?;
 
     let deps = doc.get("dependencies");
-    let has_sea_orm = deps
-        .and_then(|deps| deps.get("sea-orm"))
-        .is_some();
+    let has_sea_orm = deps.and_then(|deps| deps.get("sea-orm")).is_some();
     let has_tideway_db = deps
         .and_then(|deps| deps.get("tideway"))
         .and_then(|item| item.get("features"))
@@ -81,7 +79,11 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
         print_warning("migration/ directory not found; sea-orm-cli may fail");
     }
 
-    if args.action == "status" || args.action == "up" || args.action == "down" || args.action == "reset" {
+    if args.action == "status"
+        || args.action == "up"
+        || args.action == "down"
+        || args.action == "reset"
+    {
         ensure_database_url(project_dir)?;
     }
 
@@ -110,10 +112,7 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
         print_success("Migrations completed");
         Ok(())
     } else {
-        Err(anyhow::anyhow!(
-            "sea-orm-cli exited with status {}",
-            status
-        ))
+        Err(anyhow::anyhow!("sea-orm-cli exited with status {}", status))
     }
 }
 
@@ -166,10 +165,7 @@ fn init_sea_orm_migration(project_dir: &Path) -> Result<()> {
     }
 
     let mut command = Command::new("sea-orm-cli");
-    command
-        .arg("migrate")
-        .arg("init")
-        .current_dir(project_dir);
+    command.arg("migrate").arg("init").current_dir(project_dir);
 
     if let Some(env_map) = read_env_map(&project_dir.join(".env")) {
         command.envs(env_map);
@@ -184,9 +180,6 @@ fn init_sea_orm_migration(project_dir: &Path) -> Result<()> {
         print_success("Migration crate initialized");
         Ok(())
     } else {
-        Err(anyhow::anyhow!(
-            "sea-orm-cli exited with status {}",
-            status
-        ))
+        Err(anyhow::anyhow!("sea-orm-cli exited with status {}", status))
     }
 }

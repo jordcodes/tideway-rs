@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-#[cfg(feature = "database")]
-use crate::traits::database::DatabasePool;
+#[cfg(feature = "metrics")]
+use crate::metrics::MetricsCollector;
 #[cfg(feature = "cache")]
 use crate::traits::cache::Cache;
-#[cfg(feature = "sessions")]
-use crate::traits::session::SessionStore;
+#[cfg(feature = "database")]
+use crate::traits::database::DatabasePool;
 #[cfg(feature = "jobs")]
 use crate::traits::job::JobQueue;
 #[cfg(feature = "email")]
 use crate::traits::mailer::Mailer;
+#[cfg(feature = "sessions")]
+use crate::traits::session::SessionStore;
 #[cfg(feature = "websocket")]
 use crate::websocket::ConnectionManager;
-#[cfg(feature = "metrics")]
-use crate::metrics::MetricsCollector;
 
 /// Application context for dependency injection and shared state
 ///
@@ -79,9 +79,9 @@ impl AppContext {
     /// Get the database pool, returning an error if not configured
     #[cfg(feature = "database")]
     pub fn database(&self) -> crate::error::Result<&Arc<dyn DatabasePool>> {
-        self.database.as_ref().ok_or_else(|| {
-            crate::error::TidewayError::internal("Database pool not configured")
-        })
+        self.database
+            .as_ref()
+            .ok_or_else(|| crate::error::TidewayError::internal("Database pool not configured"))
     }
 
     /// Get the database pool as an Option
@@ -93,9 +93,9 @@ impl AppContext {
     /// Get the cache, returning an error if not configured
     #[cfg(feature = "cache")]
     pub fn cache(&self) -> crate::error::Result<&Arc<dyn Cache>> {
-        self.cache.as_ref().ok_or_else(|| {
-            crate::error::TidewayError::internal("Cache not configured")
-        })
+        self.cache
+            .as_ref()
+            .ok_or_else(|| crate::error::TidewayError::internal("Cache not configured"))
     }
 
     /// Get the cache as an Option
@@ -107,9 +107,9 @@ impl AppContext {
     /// Get the session store, returning an error if not configured
     #[cfg(feature = "sessions")]
     pub fn sessions(&self) -> crate::error::Result<&Arc<dyn SessionStore>> {
-        self.sessions.as_ref().ok_or_else(|| {
-            crate::error::TidewayError::internal("Session store not configured")
-        })
+        self.sessions
+            .as_ref()
+            .ok_or_else(|| crate::error::TidewayError::internal("Session store not configured"))
     }
 
     /// Get the session store as an Option
@@ -121,9 +121,9 @@ impl AppContext {
     /// Get the job queue, returning an error if not configured
     #[cfg(feature = "jobs")]
     pub fn jobs(&self) -> crate::error::Result<&Arc<dyn JobQueue>> {
-        self.jobs.as_ref().ok_or_else(|| {
-            crate::error::TidewayError::internal("Job queue not configured")
-        })
+        self.jobs
+            .as_ref()
+            .ok_or_else(|| crate::error::TidewayError::internal("Job queue not configured"))
     }
 
     /// Get the job queue as an Option
@@ -135,9 +135,9 @@ impl AppContext {
     /// Get the WebSocket manager, returning an error if not configured
     #[cfg(feature = "websocket")]
     pub fn websocket_manager(&self) -> crate::error::Result<Arc<ConnectionManager>> {
-        self.websocket_manager.clone().ok_or_else(|| {
-            crate::error::TidewayError::internal("WebSocket manager not configured")
-        })
+        self.websocket_manager
+            .clone()
+            .ok_or_else(|| crate::error::TidewayError::internal("WebSocket manager not configured"))
     }
 
     /// Get the WebSocket manager as an Option
@@ -149,9 +149,9 @@ impl AppContext {
     /// Get the metrics collector, returning an error if not configured
     #[cfg(feature = "metrics")]
     pub fn metrics(&self) -> crate::error::Result<&Arc<MetricsCollector>> {
-        self.metrics.as_ref().ok_or_else(|| {
-            crate::error::TidewayError::internal("Metrics collector not configured")
-        })
+        self.metrics
+            .as_ref()
+            .ok_or_else(|| crate::error::TidewayError::internal("Metrics collector not configured"))
     }
 
     /// Get the metrics collector as an Option
@@ -163,9 +163,9 @@ impl AppContext {
     /// Get the mailer, returning an error if not configured
     #[cfg(feature = "email")]
     pub fn mailer(&self) -> crate::error::Result<&Arc<dyn Mailer>> {
-        self.mailer.as_ref().ok_or_else(|| {
-            crate::error::TidewayError::internal("Mailer not configured")
-        })
+        self.mailer
+            .as_ref()
+            .ok_or_else(|| crate::error::TidewayError::internal("Mailer not configured"))
     }
 
     /// Get the mailer as an Option
@@ -204,10 +204,9 @@ impl AppContext {
         use crate::database::SeaOrmPool;
         let pool = self.database()?;
         // Downcast to SeaOrmPool
-        let sea_orm_pool = pool
-            .as_any()
-            .downcast_ref::<SeaOrmPool>()
-            .ok_or_else(|| crate::error::TidewayError::internal("Database pool is not SeaOrmPool"))?;
+        let sea_orm_pool = pool.as_any().downcast_ref::<SeaOrmPool>().ok_or_else(|| {
+            crate::error::TidewayError::internal("Database pool is not SeaOrmPool")
+        })?;
         Ok(sea_orm_pool.inner().clone())
     }
 }

@@ -7,8 +7,8 @@ use std::path::Path;
 
 use crate::cli::InitArgs;
 use crate::{
-    ensure_dir, is_json_output, print_info, print_success, print_warning, write_file,
-    TIDEWAY_VERSION,
+    TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success, print_warning,
+    write_file,
 };
 
 /// Detected modules in the project
@@ -100,10 +100,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     }
 
     if !is_json_output() {
-        println!(
-            "\n{} Initialization complete!\n",
-            "✓".green().bold()
-        );
+        println!("\n{} Initialization complete!\n", "✓".green().bold());
 
         // Print next steps
         println!("{}", "Next steps:".yellow().bold());
@@ -132,10 +129,7 @@ pub fn run(args: InitArgs) -> Result<()> {
 
 fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
     if !is_json_output() {
-        println!(
-            "\n{} Generating minimal app...\n",
-            "tideway".cyan().bold()
-        );
+        println!("\n{} Generating minimal app...\n", "tideway".cyan().bold());
     }
 
     let project_name = detect_project_name(args)?;
@@ -155,10 +149,7 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
     print_success("Generated routes/mod.rs");
 
     if !is_json_output() {
-        println!(
-            "\n{} Initialization complete!\n",
-            "✓".green().bold()
-        );
+        println!("\n{} Initialization complete!\n", "✓".green().bold());
 
         println!("{}", "Next steps:".yellow().bold());
         println!("  1. cargo run");
@@ -190,10 +181,7 @@ fn detect_project_name(args: &InitArgs) -> Result<String> {
 
     // Fall back to current directory name
     let cwd = std::env::current_dir()?;
-    let dir_name = cwd
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("my_app");
+    let dir_name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("my_app");
 
     Ok(dir_name.replace('-', "_"))
 }
@@ -249,9 +237,7 @@ fn has_module_file(dir: &Path) -> bool {
 
 /// Generate main.rs content
 fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitArgs) -> String {
-    let mut imports = vec![
-        format!("use {}::config::AppConfig;", project_name),
-    ];
+    let mut imports = vec![format!("use {}::config::AppConfig;", project_name)];
 
     if !args.no_database {
         imports.push("use sea_orm::Database;".to_string());
@@ -273,7 +259,10 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     }
 
     if modules.organizations {
-        imports.push(format!("use {}::organizations::OrganizationModule;", project_name));
+        imports.push(format!(
+            "use {}::organizations::OrganizationModule;",
+            project_name
+        ));
     }
 
     if modules.admin {
@@ -436,7 +425,7 @@ impl RouteModule for ApiModule {\n\
 async fn root() -> MessageResponse {\n\
     MessageResponse::success(\"Tideway is running\")\n\
 }\n"
-        .to_string()
+    .to_string()
 }
 
 /// Generate config.rs content
@@ -554,8 +543,7 @@ fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> 
         return Ok(());
     }
     if let Some(parent) = path.parent() {
-        ensure_dir(parent)
-            .with_context(|| format!("Failed to create {}", parent.display()))?;
+        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
     }
     write_file(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())

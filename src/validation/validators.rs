@@ -21,12 +21,11 @@ use validator::ValidationError;
 /// }
 /// ```
 pub fn validate_uuid(id: &str) -> Result<(), ValidationError> {
-    uuid::Uuid::parse_str(id)
-        .map_err(|_| {
-            let mut err = ValidationError::new("uuid");
-            err.message = Some(std::borrow::Cow::Borrowed("must be a valid UUID"));
-            err
-        })?;
+    uuid::Uuid::parse_str(id).map_err(|_| {
+        let mut err = ValidationError::new("uuid");
+        err.message = Some(std::borrow::Cow::Borrowed("must be a valid UUID"));
+        err
+    })?;
     Ok(())
 }
 
@@ -58,7 +57,10 @@ pub fn validate_slug(slug: &str) -> Result<(), ValidationError> {
         return Err(err);
     }
 
-    if !slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+    if !slug
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+    {
         let mut err = ValidationError::new("slug");
         err.message = Some(std::borrow::Cow::Borrowed(
             "must contain only lowercase alphanumeric characters, hyphens, and underscores",
@@ -86,7 +88,10 @@ pub fn validate_slug(slug: &str) -> Result<(), ValidationError> {
 /// ```
 pub fn validate_phone(phone: &str) -> Result<(), ValidationError> {
     // Remove common formatting characters
-    let cleaned: String = phone.chars().filter(|c| !c.is_whitespace() && *c != '-' && *c != '(' && *c != ')').collect();
+    let cleaned: String = phone
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '(' && *c != ')')
+        .collect();
 
     // E.164 format: + followed by 1-15 digits
     if cleaned.starts_with('+') {
@@ -124,12 +129,11 @@ pub fn validate_phone(phone: &str) -> Result<(), ValidationError> {
 /// }
 /// ```
 pub fn validate_json_string(json: &str) -> Result<(), ValidationError> {
-    serde_json::from_str::<serde_json::Value>(json)
-        .map_err(|_| {
-            let mut err = ValidationError::new("json");
-            err.message = Some(std::borrow::Cow::Borrowed("must be valid JSON"));
-            err
-        })?;
+    serde_json::from_str::<serde_json::Value>(json).map_err(|_| {
+        let mut err = ValidationError::new("json");
+        err.message = Some(std::borrow::Cow::Borrowed("must be valid JSON"));
+        err
+    })?;
     Ok(())
 }
 
@@ -162,7 +166,10 @@ pub fn validate_duration(duration: &str) -> Result<(), ValidationError> {
         err.message = Some(std::borrow::Cow::Borrowed("cannot be empty"));
         return Err(err);
     };
-    let number: String = duration.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let number: String = duration
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
 
     if number.is_empty() {
         let mut err = ValidationError::new("duration");

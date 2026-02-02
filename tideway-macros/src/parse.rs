@@ -2,7 +2,7 @@
 
 use darling::FromMeta;
 use proc_macro2::Span;
-use syn::{Ident, Meta, Type, parse::Parse, parse::ParseStream, Token, LitStr, LitInt};
+use syn::{Ident, LitInt, LitStr, Meta, Token, Type, parse::Parse, parse::ParseStream};
 
 /// HTTP methods supported by the API macro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,9 +72,10 @@ impl FromMeta for ResponseDef {
                 let mut body: Option<Type> = None;
 
                 list.parse_nested_meta(|nested| {
-                    let ident = nested.path.get_ident().ok_or_else(|| {
-                        nested.error("expected identifier")
-                    })?;
+                    let ident = nested
+                        .path
+                        .get_ident()
+                        .ok_or_else(|| nested.error("expected identifier"))?;
 
                     match ident.to_string().as_str() {
                         "status" => {
@@ -100,9 +101,14 @@ impl FromMeta for ResponseDef {
                 })?;
 
                 let status = status.ok_or_else(|| darling::Error::missing_field("status"))?;
-                let description = description.ok_or_else(|| darling::Error::missing_field("description"))?;
+                let description =
+                    description.ok_or_else(|| darling::Error::missing_field("description"))?;
 
-                Ok(ResponseDef { status, description, body })
+                Ok(ResponseDef {
+                    status,
+                    description,
+                    body,
+                })
             }
             _ => Err(darling::Error::unexpected_type("list")),
         }
@@ -250,10 +256,17 @@ impl Parse for ApiArgs {
                             syn::Error::new(Span::call_site(), "response missing 'status' field")
                         })?;
                         let description = desc.ok_or_else(|| {
-                            syn::Error::new(Span::call_site(), "response missing 'description' field")
+                            syn::Error::new(
+                                Span::call_site(),
+                                "response missing 'description' field",
+                            )
                         })?;
 
-                        responses.push(ResponseDef { status, description, body });
+                        responses.push(ResponseDef {
+                            status,
+                            description,
+                            body,
+                        });
 
                         if content.peek(Token![,]) {
                             content.parse::<Token![,]>()?;
@@ -377,7 +390,10 @@ mod tests {
     #[test]
     fn test_convert_path_to_openapi() {
         assert_eq!(convert_path_to_openapi("/users/:id"), "/users/{id}");
-        assert_eq!(convert_path_to_openapi("/users/:user_id/posts/:post_id"), "/users/{user_id}/posts/{post_id}");
+        assert_eq!(
+            convert_path_to_openapi("/users/:user_id/posts/:post_id"),
+            "/users/{user_id}/posts/{post_id}"
+        );
         assert_eq!(convert_path_to_openapi("/files/*path"), "/files/{path}");
         assert_eq!(convert_path_to_openapi("/health"), "/health");
     }
@@ -385,7 +401,10 @@ mod tests {
     #[test]
     fn test_extract_path_params() {
         assert_eq!(extract_path_params("/users/:id"), vec!["id"]);
-        assert_eq!(extract_path_params("/users/:user_id/posts/:post_id"), vec!["user_id", "post_id"]);
+        assert_eq!(
+            extract_path_params("/users/:user_id/posts/:post_id"),
+            vec!["user_id", "post_id"]
+        );
         assert_eq!(extract_path_params("/files/*path"), vec!["path"]);
         assert_eq!(extract_path_params("/health"), Vec::<String>::new());
     }

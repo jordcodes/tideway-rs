@@ -3,14 +3,14 @@
 //! This module provides a global connection manager that tracks all active
 //! WebSocket connections and enables broadcasting to all connections or specific rooms.
 
-use crate::error::{Result, TidewayError};
 use super::connection::Connection;
 use super::message::Message;
+use crate::error::{Result, TidewayError};
+use dashmap::DashMap;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use dashmap::DashMap;
 
 /// Handle to a connection for the manager
 ///
@@ -87,7 +87,10 @@ impl ConnectionManager {
         // Get connection info first (before checking limit)
         let (conn_id, user_id) = {
             let conn_guard = conn.read().await;
-            (conn_guard.id().to_string(), conn_guard.user_id().map(String::from))
+            (
+                conn_guard.id().to_string(),
+                conn_guard.user_id().map(String::from),
+            )
         };
 
         // Use atomic compare-and-swap to safely reserve a slot
@@ -112,7 +115,7 @@ impl ConnectionManager {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 ) {
-                    Ok(_) => break, // Successfully reserved a slot
+                    Ok(_) => break,     // Successfully reserved a slot
                     Err(_) => continue, // Another thread modified it, retry
                 }
             }
@@ -126,10 +129,7 @@ impl ConnectionManager {
 
         // Update user mapping if user is authenticated
         if let Some(uid) = user_id {
-            self.users
-                .entry(uid)
-                .or_default()
-                .insert(conn_id.clone());
+            self.users.entry(uid).or_default().insert(conn_id.clone());
         }
 
         self.total_connections.fetch_add(1, Ordering::Relaxed);
@@ -186,7 +186,8 @@ impl ConnectionManager {
         let mut failed_conns = Vec::new();
 
         // Collect connection handles first to minimize lock time
-        let conns: Vec<(String, ConnectionHandle)> = self.connections
+        let conns: Vec<(String, ConnectionHandle)> = self
+            .connections
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
@@ -279,7 +280,8 @@ impl ConnectionManager {
 
     /// Broadcast a text message to all connections in a room
     pub async fn broadcast_text_to_room(&self, room: &str, text: impl Into<String>) -> Result<()> {
-        self.broadcast_to_room(room, Message::Text(text.into())).await
+        self.broadcast_to_room(room, Message::Text(text.into()))
+            .await
     }
 
     /// Broadcast a JSON message to all connections in a room
@@ -336,12 +338,21 @@ impl ConnectionManager {
     }
 
     /// Broadcast a text message to all connections for a specific user
-    pub async fn broadcast_text_to_user(&self, user_id: &str, text: impl Into<String>) -> Result<()> {
-        self.broadcast_to_user(user_id, Message::Text(text.into())).await
+    pub async fn broadcast_text_to_user(
+        &self,
+        user_id: &str,
+        text: impl Into<String>,
+    ) -> Result<()> {
+        self.broadcast_to_user(user_id, Message::Text(text.into()))
+            .await
     }
 
     /// Broadcast a JSON message to all connections for a specific user
-    pub async fn broadcast_json_to_user<T: Serialize>(&self, user_id: &str, data: &T) -> Result<()> {
+    pub async fn broadcast_json_to_user<T: Serialize>(
+        &self,
+        user_id: &str,
+        data: &T,
+    ) -> Result<()> {
         let json = serde_json::to_string(data)
             .map_err(|e| TidewayError::internal(format!("Failed to serialize JSON: {}", e)))?;
         self.broadcast_text_to_user(user_id, json).await

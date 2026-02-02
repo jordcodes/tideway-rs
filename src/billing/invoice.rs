@@ -59,9 +59,9 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
 use super::error::BillingError;
 use super::storage::BillingStore;
+use crate::error::Result;
 
 // =============================================================================
 // Helpers
@@ -370,17 +370,10 @@ pub trait InvoiceOperations: Send + Sync {
     ) -> Result<InvoiceList>;
 
     /// Get a specific invoice with ownership verification.
-    async fn get_invoice(
-        &self,
-        billable_id: &str,
-        invoice_id: &str,
-    ) -> Result<Invoice>;
+    async fn get_invoice(&self, billable_id: &str, invoice_id: &str) -> Result<Invoice>;
 
     /// Get the upcoming invoice preview for a billable entity.
-    async fn get_upcoming_invoice(
-        &self,
-        billable_id: &str,
-    ) -> Result<Option<Invoice>>;
+    async fn get_upcoming_invoice(&self, billable_id: &str) -> Result<Option<Invoice>>;
 
     /// Get line items for an invoice with ownership verification.
     async fn get_invoice_line_items(
@@ -437,7 +430,11 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
     /// Create a new invoice manager with custom configuration.
     #[must_use]
     pub fn with_config(store: S, client: C, config: InvoiceConfig) -> Self {
-        Self { store, client, config }
+        Self {
+            store,
+            client,
+            config,
+        }
     }
 
     /// Get a reference to the configuration.
@@ -470,12 +467,15 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
         let limit = params.limit.unwrap_or(self.config.default_limit);
         let status = params.status.or(self.config.default_status_filter);
 
-        let result = self.client.list_invoices(
-            &customer_id,
-            limit,
-            params.starting_after.as_deref(),
-            status,
-        ).await?;
+        let result = self
+            .client
+            .list_invoices(
+                &customer_id,
+                limit,
+                params.starting_after.as_deref(),
+                status,
+            )
+            .await?;
 
         tracing::debug!(
             billable_id = %billable_id,
@@ -495,11 +495,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
     ///
     /// Returns `BillingError::InvoiceNotFound` if the invoice doesn't exist
     /// or doesn't belong to the billable entity.
-    pub async fn get_invoice(
-        &self,
-        billable_id: &str,
-        invoice_id: &str,
-    ) -> Result<Invoice> {
+    pub async fn get_invoice(&self, billable_id: &str, invoice_id: &str) -> Result<Invoice> {
         tracing::debug!(
             billable_id = %billable_id,
             invoice_id = %invoice_id,
@@ -519,13 +515,15 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
             );
             return Err(BillingError::InvoiceNotFound {
                 invoice_id: sanitize_invoice_id(invoice_id),
-            }.into());
+            }
+            .into());
         }
 
         // Optionally fetch line items
         if self.config.include_line_items && invoice.line_items.is_none() {
             tracing::debug!(invoice_id = %invoice_id, "fetching line items");
-            let line_items = self.client
+            let line_items = self
+                .client
                 .list_invoice_line_items(invoice_id, self.config.max_line_items)
                 .await?;
             invoice.line_items = Some(line_items);
@@ -556,10 +554,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
     /// - Using the Stripe Customer Portal to show upcoming charges
     /// - Implementing a custom HTTP call to `GET /v1/invoices/upcoming`
     /// - Using Stripe's hosted invoice page
-    pub async fn get_upcoming_invoice(
-        &self,
-        billable_id: &str,
-    ) -> Result<Option<Invoice>> {
+    pub async fn get_upcoming_invoice(&self, billable_id: &str) -> Result<Option<Invoice>> {
         tracing::debug!(billable_id = %billable_id, "fetching upcoming invoice");
         let customer_id = self.get_customer_id(billable_id).await?;
         self.client.get_upcoming_invoice(&customer_id).await
@@ -595,7 +590,8 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
             );
             return Err(BillingError::InvoiceNotFound {
                 invoice_id: sanitize_invoice_id(invoice_id),
-            }.into());
+            }
+            .into());
         }
 
         let limit = limit.unwrap_or(self.config.max_line_items);
@@ -607,9 +603,12 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceManager<S, C> {
         self.store
             .get_stripe_customer_id(billable_id)
             .await?
-            .ok_or_else(|| BillingError::NoCustomer {
-                billable_id: billable_id.to_string(),
-            }.into())
+            .ok_or_else(|| {
+                BillingError::NoCustomer {
+                    billable_id: billable_id.to_string(),
+                }
+                .into()
+            })
     }
 }
 
@@ -623,18 +622,11 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for InvoiceManag
         self.list_invoices(billable_id, params).await
     }
 
-    async fn get_invoice(
-        &self,
-        billable_id: &str,
-        invoice_id: &str,
-    ) -> Result<Invoice> {
+    async fn get_invoice(&self, billable_id: &str, invoice_id: &str) -> Result<Invoice> {
         self.get_invoice(billable_id, invoice_id).await
     }
 
-    async fn get_upcoming_invoice(
-        &self,
-        billable_id: &str,
-    ) -> Result<Option<Invoice>> {
+    async fn get_upcoming_invoice(&self, billable_id: &str) -> Result<Option<Invoice>> {
         self.get_upcoming_invoice(billable_id).await
     }
 
@@ -644,7 +636,8 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for InvoiceManag
         invoice_id: &str,
         limit: Option<u8>,
     ) -> Result<Vec<InvoiceLineItem>> {
-        self.get_invoice_line_items(billable_id, invoice_id, limit).await
+        self.get_invoice_line_items(billable_id, invoice_id, limit)
+            .await
     }
 }
 
@@ -777,7 +770,9 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     pub async fn invalidate(&self, billable_id: &str) {
         tracing::debug!(billable_id = %billable_id, "invalidating invoice cache");
         let mut cache = self.cache.write().await;
-        cache.lists.retain(|k, _| !k.matches_billable_id(billable_id));
+        cache
+            .lists
+            .retain(|k, _| !k.matches_billable_id(billable_id));
         cache.upcoming.remove(billable_id);
     }
 
@@ -794,7 +789,9 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     /// Returns 0 if the lock cannot be acquired immediately.
     #[must_use]
     pub fn cache_size(&self) -> usize {
-        self.cache.try_read().map_or(0, |c| c.lists.len() + c.upcoming.len())
+        self.cache
+            .try_read()
+            .map_or(0, |c| c.lists.len() + c.upcoming.len())
     }
 
     /// Enforce maximum cache entries limit using sampling-based eviction.
@@ -825,7 +822,9 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
 
             if sample_size > 0 && !cache.lists.is_empty() {
                 // Collect a sample of keys with their access times
-                let sample: Vec<_> = cache.lists.iter()
+                let sample: Vec<_> = cache
+                    .lists
+                    .iter()
                     .take(sample_size)
                     .map(|(k, v)| (k.clone(), v.last_accessed))
                     .collect();
@@ -884,22 +883,21 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         {
             let mut cache = self.cache.write().await;
             let now = std::time::Instant::now();
-            cache.lists.insert(cache_key, CacheEntry {
-                data: std::sync::Arc::new(result.clone()),
-                expires_at: now + self.ttl,
-                last_accessed: now,
-            });
+            cache.lists.insert(
+                cache_key,
+                CacheEntry {
+                    data: std::sync::Arc::new(result.clone()),
+                    expires_at: now + self.ttl,
+                    last_accessed: now,
+                },
+            );
         }
 
         Ok(result)
     }
 
     /// Get a specific invoice (not cached, but verifies ownership).
-    pub async fn get_invoice(
-        &self,
-        billable_id: &str,
-        invoice_id: &str,
-    ) -> Result<Invoice> {
+    pub async fn get_invoice(&self, billable_id: &str, invoice_id: &str) -> Result<Invoice> {
         // Individual invoice lookups are not cached as they change frequently
         self.inner.get_invoice(billable_id, invoice_id).await
     }
@@ -908,10 +906,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     ///
     /// See [`InvoiceManager::get_upcoming_invoice`] for important limitations
     /// regarding the `LiveStripeClient` implementation.
-    pub async fn get_upcoming_invoice(
-        &self,
-        billable_id: &str,
-    ) -> Result<Option<Invoice>> {
+    pub async fn get_upcoming_invoice(&self, billable_id: &str) -> Result<Option<Invoice>> {
         self.maybe_cleanup().await;
 
         // Check cache
@@ -932,11 +927,14 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         {
             let mut cache = self.cache.write().await;
             let now = std::time::Instant::now();
-            cache.upcoming.insert(billable_id.to_string(), CacheEntry {
-                data: result.clone(),
-                expires_at: now + self.ttl,
-                last_accessed: now,
-            });
+            cache.upcoming.insert(
+                billable_id.to_string(),
+                CacheEntry {
+                    data: result.clone(),
+                    expires_at: now + self.ttl,
+                    last_accessed: now,
+                },
+            );
         }
 
         Ok(result)
@@ -949,12 +947,16 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         invoice_id: &str,
         limit: Option<u8>,
     ) -> Result<Vec<InvoiceLineItem>> {
-        self.inner.get_invoice_line_items(billable_id, invoice_id, limit).await
+        self.inner
+            .get_invoice_line_items(billable_id, invoice_id, limit)
+            .await
     }
 
     /// Maybe run cleanup based on operation counter.
     async fn maybe_cleanup(&self) {
-        let count = self.operation_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let count = self
+            .operation_counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count % CLEANUP_INTERVAL == 0 {
             self.enforce_max_entries().await;
         }
@@ -971,18 +973,11 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for CachedInvoic
         self.list_invoices(billable_id, params).await
     }
 
-    async fn get_invoice(
-        &self,
-        billable_id: &str,
-        invoice_id: &str,
-    ) -> Result<Invoice> {
+    async fn get_invoice(&self, billable_id: &str, invoice_id: &str) -> Result<Invoice> {
         self.get_invoice(billable_id, invoice_id).await
     }
 
-    async fn get_upcoming_invoice(
-        &self,
-        billable_id: &str,
-    ) -> Result<Option<Invoice>> {
+    async fn get_upcoming_invoice(&self, billable_id: &str) -> Result<Option<Invoice>> {
         self.get_upcoming_invoice(billable_id).await
     }
 
@@ -992,7 +987,8 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for CachedInvoic
         invoice_id: &str,
         limit: Option<u8>,
     ) -> Result<Vec<InvoiceLineItem>> {
-        self.get_invoice_line_items(billable_id, invoice_id, limit).await
+        self.get_invoice_line_items(billable_id, invoice_id, limit)
+            .await
     }
 }
 
@@ -1080,8 +1076,16 @@ pub mod test {
                 subscription_id: Some("sub_test".to_string()),
                 status,
                 amount_due: 2999,
-                amount_paid: if status == InvoiceStatus::Paid { 2999 } else { 0 },
-                amount_remaining: if status == InvoiceStatus::Paid { 0 } else { 2999 },
+                amount_paid: if status == InvoiceStatus::Paid {
+                    2999
+                } else {
+                    0
+                },
+                amount_remaining: if status == InvoiceStatus::Paid {
+                    0
+                } else {
+                    2999
+                },
                 currency: currency.to_lowercase(),
                 created: now,
                 due_date: Some(now + 30 * 24 * 60 * 60),
@@ -1105,11 +1109,13 @@ pub mod test {
             starting_after: Option<&str>,
             status: Option<InvoiceStatus>,
         ) -> Result<InvoiceList> {
-            let invoices = self.invoices.read().map_err(|_| {
-                crate::error::TidewayError::Internal("Lock poisoned".to_string())
-            })?;
+            let invoices = self
+                .invoices
+                .read()
+                .map_err(|_| crate::error::TidewayError::Internal("Lock poisoned".to_string()))?;
 
-            let mut filtered: Vec<Invoice> = invoices.iter()
+            let mut filtered: Vec<Invoice> = invoices
+                .iter()
                 .filter(|inv| inv.customer_id == customer_id)
                 .filter(|inv| status.map_or(true, |s| inv.status == s))
                 .cloned()
@@ -1135,22 +1141,28 @@ pub mod test {
         }
 
         async fn get_invoice(&self, invoice_id: &str) -> Result<Invoice> {
-            let invoices = self.invoices.read().map_err(|_| {
-                crate::error::TidewayError::Internal("Lock poisoned".to_string())
-            })?;
+            let invoices = self
+                .invoices
+                .read()
+                .map_err(|_| crate::error::TidewayError::Internal("Lock poisoned".to_string()))?;
 
-            invoices.iter()
+            invoices
+                .iter()
                 .find(|inv| inv.id == invoice_id)
                 .cloned()
-                .ok_or_else(|| BillingError::InvoiceNotFound {
-                    invoice_id: invoice_id.to_string(),
-                }.into())
+                .ok_or_else(|| {
+                    BillingError::InvoiceNotFound {
+                        invoice_id: invoice_id.to_string(),
+                    }
+                    .into()
+                })
         }
 
         async fn get_upcoming_invoice(&self, _customer_id: &str) -> Result<Option<Invoice>> {
-            let upcoming = self.upcoming.read().map_err(|_| {
-                crate::error::TidewayError::Internal("Lock poisoned".to_string())
-            })?;
+            let upcoming = self
+                .upcoming
+                .read()
+                .map_err(|_| crate::error::TidewayError::Internal("Lock poisoned".to_string()))?;
             Ok(upcoming.clone())
         }
 
@@ -1165,18 +1177,16 @@ pub mod test {
                 .unwrap()
                 .as_secs();
 
-            Ok(vec![
-                InvoiceLineItem {
-                    id: format!("il_{}_1", invoice_id),
-                    description: Some("Pro Plan".to_string()),
-                    amount: 2999,
-                    currency: self.default_currency.clone(),
-                    quantity: Some(1),
-                    price_id: Some("price_pro".to_string()),
-                    period_start: now,
-                    period_end: now + 30 * 24 * 60 * 60,
-                },
-            ])
+            Ok(vec![InvoiceLineItem {
+                id: format!("il_{}_1", invoice_id),
+                description: Some("Pro Plan".to_string()),
+                amount: 2999,
+                currency: self.default_currency.clone(),
+                quantity: Some(1),
+                price_id: Some("price_pro".to_string()),
+                period_start: now,
+                period_end: now + 30 * 24 * 60 * 60,
+            }])
         }
     }
 }
@@ -1187,8 +1197,8 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test::MockStripeInvoiceClient;
+    use super::*;
     use crate::billing::storage::test::InMemoryBillingStore;
 
     #[test]
@@ -1208,8 +1218,8 @@ mod tests {
     #[test]
     fn test_invoice_config_clamping() {
         let config = InvoiceConfig::new()
-            .with_default_limit(200)  // Over max
-            .with_max_line_items(0);  // Under min
+            .with_default_limit(200) // Over max
+            .with_max_line_items(0); // Under min
 
         assert_eq!(config.default_limit, 100);
         assert_eq!(config.max_line_items, 1);
@@ -1233,25 +1243,37 @@ mod tests {
         let client = MockStripeInvoiceClient::new();
         let manager = InvoiceManager::new(store, client);
 
-        let result = manager.list_invoices("unknown_org", Default::default()).await;
+        let result = manager
+            .list_invoices("unknown_org", Default::default())
+            .await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_list_invoices_with_customer() {
         let store = InMemoryBillingStore::new();
-        store.set_stripe_customer_id("org_123", "org", "cus_test").await.unwrap();
+        store
+            .set_stripe_customer_id("org_123", "org", "cus_test")
+            .await
+            .unwrap();
 
         let client = MockStripeInvoiceClient::new();
         client.add_invoice(MockStripeInvoiceClient::create_test_invoice(
-            "in_1", "cus_test", InvoiceStatus::Paid
+            "in_1",
+            "cus_test",
+            InvoiceStatus::Paid,
         ));
         client.add_invoice(MockStripeInvoiceClient::create_test_invoice(
-            "in_2", "cus_test", InvoiceStatus::Open
+            "in_2",
+            "cus_test",
+            InvoiceStatus::Open,
         ));
 
         let manager = InvoiceManager::new(store, client);
-        let result = manager.list_invoices("org_123", Default::default()).await.unwrap();
+        let result = manager
+            .list_invoices("org_123", Default::default())
+            .await
+            .unwrap();
 
         assert_eq!(result.invoices.len(), 2);
     }
@@ -1259,21 +1281,34 @@ mod tests {
     #[tokio::test]
     async fn test_list_invoices_with_status_filter() {
         let store = InMemoryBillingStore::new();
-        store.set_stripe_customer_id("org_123", "org", "cus_test").await.unwrap();
+        store
+            .set_stripe_customer_id("org_123", "org", "cus_test")
+            .await
+            .unwrap();
 
         let client = MockStripeInvoiceClient::new();
         client.add_invoice(MockStripeInvoiceClient::create_test_invoice(
-            "in_1", "cus_test", InvoiceStatus::Paid
+            "in_1",
+            "cus_test",
+            InvoiceStatus::Paid,
         ));
         client.add_invoice(MockStripeInvoiceClient::create_test_invoice(
-            "in_2", "cus_test", InvoiceStatus::Open
+            "in_2",
+            "cus_test",
+            InvoiceStatus::Open,
         ));
 
         let manager = InvoiceManager::new(store, client);
-        let result = manager.list_invoices("org_123", InvoiceListParams {
-            status: Some(InvoiceStatus::Paid),
-            ..Default::default()
-        }).await.unwrap();
+        let result = manager
+            .list_invoices(
+                "org_123",
+                InvoiceListParams {
+                    status: Some(InvoiceStatus::Paid),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.invoices.len(), 1);
         assert_eq!(result.invoices[0].status, InvoiceStatus::Paid);
@@ -1282,11 +1317,16 @@ mod tests {
     #[tokio::test]
     async fn test_get_invoice_ownership() {
         let store = InMemoryBillingStore::new();
-        store.set_stripe_customer_id("org_123", "org", "cus_test").await.unwrap();
+        store
+            .set_stripe_customer_id("org_123", "org", "cus_test")
+            .await
+            .unwrap();
 
         let client = MockStripeInvoiceClient::new();
         client.add_invoice(MockStripeInvoiceClient::create_test_invoice(
-            "in_1", "cus_other", InvoiceStatus::Paid  // Different customer
+            "in_1",
+            "cus_other",
+            InvoiceStatus::Paid, // Different customer
         ));
 
         let manager = InvoiceManager::new(store, client);
@@ -1298,11 +1338,16 @@ mod tests {
     #[tokio::test]
     async fn test_cached_manager() {
         let store = InMemoryBillingStore::new();
-        store.set_stripe_customer_id("org_123", "org", "cus_test").await.unwrap();
+        store
+            .set_stripe_customer_id("org_123", "org", "cus_test")
+            .await
+            .unwrap();
 
         let client = MockStripeInvoiceClient::new();
         client.add_invoice(MockStripeInvoiceClient::create_test_invoice(
-            "in_1", "cus_test", InvoiceStatus::Paid
+            "in_1",
+            "cus_test",
+            InvoiceStatus::Paid,
         ));
 
         let inner = InvoiceManager::new(store, client);
@@ -1310,19 +1355,28 @@ mod tests {
 
         // First call - cache miss
         assert_eq!(cached.cache_size(), 0);
-        let result1 = cached.list_invoices("org_123", Default::default()).await.unwrap();
+        let result1 = cached
+            .list_invoices("org_123", Default::default())
+            .await
+            .unwrap();
         assert_eq!(result1.invoices.len(), 1);
         assert!(cached.cache_size() > 0);
 
         // Second call - cache hit
-        let result2 = cached.list_invoices("org_123", Default::default()).await.unwrap();
+        let result2 = cached
+            .list_invoices("org_123", Default::default())
+            .await
+            .unwrap();
         assert_eq!(result2.invoices.len(), 1);
     }
 
     #[tokio::test]
     async fn test_cached_manager_invalidate() {
         let store = InMemoryBillingStore::new();
-        store.set_stripe_customer_id("org_123", "org", "cus_test").await.unwrap();
+        store
+            .set_stripe_customer_id("org_123", "org", "cus_test")
+            .await
+            .unwrap();
 
         let client = MockStripeInvoiceClient::new();
         let inner = InvoiceManager::new(store, client);

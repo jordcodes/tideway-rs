@@ -12,7 +12,7 @@ mod types;
 mod verify;
 
 pub use change::{PasswordChangeConfig, PasswordChangeFlow, PasswordChangeStore};
-pub use login::{LoginFlow, LoginFlowConfig, TokenIssuer, TokenIssuance, WithRefreshStore};
+pub use login::{LoginFlow, LoginFlowConfig, TokenIssuance, TokenIssuer, WithRefreshStore};
 pub use rate_limit::{LoginRateLimitConfig, LoginRateLimiter, WithRateLimiter};
 pub use register::RegistrationFlow;
 pub use reset::PasswordResetFlow;

@@ -1,8 +1,8 @@
 use crate::error::{Result, TidewayError};
 use crate::traits::cache::Cache;
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// Redis cache implementation
@@ -42,9 +42,8 @@ impl RedisCache {
     pub async fn ping(&self) -> bool {
         match self.get_connection().await {
             Ok(mut conn) => {
-                let result: redis::RedisResult<String> = redis::cmd("PING")
-                    .query_async(&mut conn)
-                    .await;
+                let result: redis::RedisResult<String> =
+                    redis::cmd("PING").query_async(&mut conn).await;
                 let healthy = result.is_ok();
                 self.health_status.store(healthy, Ordering::Release);
                 healthy
@@ -75,9 +74,7 @@ impl Cache for RedisCache {
     async fn set_bytes(&self, key: &str, value: Vec<u8>, ttl: Option<Duration>) -> Result<()> {
         let mut conn = self.get_connection().await?;
 
-        let ttl_seconds = ttl
-            .or(Some(self.default_ttl))
-            .map(|d| d.as_secs() as usize);
+        let ttl_seconds = ttl.or(Some(self.default_ttl)).map(|d| d.as_secs() as usize);
 
         if let Some(ttl_secs) = ttl_seconds {
             redis::cmd("SETEX")

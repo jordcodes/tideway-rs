@@ -3,8 +3,8 @@
 //! Handles listing, attaching, detaching, and setting default payment methods
 //! for customers.
 
-use crate::error::Result;
 use super::storage::BillingStore;
+use crate::error::Result;
 
 /// A payment method attached to a customer.
 #[derive(Debug, Clone)]
@@ -36,11 +36,8 @@ pub struct PaymentMethodList {
 #[allow(async_fn_in_trait)]
 pub trait StripePaymentMethodClient: Send + Sync {
     /// List payment methods for a customer.
-    async fn list_payment_methods(
-        &self,
-        customer_id: &str,
-        limit: u8,
-    ) -> Result<PaymentMethodList>;
+    async fn list_payment_methods(&self, customer_id: &str, limit: u8)
+    -> Result<PaymentMethodList>;
 
     /// Attach a payment method to a customer.
     async fn attach_payment_method(
@@ -50,10 +47,7 @@ pub trait StripePaymentMethodClient: Send + Sync {
     ) -> Result<PaymentMethod>;
 
     /// Detach a payment method from a customer.
-    async fn detach_payment_method(
-        &self,
-        payment_method_id: &str,
-    ) -> Result<()>;
+    async fn detach_payment_method(&self, payment_method_id: &str) -> Result<()>;
 
     /// Set the default payment method for a customer.
     async fn set_default_payment_method(
@@ -106,16 +100,18 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
     /// List payment methods for a billable entity.
     ///
     /// Returns payment methods attached to the customer, up to the configured limit.
-    pub async fn list_payment_methods(
-        &self,
-        billable_id: &str,
-    ) -> Result<PaymentMethodList> {
-        let sub = self.store.get_subscription(billable_id).await?
+    pub async fn list_payment_methods(&self, billable_id: &str) -> Result<PaymentMethodList> {
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
 
-        self.client.list_payment_methods(&sub.stripe_customer_id, self.list_limit).await
+        self.client
+            .list_payment_methods(&sub.stripe_customer_id, self.list_limit)
+            .await
     }
 
     /// List payment methods with a specific limit.
@@ -126,12 +122,17 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
         billable_id: &str,
         limit: u8,
     ) -> Result<PaymentMethodList> {
-        let sub = self.store.get_subscription(billable_id).await?
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
 
-        self.client.list_payment_methods(&sub.stripe_customer_id, limit.clamp(1, 100)).await
+        self.client
+            .list_payment_methods(&sub.stripe_customer_id, limit.clamp(1, 100))
+            .await
     }
 
     /// Set the default payment method for a billable entity.
@@ -142,25 +143,30 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
     ///
     /// This method verifies that the payment method belongs to the customer
     /// before setting it as default, preventing unauthorized modifications.
-    pub async fn set_default(
-        &self,
-        billable_id: &str,
-        payment_method_id: &str,
-    ) -> Result<()> {
-        let sub = self.store.get_subscription(billable_id).await?
+    pub async fn set_default(&self, billable_id: &str, payment_method_id: &str) -> Result<()> {
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
 
         // Verify the payment method belongs to this customer
-        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, self.list_limit).await?;
+        let methods = self
+            .client
+            .list_payment_methods(&sub.stripe_customer_id, self.list_limit)
+            .await?;
         if !methods.methods.iter().any(|m| m.id == payment_method_id) {
             return Err(super::error::BillingError::PaymentMethodNotFound {
                 payment_method_id: payment_method_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
-        self.client.set_default_payment_method(&sub.stripe_customer_id, payment_method_id).await
+        self.client
+            .set_default_payment_method(&sub.stripe_customer_id, payment_method_id)
+            .await
     }
 
     /// Remove a payment method from a billable entity.
@@ -172,22 +178,25 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
     /// This method verifies that the payment method belongs to the customer
     /// before detaching, preventing unauthorized removal of other customers'
     /// payment methods.
-    pub async fn remove(
-        &self,
-        billable_id: &str,
-        payment_method_id: &str,
-    ) -> Result<()> {
-        let sub = self.store.get_subscription(billable_id).await?
+    pub async fn remove(&self, billable_id: &str, payment_method_id: &str) -> Result<()> {
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
 
         // Verify the payment method belongs to this customer before detaching
-        let methods = self.client.list_payment_methods(&sub.stripe_customer_id, self.list_limit).await?;
+        let methods = self
+            .client
+            .list_payment_methods(&sub.stripe_customer_id, self.list_limit)
+            .await?;
         if !methods.methods.iter().any(|m| m.id == payment_method_id) {
             return Err(super::error::BillingError::PaymentMethodNotFound {
                 payment_method_id: payment_method_id.to_string(),
-            }.into());
+            }
+            .into());
         }
 
         self.client.detach_payment_method(payment_method_id).await
@@ -201,21 +210,23 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
         billable_id: &str,
         payment_method_id: &str,
     ) -> Result<PaymentMethod> {
-        let sub = self.store.get_subscription(billable_id).await?
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
             .ok_or_else(|| super::error::BillingError::NoSubscription {
                 billable_id: billable_id.to_string(),
             })?;
 
-        self.client.attach_payment_method(payment_method_id, &sub.stripe_customer_id).await
+        self.client
+            .attach_payment_method(payment_method_id, &sub.stripe_customer_id)
+            .await
     }
 
     /// Get the default payment method for a billable entity.
     ///
     /// Returns the payment method marked as default, if any.
-    pub async fn get_default(
-        &self,
-        billable_id: &str,
-    ) -> Result<Option<PaymentMethod>> {
+    pub async fn get_default(&self, billable_id: &str) -> Result<Option<PaymentMethod>> {
         let methods = self.list_payment_methods(billable_id).await?;
         Ok(methods.methods.into_iter().find(|m| m.is_default))
     }
@@ -225,8 +236,8 @@ impl<S: BillingStore, C: StripePaymentMethodClient> PaymentMethodManager<S, C> {
 #[cfg(any(test, feature = "test-billing"))]
 pub mod test {
     use super::*;
-    use std::sync::RwLock;
     use std::collections::HashMap;
+    use std::sync::RwLock;
 
     /// Mock Stripe payment method client.
     #[derive(Default)]
@@ -245,7 +256,8 @@ pub mod test {
         /// Add a payment method for testing.
         pub fn add_payment_method(&self, customer_id: &str, method: PaymentMethod) {
             let mut methods = self.payment_methods.write().unwrap();
-            methods.entry(customer_id.to_string())
+            methods
+                .entry(customer_id.to_string())
                 .or_default()
                 .push(method);
         }
@@ -261,7 +273,8 @@ pub mod test {
             let defaults = self.default_methods.read().unwrap();
             let default_id = defaults.get(customer_id);
 
-            let customer_methods = methods.get(customer_id)
+            let customer_methods = methods
+                .get(customer_id)
                 .cloned()
                 .unwrap_or_default()
                 .into_iter()
@@ -292,17 +305,15 @@ pub mod test {
             };
 
             let mut methods = self.payment_methods.write().unwrap();
-            methods.entry(customer_id.to_string())
+            methods
+                .entry(customer_id.to_string())
                 .or_default()
                 .push(method.clone());
 
             Ok(method)
         }
 
-        async fn detach_payment_method(
-            &self,
-            payment_method_id: &str,
-        ) -> Result<()> {
+        async fn detach_payment_method(&self, payment_method_id: &str) -> Result<()> {
             let mut methods = self.payment_methods.write().unwrap();
             for customer_methods in methods.values_mut() {
                 customer_methods.retain(|m| m.id != payment_method_id);
@@ -324,8 +335,8 @@ pub mod test {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::test::MockStripePaymentMethodClient;
+    use super::*;
     use crate::billing::storage::test::InMemoryBillingStore;
     use crate::billing::storage::{StoredSubscription, SubscriptionStatus};
 
@@ -352,25 +363,34 @@ mod tests {
         let client = MockStripePaymentMethodClient::new();
 
         // Add subscription
-        store.save_subscription("org_123", &create_test_subscription("org_123")).await.unwrap();
+        store
+            .save_subscription("org_123", &create_test_subscription("org_123"))
+            .await
+            .unwrap();
 
         // Add payment methods
-        client.add_payment_method("cus_123", PaymentMethod {
-            id: "pm_1".to_string(),
-            card_brand: Some("visa".to_string()),
-            card_last4: Some("4242".to_string()),
-            card_exp_month: Some(12),
-            card_exp_year: Some(2099),
-            is_default: false,
-        });
-        client.add_payment_method("cus_123", PaymentMethod {
-            id: "pm_2".to_string(),
-            card_brand: Some("mastercard".to_string()),
-            card_last4: Some("5555".to_string()),
-            card_exp_month: Some(6),
-            card_exp_year: Some(2026),
-            is_default: false,
-        });
+        client.add_payment_method(
+            "cus_123",
+            PaymentMethod {
+                id: "pm_1".to_string(),
+                card_brand: Some("visa".to_string()),
+                card_last4: Some("4242".to_string()),
+                card_exp_month: Some(12),
+                card_exp_year: Some(2099),
+                is_default: false,
+            },
+        );
+        client.add_payment_method(
+            "cus_123",
+            PaymentMethod {
+                id: "pm_2".to_string(),
+                card_brand: Some("mastercard".to_string()),
+                card_last4: Some("5555".to_string()),
+                card_exp_month: Some(6),
+                card_exp_year: Some(2026),
+                is_default: false,
+            },
+        );
 
         let manager = PaymentMethodManager::new(store, client);
         let methods = manager.list_payment_methods("org_123").await.unwrap();
@@ -384,16 +404,22 @@ mod tests {
         let store = InMemoryBillingStore::new();
         let client = MockStripePaymentMethodClient::new();
 
-        store.save_subscription("org_123", &create_test_subscription("org_123")).await.unwrap();
+        store
+            .save_subscription("org_123", &create_test_subscription("org_123"))
+            .await
+            .unwrap();
 
-        client.add_payment_method("cus_123", PaymentMethod {
-            id: "pm_1".to_string(),
-            card_brand: Some("visa".to_string()),
-            card_last4: Some("4242".to_string()),
-            card_exp_month: Some(12),
-            card_exp_year: Some(2099),
-            is_default: false,
-        });
+        client.add_payment_method(
+            "cus_123",
+            PaymentMethod {
+                id: "pm_1".to_string(),
+                card_brand: Some("visa".to_string()),
+                card_last4: Some("4242".to_string()),
+                card_exp_month: Some(12),
+                card_exp_year: Some(2099),
+                is_default: false,
+            },
+        );
 
         let manager = PaymentMethodManager::new(store, client);
 
@@ -411,7 +437,10 @@ mod tests {
         let store = InMemoryBillingStore::new();
         let client = MockStripePaymentMethodClient::new();
 
-        store.save_subscription("org_123", &create_test_subscription("org_123")).await.unwrap();
+        store
+            .save_subscription("org_123", &create_test_subscription("org_123"))
+            .await
+            .unwrap();
 
         let manager = PaymentMethodManager::new(store, client);
 
@@ -430,16 +459,22 @@ mod tests {
         let store = InMemoryBillingStore::new();
         let client = MockStripePaymentMethodClient::new();
 
-        store.save_subscription("org_123", &create_test_subscription("org_123")).await.unwrap();
+        store
+            .save_subscription("org_123", &create_test_subscription("org_123"))
+            .await
+            .unwrap();
 
-        client.add_payment_method("cus_123", PaymentMethod {
-            id: "pm_1".to_string(),
-            card_brand: Some("visa".to_string()),
-            card_last4: Some("4242".to_string()),
-            card_exp_month: Some(12),
-            card_exp_year: Some(2099),
-            is_default: false,
-        });
+        client.add_payment_method(
+            "cus_123",
+            PaymentMethod {
+                id: "pm_1".to_string(),
+                card_brand: Some("visa".to_string()),
+                card_last4: Some("4242".to_string()),
+                card_exp_month: Some(12),
+                card_exp_year: Some(2099),
+                is_default: false,
+            },
+        );
 
         let manager = PaymentMethodManager::new(store, client);
 
