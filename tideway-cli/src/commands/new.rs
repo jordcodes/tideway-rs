@@ -166,19 +166,14 @@ pub fn run(mut args: NewArgs) -> Result<()> {
             println!("  {}. cp .env.example .env", step);
             step += 1;
         }
-        if has_database_feature {
+        if should_suggest_migrate(args.preset, has_database_feature) {
             println!("  {}. tideway migrate", step);
             step += 1;
         }
         println!("  {}. cargo run", step);
         println!();
 
-        if matches!(args.preset, Some(NewPreset::Api)) {
-            println!("{}", "First request:".yellow().bold());
-            println!("  curl http://localhost:8000/api/todos");
-            println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
-            println!();
-        }
+        print_preset_next_steps(args.preset);
     }
 
     print_success("Ready to build");
@@ -201,7 +196,7 @@ fn scaffold_files(
     )?;
     write_file_with_force(
         &target_dir.join("src/main.rs"),
-        &engine.render("starter/src/main.rs")?,
+        &clean_rust_source(&engine.render("starter/src/main.rs")?),
         args.force,
     )?;
     write_file_with_force(
@@ -605,6 +600,59 @@ fn ensure_dependency_inline(deps: &mut Table, name: &str, version: &str, feature
 fn needs_env_from_args(args: &NewArgs) -> bool {
     let features = normalize_features(&args.features);
     features.contains("auth") || features.contains("database") || args.with_config || args.with_env
+}
+
+fn should_suggest_migrate(preset: Option<NewPreset>, has_database_feature: bool) -> bool {
+    if !has_database_feature {
+        return false;
+    }
+    !matches!(preset, Some(NewPreset::Worker))
+}
+
+fn print_preset_next_steps(preset: Option<NewPreset>) {
+    match preset {
+        Some(NewPreset::Api) => {
+            println!("{}", "First request:".yellow().bold());
+            println!("  curl http://localhost:8000/api/todos");
+            println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
+            println!();
+        }
+        Some(NewPreset::Saas) => {
+            println!("{}", "SaaS smoke checks:".yellow().bold());
+            println!("  curl http://localhost:8000/health");
+            println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
+            println!();
+        }
+        Some(NewPreset::Worker) => {
+            println!("{}", "Worker smoke checks:".yellow().bold());
+            println!("  # Ensure REDIS_URL and DATABASE_URL are set in .env");
+            println!("  cargo run");
+            println!();
+        }
+        _ => {}
+    }
+}
+
+fn clean_rust_source(source: &str) -> String {
+    let mut out = String::new();
+    let mut empty_run = 0usize;
+    for line in source.lines() {
+        if line.trim().is_empty() {
+            empty_run += 1;
+            if empty_run > 1 {
+                continue;
+            }
+            out.push('\n');
+        } else {
+            empty_run = 0;
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 fn to_pascal_case(s: &str) -> String {

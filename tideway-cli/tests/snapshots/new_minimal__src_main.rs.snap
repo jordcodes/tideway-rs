@@ -8,8 +8,6 @@ mod routes;
 async fn main() -> Result<(), std::io::Error> {
     init_tracing();
 
-
-
     // tideway:app-builder:start
     let app = App::new()
         .register_module(routes::ApiModule);
