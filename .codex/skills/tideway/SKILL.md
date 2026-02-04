@@ -38,6 +38,7 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
   - `ensure_dir`, `write_file`, `remove_file`, `remove_dir`
 - Respect `--json` and `--plan` output modes.
 - Preserve generated-path compatibility; prefer additive updates.
+- B2B backend scaffolds use `organization_member` / `organization_members` naming (legacy generated apps may still use `membership` / `memberships`).
 
 ## Guardrails
 - Docs drift: `bash scripts/check_docs_drift.sh`
