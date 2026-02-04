@@ -33,6 +33,9 @@ pub enum TidewayError {
     #[error("Too many requests: {0}")]
     TooManyRequests(String),
 
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
 
@@ -220,6 +223,10 @@ impl TidewayError {
         Self::TooManyRequests(msg.into())
     }
 
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self::Conflict(msg.into())
+    }
+
     /// Add context to this error, returning an ErrorWithContext
     ///
     /// This allows you to attach context to an error while still being able
@@ -315,6 +322,7 @@ impl TidewayError {
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Internal(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             #[cfg(feature = "database")]
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -339,6 +347,7 @@ impl TidewayError {
             Self::BadRequest(msg) => format!("Bad request: {}", msg),
             Self::Unauthorized(msg) => format!("Unauthorized: {}", msg),
             Self::Forbidden(msg) => format!("Forbidden: {}", msg),
+            Self::Conflict(msg) => format!("Conflict: {}", msg),
             Self::TooManyRequests(msg) => format!("Too many requests: {}", msg),
             Self::RequestTimeout => "Request timeout".to_string(),
 

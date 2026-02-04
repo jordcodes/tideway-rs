@@ -15,8 +15,7 @@ use std::sync::Arc;
 use tideway::billing::{
     BillingStore, CheckoutManager, CheckoutRequest as TidewayCheckoutRequest, InvoiceManager,
     PlanStore, PortalManager, StoredPlan, WebhookHandler, WebhookOutcome,
-    validate_plan, validate_plan_with_stripe, StripePriceValidator,
-    BillingAuditEvent, BillingAuditLogger,
+    validate_plan, validate_plan_with_stripe,
 };
 use tideway::Result;
 
@@ -437,12 +436,6 @@ async fn deactivate_plans_with_price(state: &Arc<BillingState>, price_id: &str) 
                             error = %e,
                             "Failed to deactivate plan"
                         );
-                    } else {
-                        // Audit log
-                        state.audit_logger.log(BillingAuditEvent::PlanDeactivated {
-                            plan_id: plan.id.clone(),
-                            admin_id: Some("stripe_webhook".to_string()),
-                        }).await;
                     }
                 }
             }
@@ -763,17 +756,10 @@ async fn admin_create_plan(
 
     // Optionally validate against Stripe API
     if body.validate_stripe {
-        validate_plan_with_stripe(&plan, state.stripe_client.as_ref()).await?;
+        validate_plan_with_stripe(&plan, &state.stripe_client).await?;
     }
 
     state.billing_store.create_plan(&plan).await?;
-
-    // Audit log
-    state.audit_logger.log(BillingAuditEvent::PlanCreated {
-        plan_id: plan.id.clone(),
-        name: plan.name.clone(),
-        admin_id: None, // TODO: Extract from auth context
-    }).await;
 
     tracing::info!(plan_id = %plan.id, "Created billing plan");
     Ok(Json(AdminPlanResponse::from(plan)))
@@ -854,14 +840,7 @@ async fn admin_update_plan(
 
     state.billing_store.update_plan(&plan).await?;
 
-    // Audit log
-    state.audit_logger.log(BillingAuditEvent::PlanUpdated {
-        plan_id: plan.id.clone(),
-        admin_id: None, // TODO: Extract from auth context
-        changes,
-    }).await;
-
-    tracing::info!(plan_id = %plan.id, "Updated billing plan");
+    tracing::info!(plan_id = %plan.id, changes = ?changes, "Updated billing plan");
     Ok(Json(AdminPlanResponse::from(plan)))
 }
 
@@ -885,13 +864,6 @@ async fn admin_delete_plan(
         .await?;
 
     if subscription_count > 0 {
-        // Audit log the blocked deletion attempt
-        state.audit_logger.log(BillingAuditEvent::PlanDeletionBlocked {
-            plan_id: plan_id.clone(),
-            subscription_count,
-            admin_id: None, // TODO: Extract from auth context
-        }).await;
-
         return Err(tideway::billing::BillingError::PlanHasActiveSubscriptions {
             plan_id: plan_id.clone(),
             subscription_count,
@@ -900,14 +872,8 @@ async fn admin_delete_plan(
 
     state.billing_store.delete_plan(&plan_id).await?;
 
-    // Audit log
-    state.audit_logger.log(BillingAuditEvent::PlanDeleted {
-        plan_id: plan_id.clone(),
-        admin_id: None, // TODO: Extract from auth context
-    }).await;
-
     tracing::info!(plan_id = %plan_id, "Deleted billing plan");
-    Ok(Json(tideway::MessageResponse::new("Plan deleted successfully")))
+    Ok(Json(tideway::MessageResponse::success("Plan deleted successfully")))
 }
 
 /// Set plan active/inactive status.
@@ -923,19 +889,6 @@ async fn admin_set_plan_active(
         .ok_or_else(|| tideway::TidewayError::NotFound(format!("Plan '{}' not found", plan_id)))?;
 
     state.billing_store.set_plan_active(&plan_id, body.is_active).await?;
-
-    // Audit log
-    if body.is_active {
-        state.audit_logger.log(BillingAuditEvent::PlanActivated {
-            plan_id: plan_id.clone(),
-            admin_id: None, // TODO: Extract from auth context
-        }).await;
-    } else {
-        state.audit_logger.log(BillingAuditEvent::PlanDeactivated {
-            plan_id: plan_id.clone(),
-            admin_id: None, // TODO: Extract from auth context
-        }).await;
-    }
 
     // Fetch updated plan
     let plan = state.billing_store.get_plan(&plan_id).await?.unwrap();
@@ -1021,7 +974,7 @@ async fn admin_import_plans(
 
         // Optional Stripe validation
         if body.validate_stripe {
-            if let Err(e) = validate_plan_with_stripe(&plan, state.stripe_client.as_ref()).await {
+            if let Err(e) = validate_plan_with_stripe(&plan, &state.stripe_client).await {
                 errors.push(ImportError {
                     plan_id: plan_id.clone(),
                     error: format!("Stripe validation failed: {}", e),
@@ -1051,11 +1004,6 @@ async fn admin_import_plans(
                     });
                 } else {
                     updated += 1;
-                    state.audit_logger.log(BillingAuditEvent::PlanUpdated {
-                        plan_id: plan_id.clone(),
-                        admin_id: None,
-                        changes: vec!["imported".to_string()],
-                    }).await;
                 }
             }
             (None, _) => {
@@ -1066,11 +1014,6 @@ async fn admin_import_plans(
                     });
                 } else {
                     created += 1;
-                    state.audit_logger.log(BillingAuditEvent::PlanCreated {
-                        plan_id: plan_id.clone(),
-                        name: plan.name.clone(),
-                        admin_id: None,
-                    }).await;
                 }
             }
             (Some(_), strategy) => {
