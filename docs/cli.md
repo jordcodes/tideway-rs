@@ -152,6 +152,10 @@ tideway backend b2c --name my_app
 tideway backend b2b --name my_app
 ```
 
+Compatibility note:
+- Current B2B scaffolds generate `organization_members` (entity/module: `organization_member`).
+- Older generated apps may use `memberships`/`membership` for the same concept.
+
 ### `tideway generate`
 
 Generate frontend components.

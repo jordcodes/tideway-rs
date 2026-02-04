@@ -31,7 +31,7 @@ pub enum Relation {
     #[sea_orm(has_many = "super::verification_token::Entity")]
     VerificationTokens,
     {{#if has_organizations}}
-    #[sea_orm(has_many = "super::membership::Entity")]
+    #[sea_orm(has_many = "super::organization_member::Entity")]
     Memberships,
     #[sea_orm(
         belongs_to = "super::organization::Entity",
@@ -55,7 +55,7 @@ impl Related<super::verification_token::Entity> for Entity {
 }
 
 {{#if has_organizations}}
-impl Related<super::membership::Entity> for Entity {
+impl Related<super::organization_member::Entity> for Entity {
     fn to() -> RelationDef {
         Relation::Memberships.def()
     }

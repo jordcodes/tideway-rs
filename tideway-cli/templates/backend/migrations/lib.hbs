@@ -8,7 +8,7 @@ mod m003_create_verification_tokens;
 mod m004_create_billing;
 {{#if has_organizations}}
 mod m005_create_organizations;
-mod m006_create_memberships;
+mod m006_create_organization_members;
 mod m007_add_admin_flag;
 {{else}}
 mod m005_add_admin_flag;
@@ -27,7 +27,7 @@ impl MigratorTrait for Migrator {
             Box::new(m004_create_billing::Migration),
             {{#if has_organizations}}
             Box::new(m005_create_organizations::Migration),
-            Box::new(m006_create_memberships::Migration),
+            Box::new(m006_create_organization_members::Migration),
             Box::new(m007_add_admin_flag::Migration),
             {{else}}
             Box::new(m005_add_admin_flag::Migration),

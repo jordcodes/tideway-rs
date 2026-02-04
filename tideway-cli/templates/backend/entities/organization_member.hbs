@@ -4,10 +4,10 @@ use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
-#[sea_orm(table_name = "memberships")]
+#[sea_orm(table_name = "organization_members")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
-    pub org_id: String,
+    pub organization_id: String,
     #[sea_orm(primary_key, auto_increment = false)]
     pub user_id: Uuid,
     pub role: String,
@@ -18,7 +18,7 @@ pub struct Model {
 pub enum Relation {
     #[sea_orm(
         belongs_to = "super::organization::Entity",
-        from = "Column::OrgId",
+        from = "Column::OrganizationId",
         to = "super::organization::Column::Id"
     )]
     Organization,

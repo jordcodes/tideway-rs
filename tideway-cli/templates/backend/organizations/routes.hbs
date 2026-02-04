@@ -12,7 +12,7 @@ use tideway::auth::{AccessTokenClaims, JwtVerifier};
 use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
 use uuid::Uuid;
 
-use crate::entities::{membership, organization, user};
+use crate::entities::{organization, organization_member, user};
 
 /// Organization routes state.
 #[derive(Clone)]
@@ -87,7 +87,7 @@ pub struct OrganizationsListResponse {
 #[derive(Debug, Serialize)]
 pub struct MemberResponse {
     pub user_id: String,
-    pub org_id: String,
+    pub organization_id: String,
     pub email: String,
     pub name: Option<String>,
     pub role: String,
@@ -135,13 +135,16 @@ async fn list_organizations(
 
     let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
 
-    let memberships = membership::Entity::find()
-        .filter(membership::Column::UserId.eq(user_id))
+    let organization_members = organization_member::Entity::find()
+        .filter(organization_member::Column::UserId.eq(user_id))
         .all(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    let org_ids: Vec<String> = memberships.iter().map(|m| m.org_id.clone()).collect();
+    let org_ids: Vec<String> = organization_members
+        .iter()
+        .map(|m| m.organization_id.clone())
+        .collect();
 
     let orgs = if org_ids.is_empty() {
         vec![]
@@ -170,9 +173,9 @@ async fn get_organization(
 
     let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
 
-    let _membership = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
-        .filter(membership::Column::UserId.eq(user_id))
+    let _membership = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .filter(organization_member::Column::UserId.eq(user_id))
         .one(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
@@ -200,9 +203,9 @@ async fn update_organization(
 
     let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
 
-    let membership = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
-        .filter(membership::Column::UserId.eq(user_id))
+    let membership = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .filter(organization_member::Column::UserId.eq(user_id))
         .one(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
@@ -253,21 +256,21 @@ async fn list_members(
 
     let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
 
-    let _ = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
-        .filter(membership::Column::UserId.eq(user_id))
+    let _ = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .filter(organization_member::Column::UserId.eq(user_id))
         .one(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
         .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
 
-    let memberships = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
+    let organization_members = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
         .all(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    let user_ids: Vec<Uuid> = memberships.iter().map(|m| m.user_id).collect();
+    let user_ids: Vec<Uuid> = organization_members.iter().map(|m| m.user_id).collect();
 
     let users = user::Entity::find()
         .filter(user::Column::Id.is_in(user_ids))
@@ -275,13 +278,13 @@ async fn list_members(
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    let members: Vec<MemberResponse> = memberships
+    let members: Vec<MemberResponse> = organization_members
         .into_iter()
         .map(|m| {
             let u = users.iter().find(|u| u.id == m.user_id);
             MemberResponse {
                 user_id: m.user_id.to_string(),
-                org_id: m.org_id,
+                organization_id: m.organization_id,
                 email: u.map(|u| u.email.clone()).unwrap_or_default(),
                 name: u.and_then(|u| u.name.clone()),
                 role: m.role,
@@ -306,9 +309,9 @@ async fn update_member_role(
 
     let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
 
-    let requester_membership = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
-        .filter(membership::Column::UserId.eq(user_id))
+    let requester_membership = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .filter(organization_member::Column::UserId.eq(user_id))
         .one(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
@@ -325,9 +328,9 @@ async fn update_member_role(
         return Err(TidewayError::Forbidden("Only owner can transfer ownership".into()));
     }
 
-    let target = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
-        .filter(membership::Column::UserId.eq(target_uuid))
+    let target = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .filter(organization_member::Column::UserId.eq(target_uuid))
         .one(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
@@ -337,7 +340,7 @@ async fn update_member_role(
         return Err(TidewayError::Forbidden("Cannot change owner's role".into()));
     }
 
-    let mut active: membership::ActiveModel = target.into();
+    let mut active: organization_member::ActiveModel = target.into();
     active.role = Set(body.role);
 
     active
@@ -360,9 +363,9 @@ async fn remove_member(
 
     let user_id = extract_user_id(auth_header, &state.jwt_verifier).await?;
 
-    let requester_membership = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
-        .filter(membership::Column::UserId.eq(user_id))
+    let requester_membership = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .filter(organization_member::Column::UserId.eq(user_id))
         .one(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
@@ -379,9 +382,9 @@ async fn remove_member(
         return Err(TidewayError::Forbidden("Insufficient permissions".into()));
     }
 
-    let target = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
-        .filter(membership::Column::UserId.eq(target_uuid))
+    let target = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .filter(organization_member::Column::UserId.eq(target_uuid))
         .one(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
@@ -391,7 +394,7 @@ async fn remove_member(
         return Err(TidewayError::Forbidden("Cannot remove organization owner".into()));
     }
 
-    membership::Entity::delete_by_id((org_id, target_uuid))
+    organization_member::Entity::delete_by_id((org_id, target_uuid))
         .exec(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;

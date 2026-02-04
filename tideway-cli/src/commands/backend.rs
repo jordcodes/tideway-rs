@@ -228,7 +228,7 @@ fn generate_entities(
     if args.preset == BackendPreset::B2b {
         let org_entities = [
             ("organization.rs", "entities/organization"),
-            ("membership.rs", "entities/membership"),
+            ("organization_member.rs", "entities/organization_member"),
         ];
 
         for (filename, template_name) in org_entities {
@@ -392,8 +392,8 @@ fn generate_migrations(
                 "migrations/m005_create_organizations",
             ),
             (
-                "m006_create_memberships.rs",
-                "migrations/m006_create_memberships",
+                "m006_create_organization_members.rs",
+                "migrations/m006_create_organization_members",
             ),
             ("m007_add_admin_flag.rs", "migrations/m007_add_admin_flag"),
         ];

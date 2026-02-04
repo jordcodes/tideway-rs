@@ -15,7 +15,7 @@ use chrono::{Duration, Utc};
 
 use crate::entities::user;
 {{#if has_organizations}}
-use crate::entities::{membership, organization};
+use crate::entities::{organization, organization_member};
 {{/if}}
 
 /// Admin routes state.
@@ -435,15 +435,15 @@ async fn list_organizations(
 
     let org_ids: Vec<String> = orgs.iter().map(|o| o.id.clone()).collect();
 
-    let member_counts = membership::Entity::find()
-        .filter(membership::Column::OrgId.is_in(org_ids.clone()))
+    let member_counts = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.is_in(org_ids.clone()))
         .all(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
     let mut count_map: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for m in member_counts {
-        *count_map.entry(m.org_id).or_insert(0) += 1;
+        *count_map.entry(m.organization_id).or_insert(0) += 1;
     }
 
     let items: Vec<AdminOrgResponse> = orgs
@@ -493,8 +493,8 @@ async fn get_organization(
         .map_err(|e| TidewayError::Database(e.to_string()))?
         .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
 
-    let member_count = membership::Entity::find()
-        .filter(membership::Column::OrgId.eq(&org_id))
+    let member_count = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
         .count(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;

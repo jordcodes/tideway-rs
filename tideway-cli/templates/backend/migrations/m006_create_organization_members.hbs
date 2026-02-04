@@ -1,4 +1,4 @@
-//! Create memberships table.
+//! Create organization_members table.
 
 use sea_orm_migration::prelude::*;
 
@@ -11,26 +11,26 @@ impl MigrationTrait for Migration {
         manager
             .create_table(
                 Table::create()
-                    .table(Memberships::Table)
+                    .table(OrganizationMembers::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(Memberships::OrgId).string().not_null())
-                    .col(ColumnDef::new(Memberships::UserId).uuid().not_null())
-                    .col(ColumnDef::new(Memberships::Role).string().not_null())
-                    .col(ColumnDef::new(Memberships::JoinedAt).big_integer().not_null())
+                    .col(ColumnDef::new(OrganizationMembers::OrganizationId).string().not_null())
+                    .col(ColumnDef::new(OrganizationMembers::UserId).uuid().not_null())
+                    .col(ColumnDef::new(OrganizationMembers::Role).string().not_null())
+                    .col(ColumnDef::new(OrganizationMembers::JoinedAt).big_integer().not_null())
                     .primary_key(
                         Index::create()
-                            .col(Memberships::OrgId)
-                            .col(Memberships::UserId),
+                            .col(OrganizationMembers::OrganizationId)
+                            .col(OrganizationMembers::UserId),
                     )
                     .foreign_key(
                         ForeignKey::create()
-                            .from(Memberships::Table, Memberships::OrgId)
+                            .from(OrganizationMembers::Table, OrganizationMembers::OrganizationId)
                             .to(super::m005_create_organizations::Organizations::Table, super::m005_create_organizations::Organizations::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
                     .foreign_key(
                         ForeignKey::create()
-                            .from(Memberships::Table, Memberships::UserId)
+                            .from(OrganizationMembers::Table, OrganizationMembers::UserId)
                             .to(super::m001_create_users::Users::Table, super::m001_create_users::Users::Id)
                             .on_delete(ForeignKeyAction::Cascade),
                     )
@@ -41,15 +41,15 @@ impl MigrationTrait for Migration {
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
-            .drop_table(Table::drop().table(Memberships::Table).to_owned())
+            .drop_table(Table::drop().table(OrganizationMembers::Table).to_owned())
             .await
     }
 }
 
 #[derive(DeriveIden)]
-enum Memberships {
+enum OrganizationMembers {
     Table,
-    OrgId,
+    OrganizationId,
     UserId,
     Role,
     JoinedAt,

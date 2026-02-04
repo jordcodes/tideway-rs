@@ -24,7 +24,7 @@ use uuid::Uuid;
 
 use crate::auth::{AppTokenIssuer, DbRefreshTokenStore, DbUserStore, InMemoryMfaTokenStore};
 {{#if has_organizations}}
-use crate::entities::{membership, organization};
+use crate::entities::{organization, organization_member};
 {{/if}}
 
 /// Auth module state.
@@ -188,14 +188,14 @@ async fn register(
         .map_err(|e| tideway::TidewayError::Database(e.to_string()))?;
 
     // Create membership
-    let membership = membership::ActiveModel {
-        org_id: Set(org_id.clone()),
+    let organization_member = organization_member::ActiveModel {
+        organization_id: Set(org_id.clone()),
         user_id: Set(user_id),
         role: Set("owner".to_string()),
         joined_at: Set(now),
     };
 
-    membership
+    organization_member
         .insert(state.db.as_ref())
         .await
         .map_err(|e| tideway::TidewayError::Database(e.to_string()))?;
