@@ -93,6 +93,63 @@ fn test_resource_wire_plan_mode_is_non_mutating() {
     );
 }
 
+#[test]
+fn test_backend_plan_mode_is_non_mutating() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("src");
+    let migrations_dir = temp_dir.path().join("migration/src");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--plan")
+        .arg("backend")
+        .arg("b2c")
+        .arg("--name")
+        .arg("my_app")
+        .arg("--output")
+        .arg(&output_dir)
+        .arg("--migrations-output")
+        .arg(&migrations_dir)
+        .output()
+        .expect("run tideway backend --plan");
+
+    assert!(
+        output.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !output_dir.exists(),
+        "expected backend --plan not to create output directory"
+    );
+    assert!(
+        !migrations_dir.exists(),
+        "expected backend --plan not to create migration directory"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Plan: write file"),
+        "expected plan output with file writes, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Plan complete: no files were written"),
+        "expected explicit plan completion marker, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("m008_create_billing_plans.rs"),
+        "expected plan output to include m008 migration, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("m009_create_webhook_processed_events.rs"),
+        "expected plan output to include m009 migration, got:\n{}",
+        stdout
+    );
+}
+
 fn create_minimal_fixture(project_dir: &Path) {
     fs::create_dir_all(project_dir.join("src")).expect("create src");
     fs::write(

@@ -7,7 +7,8 @@ use std::path::Path;
 use crate::cli::{BackendArgs, BackendPreset};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success, print_warning,
+    TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success,
+    print_warning,
     write_file,
 };
 
@@ -26,6 +27,7 @@ fn to_pascal_case(s: &str) -> String {
 
 /// Run the backend command
 pub fn run(args: BackendArgs) -> Result<()> {
+    let plan_mode = is_plan_mode();
     let has_organizations = args.preset == BackendPreset::B2b;
     let preset_name = match args.preset {
         BackendPreset::B2c => "B2C (Auth + Billing + Admin)",
@@ -33,11 +35,19 @@ pub fn run(args: BackendArgs) -> Result<()> {
     };
 
     if !is_json_output() {
-        println!(
-            "\n{} Generating {} backend scaffolding\n",
-            "tideway".cyan().bold(),
-            preset_name.green()
-        );
+        if plan_mode {
+            println!(
+                "\n{} Planning {} backend scaffolding\n",
+                "tideway".cyan().bold(),
+                preset_name.green()
+            );
+        } else {
+            println!(
+                "\n{} Generating {} backend scaffolding\n",
+                "tideway".cyan().bold(),
+                preset_name.green()
+            );
+        }
         println!(
             "  Project: {}\n  Database: {}\n  Output: {}\n",
             args.name.yellow(),
@@ -107,6 +117,11 @@ pub fn run(args: BackendArgs) -> Result<()> {
 
     // Generate migrations
     generate_migrations(&engine, migrations_path, &args)?;
+
+    if plan_mode {
+        print_info("Plan complete: no files were written");
+        return Ok(());
+    }
 
     if !is_json_output() {
         println!(
