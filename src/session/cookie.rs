@@ -182,15 +182,18 @@ impl CookieSessionStore {
     pub fn build_cookie(&self, data: &SessionData) -> Result<Cookie<'static>> {
         let encrypted_value = self.encrypt(data)?;
 
-        let cookie = Cookie::build((self.config.cookie_name.clone(), encrypted_value))
+        let mut cookie_builder = Cookie::build((self.config.cookie_name.clone(), encrypted_value))
             .path(self.config.cookie_path.clone())
             .http_only(self.config.cookie_http_only)
             .secure(self.config.cookie_secure)
             .same_site(SameSite::Lax)
-            .max_age(cookie::time::Duration::seconds(
-                self.config.default_ttl().as_secs() as i64,
-            ))
-            .build();
+            .max_age(cookie::time::Duration::seconds(self.config.default_ttl().as_secs() as i64));
+
+        if let Some(domain) = &self.config.cookie_domain {
+            cookie_builder = cookie_builder.domain(domain.clone());
+        }
+
+        let cookie = cookie_builder.build();
 
         Ok(cookie)
     }

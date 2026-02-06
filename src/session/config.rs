@@ -50,10 +50,10 @@ pub struct SessionConfig {
     #[serde(default = "default_http_only")]
     pub cookie_http_only: bool,
 
-    /// Encryption key for cookie sessions (32 bytes hex-encoded)
+    /// Encryption key for cookie sessions (64 bytes hex-encoded)
     ///
     /// **REQUIRED** for cookie-based sessions in production.
-    /// Generate a secure key with: `openssl rand -hex 32`
+    /// Generate a secure key with: `openssl rand -hex 64`
     #[serde(default)]
     pub encryption_key: Option<String>,
 

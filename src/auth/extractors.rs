@@ -109,6 +109,8 @@ where
             // Validate user (optional business logic)
             provider.validate_user(&user).await?;
 
+            // Cache user + claims for downstream extractors in the same request.
+            parts.extensions.insert(user.clone());
             // Cache verified claims after successful user validation
             parts.extensions.insert(Arc::clone(&claims));
 
@@ -178,6 +180,8 @@ where
                         Ok(user) => {
                             // Validate user
                             if provider.validate_user(&user).await.is_ok() {
+                                // Cache user + claims for downstream extractors in the same request.
+                                parts.extensions.insert(user.clone());
                                 // Cache verified claims after successful user validation
                                 parts.extensions.insert(Arc::clone(&claims));
                                 Ok(OptionalAuth(Some(user)))

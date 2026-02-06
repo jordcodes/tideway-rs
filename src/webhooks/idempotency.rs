@@ -1,4 +1,4 @@
-use crate::error::Result;
+use crate::error::{Result, TidewayError};
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -71,23 +71,27 @@ impl DatabaseIdempotencyStore {
 #[cfg(feature = "database")]
 #[async_trait]
 impl IdempotencyStore for DatabaseIdempotencyStore {
-    async fn is_processed(&self, _event_id: &str) -> Result<bool> {
-        // In a real implementation, query the webhook_events table
-        // For now, this is a placeholder
-        Ok(false)
+    async fn is_processed(&self, event_id: &str) -> Result<bool> {
+        Err(TidewayError::internal(format!(
+            "DatabaseIdempotencyStore::is_processed is not implemented for event '{}'. \
+             Implement persistent idempotency before using this in production.",
+            event_id
+        )))
     }
 
     async fn mark_processed(&self, event_id: String) -> Result<()> {
-        // In a real implementation, insert into webhook_events table
-        // For now, this is a placeholder
-        tracing::debug!("Marking event {} as processed", event_id);
-        Ok(())
+        Err(TidewayError::internal(format!(
+            "DatabaseIdempotencyStore::mark_processed is not implemented for event '{}'. \
+             Implement persistent idempotency before using this in production.",
+            event_id
+        )))
     }
 
     async fn cleanup_old_entries(&self) -> Result<()> {
-        // Delete events older than X days
-        tracing::debug!("Cleaning up old webhook events");
-        Ok(())
+        Err(TidewayError::internal(
+            "DatabaseIdempotencyStore::cleanup_old_entries is not implemented. \
+             Implement persistent idempotency cleanup before using this in production.",
+        ))
     }
 }
 

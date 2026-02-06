@@ -464,7 +464,10 @@ impl App {
             final_router = final_router.layer(cors_layer);
         }
 
-        axum::serve(listener, final_router)
+        axum::serve(
+            listener,
+            final_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
             .with_graceful_shutdown(shutdown)
             .await
     }
