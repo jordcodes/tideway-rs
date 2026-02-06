@@ -153,17 +153,21 @@ async fn handle_webhook(
     event_id: &str,
     payload: &[u8],
 ) -> Result<()> {
-    // Check if already processed
-    if store.is_processed(event_id).await? {
-        tracing::info!("Webhook {} already processed, skipping", event_id);
+    // Atomically claim this event for processing.
+    // If false, another worker already claimed/processed it.
+    if !store.claim_event(event_id).await? {
+        tracing::info!("Webhook {} already claimed/processed, skipping", event_id);
         return Ok(());
     }
 
     // Process the webhook...
-    process_event(payload).await?;
+    if let Err(e) = process_event(payload).await {
+        // Release claim so provider retries can be processed later.
+        store.release_claim(event_id).await?;
+        return Err(e);
+    }
 
-    // Mark as processed
-    store.mark_processed(event_id.to_string()).await?;
+    // Success path: keep claim as processed marker.
 
     Ok(())
 }
@@ -189,6 +193,24 @@ use tideway::webhooks::DatabaseIdempotencyStore;
 let store = DatabaseIdempotencyStore::new(db_connection);
 ```
 
+Create the required table:
+
+```sql
+CREATE TABLE IF NOT EXISTS webhook_processed_events (
+    event_id TEXT PRIMARY KEY,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+SQLite variant:
+
+```sql
+CREATE TABLE IF NOT EXISTS webhook_processed_events (
+    event_id TEXT PRIMARY KEY,
+    processed_at TEXT NOT NULL
+);
+```
+
 #### Custom Store
 
 Implement `IdempotencyStore` for custom backends (Redis, etc.):
@@ -204,13 +226,23 @@ struct RedisIdempotencyStore {
 
 #[async_trait]
 impl IdempotencyStore for RedisIdempotencyStore {
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        // Atomic SETNX with TTL (or Lua script) to claim processing
+        todo!()
+    }
+
     async fn is_processed(&self, event_id: &str) -> Result<bool> {
-        // Check Redis
+        // Optional explicit check
         todo!()
     }
 
     async fn mark_processed(&self, event_id: String) -> Result<()> {
-        // Store in Redis with TTL
+        // Optional compatibility path
+        todo!()
+    }
+
+    async fn release_claim(&self, event_id: &str) -> Result<()> {
+        // Delete claim on processing failure so retries can proceed
         todo!()
     }
 
@@ -260,21 +292,25 @@ async fn webhook_handler(
     let event: WebhookEvent = serde_json::from_slice(&body)
         .map_err(|e| TidewayError::bad_request(format!("Invalid JSON: {}", e)))?;
 
-    // 4. Check idempotency
-    if idempotency.is_processed(&event.id).await? {
-        tracing::info!("Webhook {} already processed", event.id);
+    // 4. Atomically claim event processing
+    if !idempotency.claim_event(&event.id).await? {
+        tracing::info!("Webhook {} already claimed/processed", event.id);
         return Ok(StatusCode::OK);
     }
 
-    // 5. Process event
-    match event.event_type.as_str() {
-        "payment.completed" => handle_payment_completed(&event).await?,
-        "subscription.cancelled" => handle_subscription_cancelled(&event).await?,
-        _ => tracing::info!("Ignoring unknown event type: {}", event.event_type),
+    // 5. Process event (release claim if processing fails)
+    let processing_result = match event.event_type.as_str() {
+        "payment.completed" => handle_payment_completed(&event).await,
+        "subscription.cancelled" => handle_subscription_cancelled(&event).await,
+        _ => {
+            tracing::info!("Ignoring unknown event type: {}", event.event_type);
+            Ok(())
+        }
+    };
+    if let Err(e) = processing_result {
+        idempotency.release_claim(&event.id).await?;
+        return Err(e);
     }
-
-    // 6. Mark as processed
-    idempotency.mark_processed(event.id).await?;
 
     Ok(StatusCode::OK)
 }
