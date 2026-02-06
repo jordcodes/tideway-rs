@@ -1,4 +1,4 @@
-use crate::error::{Result, TidewayError};
+use crate::error::Result;
 use async_trait::async_trait;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -57,7 +57,6 @@ impl IdempotencyStore for MemoryIdempotencyStore {
 /// Database-backed idempotency store (when using SeaORM)
 #[cfg(feature = "database")]
 pub struct DatabaseIdempotencyStore {
-    #[allow(dead_code)]
     db: sea_orm::DatabaseConnection,
 }
 
@@ -72,27 +71,81 @@ impl DatabaseIdempotencyStore {
 #[async_trait]
 impl IdempotencyStore for DatabaseIdempotencyStore {
     async fn is_processed(&self, event_id: &str) -> Result<bool> {
-        Err(TidewayError::internal(format!(
-            "DatabaseIdempotencyStore::is_processed is not implemented for event '{}'. \
-             Implement persistent idempotency before using this in production.",
-            event_id
-        )))
+        use sea_orm::EntityTrait;
+
+        let model = db_entity::Entity::find_by_id(event_id.to_string())
+            .one(&self.db)
+            .await
+            .map_err(|e| crate::error::TidewayError::internal(format!(
+                "Failed to check webhook idempotency state: {}",
+                e
+            )))?;
+
+        Ok(model.is_some())
     }
 
     async fn mark_processed(&self, event_id: String) -> Result<()> {
-        Err(TidewayError::internal(format!(
-            "DatabaseIdempotencyStore::mark_processed is not implemented for event '{}'. \
-             Implement persistent idempotency before using this in production.",
-            event_id
-        )))
+        use sea_orm::sea_query::OnConflict;
+        use sea_orm::{EntityTrait, Set};
+
+        let model = db_entity::ActiveModel {
+            event_id: Set(event_id),
+            processed_at: Set(chrono::Utc::now().into()),
+        };
+
+        let result = db_entity::Entity::insert(model)
+            .on_conflict(OnConflict::column(db_entity::Column::EventId).do_nothing().to_owned())
+            .exec(&self.db)
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            // Conflict + DO NOTHING path: already marked as processed.
+            Err(sea_orm::DbErr::RecordNotInserted) => Ok(()),
+            Err(e) => Err(crate::error::TidewayError::internal(format!(
+                "Failed to mark webhook event as processed: {}",
+                e
+            ))),
+        }?;
+
+        Ok(())
     }
 
     async fn cleanup_old_entries(&self) -> Result<()> {
-        Err(TidewayError::internal(
-            "DatabaseIdempotencyStore::cleanup_old_entries is not implemented. \
-             Implement persistent idempotency cleanup before using this in production.",
-        ))
+        use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+
+        const RETENTION_DAYS: i64 = 30;
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(RETENTION_DAYS);
+
+        db_entity::Entity::delete_many()
+            .filter(db_entity::Column::ProcessedAt.lt(cutoff))
+            .exec(&self.db)
+            .await
+            .map_err(|e| crate::error::TidewayError::internal(format!(
+                "Failed to cleanup old webhook idempotency entries: {}",
+                e
+            )))?;
+
+        Ok(())
     }
+}
+
+#[cfg(feature = "database")]
+mod db_entity {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "webhook_processed_events")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub event_id: String,
+        pub processed_at: DateTimeWithTimeZone,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
 }
 
 #[cfg(test)]
@@ -276,6 +329,52 @@ mod tests {
             .await
             .unwrap();
         assert!(store2.is_processed("shared-event").await.unwrap());
+    }
+
+    #[cfg(feature = "database")]
+    mod database_tests {
+        use super::super::*;
+        use sea_orm::{ConnectionTrait, Database, Statement};
+
+        async fn setup_db() -> sea_orm::DatabaseConnection {
+            let db = Database::connect("sqlite::memory:")
+                .await
+                .expect("sqlite in-memory db should connect");
+
+            db.execute(Statement::from_string(
+                sea_orm::DatabaseBackend::Sqlite,
+                "CREATE TABLE webhook_processed_events (
+                    event_id TEXT PRIMARY KEY NOT NULL,
+                    processed_at TEXT NOT NULL
+                )"
+                .to_string(),
+            ))
+            .await
+            .expect("should create webhook_processed_events table");
+
+            db
+        }
+
+        #[tokio::test]
+        async fn test_database_store_mark_and_check_processed() {
+            let db = setup_db().await;
+            let store = DatabaseIdempotencyStore::new(db);
+
+            assert!(!store.is_processed("evt_1").await.unwrap());
+            store.mark_processed("evt_1".to_string()).await.unwrap();
+            assert!(store.is_processed("evt_1").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn test_database_store_mark_is_idempotent() {
+            let db = setup_db().await;
+            let store = DatabaseIdempotencyStore::new(db);
+
+            store.mark_processed("evt_dup".to_string()).await.unwrap();
+            store.mark_processed("evt_dup".to_string()).await.unwrap();
+
+            assert!(store.is_processed("evt_dup").await.unwrap());
+        }
     }
 
     // ============ Default cleanup behavior test ============
