@@ -7,11 +7,33 @@ use tokio::sync::RwLock;
 /// Trait for storing processed webhook event IDs to prevent duplicate processing
 #[async_trait]
 pub trait IdempotencyStore: Send + Sync {
+    /// Atomically claim an event for processing.
+    ///
+    /// Returns:
+    /// - `Ok(true)` if this caller successfully claimed the event
+    /// - `Ok(false)` if the event is already claimed/processed elsewhere
+    ///
+    /// Default implementation falls back to check-then-mark for compatibility.
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        if self.is_processed(event_id).await? {
+            return Ok(false);
+        }
+        self.mark_processed(event_id.to_string()).await?;
+        Ok(true)
+    }
+
     /// Check if an event has already been processed
     async fn is_processed(&self, event_id: &str) -> Result<bool>;
 
     /// Mark an event as processed
     async fn mark_processed(&self, event_id: String) -> Result<()>;
+
+    /// Release a previously claimed event so it can be retried.
+    ///
+    /// Default implementation is a no-op.
+    async fn release_claim(&self, _event_id: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Clean up old entries (optional)
     async fn cleanup_old_entries(&self) -> Result<()> {
@@ -42,6 +64,11 @@ impl Default for MemoryIdempotencyStore {
 
 #[async_trait]
 impl IdempotencyStore for MemoryIdempotencyStore {
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        let mut processed = self.processed.write().await;
+        Ok(processed.insert(event_id.to_string()))
+    }
+
     async fn is_processed(&self, event_id: &str) -> Result<bool> {
         let processed = self.processed.read().await;
         Ok(processed.contains(event_id))
@@ -50,6 +77,12 @@ impl IdempotencyStore for MemoryIdempotencyStore {
     async fn mark_processed(&self, event_id: String) -> Result<()> {
         let mut processed = self.processed.write().await;
         processed.insert(event_id);
+        Ok(())
+    }
+
+    async fn release_claim(&self, event_id: &str) -> Result<()> {
+        let mut processed = self.processed.write().await;
+        processed.remove(event_id);
         Ok(())
     }
 }
@@ -70,6 +103,30 @@ impl DatabaseIdempotencyStore {
 #[cfg(feature = "database")]
 #[async_trait]
 impl IdempotencyStore for DatabaseIdempotencyStore {
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        use sea_orm::sea_query::OnConflict;
+        use sea_orm::{EntityTrait, Set};
+
+        let model = db_entity::ActiveModel {
+            event_id: Set(event_id.to_string()),
+            processed_at: Set(chrono::Utc::now().into()),
+        };
+
+        let result = db_entity::Entity::insert(model)
+            .on_conflict(OnConflict::column(db_entity::Column::EventId).do_nothing().to_owned())
+            .exec(&self.db)
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(sea_orm::DbErr::RecordNotInserted) => Ok(false),
+            Err(e) => Err(crate::error::TidewayError::internal(format!(
+                "Failed to claim webhook event for processing: {}",
+                e
+            ))),
+        }
+    }
+
     async fn is_processed(&self, event_id: &str) -> Result<bool> {
         use sea_orm::EntityTrait;
 
@@ -107,6 +164,20 @@ impl IdempotencyStore for DatabaseIdempotencyStore {
                 e
             ))),
         }?;
+
+        Ok(())
+    }
+
+    async fn release_claim(&self, event_id: &str) -> Result<()> {
+        use sea_orm::EntityTrait;
+
+        db_entity::Entity::delete_by_id(event_id.to_string())
+            .exec(&self.db)
+            .await
+            .map_err(|e| crate::error::TidewayError::internal(format!(
+                "Failed to release webhook event claim: {}",
+                e
+            )))?;
 
         Ok(())
     }
@@ -228,6 +299,23 @@ mod tests {
         // Cleanup should succeed (default no-op implementation)
         let result = store.cleanup_old_entries().await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_claim_event() {
+        let store = MemoryIdempotencyStore::new();
+
+        assert!(store.claim_event("event-claim").await.unwrap());
+        assert!(!store.claim_event("event-claim").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_memory_store_release_claim() {
+        let store = MemoryIdempotencyStore::new();
+
+        assert!(store.claim_event("event-release").await.unwrap());
+        store.release_claim("event-release").await.unwrap();
+        assert!(store.claim_event("event-release").await.unwrap());
     }
 
     #[tokio::test]
@@ -374,6 +462,25 @@ mod tests {
             store.mark_processed("evt_dup".to_string()).await.unwrap();
 
             assert!(store.is_processed("evt_dup").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn test_database_store_claim_event_is_atomic() {
+            let db = setup_db().await;
+            let store = DatabaseIdempotencyStore::new(db);
+
+            assert!(store.claim_event("evt_claim").await.unwrap());
+            assert!(!store.claim_event("evt_claim").await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn test_database_store_release_claim() {
+            let db = setup_db().await;
+            let store = DatabaseIdempotencyStore::new(db);
+
+            assert!(store.claim_event("evt_release").await.unwrap());
+            store.release_claim("evt_release").await.unwrap();
+            assert!(store.claim_event("evt_release").await.unwrap());
         }
     }
 

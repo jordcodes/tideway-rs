@@ -99,15 +99,6 @@ impl WebhookRouter {
     {
         let event_id = event.event_id().to_string();
 
-        // Check if already processed
-        if idempotency_store.is_processed(&event_id).await? {
-            tracing::debug!(
-                event_id = event.event_id(),
-                "Skipping already processed event"
-            );
-            return Ok(());
-        }
-
         // Prevent concurrent duplicate processing in this process.
         let inserted = {
             let mut in_flight = self
@@ -124,8 +115,28 @@ impl WebhookRouter {
             return Ok(());
         }
 
+        // Atomically claim event processing in the backing store.
+        let claimed = idempotency_store.claim_event(&event_id).await?;
+        if !claimed {
+            if let Ok(mut in_flight) = self.in_flight.lock() {
+                in_flight.remove(&event_id);
+            }
+            tracing::debug!(
+                event_id = event.event_id(),
+                "Skipping already processed/claimed event"
+            );
+            return Ok(());
+        }
+
         // Validate event
         if let Err(e) = handler.validate(event).await {
+            if let Err(release_err) = idempotency_store.release_claim(&event_id).await {
+                tracing::warn!(
+                    event_id = event.event_id(),
+                    error = %release_err,
+                    "Failed to release webhook claim after validation error"
+                );
+            }
             if let Ok(mut in_flight) = self.in_flight.lock() {
                 in_flight.remove(&event_id);
             }
@@ -135,12 +146,9 @@ impl WebhookRouter {
         // Handle event
         match handler.handle(event).await {
             Ok(()) => {
-                // Mark as processed
-                let mark_result = idempotency_store.mark_processed(event_id.clone()).await;
                 if let Ok(mut in_flight) = self.in_flight.lock() {
                     in_flight.remove(&event_id);
                 }
-                mark_result?;
 
                 tracing::info!(
                     event_id = event.event_id(),
@@ -151,6 +159,13 @@ impl WebhookRouter {
                 Ok(())
             }
             Err(e) => {
+                if let Err(release_err) = idempotency_store.release_claim(&event_id).await {
+                    tracing::warn!(
+                        event_id = event.event_id(),
+                        error = %release_err,
+                        "Failed to release webhook claim after handler error"
+                    );
+                }
                 if let Ok(mut in_flight) = self.in_flight.lock() {
                     in_flight.remove(&event_id);
                 }
