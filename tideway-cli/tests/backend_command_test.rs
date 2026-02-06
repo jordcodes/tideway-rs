@@ -41,6 +41,12 @@ fn test_backend_generates_webhook_processed_events_migration() {
     );
 }
 
+#[test]
+fn test_backend_migration_lib_matches_generated_files_for_b2c_and_b2b() {
+    assert_migration_lib_matches_generated_files("b2c");
+    assert_migration_lib_matches_generated_files("b2b");
+}
+
 fn run_tideway(args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
     for arg in args {
@@ -57,4 +63,54 @@ fn assert_success(output: &std::process::Output, label: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn assert_migration_lib_matches_generated_files(preset: &str) {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("src");
+    let migrations_dir = temp_dir.path().join("migration/src");
+
+    let output = run_tideway(&[
+        "backend",
+        preset,
+        "--name",
+        "my_app",
+        "--output",
+        output_dir.to_str().expect("output dir utf8"),
+        "--migrations-output",
+        migrations_dir.to_str().expect("migrations dir utf8"),
+    ]);
+    assert_success(&output, &format!("tideway backend {}", preset));
+
+    let lib_rs = fs::read_to_string(migrations_dir.join("lib.rs")).expect("read migration lib");
+    let migration_mods = parse_migration_mods(&lib_rs);
+    assert!(
+        !migration_mods.is_empty(),
+        "expected migration modules in lib.rs for {}",
+        preset
+    );
+
+    for module in migration_mods {
+        let file_path = migrations_dir.join(format!("{}.rs", module));
+        assert!(
+            file_path.exists(),
+            "missing migration file for module '{}' at {}",
+            module,
+            file_path.display()
+        );
+    }
+}
+
+fn parse_migration_mods(lib_rs: &str) -> Vec<String> {
+    lib_rs
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("mod m") && line.ends_with(';'))
+        .map(|line| {
+            line.strip_prefix("mod ")
+                .and_then(|rest| rest.strip_suffix(';'))
+                .expect("valid mod line")
+                .to_string()
+        })
+        .collect()
 }

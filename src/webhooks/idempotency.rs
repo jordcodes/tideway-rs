@@ -4,7 +4,15 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-/// Trait for storing processed webhook event IDs to prevent duplicate processing
+/// Trait for storing webhook processing claims to prevent duplicate work.
+///
+/// Recommended flow for handlers:
+/// 1. Call `claim_event(event_id)` before any side effects.
+/// 2. If it returns `false`, treat as duplicate and return success (idempotent skip).
+/// 3. If processing fails with a retryable/transient error, call `release_claim(event_id)`.
+/// 4. If processing succeeds (or permanently failed and should not retry), keep claim recorded.
+///
+/// Implementations should make `claim_event` atomic when possible.
 #[async_trait]
 pub trait IdempotencyStore: Send + Sync {
     /// Atomically claim an event for processing.
@@ -22,7 +30,10 @@ pub trait IdempotencyStore: Send + Sync {
         Ok(true)
     }
 
-    /// Check if an event has already been processed
+    /// Check whether an event is already claimed/processed.
+    ///
+    /// Primarily useful for diagnostics and compatibility paths.
+    /// Prefer `claim_event` for the processing gate.
     async fn is_processed(&self, event_id: &str) -> Result<bool>;
 
     /// Mark an event as processed
