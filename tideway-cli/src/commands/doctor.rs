@@ -176,6 +176,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     if needs_database {
         check_migration_setup(project_dir, &mut report);
         check_database_wiring(&src_dir, &mut report);
+        check_webhook_idempotency_setup(project_dir, &src_dir, &mut report);
         check_migration_execution_hint(
             project_dir,
             &src_dir,
@@ -683,4 +684,77 @@ fn check_migration_execution_hint(
                 .to_string(),
         );
     }
+}
+
+fn check_webhook_idempotency_setup(project_dir: &Path, src_dir: &Path, report: &mut DoctorReport) {
+    if !project_uses_database_webhook_idempotency(src_dir) {
+        return;
+    }
+
+    if has_webhook_idempotency_migration(project_dir) {
+        report.info.push(
+            "Webhook DB idempotency detected and migration marker found (webhook_processed_events)"
+                .to_string(),
+        );
+        return;
+    }
+
+    report.warnings.push(
+        "DatabaseIdempotencyStore detected, but webhook_processed_events migration marker is missing (add migration e.g. m009_create_webhook_processed_events.rs and register it in migration/src/lib.rs)".to_string(),
+    );
+}
+
+fn project_uses_database_webhook_idempotency(src_dir: &Path) -> bool {
+    any_rs_file_contains(src_dir, "DatabaseIdempotencyStore")
+}
+
+fn has_webhook_idempotency_migration(project_dir: &Path) -> bool {
+    let migration_src = project_dir.join("migration").join("src");
+    if !migration_src.exists() {
+        return false;
+    }
+
+    // Accept either explicit lib registration or table marker in migration files.
+    let migration_marker = "webhook_processed_events";
+
+    let lib_rs = migration_src.join("lib.rs");
+    if lib_rs.exists()
+        && fs::read_to_string(&lib_rs)
+            .map(|s| s.contains(migration_marker))
+            .unwrap_or(false)
+    {
+        return true;
+    }
+
+    any_rs_file_contains(&migration_src, migration_marker)
+}
+
+fn any_rs_file_contains(root: &Path, needle: &str) -> bool {
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            let Ok(entries) = fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                stack.push(entry.path());
+            }
+            continue;
+        }
+
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+
+        if fs::read_to_string(&path)
+            .map(|contents| contents.contains(needle))
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }

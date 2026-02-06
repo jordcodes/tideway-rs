@@ -586,3 +586,142 @@ async fn list_todos() {}
         report.warnings
     );
 }
+
+#[test]
+fn test_doctor_warns_when_webhook_db_idempotency_migration_missing() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    std::fs::create_dir_all(project_dir.join("migration/src")).expect("create migration src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join("src/webhooks.rs"),
+        r#"use tideway::webhooks::DatabaseIdempotencyStore;
+
+fn build(db: sea_orm::DatabaseConnection) -> DatabaseIdempotencyStore {
+    DatabaseIdempotencyStore::new(db)
+}
+"#,
+    )
+    .expect("write webhook src");
+    std::fs::write(project_dir.join("migration/src/lib.rs"), "// no webhook migration yet")
+        .expect("write migration lib");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .warnings
+            .iter()
+            .any(|line| line.contains("webhook_processed_events")),
+        "expected webhook idempotency migration warning, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn test_doctor_webhook_db_idempotency_no_warning_when_marker_present() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    std::fs::create_dir_all(project_dir.join("migration/src")).expect("create migration src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join("src/webhooks.rs"),
+        r#"use tideway::webhooks::DatabaseIdempotencyStore;
+
+fn build(db: sea_orm::DatabaseConnection) -> DatabaseIdempotencyStore {
+    DatabaseIdempotencyStore::new(db)
+}
+"#,
+    )
+    .expect("write webhook src");
+    std::fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        "mod m009_create_webhook_processed_events;\n",
+    )
+    .expect("write migration lib");
+    std::fs::write(
+        project_dir.join("migration/src/m009_create_webhook_processed_events.rs"),
+        "// creates webhook_processed_events table",
+    )
+    .expect("write migration");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|line| line.contains("webhook_processed_events")),
+        "did not expect webhook idempotency warning, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn test_doctor_json_reports_webhook_db_idempotency_warning() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    std::fs::create_dir_all(project_dir.join("migration/src")).expect("create migration src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join("src/webhooks.rs"),
+        "use tideway::webhooks::DatabaseIdempotencyStore;\n",
+    )
+    .expect("write webhook src");
+    std::fs::write(project_dir.join("migration/src/lib.rs"), "// no webhook marker")
+        .expect("write migration lib");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--json")
+        .arg("doctor")
+        .arg("--path")
+        .arg(project_dir.to_str().expect("utf8 path"))
+        .output()
+        .expect("run tideway doctor");
+
+    assert!(
+        output.status.success(),
+        "doctor command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("webhook_processed_events"),
+        "expected webhook idempotency warning in json output, got:\n{}",
+        stdout
+    );
+}
