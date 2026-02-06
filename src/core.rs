@@ -607,6 +607,95 @@ impl Default for AppBuilder {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{Router, routing::get};
+
+    struct PingModule;
+
+    impl RouteModule for PingModule {
+        fn routes(&self) -> Router<AppContext> {
+            Router::new().route("/ping", get(|| async { "pong" }))
+        }
+
+        fn prefix(&self) -> Option<&str> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn test_serve_applies_connect_info_for_per_ip_rate_limit() {
+        let port = {
+            let probe = match std::net::TcpListener::bind("127.0.0.1:0") {
+                Ok(listener) => listener,
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    // Some sandboxed CI/dev environments disallow opening sockets.
+                    // Skip this end-to-end network test in those environments.
+                    return;
+                }
+                Err(e) => panic!("should bind ephemeral probe port: {}", e),
+            };
+            let port = probe
+                .local_addr()
+                .expect("probe should have local addr")
+                .port();
+            drop(probe);
+            port
+        };
+
+        let rate_limit = crate::RateLimitConfig::builder()
+            .enabled(true)
+            .max_requests(1)
+            .window_seconds(60)
+            .per_ip()
+            .build();
+        let config = crate::ConfigBuilder::new()
+            .with_host("127.0.0.1")
+            .with_port(port)
+            .with_rate_limit(rate_limit)
+            .build()
+            .expect("config should be valid");
+
+        let app = App::with_config(config).register_module(PingModule);
+
+        let server = tokio::spawn(async move { app.serve().await });
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{}/ping", port);
+
+        // Wait for server startup (brief retry loop).
+        let mut ready = false;
+        for _ in 0..30 {
+            match client.get(&url).send().await {
+                Ok(resp) if resp.status().is_success() => {
+                    ready = true;
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        }
+        assert!(ready, "server did not become ready in time");
+
+        let first = client
+            .get(&url)
+            .send()
+            .await
+            .expect("first request should be sent");
+        assert_eq!(first.status(), reqwest::StatusCode::OK);
+
+        let second = client
+            .get(&url)
+            .send()
+            .await
+            .expect("second request should be sent");
+        assert_eq!(second.status(), reqwest::StatusCode::TOO_MANY_REQUESTS);
+
+        server.abort();
+        let _ = server.await;
+    }
+}
+
 /// Graceful shutdown signal handler
 async fn shutdown_signal() {
     let ctrl_c = async {

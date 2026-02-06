@@ -373,6 +373,14 @@ fn generate_migrations(
             "migrations/m003_create_verification_tokens",
         ),
         ("m004_create_billing.rs", "migrations/m004_create_billing"),
+        (
+            "m008_create_billing_plans.rs",
+            "migrations/m008_create_billing_plans",
+        ),
+        (
+            "m009_create_webhook_processed_events.rs",
+            "migrations/m009_create_webhook_processed_events",
+        ),
     ];
 
     for (filename, template_name) in core_migrations {
