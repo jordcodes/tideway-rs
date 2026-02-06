@@ -176,7 +176,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     if needs_database {
         check_migration_setup(project_dir, &mut report);
         check_database_wiring(&src_dir, &mut report);
-        check_webhook_idempotency_setup(project_dir, &src_dir, &mut report);
+        check_webhook_idempotency_setup(project_dir, &src_dir, fix, &mut report);
         check_migration_execution_hint(
             project_dir,
             &src_dir,
@@ -686,7 +686,12 @@ fn check_migration_execution_hint(
     }
 }
 
-fn check_webhook_idempotency_setup(project_dir: &Path, src_dir: &Path, report: &mut DoctorReport) {
+fn check_webhook_idempotency_setup(
+    project_dir: &Path,
+    src_dir: &Path,
+    fix: bool,
+    report: &mut DoctorReport,
+) {
     if !project_uses_database_webhook_idempotency(src_dir) {
         return;
     }
@@ -702,6 +707,12 @@ fn check_webhook_idempotency_setup(project_dir: &Path, src_dir: &Path, report: &
     report.warnings.push(
         "DatabaseIdempotencyStore detected, but webhook_processed_events migration marker is missing (add migration e.g. m009_create_webhook_processed_events.rs and register it in migration/src/lib.rs)".to_string(),
     );
+
+    if fix {
+        report.fixes.push(
+            "Webhook idempotency migration TODO: create migration/src/m009_create_webhook_processed_events.rs (or equivalent) that creates `webhook_processed_events(event_id PRIMARY KEY, processed_at TIMESTAMPTZ NOT NULL)` and register it in migration/src/lib.rs".to_string(),
+        );
+    }
 }
 
 fn project_uses_database_webhook_idempotency(src_dir: &Path) -> bool {

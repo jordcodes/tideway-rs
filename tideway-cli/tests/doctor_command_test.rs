@@ -725,3 +725,40 @@ tideway = { version = "0.7", features = ["database"] }
         stdout
     );
 }
+
+#[test]
+fn test_doctor_fix_includes_webhook_db_idempotency_todo_snippet() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    std::fs::create_dir_all(project_dir.join("migration/src")).expect("create migration src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join("src/webhooks.rs"),
+        "use tideway::webhooks::DatabaseIdempotencyStore;\n",
+    )
+    .expect("write webhook src");
+    std::fs::write(project_dir.join("migration/src/lib.rs"), "// no webhook marker")
+        .expect("write migration lib");
+
+    let report = analyze_project(project_dir, true).expect("analyze project");
+    assert!(
+        report
+            .fixes
+            .iter()
+            .any(|line| line.contains("Webhook idempotency migration TODO")),
+        "expected webhook idempotency TODO fix, got {:?}",
+        report.fixes
+    );
+}
