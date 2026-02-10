@@ -6,6 +6,7 @@ pub mod env;
 pub mod templates;
 
 use colored::Colorize;
+use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +33,7 @@ pub fn is_plan_mode() -> bool {
 }
 
 fn print_json(level: &str, message: &str) {
-    let payload = serde_json::json!({
+    let payload = json!({
         "level": level,
         "message": message,
     });
@@ -79,6 +80,48 @@ pub fn error_contract(problem: &str, primary_fix: &str, advanced_fix: &str) -> S
     format!(
         "Problem: {problem}\nPrimary fix: {primary_fix}\nAdvanced fix: {advanced_fix}"
     )
+}
+
+pub fn parse_error_contract(message: &str) -> Option<(String, String, String)> {
+    let mut problem = None;
+    let mut primary_fix = None;
+    let mut advanced_fix = None;
+
+    for line in message.lines() {
+        if let Some(value) = line.strip_prefix("Problem: ") {
+            problem = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("Primary fix: ") {
+            primary_fix = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("Advanced fix: ") {
+            advanced_fix = Some(value.trim().to_string());
+        }
+    }
+
+    match (problem, primary_fix, advanced_fix) {
+        (Some(problem), Some(primary_fix), Some(advanced_fix)) => {
+            Some((problem, primary_fix, advanced_fix))
+        }
+        _ => None,
+    }
+}
+
+pub fn print_structured_error(message: &str) {
+    if is_json_output() {
+        if let Some((problem, primary_fix, advanced_fix)) = parse_error_contract(message) {
+            let payload = json!({
+                "level": "error",
+                "message": message,
+                "problem": problem,
+                "primary_fix": primary_fix,
+                "advanced_fix": advanced_fix,
+            });
+            println!("{}", payload);
+        } else {
+            print_json("error", message);
+        }
+    } else {
+        print_error(message);
+    }
 }
 
 pub fn ensure_dir(path: &Path) -> std::io::Result<()> {

@@ -87,6 +87,34 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
     assert_error_contract(&output);
 }
 
+#[test]
+fn test_json_mode_emits_structured_error_fields() {
+    let output = run_tideway(&["--json", "new", "--no-prompt"]);
+    assert_failure(&output, "tideway --json new --no-prompt");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("\"level\":\"error\""),
+        "expected error level json, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("\"problem\":"),
+        "expected `problem` field, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("\"primary_fix\":"),
+        "expected `primary_fix` field, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("\"advanced_fix\":"),
+        "expected `advanced_fix` field, got:\n{}",
+        stdout
+    );
+}
+
 fn run_tideway(args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
     for arg in args {
@@ -106,21 +134,23 @@ fn assert_failure(output: &std::process::Output, label: &str) {
 }
 
 fn assert_error_contract(output: &std::process::Output) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}\n{}", stdout, stderr);
     assert!(
-        stderr.contains("Problem:"),
-        "expected `Problem:` in stderr, got:\n{}",
-        stderr
+        combined.contains("Problem:"),
+        "expected `Problem:` in output, got:\n{}",
+        combined
     );
     assert!(
-        stderr.contains("Primary fix:"),
-        "expected `Primary fix:` in stderr, got:\n{}",
-        stderr
+        combined.contains("Primary fix:"),
+        "expected `Primary fix:` in output, got:\n{}",
+        combined
     );
     assert!(
-        stderr.contains("Advanced fix:"),
-        "expected `Advanced fix:` in stderr, got:\n{}",
-        stderr
+        combined.contains("Advanced fix:"),
+        "expected `Advanced fix:` in output, got:\n{}",
+        combined
     );
 }
 
