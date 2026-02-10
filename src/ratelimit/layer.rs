@@ -79,13 +79,13 @@ struct RateLimitState {
 
 impl RateLimitState {
     fn new(config: RateLimitConfig) -> Self {
-        let max_requests =
-            NonZeroU32::new(config.max_requests.max(1)).expect("max_requests should be positive");
+        let max_requests = NonZeroU32::new(config.max_requests.max(1)).unwrap_or(NonZeroU32::MIN);
 
         // Create quota: max_requests per window_seconds
-        let quota = Quota::with_period(std::time::Duration::from_secs(config.window_seconds))
-            .expect("window_seconds should be positive")
-            .allow_burst(max_requests);
+        let quota =
+            Quota::with_period(std::time::Duration::from_secs(config.window_seconds.max(1)))
+                .unwrap_or_else(|| Quota::per_second(max_requests))
+                .allow_burst(max_requests);
 
         let limiter = if config.strategy == "per_ip" {
             LimiterState::PerIp(Arc::new(RateLimiter::keyed(quota)))

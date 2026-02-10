@@ -660,6 +660,7 @@ mod tests {
             .done()
             .unwrap()
             .build()
+            .unwrap()
     }
 
     #[tokio::test]

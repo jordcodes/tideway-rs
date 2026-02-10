@@ -113,12 +113,11 @@ pub struct LoginRateLimiter {
 impl LoginRateLimiter {
     /// Create a new login rate limiter with the given configuration.
     pub fn new(config: LoginRateLimitConfig) -> Self {
-        let max_attempts =
-            NonZeroU32::new(config.max_attempts.max(1)).expect("max_attempts should be positive");
+        let max_attempts = NonZeroU32::new(config.max_attempts.max(1)).unwrap_or(NonZeroU32::MIN);
 
         // Create quota: max_attempts per window_seconds
-        let quota = Quota::with_period(Duration::from_secs(config.window_seconds))
-            .expect("window_seconds should be positive")
+        let quota = Quota::with_period(Duration::from_secs(config.window_seconds.max(1)))
+            .unwrap_or_else(|| Quota::per_second(max_attempts))
             .allow_burst(max_attempts);
 
         Self {

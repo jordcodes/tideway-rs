@@ -29,7 +29,7 @@
 //!         .included_seats(5)
 //!         .features(["reports", "api", "priority_support"])
 //!         .done()?
-//!     .build();
+//!     .build()?;
 //!
 //! // Create manager
 //! let billing = BillingManager::new(store, config, plans);

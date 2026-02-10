@@ -33,6 +33,8 @@ pub enum BillingError {
     InvalidStripePrice { price_id: String, reason: String },
     /// A plan is missing required Stripe pricing metadata.
     MissingStripePrice { plan_id: String },
+    /// Duplicate plan ID encountered during plan construction.
+    DuplicatePlanId { plan_id: String },
 
     // Subscription errors
     /// No subscription found for the billable entity.
@@ -149,6 +151,9 @@ impl fmt::Display for BillingError {
             }
             Self::MissingStripePrice { plan_id } => {
                 write!(f, "Plan '{}' is missing required stripe_price", plan_id)
+            }
+            Self::DuplicatePlanId { plan_id } => {
+                write!(f, "Duplicate plan ID: '{}'", plan_id)
             }
             Self::NoSubscription { billable_id } => {
                 write!(f, "No subscription found for '{}'", billable_id)
@@ -288,6 +293,7 @@ impl From<BillingError> for crate::error::TidewayError {
             | BillingError::PlanHasActiveSubscriptions { .. }
             | BillingError::InvalidStripePrice { .. }
             | BillingError::MissingStripePrice { .. }
+            | BillingError::DuplicatePlanId { .. }
             | BillingError::InsufficientSeats { .. }
             | BillingError::InvalidSeatCount { .. }
             | BillingError::InvalidRedirectUrl { .. }
@@ -340,6 +346,7 @@ impl BillingError {
             | Self::PlanHasActiveSubscriptions { .. }
             | Self::InvalidStripePrice { .. }
             | Self::MissingStripePrice { .. }
+            | Self::DuplicatePlanId { .. }
             | Self::InsufficientSeats { .. }
             | Self::InvalidSeatCount { .. }
             | Self::InvalidRedirectUrl { .. }

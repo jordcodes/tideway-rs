@@ -23,7 +23,7 @@
 //!         .included_seats(5)
 //!         .features(["basic_reports", "advanced_reports", "api_access"])
 //!         .done()?
-//!     .build();
+//!     .build()?;
 //! ```
 //!
 //! # Dynamic Plans (Database-backed)
@@ -386,14 +386,16 @@ impl PlansBuilder {
     }
 
     /// Build the plans collection.
-    #[must_use]
-    pub fn build(self) -> Plans {
-        Plans { plans: self.plans }
+    pub fn build(self) -> Result<Plans, BillingError> {
+        Ok(Plans { plans: self.plans })
     }
 
-    fn add_plan(mut self, config: PlanConfig) -> Self {
+    fn add_plan(mut self, config: PlanConfig) -> Result<Self, BillingError> {
+        if self.plans.contains_key(&config.id) {
+            return Err(BillingError::DuplicatePlanId { plan_id: config.id });
+        }
         self.plans.insert(config.id.clone(), config);
-        self
+        Ok(self)
     }
 }
 
@@ -541,7 +543,7 @@ impl PlanBuilder {
             description: self.description,
             currency: self.currency,
         };
-        Ok(self.parent.add_plan(config))
+        self.parent.add_plan(config)
     }
 }
 
@@ -876,7 +878,8 @@ mod tests {
             .max_projects(100)
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         assert_eq!(plans.len(), 2);
         assert!(plans.contains("starter"));
@@ -896,7 +899,8 @@ mod tests {
             .features(["reports", "api_access"])
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let starter = plans.get("starter").unwrap();
         assert!(starter.has_feature("reports"));
@@ -921,7 +925,8 @@ mod tests {
             .included_seats(5)
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let starter = plans.get("starter").unwrap();
         assert_eq!(starter.included_seats, 3);
@@ -949,7 +954,8 @@ mod tests {
             .custom_limit("widgets", 500)
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let starter = plans.get("starter").unwrap();
         assert!(starter.check_limit("projects", 5).is_allowed());
@@ -973,7 +979,8 @@ mod tests {
             .stripe_price("price_enterprise")
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let enterprise = plans.get("enterprise").unwrap();
         assert_eq!(
@@ -993,7 +1000,8 @@ mod tests {
             .stripe_price("price_xyz789")
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let found = plans.find_by_stripe_price("price_abc123");
         assert!(found.is_some());
@@ -1015,7 +1023,8 @@ mod tests {
             .extra_seat_price("price_seat")
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let ids = plans.all_stripe_price_ids();
         assert!(ids.contains(&"price_starter"));
@@ -1035,7 +1044,8 @@ mod tests {
             .stripe_price("price_pro")
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let starter = plans.get("starter").unwrap();
         assert_eq!(starter.trial_days, Some(14));
@@ -1059,7 +1069,8 @@ mod tests {
             .features(["reports", "api_access", "priority_support"])
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let starter = plans.get("starter").unwrap();
         let pro = plans.get("pro").unwrap();
@@ -1088,7 +1099,8 @@ mod tests {
             .features(["reports", "api_access"])
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let starter = plans.get("starter").unwrap();
         let pro = plans.get("pro").unwrap();
@@ -1109,7 +1121,8 @@ mod tests {
             .features(["reports"])
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let starter = plans.get("starter").unwrap();
 
@@ -1132,7 +1145,8 @@ mod tests {
             .features(["reports", "api_access"])
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let monthly = plans.get("monthly").unwrap();
         let yearly = plans.get("yearly").unwrap();
@@ -1155,7 +1169,8 @@ mod tests {
             .included_seats(3)
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let pro = plans.get("pro").unwrap();
         let starter = plans.get("starter").unwrap();
@@ -1178,7 +1193,8 @@ mod tests {
             .included_seats(3)
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let pro = plans.get("pro").unwrap();
         let starter = plans.get("starter").unwrap();
@@ -1209,7 +1225,8 @@ mod tests {
             .included_seats(10) // More included seats, but no extra seats support
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let pro = plans.get("pro").unwrap();
         let basic = plans.get("basic").unwrap();
@@ -1251,7 +1268,8 @@ mod tests {
             .features(["basic", "reports", "api_access", "sso", "audit"])
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let free = plans.get("free").unwrap();
         let suggestions = plans.suggest_upgrades(free);
@@ -1281,13 +1299,39 @@ mod tests {
             .features(["basic", "reports", "api_access"])
             .done()
             .unwrap()
-            .build();
+            .build()
+            .unwrap();
 
         let free = plans.get("free").unwrap();
         let next = plans.next_tier_up(free);
 
         assert!(next.is_some());
         assert_eq!(next.unwrap().id, "starter"); // Minimal upgrade
+    }
+
+    #[test]
+    fn test_done_without_stripe_price_returns_error() {
+        let result = Plans::builder().plan("starter").done();
+        assert!(matches!(
+            result,
+            Err(BillingError::MissingStripePrice { plan_id }) if plan_id == "starter"
+        ));
+    }
+
+    #[test]
+    fn test_duplicate_plan_id_returns_error() {
+        let result = Plans::builder()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .done()
+            .unwrap()
+            .plan("starter")
+            .stripe_price("price_starter_v2")
+            .done();
+        assert!(matches!(
+            result,
+            Err(BillingError::DuplicatePlanId { plan_id }) if plan_id == "starter"
+        ));
     }
 
     #[test]

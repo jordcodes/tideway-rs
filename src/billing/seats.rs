@@ -366,6 +366,7 @@ mod tests {
             .done()
             .unwrap()
             .build()
+            .unwrap()
     }
 
     fn create_test_subscription(

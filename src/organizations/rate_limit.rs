@@ -109,19 +109,17 @@ pub struct InvitationRateLimiter {
 impl InvitationRateLimiter {
     /// Create a new invitation rate limiter with the given configuration.
     pub fn new(config: InvitationRateLimitConfig) -> Self {
-        let max_per_org =
-            NonZeroU32::new(config.max_per_org.max(1)).expect("max_per_org should be positive");
-        let max_per_actor =
-            NonZeroU32::new(config.max_per_actor.max(1)).expect("max_per_actor should be positive");
+        let max_per_org = NonZeroU32::new(config.max_per_org.max(1)).unwrap_or(NonZeroU32::MIN);
+        let max_per_actor = NonZeroU32::new(config.max_per_actor.max(1)).unwrap_or(NonZeroU32::MIN);
 
-        let window = Duration::from_secs(config.window_seconds);
+        let window = Duration::from_secs(config.window_seconds.max(1));
 
         let org_quota = Quota::with_period(window)
-            .expect("window_seconds should be positive")
+            .unwrap_or_else(|| Quota::per_second(max_per_org))
             .allow_burst(max_per_org);
 
         let actor_quota = Quota::with_period(window)
-            .expect("window_seconds should be positive")
+            .unwrap_or_else(|| Quota::per_second(max_per_actor))
             .allow_burst(max_per_actor);
 
         Self {

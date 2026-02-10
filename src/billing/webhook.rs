@@ -522,6 +522,7 @@ mod tests {
             .done()
             .unwrap()
             .build()
+            .unwrap()
     }
 
     fn create_test_webhook_secret() -> String {
