@@ -1074,7 +1074,7 @@ async fn main() {
 
     let err = tideway_cli::commands::resource::run(args).expect_err("expected error");
     assert!(
-        err.to_string().contains("uuid dependency"),
+        err.to_string().contains("Problem:") && err.to_string().contains("Advanced fix:"),
         "unexpected error: {}",
         err
     );

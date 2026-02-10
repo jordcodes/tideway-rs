@@ -5,15 +5,16 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::{print_success, print_warning};
+use crate::{error_contract, print_success, print_warning};
 
 pub fn ensure_project_dir(project_dir: &Path) -> Result<()> {
     let cargo_toml = project_dir.join("Cargo.toml");
     if !cargo_toml.exists() {
-        return Err(anyhow::anyhow!(
-            "Cargo.toml not found in {}",
-            project_dir.display()
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            &format!("Cargo.toml not found in {}", project_dir.display()),
+            "Run this command in a Rust project root.",
+            "For a new app, run `tideway new <app>` first."
+        )));
     }
 
     let main_rs = project_dir.join("src").join("main.rs");

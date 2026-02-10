@@ -7,7 +7,7 @@ use std::process::Command;
 
 use crate::cli::{MigrateArgs, MigrateBackend};
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
-use crate::{is_plan_mode, print_info, print_success, print_warning};
+use crate::{error_contract, is_plan_mode, print_info, print_success, print_warning};
 
 pub fn run(args: MigrateArgs) -> Result<()> {
     if is_plan_mode() {
@@ -25,18 +25,22 @@ pub fn run(args: MigrateArgs) -> Result<()> {
         let backend = resolve_backend(&project_dir, args.backend)?;
         return match backend {
             MigrateBackend::SeaOrm => init_sea_orm_migration(&project_dir),
-            MigrateBackend::Auto => Err(anyhow::anyhow!(
-                "Unable to detect migration backend; pass --backend"
-            )),
+            MigrateBackend::Auto => Err(anyhow::anyhow!(error_contract(
+                "Unable to detect migration backend.",
+                "Pass `--backend sea-orm`.",
+                "Add SeaORM dependencies and Tideway `database` feature, then rerun."
+            ))),
         };
     }
 
     let backend = resolve_backend(&project_dir, args.backend)?;
     match backend {
         MigrateBackend::SeaOrm => run_sea_orm_cli(&project_dir, &args),
-        MigrateBackend::Auto => Err(anyhow::anyhow!(
-            "Unable to detect migration backend; pass --backend"
-        )),
+        MigrateBackend::Auto => Err(anyhow::anyhow!(error_contract(
+            "Unable to detect migration backend.",
+            "Pass `--backend sea-orm`.",
+            "Add SeaORM dependencies and Tideway `database` feature, then rerun."
+        ))),
     }
 }
 
@@ -67,9 +71,11 @@ fn detect_backend(project_dir: &Path) -> Result<MigrateBackend> {
     if has_sea_orm || has_tideway_db {
         Ok(MigrateBackend::SeaOrm)
     } else {
-        Err(anyhow::anyhow!(
-            "Could not detect migration backend (add sea-orm or pass --backend)"
-        ))
+        Err(anyhow::anyhow!(error_contract(
+            "Could not detect migration backend.",
+            "Add SeaORM dependencies or use `--backend sea-orm`.",
+            "For greenfield apps, run `tideway new <app> --preset api`."
+        )))
     }
 }
 
@@ -130,15 +136,24 @@ fn ensure_database_url(project_dir: &Path) -> Result<()> {
     }
 
     Err(anyhow::anyhow!(
-        "DATABASE_URL is missing (set it in .env or the environment)"
+        "{}",
+        error_contract(
+            "DATABASE_URL is missing.",
+            "Set DATABASE_URL in `.env` and rerun `tideway migrate`.",
+            "Run `tideway dev --fix-env` to bootstrap `.env` from `.env.example`."
+        )
     ))
 }
 
 fn validate_database_url(value: &str) -> Result<()> {
     if !value.contains("://") {
         return Err(anyhow::anyhow!(
-            "DATABASE_URL looks invalid (missing scheme): {}",
-            value
+            "{}",
+            error_contract(
+                &format!("DATABASE_URL looks invalid (missing scheme): {}", value),
+                "Use a URL like `postgres://...` or `sqlite:...`.",
+                "Regenerate config with `tideway doctor --fix` and update DATABASE_URL."
+            )
         ));
     }
 
@@ -149,8 +164,12 @@ fn validate_database_url(value: &str) -> Result<()> {
 
     if !valid {
         return Err(anyhow::anyhow!(
-            "DATABASE_URL scheme looks invalid: {}",
-            value
+            "{}",
+            error_contract(
+                &format!("DATABASE_URL scheme looks invalid: {}", value),
+                "Use `postgres://`, `postgresql://`, or `sqlite:`.",
+                "Update `.env` and rerun `tideway migrate status`."
+            )
         ));
     }
 

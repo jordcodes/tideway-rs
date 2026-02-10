@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
-use crate::{ensure_dir, print_info, print_success, print_warning, write_file};
+use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
 
 const APP_BUILDER_START_MARKER: &str = "tideway:app-builder:start";
 const APP_BUILDER_END_MARKER: &str = "tideway:app-builder:end";
@@ -15,10 +15,11 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
     let src_dir = project_dir.join("src");
     if !src_dir.exists() {
-        return Err(anyhow::anyhow!(
-            "src/ not found in {}",
-            project_dir.display()
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            &format!("src/ not found in {}", project_dir.display()),
+            "Run from a Tideway app root containing src/.",
+            "For a new app, run `tideway new <app>` then rerun this command."
+        )));
     }
 
     let resource_name = normalize_name(&args.name);
@@ -63,57 +64,79 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     }
 
     if args.repo && !args.db {
-        return Err(anyhow::anyhow!(
-            "Repository scaffolding requires --db (run `tideway resource {} --db --repo`)",
-            resource_name
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            "Repository scaffolding requires --db.",
+            &format!("Run `tideway resource {} --db --repo`.", resource_name),
+            "Skip `--repo` if you only want route stubs."
+        )));
     }
 
     if args.repo_tests && !args.repo {
-        return Err(anyhow::anyhow!(
-            "Repository tests require --repo (run `tideway resource {} --db --repo --repo-tests`)",
-            resource_name
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            "Repository tests require --repo.",
+            &format!(
+                "Run `tideway resource {} --db --repo --repo-tests`.",
+                resource_name
+            ),
+            "Drop `--repo-tests` if repository scaffolding is not needed."
+        )));
     }
 
     if args.service && !args.repo {
-        return Err(anyhow::anyhow!(
-            "Service scaffolding requires --repo (run `tideway resource {} --db --repo --service`)",
-            resource_name
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            "Service scaffolding requires --repo.",
+            &format!(
+                "Run `tideway resource {} --db --repo --service`.",
+                resource_name
+            ),
+            "Drop `--service` if you only need route/repository layers."
+        )));
     }
 
     if args.search && !args.paginate {
-        return Err(anyhow::anyhow!(
-            "Search requires --paginate (run `tideway resource {} --db --paginate --search`)",
-            resource_name
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            "Search requires --paginate.",
+            &format!(
+                "Run `tideway resource {} --db --paginate --search`.",
+                resource_name
+            ),
+            "Drop `--search` for basic list endpoints."
+        )));
     }
 
     if args.search && !args.db {
-        return Err(anyhow::anyhow!(
-            "Search requires --db (run `tideway resource {} --db --paginate --search`)",
-            resource_name
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            "Search requires --db.",
+            &format!(
+                "Run `tideway resource {} --db --paginate --search`.",
+                resource_name
+            ),
+            "Drop `--search` if using non-DB stubs."
+        )));
     }
 
     if args.paginate && !args.db {
-        return Err(anyhow::anyhow!(
-            "Pagination requires --db (run `tideway resource {} --db --paginate`)",
-            resource_name
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            "Pagination requires --db.",
+            &format!("Run `tideway resource {} --db --paginate`.", resource_name),
+            "Drop `--paginate` for non-DB stubs."
+        )));
     }
 
     if args.db {
         if !has_database {
-            return Err(anyhow::anyhow!(
-                "Database scaffolding requires the Tideway `database` feature (run `tideway add database`, or for greenfield apps use `tideway new <app> --preset api`)"
-            ));
+            return Err(anyhow::anyhow!(error_contract(
+                "Database scaffolding requires the Tideway `database` feature.",
+                "For greenfield apps, run `tideway new <app> --preset api`.",
+                "For existing apps, run `tideway add database`."
+            )));
         }
         if !has_dependency(&cargo_path, "sea-orm") {
-            return Err(anyhow::anyhow!(
-                "SeaORM dependency not found (run `tideway add database`, or for greenfield apps use `tideway new <app> --preset api`)"
-            ));
+            return Err(anyhow::anyhow!(error_contract(
+                "SeaORM dependency not found.",
+                "For greenfield apps, run `tideway new <app> --preset api`.",
+                "For existing apps, run `tideway add database`."
+            )));
         }
         if matches!(args.id_type, ResourceIdType::Uuid) && !has_dependency(&cargo_path, "uuid") {
             if args.add_uuid {
@@ -121,7 +144,12 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 print_success("Added uuid dependency to Cargo.toml");
             } else {
                 return Err(anyhow::anyhow!(
-                    "UUID id type requires the uuid dependency (rerun with --add-uuid)"
+                    "{}",
+                    error_contract(
+                        "UUID id type requires the `uuid` dependency.",
+                        "Rerun with `--add-uuid`.",
+                        "Add `uuid` manually in Cargo.toml then rerun."
+                    )
                 ));
             }
         }
@@ -134,9 +162,11 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 args.id_type,
             )?,
             DbBackend::Auto => {
-                return Err(anyhow::anyhow!(
-                    "Unable to detect database backend (use --db-backend)"
-                ));
+                return Err(anyhow::anyhow!(error_contract(
+                    "Unable to detect database backend.",
+                    "Pass `--db-backend sea-orm`.",
+                    "Add SeaORM dependencies, then rerun with `--db-backend auto`."
+                )));
             }
         }
 
@@ -218,9 +248,11 @@ fn detect_db_backend(project_dir: &Path) -> Result<DbBackend> {
     if has_sea_orm || has_tideway_db {
         Ok(DbBackend::SeaOrm)
     } else {
-        Err(anyhow::anyhow!(
-            "Could not detect database backend (add sea-orm or pass --db-backend)"
-        ))
+        Err(anyhow::anyhow!(error_contract(
+            "Could not detect database backend.",
+            "Add SeaORM dependencies and Tideway `database` feature.",
+            "Pass `--db-backend sea-orm` explicitly."
+        )))
     }
 }
 

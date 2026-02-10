@@ -11,7 +11,8 @@ use toml_edit::{Array, InlineTable, Item, Table, Value};
 use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success, print_warning,
+    TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info, print_success,
+    print_warning,
     write_file,
 };
 
@@ -46,7 +47,13 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     let name = args
         .name
         .clone()
-        .ok_or_else(|| anyhow!("Project name is required (e.g. `tideway new my_app`)"))?;
+        .ok_or_else(|| {
+            anyhow!(error_contract(
+                "Project name is required.",
+                "Run `tideway new my_app`.",
+                "Use `--path` to control output location separately from project name."
+            ))
+        })?;
 
     let mut wizard = WizardOptions::default();
     if should_prompt(&args) {
@@ -68,10 +75,11 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     let target_dir = PathBuf::from(&dir_name);
     if target_dir.exists() {
         if !args.force {
-            return Err(anyhow!(
-                "Destination already exists: {} (use --force to overwrite)",
-                target_dir.display()
-            ));
+            return Err(anyhow!(error_contract(
+                &format!("Destination already exists: {}", target_dir.display()),
+                "Choose a new app name/path for a clean scaffold.",
+                "Rerun with `--force` to overwrite existing files."
+            )));
         }
         print_warning(&format!(
             "Destination exists, files may be overwritten: {}",

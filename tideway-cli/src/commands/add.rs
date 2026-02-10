@@ -7,7 +7,10 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{AddArgs, AddFeature};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{TIDEWAY_VERSION, ensure_dir, print_info, print_success, print_warning, write_file};
+use crate::{
+    TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success, print_warning,
+    write_file,
+};
 
 const APP_BUILDER_START_MARKER: &str = "tideway:app-builder:start";
 const APP_BUILDER_END_MARKER: &str = "tideway:app-builder:end";
@@ -17,10 +20,11 @@ pub fn run(args: AddArgs) -> Result<()> {
     let cargo_path = project_dir.join("Cargo.toml");
 
     if !cargo_path.exists() {
-        return Err(anyhow::anyhow!(
-            "Cargo.toml not found in {}",
-            project_dir.display()
-        ));
+        return Err(anyhow::anyhow!(error_contract(
+            &format!("Cargo.toml not found in {}", project_dir.display()),
+            "Run this command inside a Rust project root.",
+            "For greenfield apps, run `tideway new <app>` first."
+        )));
     }
 
     let cargo_contents = fs::read_to_string(&cargo_path)

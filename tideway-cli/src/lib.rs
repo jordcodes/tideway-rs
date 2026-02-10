@@ -75,6 +75,12 @@ pub fn print_error(message: &str) {
     }
 }
 
+pub fn error_contract(problem: &str, primary_fix: &str, advanced_fix: &str) -> String {
+    format!(
+        "Problem: {problem}\nPrimary fix: {primary_fix}\nAdvanced fix: {advanced_fix}"
+    )
+}
+
 pub fn ensure_dir(path: &Path) -> std::io::Result<()> {
     if is_plan_mode() {
         print_info(&format!("Plan: create directory {}", path.display()));
