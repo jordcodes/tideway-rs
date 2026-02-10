@@ -86,14 +86,28 @@ impl Plans {
 
     /// Merge plans from another Plans collection.
     ///
-    /// Plans from `other` will overwrite plans with the same ID.
-    pub fn merge(&mut self, other: Plans) {
-        self.plans.extend(other.plans);
+    /// Returns an error if a plan ID from `other` already exists.
+    pub fn merge(&mut self, other: Plans) -> Result<(), BillingError> {
+        for (id, config) in other.plans {
+            if self.plans.contains_key(&id) {
+                return Err(BillingError::DuplicatePlanId { plan_id: id });
+            }
+            self.plans.insert(id, config);
+        }
+        Ok(())
     }
 
     /// Add a single plan config.
-    pub fn add(&mut self, config: PlanConfig) {
+    ///
+    /// Returns an error if a plan with the same ID already exists.
+    pub fn add(&mut self, config: PlanConfig) -> Result<(), BillingError> {
+        if self.plans.contains_key(&config.id) {
+            return Err(BillingError::DuplicatePlanId {
+                plan_id: config.id.clone(),
+            });
+        }
         self.plans.insert(config.id.clone(), config);
+        Ok(())
     }
 
     /// Get a plan by ID.
@@ -1328,6 +1342,54 @@ mod tests {
             .plan("starter")
             .stripe_price("price_starter_v2")
             .done();
+        assert!(matches!(
+            result,
+            Err(BillingError::DuplicatePlanId { plan_id }) if plan_id == "starter"
+        ));
+    }
+
+    #[test]
+    fn test_add_duplicate_plan_id_returns_error() {
+        let mut plans = Plans::new();
+        let plan = PlanConfig {
+            id: "starter".to_string(),
+            stripe_price_id: "price_starter".to_string(),
+            extra_seat_price_id: None,
+            included_seats: 1,
+            features: HashSet::new(),
+            limits: PlanLimits::default(),
+            trial_days: None,
+            display_name: None,
+            description: None,
+            currency: None,
+        };
+
+        plans.add(plan.clone()).unwrap();
+        let result = plans.add(plan);
+        assert!(matches!(
+            result,
+            Err(BillingError::DuplicatePlanId { plan_id }) if plan_id == "starter"
+        ));
+    }
+
+    #[test]
+    fn test_merge_duplicate_plan_id_returns_error() {
+        let mut existing = Plans::builder()
+            .plan("starter")
+            .stripe_price("price_starter")
+            .done()
+            .unwrap()
+            .build()
+            .unwrap();
+        let incoming = Plans::builder()
+            .plan("starter")
+            .stripe_price("price_starter_new")
+            .done()
+            .unwrap()
+            .build()
+            .unwrap();
+
+        let result = existing.merge(incoming);
         assert!(matches!(
             result,
             Err(BillingError::DuplicatePlanId { plan_id }) if plan_id == "starter"

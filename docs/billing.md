@@ -19,14 +19,14 @@ async fn main() -> tideway::Result<()> {
             .included_seats(3)
             .features(["reports", "export"])
             .trial_days(14)
-            .done()
+            .done()?
         .plan("pro")
             .stripe_price("price_pro_monthly")
             .extra_seat_price("price_seat_monthly")
             .included_seats(5)
             .features(["reports", "export", "api", "priority_support"])
-            .done()
-        .build();
+            .done()?
+        .build()?;
 
     // 2. Create the Stripe client
     let client = LiveStripeClient::new(
@@ -89,8 +89,8 @@ let plans = Plans::builder()
         .stripe_price("price_starter_gbp")  // GBP price in Stripe
         .currency("gbp")                     // Optional: for display purposes
         .included_seats(3)
-        .done()
-    .build();
+        .done()?
+    .build()?;
 ```
 
 The module defaults to GBP for mock clients in tests. For other currencies:
@@ -123,7 +123,7 @@ let plans = Plans::builder()
         .stripe_price("price_free")
         .included_seats(1)
         .features(["basic"])
-        .done()
+        .done()?
     .plan("starter")
         .stripe_price("price_starter")
         .extra_seat_price("price_seat")  // Enable seat-based billing
@@ -133,7 +133,7 @@ let plans = Plans::builder()
         .max_projects(10)
         .max_storage_mb(5000)
         .custom_limit("api_calls", 1000)
-        .done()
+        .done()?
     .plan("pro")
         .stripe_price("price_pro")
         .extra_seat_price("price_seat")
@@ -142,8 +142,8 @@ let plans = Plans::builder()
         .max_projects(100)
         .max_storage_mb(50000)
         .custom_limit("api_calls", 100_000)
-        .done()
-    .build();
+        .done()?
+    .build()?;
 ```
 
 ### Dynamic Plans (Database-Backed)
@@ -261,10 +261,10 @@ let defaults = Plans::builder()
         .stripe_price("price_free")
         .included_seats(1)
         .features(["basic"])
-        .done()
-    .build();
+        .done()?
+    .build()?;
 
-plans.merge(defaults);  // Database plans take precedence
+plans.merge(defaults)?;
 ```
 
 ### Converting Between Plan Types
@@ -1191,8 +1191,8 @@ async fn test_checkout_flow() {
     let plans = Plans::builder()
         .plan("starter")
             .stripe_price("price_test")
-            .done()
-        .build();
+            .done()?
+        .build()?;
 
     let manager = CheckoutManager::new(
         store,
