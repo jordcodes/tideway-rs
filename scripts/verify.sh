@@ -19,6 +19,9 @@ bash scripts/check_cli_fs_writes.sh
 echo "[verify] public api surface"
 bash scripts/check_public_api_surface.sh
 
+echo "[verify] messaging contract"
+cargo test -p tideway-cli --test messaging_contract_test
+
 echo "[verify] tideway-cli tests"
 cargo test -p tideway-cli
 

@@ -52,10 +52,10 @@
 Tideway now has a DX-first roadmap focused on the original goal:
 "batteries included, modular API, fastest path to shipping Rust APIs."
 
-See `ROADMAP_2026_DX.md` for:
-- Phase DX-1 through DX-5 outcomes and acceptance criteria
-- Explicit success metrics (time-to-first-endpoint, idempotency, CI regression targets)
-- A concrete first 2-week execution plan for DX-1
+See `ROADMAP_2026_DX_EXECUTION.md` (source of truth) for:
+- Canonical path and command taxonomy (primary vs advanced)
+- 90-day DX execution plan with acceptance criteria
+- Ownership model, metrics dashboard, and immediate backlog
 
 ## Notes
 

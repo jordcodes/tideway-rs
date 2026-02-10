@@ -10,7 +10,7 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
 
 ## Current Direction (DX-First)
 - Product goal: batteries-included, modular Rust APIs with fastest path to shipping.
-- Source of truth roadmap: `ROADMAP_2026_DX.md`.
+- Source of truth roadmap: `ROADMAP_2026_DX_EXECUTION.md`.
 - Prioritize work in this order:
   1. Golden-path speed (`new` -> `dev` -> first endpoint)
   2. Scaffold reliability and idempotency

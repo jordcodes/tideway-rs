@@ -1,4 +1,9 @@
-# Tideway 2026 DX-First Roadmap
+# Tideway 2026 DX-First Roadmap (Archived)
+
+Status: archived snapshot.
+Source of truth: `ROADMAP_2026_DX_EXECUTION.md`.
+
+This file is kept for historical context only. Do not update planning here.
 
 ## Product Goal
 Build the fastest path to shipping Rust APIs with a batteries-included framework that stays modular as apps grow.
