@@ -28,22 +28,22 @@ pub enum Commands {
     /// Diagnose feature and project setup issues
     Doctor(DoctorArgs),
 
-    /// Generate frontend components
+    /// Advanced: generate frontend components
     Generate(GenerateArgs),
 
-    /// Generate backend scaffolding (routes, entities, migrations)
+    /// Advanced: generate backend scaffolding (routes, entities, migrations)
     Backend(BackendArgs),
 
-    /// Add Tideway features and scaffolding to an existing project
+    /// Advanced: add Tideway features and scaffolding to an existing project
     Add(AddArgs),
 
-    /// Initialize main.rs by scanning for modules and wiring them together
+    /// Advanced: initialize main.rs by scanning modules and wiring them together
     Init(InitArgs),
 
     /// Generate a CRUD resource module
     Resource(ResourceArgs),
 
-    /// Set up frontend dependencies (Tailwind, shadcn components, etc.)
+    /// Advanced: set up frontend dependencies (Tailwind, shadcn components, etc.)
     Setup(SetupArgs),
 
     /// Run a Tideway app in dev mode (loads env, optional migrations)

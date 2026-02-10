@@ -8,6 +8,23 @@ This doc lists the Tideway CLI commands with common examples.
 cargo install tideway-cli
 ```
 
+## Command Groups
+
+Primary (recommended for most users):
+- `new`
+- `dev`
+- `resource`
+- `doctor`
+- `migrate`
+
+Advanced (existing projects, nonstandard workflows, or legacy compatibility):
+- `add`
+- `backend`
+- `init`
+- `generate`
+- `setup`
+- `templates`
+
 ## Commands
 
 Global options:
@@ -74,7 +91,7 @@ Available presets:
 - `saas` - b2b backend modules (auth, billing, organizations, admin) + api defaults and production scaffolding
 - `worker` - jobs-first scaffold (database + jobs + redis + metrics) with config, docker, CI, env
 
-### `tideway init`
+### `tideway init` (advanced)
 
 Scan your existing project and generate `main.rs` wiring.
 
@@ -88,7 +105,7 @@ Minimal entrypoint:
 tideway init --minimal
 ```
 
-### `tideway add`
+### `tideway add` (advanced)
 
 Add Tideway features and optional scaffolding.
 
@@ -143,7 +160,7 @@ Fix missing `.env.example`:
 tideway doctor --fix
 ```
 
-### `tideway backend`
+### `tideway backend` (advanced)
 
 Generate a full backend preset.
 
@@ -156,7 +173,7 @@ Compatibility note:
 - Current B2B scaffolds generate `organization_members` (entity/module: `organization_member`).
 - Older generated apps may use `memberships`/`membership` for the same concept.
 
-### `tideway generate`
+### `tideway generate` (advanced)
 
 Generate frontend components.
 
@@ -166,7 +183,7 @@ tideway generate billing --with-views
 tideway generate all --framework vue
 ```
 
-### `tideway setup`
+### `tideway setup` (advanced)
 
 Install Tailwind + shadcn-vue for your frontend.
 
@@ -199,5 +216,5 @@ tideway migrate up -- --num 2
 
 ## Notes
 
-- `tideway new` is the fastest path to a runnable API.
+- Canonical path: `new` -> `dev --fix-env` -> `resource ...` -> `migrate`.
 - `tideway doctor` is a quick sanity check before deploying.
