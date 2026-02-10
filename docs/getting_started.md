@@ -42,6 +42,7 @@ This command scaffolds routes, database entity/migration, repository, service, p
 
 If you prefer manual route modules and composition contracts, see:
 - `docs/module_contracts.md`
+- `docs/advanced_composition.md`
 - `README.md` Core Concepts section
 
 If you enable the `openapi` feature, you can define small docs per module and merge them:

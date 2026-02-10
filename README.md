@@ -205,7 +205,7 @@ When using Tideway as a dependency, import from the `tideway` crate:
 use tideway::{App, ConfigBuilder, RouteModule, Result, TidewayError};
 ```
 
-You can define modules with less boilerplate using the `module!` macro:
+Preferred module style for onboarding: use `module!` + `register_module`.
 
 ```rust
 tideway::module!(
@@ -218,16 +218,9 @@ tideway::module!(
 );
 ```
 
-Advanced alternative: you can also group multiple methods for the same path:
-
+Preferred registration style:
 ```rust
-tideway::module!(
-    UsersModule,
-    prefix = "/api",
-    routes = [
-        ("/users", get => list_users, post => create_user),
-    ]
-);
+let app = App::new().register_module(UsersModule);
 ```
 
 **OpenAPI per module (optional advanced):**
@@ -240,6 +233,9 @@ mod openapi_docs {
 #[cfg(feature = "openapi")]
 let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc);
 ```
+
+For advanced composition variants (`register_modules!`, `register_optional_modules!`, grouped route syntax),
+see `docs/advanced_composition.md`.
 
 **Quick guards with `ensure!`:**
 ```rust

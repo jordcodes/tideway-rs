@@ -22,34 +22,34 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Create a new Tideway starter app
+    /// Primary: create a new Tideway starter app (use for greenfield projects)
     New(NewArgs),
 
-    /// Diagnose feature and project setup issues
+    /// Primary: diagnose feature and project setup issues
     Doctor(DoctorArgs),
 
-    /// Advanced: generate frontend components
+    /// Advanced: generate frontend components (not for backend API scaffolding)
     Generate(GenerateArgs),
 
-    /// Advanced: generate backend scaffolding (routes, entities, migrations)
+    /// Advanced: generate backend scaffolding for existing/nonstandard projects (not for greenfield)
     Backend(BackendArgs),
 
-    /// Advanced: add Tideway features and scaffolding to an existing project
+    /// Advanced: add features/scaffolding to an existing project (not the default new-app path)
     Add(AddArgs),
 
-    /// Advanced: initialize main.rs by scanning modules and wiring them together
+    /// Advanced: initialize main.rs by scanning modules in existing projects (not for greenfield)
     Init(InitArgs),
 
-    /// Generate a CRUD resource module
+    /// Primary: generate a CRUD resource module
     Resource(ResourceArgs),
 
-    /// Advanced: set up frontend dependencies (Tailwind, shadcn components, etc.)
+    /// Advanced: set up frontend dependencies (not required for API-only workflows)
     Setup(SetupArgs),
 
-    /// Run a Tideway app in dev mode (loads env, optional migrations)
+    /// Primary: run a Tideway app in dev mode (loads env, optional migrations)
     Dev(DevArgs),
 
-    /// Run database migrations
+    /// Primary: run database migrations
     Migrate(MigrateArgs),
 
     /// List available templates

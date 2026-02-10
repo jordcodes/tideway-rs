@@ -40,11 +40,11 @@ for line in "${required_advanced_docs[@]}"; do
 done
 
 required_advanced_help=(
-  "/// Advanced: generate frontend components"
-  "/// Advanced: generate backend scaffolding (routes, entities, migrations)"
-  "/// Advanced: add Tideway features and scaffolding to an existing project"
-  "/// Advanced: initialize main.rs by scanning modules and wiring them together"
-  "/// Advanced: set up frontend dependencies (Tailwind, shadcn components, etc.)"
+  "/// Advanced: generate frontend components (not for backend API scaffolding)"
+  "/// Advanced: generate backend scaffolding for existing/nonstandard projects (not for greenfield)"
+  "/// Advanced: add features/scaffolding to an existing project (not the default new-app path)"
+  "/// Advanced: initialize main.rs by scanning modules in existing projects (not for greenfield)"
+  "/// Advanced: set up frontend dependencies (not required for API-only workflows)"
 )
 for line in "${required_advanced_help[@]}"; do
   if ! grep -Fq -- "$line" tideway-cli/src/cli.rs; then
