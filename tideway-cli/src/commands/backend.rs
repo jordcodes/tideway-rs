@@ -448,7 +448,7 @@ fn generate_migrations(
 fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
-            "Skipping {} (use --force to overwrite)",
+            "Skipping {} (use --force to overwrite; `tideway backend` is an advanced command)",
             path.display()
         ));
         return Ok(());

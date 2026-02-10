@@ -52,7 +52,9 @@ pub fn run(args: InitArgs) -> Result<()> {
     let modules = scan_modules(src_path)?;
 
     if !modules.any() {
-        print_warning("No modules detected. Run 'tideway backend' first to generate modules.");
+        print_warning(
+            "No modules detected. Advanced fix: run `tideway backend` to generate modules.",
+        );
         print_info(
             "For greenfield apps, use the primary path: tideway new <app> -> tideway dev --fix-env",
         );
@@ -550,7 +552,7 @@ fn generate_env_example(project_name: &str, modules: &DetectedModules, args: &In
 fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
-            "Skipping {} (use --force to overwrite)",
+            "Skipping {} (use --force to overwrite; `tideway init` is advanced for existing projects)",
             path.display()
         ));
         return Ok(());
