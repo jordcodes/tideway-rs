@@ -179,6 +179,14 @@ Maintainers: see `docs/maintainer_verify.md` for `scripts/verify.sh` troubleshoo
 
 ## Core Concepts
 
+Canonical onboarding path:
+- `tideway new my_app`
+- `tideway dev --fix-env`
+- `tideway resource <name> --wire --db --repo --service --paginate --search`
+- `tideway migrate`
+
+For advanced/manual composition patterns, see `docs/module_contracts.md`.
+
 ### 1. Application Structure
 
 Tideway applications are organized into layers:
@@ -210,7 +218,7 @@ tideway::module!(
 );
 ```
 
-You can also group multiple methods for the same path:
+Advanced alternative: you can also group multiple methods for the same path:
 
 ```rust
 tideway::module!(
@@ -222,7 +230,7 @@ tideway::module!(
 );
 ```
 
-**OpenAPI per module (optional):**
+**OpenAPI per module (optional advanced):**
 ```rust
 #[cfg(feature = "openapi")]
 mod openapi_docs {

@@ -128,6 +128,9 @@ pub fn run(args: BackendArgs) -> Result<()> {
             "\n{} Backend scaffolding generated successfully!\n",
             "✓".green().bold()
         );
+        print_info(
+            "Note: `tideway backend` is advanced. For greenfield apps, prefer `tideway new <app>`.",
+        );
 
         // Print next steps
         println!("{}", "Next steps:".yellow().bold());

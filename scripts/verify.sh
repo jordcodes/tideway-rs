@@ -10,6 +10,9 @@ bash scripts/check_docs_drift.sh
 echo "[verify] quickstart parity"
 bash scripts/check_quickstart_parity.sh
 
+echo "[verify] command taxonomy"
+bash scripts/check_command_taxonomy.sh
+
 echo "[verify] cli filesystem policy"
 bash scripts/check_cli_fs_writes.sh
 
