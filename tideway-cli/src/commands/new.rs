@@ -12,8 +12,7 @@ use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, Res
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info, print_success,
-    print_warning,
-    write_file,
+    print_warning, write_file,
 };
 
 #[derive(Default)]
@@ -44,16 +43,13 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         apply_preset(preset, &mut args);
     }
 
-    let name = args
-        .name
-        .clone()
-        .ok_or_else(|| {
-            anyhow!(error_contract(
-                "Project name is required.",
-                "Run `tideway new my_app`.",
-                "Use `--path` to control output location separately from project name."
-            ))
-        })?;
+    let name = args.name.clone().ok_or_else(|| {
+        anyhow!(error_contract(
+            "Project name is required.",
+            "Run `tideway new my_app`.",
+            "Use `--path` to control output location separately from project name."
+        ))
+    })?;
 
     let mut wizard = WizardOptions::default();
     if should_prompt(&args) {

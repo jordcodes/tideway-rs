@@ -935,11 +935,13 @@ mod tests {
             .included_seats(3)
             .features(["reports"])
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .included_seats(5)
             .features(["reports", "api"])
             .done()
+            .unwrap()
             .build()
     }
 

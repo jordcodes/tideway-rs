@@ -101,10 +101,9 @@ impl WebhookRouter {
 
         // Prevent concurrent duplicate processing in this process.
         let inserted = {
-            let mut in_flight = self
-                .in_flight
-                .lock()
-                .map_err(|_| crate::error::TidewayError::internal("Webhook in-flight lock poisoned"))?;
+            let mut in_flight = self.in_flight.lock().map_err(|_| {
+                crate::error::TidewayError::internal("Webhook in-flight lock poisoned")
+            })?;
             in_flight.insert(event_id.clone())
         };
         if !inserted {

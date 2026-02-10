@@ -77,9 +77,7 @@ pub fn print_error(message: &str) {
 }
 
 pub fn error_contract(problem: &str, primary_fix: &str, advanced_fix: &str) -> String {
-    format!(
-        "Problem: {problem}\nPrimary fix: {primary_fix}\nAdvanced fix: {advanced_fix}"
-    )
+    format!("Problem: {problem}\nPrimary fix: {primary_fix}\nAdvanced fix: {advanced_fix}")
 }
 
 pub fn parse_error_contract(message: &str) -> Option<(String, String, String)> {

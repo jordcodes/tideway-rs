@@ -169,6 +169,9 @@ tideway = "0.7"
     )
     .expect("write Cargo.toml");
     fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write main.rs");
-    fs::write(project_dir.join("src/routes/mod.rs"), "pub struct ApiModule;\n")
-        .expect("write routes mod");
+    fs::write(
+        project_dir.join("src/routes/mod.rs"),
+        "pub struct ApiModule;\n",
+    )
+    .expect("write routes mod");
 }

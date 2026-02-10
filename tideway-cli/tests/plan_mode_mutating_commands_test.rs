@@ -9,7 +9,10 @@ fn test_add_auth_wire_plan_mode_is_non_mutating() {
     let project_dir = temp_dir.path().join("my_app");
     create_minimal_fixture(&project_dir);
 
-    let tracked_files = vec![project_dir.join("Cargo.toml"), project_dir.join("src/main.rs")];
+    let tracked_files = vec![
+        project_dir.join("Cargo.toml"),
+        project_dir.join("src/main.rs"),
+    ];
     let before = snapshot_files(&tracked_files);
 
     let output = Command::new(env!("CARGO_BIN_EXE_tideway"))

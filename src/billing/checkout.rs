@@ -653,10 +653,12 @@ mod tests {
             .included_seats(3)
             .trial_days(14)
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .included_seats(5)
             .done()
+            .unwrap()
             .build()
     }
 

@@ -22,13 +22,13 @@
 //!         .included_seats(3)
 //!         .features(["reports"])
 //!         .trial_days(14)
-//!         .done()
+//!         .done()?
 //!     .plan("pro")
 //!         .stripe_price("price_pro")
 //!         .extra_seat_price("price_seat")
 //!         .included_seats(5)
 //!         .features(["reports", "api", "priority_support"])
-//!         .done()
+//!         .done()?
 //!     .build();
 //!
 //! // Create manager

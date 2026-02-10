@@ -16,13 +16,13 @@
 //!         .included_seats(3)
 //!         .features(["basic_reports", "email_support"])
 //!         .trial_days(14)
-//!         .done()
+//!         .done()?
 //!     .plan("pro")
 //!         .stripe_price("price_pro_monthly")
 //!         .extra_seat_price("price_extra_seat")
 //!         .included_seats(5)
 //!         .features(["basic_reports", "advanced_reports", "api_access"])
-//!         .done()
+//!         .done()?
 //!     .build();
 //! ```
 //!
@@ -40,7 +40,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::storage::StoredPlan;
+use super::{error::BillingError, storage::StoredPlan};
 
 /// A collection of plan configurations.
 #[derive(Clone, Debug, Default)]
@@ -521,16 +521,17 @@ impl PlanBuilder {
 
     /// Finish defining this plan and return to the parent builder.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `stripe_price` was not set.
-    #[must_use]
-    pub fn done(self) -> PlansBuilder {
+    /// Returns an error if `stripe_price` was not set.
+    pub fn done(self) -> Result<PlansBuilder, BillingError> {
         let config = PlanConfig {
             id: self.id,
             stripe_price_id: self
                 .stripe_price_id
-                .expect("stripe_price is required for a plan"),
+                .ok_or(BillingError::MissingStripePrice {
+                    plan_id: self.id.clone(),
+                })?,
             extra_seat_price_id: self.extra_seat_price_id,
             included_seats: self.included_seats,
             features: self.features,
@@ -540,7 +541,7 @@ impl PlanBuilder {
             description: self.description,
             currency: self.currency,
         };
-        self.parent.add_plan(config)
+        Ok(self.parent.add_plan(config))
     }
 }
 
@@ -866,6 +867,7 @@ mod tests {
             .features(["reports", "email_support"])
             .trial_days(14)
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .extra_seat_price("price_seat")
@@ -873,6 +875,7 @@ mod tests {
             .features(["reports", "api_access", "priority_support"])
             .max_projects(100)
             .done()
+            .unwrap()
             .build();
 
         assert_eq!(plans.len(), 2);
@@ -887,10 +890,12 @@ mod tests {
             .stripe_price("price_starter")
             .features(["reports"])
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .features(["reports", "api_access"])
             .done()
+            .unwrap()
             .build();
 
         let starter = plans.get("starter").unwrap();
@@ -909,11 +914,13 @@ mod tests {
             .stripe_price("price_starter")
             .included_seats(3)
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .extra_seat_price("price_seat")
             .included_seats(5)
             .done()
+            .unwrap()
             .build();
 
         let starter = plans.get("starter").unwrap();
@@ -935,11 +942,13 @@ mod tests {
             .max_projects(10)
             .max_storage_mb(1024)
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .max_projects(100)
             .custom_limit("widgets", 500)
             .done()
+            .unwrap()
             .build();
 
         let starter = plans.get("starter").unwrap();
@@ -963,6 +972,7 @@ mod tests {
             .plan("enterprise")
             .stripe_price("price_enterprise")
             .done()
+            .unwrap()
             .build();
 
         let enterprise = plans.get("enterprise").unwrap();
@@ -978,9 +988,11 @@ mod tests {
             .plan("starter")
             .stripe_price("price_abc123")
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_xyz789")
             .done()
+            .unwrap()
             .build();
 
         let found = plans.find_by_stripe_price("price_abc123");
@@ -997,10 +1009,12 @@ mod tests {
             .plan("starter")
             .stripe_price("price_starter")
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .extra_seat_price("price_seat")
             .done()
+            .unwrap()
             .build();
 
         let ids = plans.all_stripe_price_ids();
@@ -1016,9 +1030,11 @@ mod tests {
             .stripe_price("price_starter")
             .trial_days(14)
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .done()
+            .unwrap()
             .build();
 
         let starter = plans.get("starter").unwrap();
@@ -1036,11 +1052,13 @@ mod tests {
             .included_seats(3)
             .features(["reports"])
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .included_seats(5)
             .features(["reports", "api_access", "priority_support"])
             .done()
+            .unwrap()
             .build();
 
         let starter = plans.get("starter").unwrap();
@@ -1063,11 +1081,13 @@ mod tests {
             .included_seats(3)
             .features(["reports"])
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .included_seats(5)
             .features(["reports", "api_access"])
             .done()
+            .unwrap()
             .build();
 
         let starter = plans.get("starter").unwrap();
@@ -1088,6 +1108,7 @@ mod tests {
             .stripe_price("price_starter")
             .features(["reports"])
             .done()
+            .unwrap()
             .build();
 
         let starter = plans.get("starter").unwrap();
@@ -1104,11 +1125,13 @@ mod tests {
             .included_seats(5)
             .features(["reports", "api_access"])
             .done()
+            .unwrap()
             .plan("yearly")
             .stripe_price("price_yearly")
             .included_seats(5)
             .features(["reports", "api_access"])
             .done()
+            .unwrap()
             .build();
 
         let monthly = plans.get("monthly").unwrap();
@@ -1126,10 +1149,12 @@ mod tests {
             .extra_seat_price("price_seat")
             .included_seats(5)
             .done()
+            .unwrap()
             .plan("starter")
             .stripe_price("price_starter")
             .included_seats(3)
             .done()
+            .unwrap()
             .build();
 
         let pro = plans.get("pro").unwrap();
@@ -1147,10 +1172,12 @@ mod tests {
             .extra_seat_price("price_seat")
             .included_seats(10)
             .done()
+            .unwrap()
             .plan("starter")
             .stripe_price("price_starter")
             .included_seats(3)
             .done()
+            .unwrap()
             .build();
 
         let pro = plans.get("pro").unwrap();
@@ -1176,10 +1203,12 @@ mod tests {
             .extra_seat_price("price_seat")
             .included_seats(5)
             .done()
+            .unwrap()
             .plan("basic")
             .stripe_price("price_basic")
             .included_seats(10) // More included seats, but no extra seats support
             .done()
+            .unwrap()
             .build();
 
         let pro = plans.get("pro").unwrap();
@@ -1206,18 +1235,22 @@ mod tests {
             .stripe_price("price_free")
             .features(["basic"])
             .done()
+            .unwrap()
             .plan("starter")
             .stripe_price("price_starter")
             .features(["basic", "reports"])
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .features(["basic", "reports", "api_access"])
             .done()
+            .unwrap()
             .plan("enterprise")
             .stripe_price("price_enterprise")
             .features(["basic", "reports", "api_access", "sso", "audit"])
             .done()
+            .unwrap()
             .build();
 
         let free = plans.get("free").unwrap();
@@ -1237,14 +1270,17 @@ mod tests {
             .stripe_price("price_free")
             .features(["basic"])
             .done()
+            .unwrap()
             .plan("starter")
             .stripe_price("price_starter")
             .features(["basic", "reports"])
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .features(["basic", "reports", "api_access"])
             .done()
+            .unwrap()
             .build();
 
         let free = plans.get("free").unwrap();

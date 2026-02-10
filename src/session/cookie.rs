@@ -187,7 +187,9 @@ impl CookieSessionStore {
             .http_only(self.config.cookie_http_only)
             .secure(self.config.cookie_secure)
             .same_site(SameSite::Lax)
-            .max_age(cookie::time::Duration::seconds(self.config.default_ttl().as_secs() as i64));
+            .max_age(cookie::time::Duration::seconds(
+                self.config.default_ttl().as_secs() as i64,
+            ));
 
         if let Some(domain) = &self.config.cookie_domain {
             cookie_builder = cookie_builder.domain(domain.clone());

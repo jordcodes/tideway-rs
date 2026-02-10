@@ -468,8 +468,8 @@ impl App {
             listener,
             final_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-            .with_graceful_shutdown(shutdown)
-            .await
+        .with_graceful_shutdown(shutdown)
+        .await
     }
 }
 

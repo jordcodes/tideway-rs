@@ -124,7 +124,11 @@ impl IdempotencyStore for DatabaseIdempotencyStore {
         };
 
         let result = db_entity::Entity::insert(model)
-            .on_conflict(OnConflict::column(db_entity::Column::EventId).do_nothing().to_owned())
+            .on_conflict(
+                OnConflict::column(db_entity::Column::EventId)
+                    .do_nothing()
+                    .to_owned(),
+            )
             .exec(&self.db)
             .await;
 
@@ -144,10 +148,12 @@ impl IdempotencyStore for DatabaseIdempotencyStore {
         let model = db_entity::Entity::find_by_id(event_id.to_string())
             .one(&self.db)
             .await
-            .map_err(|e| crate::error::TidewayError::internal(format!(
-                "Failed to check webhook idempotency state: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::TidewayError::internal(format!(
+                    "Failed to check webhook idempotency state: {}",
+                    e
+                ))
+            })?;
 
         Ok(model.is_some())
     }
@@ -162,7 +168,11 @@ impl IdempotencyStore for DatabaseIdempotencyStore {
         };
 
         let result = db_entity::Entity::insert(model)
-            .on_conflict(OnConflict::column(db_entity::Column::EventId).do_nothing().to_owned())
+            .on_conflict(
+                OnConflict::column(db_entity::Column::EventId)
+                    .do_nothing()
+                    .to_owned(),
+            )
             .exec(&self.db)
             .await;
 
@@ -185,10 +195,12 @@ impl IdempotencyStore for DatabaseIdempotencyStore {
         db_entity::Entity::delete_by_id(event_id.to_string())
             .exec(&self.db)
             .await
-            .map_err(|e| crate::error::TidewayError::internal(format!(
-                "Failed to release webhook event claim: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::TidewayError::internal(format!(
+                    "Failed to release webhook event claim: {}",
+                    e
+                ))
+            })?;
 
         Ok(())
     }
@@ -203,10 +215,12 @@ impl IdempotencyStore for DatabaseIdempotencyStore {
             .filter(db_entity::Column::ProcessedAt.lt(cutoff))
             .exec(&self.db)
             .await
-            .map_err(|e| crate::error::TidewayError::internal(format!(
-                "Failed to cleanup old webhook idempotency entries: {}",
-                e
-            )))?;
+            .map_err(|e| {
+                crate::error::TidewayError::internal(format!(
+                    "Failed to cleanup old webhook idempotency entries: {}",
+                    e
+                ))
+            })?;
 
         Ok(())
     }

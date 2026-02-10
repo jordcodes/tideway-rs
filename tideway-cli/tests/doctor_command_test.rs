@@ -261,7 +261,10 @@ tideway = { version = "0.7", features = ["database"] }
     .expect("write env example");
 
     let report = analyze_project(project_dir, true).expect("analyze project");
-    assert!(project_dir.join(".env").exists(), "expected .env to be created");
+    assert!(
+        project_dir.join(".env").exists(),
+        "expected .env to be created"
+    );
     assert!(
         report
             .fixes
@@ -615,8 +618,11 @@ fn build(db: sea_orm::DatabaseConnection) -> DatabaseIdempotencyStore {
 "#,
     )
     .expect("write webhook src");
-    std::fs::write(project_dir.join("migration/src/lib.rs"), "// no webhook migration yet")
-        .expect("write migration lib");
+    std::fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        "// no webhook migration yet",
+    )
+    .expect("write migration lib");
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
@@ -702,8 +708,11 @@ tideway = { version = "0.7", features = ["database"] }
         "use tideway::webhooks::DatabaseIdempotencyStore;\n",
     )
     .expect("write webhook src");
-    std::fs::write(project_dir.join("migration/src/lib.rs"), "// no webhook marker")
-        .expect("write migration lib");
+    std::fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        "// no webhook marker",
+    )
+    .expect("write migration lib");
 
     let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
         .arg("--json")
@@ -749,8 +758,11 @@ tideway = { version = "0.7", features = ["database"] }
         "use tideway::webhooks::DatabaseIdempotencyStore;\n",
     )
     .expect("write webhook src");
-    std::fs::write(project_dir.join("migration/src/lib.rs"), "// no webhook marker")
-        .expect("write migration lib");
+    std::fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        "// no webhook marker",
+    )
+    .expect("write migration lib");
 
     let report = analyze_project(project_dir, true).expect("analyze project");
     assert!(

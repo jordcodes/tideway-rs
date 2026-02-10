@@ -101,7 +101,8 @@ fn assert_file_snapshot(actual_path: &Path, snapshot_name: &str) {
     let expected = fs::read_to_string(&snapshot_path).expect("read snapshot");
 
     assert_eq!(
-        expected, actual,
+        expected,
+        actual,
         "snapshot mismatch for {}.\nIf intentional, update {}",
         actual_path.display(),
         snapshot_path.display()

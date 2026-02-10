@@ -57,9 +57,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
             wire_openapi_docs(&src_dir, &resource_name, &resource_plural)?;
         }
     } else {
-        print_warning(
-            "Manual wiring mode is advanced. For the primary path, rerun with `--wire`.",
-        );
+        print_warning("Manual wiring mode is advanced. For the primary path, rerun with `--wire`.");
         print_info("Next steps: add the module to routes/mod.rs and register it in main.rs");
     }
 
@@ -208,7 +206,9 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 wire_services_in_main(&src_dir)?;
             }
         } else {
-            print_info("Next steps: wire database into main.rs (advanced: `tideway add database --wire`)");
+            print_info(
+                "Next steps: wire database into main.rs (advanced: `tideway add database --wire`)",
+            );
         }
     }
 
@@ -216,7 +216,9 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         print_info("Added unit tests to the resource module");
     }
 
-    print_info("Primary path reminder: run `tideway dev --fix-env` to boot and verify the new resource.");
+    print_info(
+        "Primary path reminder: run `tideway dev --fix-env` to boot and verify the new resource.",
+    );
     print_success(&format!("Generated {} resource", resource_name));
     Ok(())
 }

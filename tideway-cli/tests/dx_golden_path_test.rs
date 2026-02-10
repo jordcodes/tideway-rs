@@ -80,7 +80,10 @@ fn test_dev_fix_env_copies_env_example_and_passes_env_to_cargo() {
     );
     assert_success(&output, "tideway dev --fix-env");
 
-    assert!(project_dir.join(".env").exists(), "expected .env to be created");
+    assert!(
+        project_dir.join(".env").exists(),
+        "expected .env to be created"
+    );
     let env_contents = fs::read_to_string(project_dir.join(".env")).expect("read .env");
     assert!(
         env_contents.contains("JWT_SECRET=dev-secret"),
@@ -119,7 +122,11 @@ fn test_dev_warns_when_env_missing_without_fix() {
     write_fake_cargo(&fake_cargo_dir, &invocation_log);
 
     let output = run_tideway_with_path(
-        &["dev", "--path", project_dir.to_str().expect("project path utf8")],
+        &[
+            "dev",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ],
         &fake_cargo_dir,
     );
     assert_success(&output, "tideway dev");

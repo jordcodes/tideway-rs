@@ -66,11 +66,7 @@ fn test_doctor_mentions_primary_path_reminder() {
     let project_dir = temp_dir.path().join("my_app");
     create_minimal_project(&project_dir);
 
-    let output = run_tideway(&[
-        "doctor",
-        "--path",
-        project_dir.to_str().expect("utf8 path"),
-    ]);
+    let output = run_tideway(&["doctor", "--path", project_dir.to_str().expect("utf8 path")]);
     assert_success(&output, "tideway doctor");
 
     let stdout = String::from_utf8_lossy(&output.stdout);

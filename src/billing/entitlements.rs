@@ -509,6 +509,7 @@ mod tests {
             .max_projects(5)
             .max_storage_mb(1000)
             .done()
+            .unwrap()
             .plan("pro")
             .stripe_price("price_pro")
             .included_seats(5)
@@ -517,6 +518,7 @@ mod tests {
             .max_storage_mb(10000)
             .max_api_calls(100000)
             .done()
+            .unwrap()
             .build()
     }
 

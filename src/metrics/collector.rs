@@ -101,12 +101,6 @@ impl MetricsCollector {
     }
 }
 
-impl Default for MetricsCollector {
-    fn default() -> Self {
-        Self::new().expect("Failed to create metrics collector")
-    }
-}
-
 /// Normalize a path for metrics (remove IDs, etc.)
 fn normalize_path(path: &str) -> String {
     // Simple normalization: replace numeric segments with :id

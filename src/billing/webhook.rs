@@ -520,6 +520,7 @@ mod tests {
             .extra_seat_price("price_seat")
             .included_seats(3)
             .done()
+            .unwrap()
             .build()
     }
 

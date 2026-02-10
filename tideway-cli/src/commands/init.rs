@@ -158,9 +158,7 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
 
     if !is_json_output() {
         println!("\n{} Initialization complete!\n", "✓".green().bold());
-        print_info(
-            "Note: `tideway init` is advanced. For a new app, prefer `tideway new <app>`.",
-        );
+        print_info("Note: `tideway init` is advanced. For a new app, prefer `tideway new <app>`.");
 
         println!("{}", "Next steps:".yellow().bold());
         println!("  1. cargo run");

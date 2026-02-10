@@ -493,7 +493,9 @@ fn apply_env_fixes(
         })?;
         write_file(env_file, &source)
             .with_context(|| format!("Failed to write {}", env_file.display()))?;
-        report.fixes.push("Created .env from .env.example".to_string());
+        report
+            .fixes
+            .push("Created .env from .env.example".to_string());
     }
 
     Ok(())

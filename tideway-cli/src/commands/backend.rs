@@ -8,8 +8,7 @@ use crate::cli::{BackendArgs, BackendPreset};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success,
-    print_warning,
-    write_file,
+    print_warning, write_file,
 };
 
 /// Convert snake_case to PascalCase

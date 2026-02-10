@@ -359,10 +359,12 @@ mod tests {
             .extra_seat_price("price_seat")
             .included_seats(3)
             .done()
+            .unwrap()
             .plan("basic")
             .stripe_price("price_basic")
             .included_seats(1)
             .done()
+            .unwrap()
             .build()
     }
 

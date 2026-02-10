@@ -375,12 +375,16 @@ async fn main() {
 
     let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert_eq!(
-        updated.matches("let database_url = std::env::var(\"DATABASE_URL\")").count(),
+        updated
+            .matches("let database_url = std::env::var(\"DATABASE_URL\")")
+            .count(),
         1,
         "database url bootstrap should be inserted once"
     );
     assert_eq!(
-        updated.matches(".with_database(Arc::new(SeaOrmPool::new(db, database_url)))").count(),
+        updated
+            .matches(".with_database(Arc::new(SeaOrmPool::new(db, database_url)))")
+            .count(),
         1,
         "database context wiring should be inserted once"
     );
