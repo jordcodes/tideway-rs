@@ -12,6 +12,7 @@ use crate::{print_info, print_success};
 pub fn run(args: DevArgs) -> Result<()> {
     if is_plan_mode() {
         print_info("Plan: would run tideway dev (cargo run) with env + migrations");
+        print_info("Primary run command for local development.");
         return Ok(());
     }
     let project_dir = PathBuf::from(&args.path);
@@ -38,7 +39,7 @@ pub fn run(args: DevArgs) -> Result<()> {
         command.env("DATABASE_AUTO_MIGRATE", "true");
     }
 
-    print_info("Starting Tideway app...");
+    print_info("Starting Tideway app (primary local run command)...");
     let status = command.status().context("Failed to run cargo")?;
 
     if status.success() {

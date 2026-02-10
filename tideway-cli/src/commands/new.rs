@@ -158,24 +158,25 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         println!("\n{}", "Next steps:".yellow().bold());
         println!("  1. cd {}", dir_name);
         let mut step = 2;
+        println!("  {}. tideway doctor --fix", step);
+        step += 1;
         if args.with_docker {
             println!("  {}. docker compose up -d", step);
             step += 1;
         }
-        if has_auth_feature || has_database_feature || args.with_config {
-            println!("  {}. cp .env.example .env", step);
-            step += 1;
-        }
-        if should_suggest_migrate(args.preset, has_database_feature) {
-            println!("  {}. tideway migrate", step);
-            step += 1;
-        }
-        println!("  {}. cargo run", step);
+        println!("  {}. tideway dev --fix-env", step);
         println!();
+        if should_suggest_migrate(args.preset, has_database_feature) {
+            println!("Tip: run `tideway migrate` when you need explicit migration control.");
+            println!();
+        }
 
         print_preset_next_steps(args.preset);
     }
 
+    print_info(
+        "Primary path: tideway new <app> -> tideway dev --fix-env -> tideway resource <name> --wire --db --repo --service --paginate --search",
+    );
     print_success("Ready to build");
     Ok(())
 }
@@ -626,7 +627,7 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
         Some(NewPreset::Worker) => {
             println!("{}", "Worker smoke checks:".yellow().bold());
             println!("  # Ensure REDIS_URL and DATABASE_URL are set in .env");
-            println!("  cargo run");
+            println!("  tideway dev --fix-env");
             println!();
         }
         _ => {}

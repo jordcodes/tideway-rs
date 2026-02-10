@@ -30,6 +30,9 @@ pub fn run(args: DoctorArgs) -> Result<()> {
 
     if report.info.is_empty() && report.warnings.is_empty() {
         print_success("No issues found");
+        print_info(
+            "Primary path reminder: tideway new <app> -> tideway dev --fix-env -> tideway resource <name> --wire --db --repo --service --paginate --search",
+        );
         return Ok(());
     }
 
@@ -57,6 +60,9 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         report.warnings.len()
     );
     print_info(&summary);
+    print_info(
+        "Primary path reminder: for greenfield apps use `tideway new <app>`; treat `add`/`init`/`backend` as advanced commands.",
+    );
 
     Ok(())
 }

@@ -18,7 +18,9 @@ pub fn ensure_project_dir(project_dir: &Path) -> Result<()> {
 
     let main_rs = project_dir.join("src").join("main.rs");
     if !main_rs.exists() {
-        print_warning("src/main.rs not found (run `tideway init` if this is a Tideway project)");
+        print_warning(
+            "src/main.rs not found (advanced: run `tideway init` for existing projects; for greenfield apps use `tideway new <app>`)",
+        );
     }
 
     Ok(())
