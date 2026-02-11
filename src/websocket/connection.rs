@@ -68,6 +68,13 @@ impl Connection {
         &self.rooms
     }
 
+    /// Clone the outbound channel sender.
+    ///
+    /// This allows callers to send without holding a connection lock across await points.
+    pub(crate) fn sender_clone(&self) -> mpsc::Sender<Message> {
+        self.sender.clone()
+    }
+
     /// Send a message to this connection
     ///
     /// Returns an error if the channel is full (backpressure) or the connection is closed.

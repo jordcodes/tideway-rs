@@ -9,6 +9,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tower::Service;
 
+const UNMATCHED_ROUTE_LABEL: &str = "<unmatched>";
+
 /// Build a Tower layer for metrics collection
 pub fn build_metrics_layer(collector: Arc<MetricsCollector>) -> MetricsLayer {
     MetricsLayer { collector }
@@ -62,7 +64,7 @@ where
             .extensions()
             .get::<MatchedPath>()
             .map(|p| p.as_str().to_string())
-            .unwrap_or_else(|| req.uri().path().to_string());
+            .unwrap_or_else(|| UNMATCHED_ROUTE_LABEL.to_string());
 
         // Increment in-flight requests
         collector.increment_in_flight();
@@ -70,17 +72,21 @@ where
         let fut = self.inner.call(req);
 
         Box::pin(async move {
-            let response = fut.await?;
-            let status = response.status().as_u16();
+            let result = fut.await;
             let duration = start.elapsed();
 
-            // Record metrics
-            collector.record_request(&method, &path, status, duration);
-
-            // Decrement in-flight requests
-            collector.decrement_in_flight();
-
-            Ok(response)
+            match result {
+                Ok(response) => {
+                    let status = response.status().as_u16();
+                    collector.record_request(&method, &path, status, duration);
+                    collector.decrement_in_flight();
+                    Ok(response)
+                }
+                Err(error) => {
+                    collector.decrement_in_flight();
+                    Err(error)
+                }
+            }
         })
     }
 }
@@ -121,6 +127,32 @@ mod tests {
         let metric = family.get_metric().first().expect("metric not recorded");
         let path = find_label_value(metric, "path").expect("path label missing");
         assert_eq!(path, "/users/{id}");
+    }
+
+    #[tokio::test]
+    async fn test_metrics_unmatched_path_uses_constant_label() {
+        let collector = Arc::new(MetricsCollector::new().unwrap());
+        let app = Router::new()
+            .route("/users/{id}", get(|| async { "ok" }))
+            .layer(build_metrics_layer(collector.clone()));
+
+        let req = Request::builder()
+            .method("GET")
+            .uri("/totally-random-path-123")
+            .body(Body::empty())
+            .unwrap();
+        let _ = app.oneshot(req).await.unwrap();
+
+        let metrics = collector.registry().gather();
+        let family = find_metric_family(&metrics, "tideway_http_requests_total")
+            .expect("metrics family not found");
+        let metric = family
+            .get_metric()
+            .iter()
+            .find(|m| find_label_value(m, "status").as_deref() == Some("404"))
+            .expect("404 metric not recorded");
+        let path = find_label_value(metric, "path").expect("path label missing");
+        assert_eq!(path, UNMATCHED_ROUTE_LABEL);
     }
 
     fn find_metric_family<'a>(

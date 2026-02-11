@@ -102,6 +102,71 @@ mod websocket_tests {
     }
 
     #[tokio::test]
+    async fn test_broadcast_does_not_unregister_on_lock_contention() {
+        use tokio::time::{Duration, timeout};
+
+        let manager = Arc::new(ConnectionManager::new());
+
+        let (tx, mut rx) = mpsc::channel::<Message>(16);
+        let conn = Arc::new(tokio::sync::RwLock::new(Connection::new(
+            "conn-1".to_string(),
+            tx,
+        )));
+
+        assert!(manager.register(conn.clone()).await.is_ok());
+        assert_eq!(manager.connection_count(), 1);
+
+        let (lock_acquired_tx, lock_acquired_rx) = tokio::sync::oneshot::channel();
+        let conn_for_lock = conn.clone();
+        let hold_lock = tokio::spawn(async move {
+            let _guard = conn_for_lock.write().await;
+            let _ = lock_acquired_tx.send(());
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        });
+
+        // Ensure the write lock is held before broadcasting.
+        let _ = lock_acquired_rx.await;
+
+        // Broadcast should wait for lock contention, not treat it as a dead connection.
+        assert!(manager.broadcast_text("hello").await.is_ok());
+        hold_lock.await.unwrap();
+
+        let received = timeout(Duration::from_millis(250), rx.recv())
+            .await
+            .expect("message should be delivered")
+            .expect("channel should still be open");
+        assert!(matches!(received, Message::Text(ref t) if t == "hello"));
+        assert_eq!(manager.connection_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_unregister_cleans_stale_room_membership_after_lock_contention() {
+        let manager = Arc::new(ConnectionManager::new());
+
+        let (tx, _rx) = mpsc::channel::<Message>(16);
+        let conn = Arc::new(tokio::sync::RwLock::new(Connection::new(
+            "conn-1".to_string(),
+            tx,
+        )));
+
+        assert!(manager.register(conn.clone()).await.is_ok());
+
+        // Hold a write lock so add_to_room can't update connection-local room state.
+        let conn_write_guard = conn.write().await;
+        manager.add_to_room("conn-1", "room-1");
+        drop(conn_write_guard);
+
+        // Manager room index contains the member even though local state missed the update.
+        assert_eq!(manager.room_members("room-1").len(), 1);
+
+        manager.unregister("conn-1").await;
+
+        // Unregister should fully clean stale room membership.
+        assert!(manager.room_members("room-1").is_empty());
+        assert_eq!(manager.room_count(), 0);
+    }
+
+    #[tokio::test]
     async fn test_connection_limit_enforced() {
         // Create manager with limit of 2 connections
         let manager = ConnectionManager::with_max_connections(2);

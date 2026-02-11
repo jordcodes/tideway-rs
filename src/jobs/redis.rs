@@ -12,6 +12,72 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
+const PENDING_JOBS_KEY: &str = "jobs:pending";
+const SCHEDULED_JOBS_KEY: &str = "jobs:scheduled";
+const WORKERS_KEY: &str = "jobs:workers";
+const PROCESSING_KEY_PREFIX: &str = "jobs:processing:";
+const WORKER_HEARTBEAT_KEY_PREFIX: &str = "jobs:worker:heartbeat:";
+const WORKER_HEARTBEAT_TTL_SECONDS: u64 = 30;
+
+/// Atomically move all due scheduled jobs into the pending queue.
+///
+/// KEYS[1] = scheduled zset key
+/// KEYS[2] = pending list key
+/// ARGV[1] = unix timestamp cutoff
+const MOVE_DUE_JOBS_LUA: &str = r#"
+local scheduled_key = KEYS[1]
+local pending_key = KEYS[2]
+local cutoff = tonumber(ARGV[1])
+local jobs = redis.call('ZRANGEBYSCORE', scheduled_key, '-inf', cutoff)
+
+for _, job in ipairs(jobs) do
+  redis.call('ZREM', scheduled_key, job)
+  redis.call('LPUSH', pending_key, job)
+end
+
+return #jobs
+"#;
+
+/// Reclaim jobs from stale workers whose heartbeat has expired.
+///
+/// KEYS[1] = workers set key
+/// KEYS[2] = pending list key
+/// ARGV[1] = heartbeat key prefix
+/// ARGV[2] = processing list key prefix
+const RECLAIM_STALE_WORKERS_LUA: &str = r#"
+local workers_key = KEYS[1]
+local pending_key = KEYS[2]
+local heartbeat_prefix = ARGV[1]
+local processing_prefix = ARGV[2]
+local reclaimed = 0
+
+local workers = redis.call('SMEMBERS', workers_key)
+for _, worker in ipairs(workers) do
+  local heartbeat_key = heartbeat_prefix .. worker
+  if redis.call('EXISTS', heartbeat_key) == 0 then
+    local processing_key = processing_prefix .. worker
+    while true do
+      local job = redis.call('RPOPLPUSH', processing_key, pending_key)
+      if not job then
+        break
+      end
+      reclaimed = reclaimed + 1
+    end
+    redis.call('SREM', workers_key, worker)
+  end
+end
+
+return reclaimed
+"#;
+
+fn processing_key(worker_id: &str) -> String {
+    format!("{PROCESSING_KEY_PREFIX}{worker_id}")
+}
+
+fn worker_heartbeat_key(worker_id: &str) -> String {
+    format!("{WORKER_HEARTBEAT_KEY_PREFIX}{worker_id}")
+}
+
 /// Redis-backed job queue implementation
 ///
 /// Uses Redis data structures:
@@ -157,6 +223,7 @@ impl RedisJobQueue {
     /// It respects the shutdown flag and will exit cleanly when signaled.
     fn start_scheduler_task(&self) {
         let client = self.client.clone();
+        let worker_id = self.worker_id.clone();
         let shutdown = self.shutdown.clone();
         let scheduler_handle = self.scheduler_handle.clone();
 
@@ -178,40 +245,67 @@ impl RedisJobQueue {
                 }
 
                 if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
-                    let now = Utc::now().timestamp();
+                    let heartbeat_key = worker_heartbeat_key(&worker_id);
+                    let heartbeat_update: redis::RedisResult<()> = redis::pipe()
+                        .cmd("SADD")
+                        .arg(WORKERS_KEY)
+                        .arg(&worker_id)
+                        .ignore()
+                        .cmd("SETEX")
+                        .arg(&heartbeat_key)
+                        .arg(WORKER_HEARTBEAT_TTL_SECONDS)
+                        .arg("1")
+                        .ignore()
+                        .query_async(&mut conn)
+                        .await;
+                    if let Err(error) = heartbeat_update {
+                        tracing::warn!(
+                            error = %error,
+                            worker_id = %worker_id,
+                            "Failed to update Redis job worker heartbeat"
+                        );
+                        continue;
+                    }
 
-                    // Get all scheduled jobs with score <= now
-                    let scheduled_key = "jobs:scheduled";
-                    let results: redis::RedisResult<Vec<(String, f64)>> =
-                        redis::cmd("ZRANGEBYSCORE")
-                            .arg(scheduled_key)
-                            .arg("-inf")
-                            .arg(now)
-                            .arg("WITHSCORES")
-                            .query_async(&mut conn)
+                    let reclaimed: redis::RedisResult<i64> =
+                        redis::Script::new(RECLAIM_STALE_WORKERS_LUA)
+                            .key(WORKERS_KEY)
+                            .key(PENDING_JOBS_KEY)
+                            .arg(WORKER_HEARTBEAT_KEY_PREFIX)
+                            .arg(PROCESSING_KEY_PREFIX)
+                            .invoke_async(&mut conn)
                             .await;
-
-                    if let Ok(jobs) = results {
-                        for (job_json, _score) in jobs {
-                            // Check shutdown before processing each job
-                            if shutdown.load(Ordering::Acquire) {
-                                break;
-                            }
-
-                            // Remove from scheduled set
-                            let _: redis::RedisResult<()> = redis::cmd("ZREM")
-                                .arg(scheduled_key)
-                                .arg(&job_json)
-                                .query_async(&mut conn)
-                                .await;
-
-                            // Add to pending list
-                            let _: redis::RedisResult<()> = redis::cmd("LPUSH")
-                                .arg("jobs:pending")
-                                .arg(&job_json)
-                                .query_async(&mut conn)
-                                .await;
+                    match reclaimed {
+                        Ok(count) if count > 0 => {
+                            tracing::warn!(
+                                reclaimed_jobs = count,
+                                worker_id = %worker_id,
+                                "Reclaimed orphaned jobs from stale workers"
+                            );
                         }
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                worker_id = %worker_id,
+                                "Failed to reclaim jobs from stale workers"
+                            );
+                        }
+                    }
+
+                    let now = Utc::now().timestamp();
+                    let moved: redis::RedisResult<i64> = redis::Script::new(MOVE_DUE_JOBS_LUA)
+                        .key(SCHEDULED_JOBS_KEY)
+                        .key(PENDING_JOBS_KEY)
+                        .arg(now)
+                        .invoke_async(&mut conn)
+                        .await;
+
+                    if let Err(error) = moved {
+                        tracing::warn!(
+                            error = %error,
+                            "Failed to move due scheduled jobs to pending queue"
+                        );
                     }
                 }
             }
@@ -249,7 +343,7 @@ impl JobQueue for RedisJobQueue {
 
         let mut conn = self.get_connection().await?;
         redis::cmd("LPUSH")
-            .arg("jobs:pending")
+            .arg(PENDING_JOBS_KEY)
             .arg(&job_json)
             .query_async::<()>(&mut conn)
             .await
@@ -260,12 +354,12 @@ impl JobQueue for RedisJobQueue {
 
     async fn dequeue(&self) -> Result<Option<JobData>> {
         let mut conn = self.get_connection().await?;
-        let processing_key = format!("jobs:processing:{}", self.worker_id);
+        let processing_key = processing_key(&self.worker_id);
 
         // Use BRPOPLPUSH for atomic move from pending to processing
         // This blocks for up to 5 seconds waiting for a job
         let result: Option<String> = redis::cmd("BRPOPLPUSH")
-            .arg("jobs:pending")
+            .arg(PENDING_JOBS_KEY)
             .arg(&processing_key)
             .arg(5) // timeout in seconds
             .query_async(&mut conn)
@@ -283,7 +377,7 @@ impl JobQueue for RedisJobQueue {
 
     async fn complete(&self, job_id: &str) -> Result<()> {
         let mut conn = self.get_connection().await?;
-        let processing_key = format!("jobs:processing:{}", self.worker_id);
+        let processing_key = processing_key(&self.worker_id);
 
         // Find and remove the job from processing list
         let jobs: Vec<String> = redis::cmd("LRANGE")
@@ -326,7 +420,7 @@ impl JobQueue for RedisJobQueue {
 
     async fn fail(&self, job_id: &str, _error: String) -> Result<()> {
         let mut conn = self.get_connection().await?;
-        let processing_key = format!("jobs:processing:{}", self.worker_id);
+        let processing_key = processing_key(&self.worker_id);
 
         // Find the job in processing list
         let jobs: Vec<String> = redis::cmd("LRANGE")
@@ -373,7 +467,7 @@ impl JobQueue for RedisJobQueue {
 
                         // Add to scheduled set
                         redis::cmd("ZADD")
-                            .arg("jobs:scheduled")
+                            .arg(SCHEDULED_JOBS_KEY)
                             .arg(retry_at.timestamp())
                             .arg(&retry_json)
                             .query_async::<()>(&mut conn)
@@ -406,7 +500,7 @@ impl JobQueue for RedisJobQueue {
 
     async fn retry(&self, job_id: &str) -> Result<()> {
         let mut conn = self.get_connection().await?;
-        let processing_key = format!("jobs:processing:{}", self.worker_id);
+        let processing_key = processing_key(&self.worker_id);
 
         // Find the job in processing list
         let jobs: Vec<String> = redis::cmd("LRANGE")
@@ -447,7 +541,7 @@ impl JobQueue for RedisJobQueue {
 
                         // Re-enqueue to pending
                         redis::cmd("LPUSH")
-                            .arg("jobs:pending")
+                            .arg(PENDING_JOBS_KEY)
                             .arg(&retry_json)
                             .query_async::<()>(&mut conn)
                             .await
@@ -495,7 +589,7 @@ impl JobQueue for RedisJobQueue {
 
         let mut conn = self.get_connection().await?;
         redis::cmd("ZADD")
-            .arg("jobs:scheduled")
+            .arg(SCHEDULED_JOBS_KEY)
             .arg(run_at.timestamp())
             .arg(&job_json)
             .query_async::<()>(&mut conn)

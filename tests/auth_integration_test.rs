@@ -319,6 +319,25 @@ impl RefreshTokenStore for InMemoryRefreshTokenStore {
         Ok(())
     }
 
+    async fn compare_and_swap_family_generation(
+        &self,
+        family: &str,
+        expected_generation: u32,
+        new_generation: u32,
+    ) -> Result<bool> {
+        let mut families = self.families.write().unwrap();
+        match families.get_mut(family) {
+            Some((_, generation, revoked)) => {
+                if *revoked || *generation != expected_generation {
+                    return Ok(false);
+                }
+                *generation = new_generation;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     async fn revoke_family(&self, family: &str) -> Result<()> {
         let mut families = self.families.write().unwrap();
         if let Some((_, _, r)) = families.get_mut(family) {

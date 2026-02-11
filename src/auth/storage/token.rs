@@ -1,6 +1,6 @@
 //! Refresh token storage trait.
 
-use crate::error::Result;
+use crate::error::{Result, TidewayError};
 use async_trait::async_trait;
 
 /// Trait for tracking refresh token families.
@@ -42,6 +42,29 @@ pub trait RefreshTokenStore: Send + Sync {
 
     /// Set the current generation for a token family.
     async fn set_family_generation(&self, family: &str, generation: u32) -> Result<()>;
+
+    /// Atomically advance a token family's generation.
+    ///
+    /// Returns `Ok(true)` if generation was advanced from `expected_generation`
+    /// to `new_generation`, or `Ok(false)` when the expected generation didn't match.
+    ///
+    /// # Important
+    ///
+    /// Production implementations must override this with a true compare-and-swap
+    /// operation in the backing store.
+    ///
+    /// The default implementation fails closed to prevent accidental non-atomic
+    /// implementations in security-sensitive refresh flows.
+    async fn compare_and_swap_family_generation(
+        &self,
+        _family: &str,
+        _expected_generation: u32,
+        _new_generation: u32,
+    ) -> Result<bool> {
+        Err(TidewayError::internal(
+            "RefreshTokenStore::compare_and_swap_family_generation must be implemented atomically",
+        ))
+    }
 
     /// Revoke an entire token family.
     ///
@@ -129,6 +152,35 @@ pub mod test {
             Ok(())
         }
 
+        async fn compare_and_swap_family_generation(
+            &self,
+            family: &str,
+            expected_generation: u32,
+            new_generation: u32,
+        ) -> Result<bool> {
+            let mut families = self.families.write().unwrap();
+            match families.get_mut(family) {
+                Some(state) => {
+                    if state.revoked || state.generation != expected_generation {
+                        return Ok(false);
+                    }
+                    state.generation = new_generation;
+                    Ok(true)
+                }
+                None if expected_generation == 0 => {
+                    families.insert(
+                        family.to_string(),
+                        FamilyState {
+                            generation: new_generation,
+                            revoked: false,
+                        },
+                    );
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        }
+
         async fn revoke_family(&self, family: &str) -> Result<()> {
             let mut families = self.families.write().unwrap();
             if let Some(state) = families.get_mut(family) {
@@ -192,5 +244,52 @@ pub mod test {
             }
             Ok(None)
         }
+    }
+
+    #[cfg(test)]
+    struct NonAtomicDefaultStore;
+
+    #[cfg(test)]
+    #[async_trait]
+    impl RefreshTokenStore for NonAtomicDefaultStore {
+        async fn is_family_revoked(&self, _family: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn get_family_generation(&self, _family: &str) -> Result<Option<u32>> {
+            Ok(None)
+        }
+
+        async fn set_family_generation(&self, _family: &str, _generation: u32) -> Result<()> {
+            Ok(())
+        }
+
+        async fn revoke_family(&self, _family: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn revoke_all_for_user(&self, _user_id: &str) -> Result<()> {
+            Ok(())
+        }
+
+        async fn associate_family_with_user(&self, _family: &str, _user_id: &str) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    #[tokio::test]
+    async fn test_default_compare_and_swap_fails_closed() {
+        let store = NonAtomicDefaultStore;
+        let result = store
+            .compare_and_swap_family_generation("family-1", 0, 1)
+            .await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be implemented atomically")
+        );
     }
 }

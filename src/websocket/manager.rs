@@ -168,6 +168,25 @@ impl ConnectionManager {
                     }
                 }
             }
+            drop(conn_guard);
+
+            // Ensure no stale room memberships remain even if local room state was
+            // out-of-sync due lock contention in add/remove room updates.
+            self.remove_connection_from_all_rooms(conn_id);
+        }
+    }
+
+    fn remove_connection_from_all_rooms(&self, conn_id: &str) {
+        let room_names: Vec<String> = self.rooms.iter().map(|entry| entry.key().clone()).collect();
+
+        for room_name in room_names {
+            if let Some(mut room_conns) = self.rooms.get_mut(&room_name) {
+                room_conns.remove(conn_id);
+                if room_conns.is_empty() {
+                    drop(room_conns);
+                    self.rooms.remove(&room_name);
+                }
+            }
         }
     }
 
@@ -194,13 +213,16 @@ impl ConnectionManager {
 
         // Send to each connection
         for (conn_id, conn) in conns {
-            if let Ok(conn_guard) = conn.try_read() {
-                if let Err(e) = conn_guard.send(msg.clone()).await {
-                    errors.push(e);
-                    failed_conns.push(conn_id);
-                }
-            } else {
-                // Connection is locked, skip for now (will be cleaned up later)
+            // Clone sender under a short-lived read lock, then send without holding the lock.
+            let sender = {
+                let conn_guard = conn.read().await;
+                conn_guard.sender_clone()
+            };
+
+            if sender.send(msg.clone()).await.is_err() {
+                errors.push(TidewayError::internal(
+                    "Failed to send message: channel full or connection closed",
+                ));
                 failed_conns.push(conn_id);
             }
         }
@@ -249,16 +271,25 @@ impl ConnectionManager {
         let mut failed_conns = Vec::new();
 
         for conn_id in conn_ids {
-            if let Some(conn) = self.connections.get(&conn_id) {
-                if let Ok(conn_guard) = conn.try_read() {
-                    if let Err(e) = conn_guard.send(msg.clone()).await {
-                        errors.push(e);
-                        failed_conns.push(conn_id);
-                    }
-                } else {
-                    // Connection locked, skip
-                    failed_conns.push(conn_id);
-                }
+            let Some(conn) = self
+                .connections
+                .get(&conn_id)
+                .map(|entry| entry.value().clone())
+            else {
+                continue;
+            };
+
+            // Clone sender under a short-lived read lock, then send without holding the lock.
+            let sender = {
+                let conn_guard = conn.read().await;
+                conn_guard.sender_clone()
+            };
+
+            if sender.send(msg.clone()).await.is_err() {
+                errors.push(TidewayError::internal(
+                    "Failed to send message: channel full or connection closed",
+                ));
+                failed_conns.push(conn_id);
             }
         }
 
@@ -308,16 +339,25 @@ impl ConnectionManager {
         let mut failed_conns = Vec::new();
 
         for conn_id in conn_ids {
-            if let Some(conn) = self.connections.get(&conn_id) {
-                if let Ok(conn_guard) = conn.try_read() {
-                    if let Err(e) = conn_guard.send(msg.clone()).await {
-                        errors.push(e);
-                        failed_conns.push(conn_id);
-                    }
-                } else {
-                    // Connection locked, skip
-                    failed_conns.push(conn_id);
-                }
+            let Some(conn) = self
+                .connections
+                .get(&conn_id)
+                .map(|entry| entry.value().clone())
+            else {
+                continue;
+            };
+
+            // Clone sender under a short-lived read lock, then send without holding the lock.
+            let sender = {
+                let conn_guard = conn.read().await;
+                conn_guard.sender_clone()
+            };
+
+            if sender.send(msg.clone()).await.is_err() {
+                errors.push(TidewayError::internal(
+                    "Failed to send message: channel full or connection closed",
+                ));
+                failed_conns.push(conn_id);
             }
         }
 

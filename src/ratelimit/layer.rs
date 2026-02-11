@@ -30,6 +30,8 @@ use tower::{Layer, Service};
 /// Shrink the keyed state store every N requests to prevent unbounded memory growth.
 /// This is a balance between memory efficiency and performance overhead.
 const SHRINK_INTERVAL: u64 = 1000;
+/// Shared bucket used when client IP cannot be determined.
+const UNKNOWN_CLIENT_BUCKET: &str = "__tideway_unknown_client__";
 
 /// Custom error response for rate limit exceeded
 #[derive(serde::Serialize)]
@@ -110,19 +112,14 @@ impl RateLimitState {
                     limiter.retain_recent();
                 }
 
-                if let Some(ip) = key {
-                    match limiter.check_key(&ip.to_string()) {
-                        Ok(_) => Ok(()),
-                        Err(not_until) => {
-                            let wait = not_until.wait_time_from(governor::clock::Clock::now(
-                                &DefaultClock::default(),
-                            ));
-                            Err(wait.as_secs().max(1))
-                        }
+                let bucket = key.unwrap_or(UNKNOWN_CLIENT_BUCKET);
+                match limiter.check_key(&bucket.to_string()) {
+                    Ok(_) => Ok(()),
+                    Err(not_until) => {
+                        let wait = not_until
+                            .wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+                        Err(wait.as_secs().max(1))
                     }
-                } else {
-                    // No IP available, allow the request
-                    Ok(())
                 }
             }
             LimiterState::Global(limiter) => match limiter.check() {
@@ -363,6 +360,21 @@ mod tests {
             assert!(retry_after > 0, "Should return positive retry_after");
             assert!(retry_after <= 60, "retry_after should be within window");
         }
+    }
+
+    #[test]
+    fn test_missing_ip_uses_shared_bucket() {
+        let config = RateLimitConfig {
+            enabled: true,
+            max_requests: 1,
+            window_seconds: 60,
+            strategy: "per_ip".to_string(),
+            trust_proxy: false,
+        };
+        let state = RateLimitState::new(config);
+
+        assert!(state.check_rate_limit(None).is_ok());
+        assert!(state.check_rate_limit(None).is_err());
     }
 
     #[test]

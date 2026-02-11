@@ -93,6 +93,7 @@ If you want to serve Tideway with `axum::serve`, use the middleware-aware router
 
 ```rust
 use tideway::App;
+use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
 #[tokio::main]
@@ -101,7 +102,11 @@ async fn main() -> Result<(), std::io::Error> {
     let router = app.into_router_with_middleware();
 
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
-    axum::serve(listener, router).await
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
 ```
 

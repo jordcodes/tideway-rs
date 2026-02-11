@@ -6,6 +6,7 @@ use axum::{
     response::Response,
 };
 use futures::future::BoxFuture;
+use std::sync::OnceLock;
 use std::time::Instant;
 use tower::Service;
 
@@ -13,6 +14,16 @@ use tower::Service;
 pub fn build_request_logging_layer(config: &RequestLoggingConfig) -> Option<RequestLoggingLayer> {
     if !config.enabled {
         return None;
+    }
+
+    if config.body_preview_size > 0 {
+        static BODY_PREVIEW_WARNED: OnceLock<()> = OnceLock::new();
+        BODY_PREVIEW_WARNED.get_or_init(|| {
+            tracing::warn!(
+                body_preview_size = config.body_preview_size,
+                "request body preview is not implemented yet; REQUEST_LOGGING_BODY_PREVIEW_SIZE is currently ignored"
+            );
+        });
     }
 
     Some(RequestLoggingLayer {
@@ -70,7 +81,7 @@ where
             .get::<MatchedPath>()
             .map(|p| p.as_str().to_string());
         let path = matched_path.unwrap_or_else(|| uri.path().to_string());
-        let query = uri.query().map(|q| q.to_string());
+        let query = sanitize_query(uri.query());
 
         // Extract request ID if present
         let request_id = req
@@ -271,6 +282,68 @@ fn is_log_level_enabled(level: LogLevel) -> bool {
     }
 }
 
+const REDACTED_QUERY_VALUE: &str = "[REDACTED]";
+
+fn sanitize_query(query: Option<&str>) -> Option<String> {
+    query.map(|q| {
+        q.split('&')
+            .map(|pair| {
+                if let Some((key, value)) = pair.split_once('=') {
+                    if is_sensitive_query_key_decoded(key) {
+                        format!("{key}={REDACTED_QUERY_VALUE}")
+                    } else {
+                        format!("{key}={value}")
+                    }
+                } else if is_sensitive_query_key_decoded(pair) {
+                    format!("{pair}={REDACTED_QUERY_VALUE}")
+                } else {
+                    pair.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("&")
+    })
+}
+
+fn is_sensitive_query_key_decoded(raw_key: &str) -> bool {
+    let decoded_key = decode_query_key(raw_key);
+    is_sensitive_query_key(&decoded_key)
+}
+
+fn decode_query_key(raw_key: &str) -> String {
+    if !raw_key.as_bytes().iter().any(|c| *c == b'%' || *c == b'+') {
+        return raw_key.to_string();
+    }
+
+    let encoded = format!("{raw_key}=");
+    if let Some((decoded, _)) = url::form_urlencoded::parse(encoded.as_bytes()).next() {
+        decoded.into_owned()
+    } else {
+        raw_key.to_string()
+    }
+}
+
+fn is_sensitive_query_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    matches!(
+        key.as_str(),
+        "token"
+            | "access_token"
+            | "refresh_token"
+            | "id_token"
+            | "password"
+            | "secret"
+            | "api_key"
+            | "signature"
+            | "sig"
+            | "code"
+            | "auth"
+            | "authorization"
+    ) || key.ends_with("_token")
+        || key.ends_with("_secret")
+        || key.ends_with("_key")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,5 +406,26 @@ mod tests {
             assert!(!is_log_level_enabled(LogLevel::Debug));
             assert!(is_log_level_enabled(LogLevel::Info));
         });
+    }
+
+    #[test]
+    fn test_sanitize_query_redacts_sensitive_keys() {
+        let query = Some("token=abc123&page=2&api_key=xyz");
+        let sanitized = sanitize_query(query).unwrap();
+        assert_eq!(sanitized, "token=[REDACTED]&page=2&api_key=[REDACTED]");
+    }
+
+    #[test]
+    fn test_sanitize_query_preserves_non_sensitive_values() {
+        let query = Some("page=2&sort=asc");
+        let sanitized = sanitize_query(query).unwrap();
+        assert_eq!(sanitized, "page=2&sort=asc");
+    }
+
+    #[test]
+    fn test_sanitize_query_redacts_urlencoded_sensitive_keys() {
+        let query = Some("access%5Ftoken=abc123&page=2");
+        let sanitized = sanitize_query(query).unwrap();
+        assert_eq!(sanitized, "access%5Ftoken=[REDACTED]&page=2");
     }
 }

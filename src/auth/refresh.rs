@@ -186,23 +186,6 @@ where
             return Err(TidewayError::Unauthorized("Token has been revoked".into()));
         }
 
-        // Check generation (detect reuse)
-        if let Some(stored_gen) = self.store.get_family_generation(family).await? {
-            if claims.generation < stored_gen {
-                // Token reuse detected! Revoke entire family
-                tracing::error!(
-                    target: "auth.token.reuse_detected",
-                    user_id = %user_id,
-                    family = %family,
-                    presented_generation = claims.generation,
-                    expected_generation = stored_gen,
-                    "SECURITY: Refresh token reuse detected - possible token theft"
-                );
-                self.store.revoke_family(family).await?;
-                return Err(TidewayError::Unauthorized("Token reuse detected".into()));
-            }
-        }
-
         // Load user (verify still exists/active)
         let user = match self.user_loader.load_user(user_id).await? {
             Some(u) => u,
@@ -217,11 +200,56 @@ where
             }
         };
 
-        // Update stored generation
-        let new_generation = claims.generation + 1;
-        self.store
-            .set_family_generation(family, new_generation)
+        // Atomically advance generation.
+        // This prevents concurrent refresh requests from both succeeding.
+        let new_generation = claims
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| TidewayError::Unauthorized("Invalid refresh token generation".into()))?;
+        let advanced = self
+            .store
+            .compare_and_swap_family_generation(family, claims.generation, new_generation)
             .await?;
+
+        if !advanced {
+            // Family may have been revoked concurrently.
+            if self.store.is_family_revoked(family).await? {
+                tracing::warn!(
+                    target: "auth.token.invalid",
+                    user_id = %user_id,
+                    family = %family,
+                    "Attempted use of revoked token family"
+                );
+                return Err(TidewayError::Unauthorized("Token has been revoked".into()));
+            }
+
+            let stored_gen = self.store.get_family_generation(family).await?.unwrap_or(0);
+            if claims.generation < stored_gen {
+                // Token reuse detected! Revoke entire family
+                tracing::error!(
+                    target: "auth.token.reuse_detected",
+                    user_id = %user_id,
+                    family = %family,
+                    presented_generation = claims.generation,
+                    expected_generation = stored_gen,
+                    "SECURITY: Refresh token reuse detected - possible token theft"
+                );
+                self.store.revoke_family(family).await?;
+                return Err(TidewayError::Unauthorized("Token reuse detected".into()));
+            }
+
+            tracing::warn!(
+                target: "auth.token.invalid",
+                user_id = %user_id,
+                family = %family,
+                presented_generation = claims.generation,
+                stored_generation = stored_gen,
+                "Refresh token generation mismatch"
+            );
+            return Err(TidewayError::Unauthorized(
+                "Refresh token already used".into(),
+            ));
+        }
 
         // Issue new access token
         let email = self.user_loader.user_email(&user);
@@ -548,5 +576,37 @@ mod tests {
         assert_eq!(initial.family, refresh1.family);
         assert_eq!(refresh1.family, refresh2.family);
         assert_eq!(refresh2.family, refresh3.family);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_refresh_same_token_only_one_succeeds() {
+        let secret = b"test-secret-key-32-bytes-long!!";
+        let issuer = JwtIssuer::new(JwtIssuerConfig::with_secret(
+            String::from_utf8_lossy(secret).to_string(),
+            "test-app",
+        ))
+        .unwrap();
+
+        let store = InMemoryRefreshTokenStore::new();
+        let user_loader = TestUserLoader;
+
+        let flow = TokenRefreshFlow::new(issuer.clone(), store, user_loader, secret);
+
+        let subject = TokenSubject::new("user-123");
+        let initial = issuer.issue(subject, false).unwrap();
+
+        let (r1, r2) = tokio::join!(
+            flow.refresh(&initial.refresh_token),
+            flow.refresh(&initial.refresh_token)
+        );
+
+        let success_count = [r1.is_ok(), r2.is_ok()]
+            .into_iter()
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(
+            success_count, 1,
+            "exactly one concurrent refresh should succeed"
+        );
     }
 }
