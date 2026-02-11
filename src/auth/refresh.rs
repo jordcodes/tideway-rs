@@ -308,7 +308,6 @@ mod tests {
     struct TestUserLoader;
 
     struct TestUser {
-        id: String,
         email: String,
         name: String,
     }
@@ -317,9 +316,8 @@ mod tests {
     impl UserLoader for TestUserLoader {
         type User = TestUser;
 
-        async fn load_user(&self, user_id: &str) -> Result<Option<Self::User>> {
+        async fn load_user(&self, _user_id: &str) -> Result<Option<Self::User>> {
             Ok(Some(TestUser {
-                id: user_id.to_string(),
                 email: "test@example.com".to_string(),
                 name: "Test User".to_string(),
             }))

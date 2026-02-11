@@ -397,6 +397,7 @@ pub enum PlanInterval {
 
 impl PlanInterval {
     /// Convert from string.
+    #[allow(clippy::should_implement_trait)] // This is intentionally lenient and defaults unknown values to monthly.
     #[must_use]
     pub fn from_str(s: &str) -> Self {
         match s {

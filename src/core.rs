@@ -487,8 +487,6 @@ pub struct AppBuilder {
     /// Modules stored as (router, optional_prefix)
     modules: Vec<(Router<AppContext>, Option<String>)>,
     global_layers: Vec<GlobalLayer>,
-    #[cfg(feature = "metrics")]
-    metrics_collector: Option<Arc<MetricsCollector>>,
 }
 
 impl AppBuilder {
@@ -498,8 +496,6 @@ impl AppBuilder {
             context: AppContext::new(),
             modules: Vec::new(),
             global_layers: Vec::new(),
-            #[cfg(feature = "metrics")]
-            metrics_collector: None,
         }
     }
 
@@ -608,6 +604,7 @@ impl Default for AppBuilder {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use axum::{Router, routing::get};

@@ -23,28 +23,6 @@ struct User {
     password_hash: String, // In real app, use bcrypt/argon2
 }
 
-// Mock claims
-#[derive(Clone, Deserialize, Serialize)]
-struct Claims {
-    sub: String,
-    email: String,
-    exp: usize,
-}
-
-impl Default for Claims {
-    fn default() -> Self {
-        Self {
-            sub: "test-user".to_string(),
-            email: "test@example.com".to_string(),
-            exp: (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 3600) as usize,
-        }
-    }
-}
-
 // Mock auth provider (simplified - in real app use tideway::auth::AuthProvider)
 #[allow(dead_code)]
 struct MockAuthProvider;

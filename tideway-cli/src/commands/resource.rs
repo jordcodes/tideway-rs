@@ -258,6 +258,7 @@ fn detect_db_backend(project_dir: &Path) -> Result<DbBackend> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_resource_module(
     resource_pascal: &str,
     resource_name: &str,
@@ -1318,12 +1319,11 @@ fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
             }
         }
         let insert_at = insert_at.unwrap_or_else(|| {
-            let prelude_line = lines
+            lines
                 .iter()
                 .position(|line| line.contains("sea_orm_migration::prelude"))
                 .map(|idx| idx + 1)
-                .unwrap_or(0);
-            prelude_line
+                .unwrap_or(0)
         });
         lines.insert(insert_at, mod_line);
         contents = lines.join("\n");

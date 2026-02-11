@@ -28,6 +28,15 @@ cargo test -p tideway-cli --test messaging_contract_test
 echo "[verify] tideway-cli tests"
 cargo test -p tideway-cli
 
+echo "[verify] tideway lib tests"
+cargo test --lib
+
+echo "[verify] billing feature compile check"
+cargo check --features billing
+
+echo "[verify] all-features compile check"
+cargo check --all-features
+
 echo "[verify] module contract tests"
 cargo test --test prelude_smoke_test
 cargo test --test feature_gate_contract_test

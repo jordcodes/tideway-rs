@@ -265,7 +265,6 @@ pub fn validate_form<T: Validate>(form: axum::extract::Form<T>) -> Result<Valida
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde::Deserialize;
     use validator::Validate;
 

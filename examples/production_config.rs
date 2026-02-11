@@ -15,15 +15,11 @@ use tideway::{App, ConfigBuilder, CorsConfig, RateLimitConfig};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize structured logging early
     // Production: Use JSON logging for log aggregation systems
-    let log_json = std::env::var("TIDEWAY_LOG_JSON")
+    let _log_json = std::env::var("TIDEWAY_LOG_JSON")
         .map(|v| v.parse().unwrap_or(false))
         .unwrap_or(false);
 
-    if log_json {
-        tideway::init_tracing();
-    } else {
-        tideway::init_tracing();
-    }
+    tideway::init_tracing();
 
     // Load configuration from environment
     // Production: Use ConfigBuilder to load from environment variables

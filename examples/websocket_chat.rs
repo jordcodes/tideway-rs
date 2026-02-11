@@ -10,7 +10,6 @@
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     use async_trait::async_trait;
     use axum::Router;
-    use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use tideway::{
         App, AppContext, ConfigBuilder, Result,

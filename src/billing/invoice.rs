@@ -1117,7 +1117,7 @@ pub mod test {
             let mut filtered: Vec<Invoice> = invoices
                 .iter()
                 .filter(|inv| inv.customer_id == customer_id)
-                .filter(|inv| status.map_or(true, |s| inv.status == s))
+                .filter(|inv| status.is_none_or(|s| inv.status == s))
                 .cloned()
                 .collect();
 

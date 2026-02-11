@@ -68,6 +68,7 @@ async fn main() -> tideway::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "cache-redis")]
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 struct User {
     id: u64,

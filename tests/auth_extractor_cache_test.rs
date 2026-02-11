@@ -82,7 +82,7 @@ async fn auth_user_reuses_cached_user() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
     let (mut parts, _) = request.into_parts();
 
-    parts.extensions.insert(TestProvider::default());
+    parts.extensions.insert(TestProvider);
     parts.extensions.insert(TestUser { admin: false });
 
     let AuthUser(user) = AuthUser::<TestProvider>::from_request_parts(&mut parts, &())
@@ -96,7 +96,7 @@ async fn optional_auth_reuses_cached_user() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
     let (mut parts, _) = request.into_parts();
 
-    parts.extensions.insert(TestProvider::default());
+    parts.extensions.insert(TestProvider);
     parts.extensions.insert(TestUser { admin: true });
 
     let OptionalAuth(user) = OptionalAuth::<TestProvider>::from_request_parts(&mut parts, &())
@@ -111,7 +111,7 @@ async fn require_admin_reuses_cached_user() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
     let (mut parts, _) = request.into_parts();
 
-    parts.extensions.insert(TestProvider::default());
+    parts.extensions.insert(TestProvider);
     parts.extensions.insert(TestUser { admin: true });
 
     let RequireAdmin(user) = RequireAdmin::<TestProvider>::from_request_parts(&mut parts, &())
@@ -125,7 +125,7 @@ async fn require_admin_rejects_cached_non_admin() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
     let (mut parts, _) = request.into_parts();
 
-    parts.extensions.insert(TestProvider::default());
+    parts.extensions.insert(TestProvider);
     parts.extensions.insert(TestUser { admin: false });
 
     let result = RequireAdmin::<TestProvider>::from_request_parts(&mut parts, &()).await;
@@ -137,7 +137,7 @@ async fn claims_ref_reuses_cached_claims() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
     let (mut parts, _) = request.into_parts();
 
-    parts.extensions.insert(ClaimsProvider::default());
+    parts.extensions.insert(ClaimsProvider);
     let cached = Arc::new(TestClaims);
     parts.extensions.insert(Arc::clone(&cached));
 
@@ -152,7 +152,7 @@ async fn claims_ref_inserts_claims_when_missing() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
     let (mut parts, _) = request.into_parts();
 
-    parts.extensions.insert(ClaimsProvider::default());
+    parts.extensions.insert(ClaimsProvider);
     parts
         .headers
         .insert("authorization", "Bearer test-token".parse().unwrap());
@@ -169,7 +169,7 @@ async fn optional_auth_does_not_cache_claims_on_validation_error() {
     let request = Request::builder().uri("/").body(Body::empty()).unwrap();
     let (mut parts, _) = request.into_parts();
 
-    parts.extensions.insert(RejectingUserProvider::default());
+    parts.extensions.insert(RejectingUserProvider);
     parts
         .headers
         .insert("authorization", "Bearer test-token".parse().unwrap());

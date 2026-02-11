@@ -443,6 +443,7 @@ mod tests {
                 tax_id_collection: false,
                 billing_address_collection: false,
                 coupon: None,
+                payment_method_collection: None,
             })
             .await
             .unwrap();

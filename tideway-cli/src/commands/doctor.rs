@@ -37,11 +37,11 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     }
 
     for line in &report.info {
-        print_info(&line);
+        print_info(line);
     }
 
     for line in &report.fixes {
-        print_success(&line);
+        print_success(line);
     }
 
     if !report.warnings.is_empty() {
@@ -49,7 +49,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
             println!();
         }
         for warning in &report.warnings {
-            print_warning(&warning);
+            print_warning(warning);
         }
     }
 

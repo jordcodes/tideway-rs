@@ -521,7 +521,6 @@ pub struct Subscription {
 
 impl Subscription {
     /// Create from stored subscription with optional plan.
-    #[must_use]
     pub fn from_stored(stored: StoredSubscription, plan: Option<super::plans::PlanConfig>) -> Self {
         Self {
             id: stored.stripe_subscription_id,

@@ -179,7 +179,6 @@ pub mod test {
     struct MockCustomer {
         email: String,
         name: Option<String>,
-        metadata: Option<CustomerMetadata>,
     }
 
     impl MockStripeClient {
@@ -211,7 +210,6 @@ pub mod test {
                 MockCustomer {
                     email: request.email,
                     name: request.name,
-                    metadata: request.metadata,
                 },
             );
             Ok(id)

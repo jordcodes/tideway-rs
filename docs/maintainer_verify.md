@@ -14,9 +14,13 @@ bash scripts/verify.sh
 2. `bash scripts/check_quickstart_parity.sh`
 3. `bash scripts/check_cli_fs_writes.sh`
 4. `bash scripts/check_public_api_surface.sh`
-5. `cargo test -p tideway-cli`
-6. `cargo test --test prelude_smoke_test`
-7. `cargo test --test feature_gate_contract_test`
+5. `cargo test -p tideway-cli --test messaging_contract_test`
+6. `cargo test -p tideway-cli`
+7. `cargo test --lib`
+8. `cargo check --features billing`
+9. `cargo check --all-features`
+10. `cargo test --test prelude_smoke_test`
+11. `cargo test --test feature_gate_contract_test`
 
 ## Common Failures and Fixes
 
@@ -84,6 +88,21 @@ Fix:
 - for intentional scaffold output changes:
   - update relevant files under `tideway-cli/tests/snapshots/`
 - re-run targeted test, then full CLI suite
+
+---
+
+### Feature Build Failures (`cargo check --features billing` / `cargo check --all-features`)
+
+Symptoms:
+- optional modules compile in default builds, but fail when billing or full feature set is enabled
+- missing fields, moved values, or unused-feature drift in feature-gated code
+
+Fix:
+- run the exact failing check locally and fix the referenced file/line
+- make sure tests/builds for the affected feature compile with:
+  - `cargo check --features billing`
+  - `cargo check --all-features`
+- if a public request type changed, update all test initializers and mock call sites
 
 ---
 

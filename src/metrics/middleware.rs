@@ -99,8 +99,6 @@ mod tests {
     fn test_metrics_layer_creation() {
         let collector = Arc::new(MetricsCollector::new().unwrap());
         let _layer = build_metrics_layer(collector);
-        // Just verify it compiles and can be created
-        assert!(true);
     }
 
     #[tokio::test]
@@ -120,7 +118,7 @@ mod tests {
         let metrics = collector.registry().gather();
         let family = find_metric_family(&metrics, "tideway_http_requests_total")
             .expect("metrics family not found");
-        let metric = family.get_metric().get(0).expect("metric not recorded");
+        let metric = family.get_metric().first().expect("metric not recorded");
         let path = find_label_value(metric, "path").expect("path label missing");
         assert_eq!(path, "/users/{id}");
     }

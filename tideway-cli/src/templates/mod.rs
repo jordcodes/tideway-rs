@@ -89,7 +89,7 @@ fn register_templates(
             }
             include_dir::DirEntry::File(file) => {
                 let path = file.path();
-                if path.extension().map_or(false, |ext| ext == "hbs") {
+                if path.extension().is_some_and(|ext| ext == "hbs") {
                     // Remove .hbs extension for template name
                     let name = path.file_stem().unwrap().to_string_lossy();
                     let template_key = if prefix.is_empty() {

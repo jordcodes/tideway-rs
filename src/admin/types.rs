@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Platform-wide statistics for the admin dashboard.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlatformStats {
     /// Total number of registered users.
     pub total_users: u64,
@@ -18,18 +18,6 @@ pub struct PlatformStats {
     pub mrr_cents: u64,
     /// Number of users who signed up in the last 30 days.
     pub recent_signups: u64,
-}
-
-impl Default for PlatformStats {
-    fn default() -> Self {
-        Self {
-            total_users: 0,
-            total_organizations: 0,
-            active_subscriptions: 0,
-            mrr_cents: 0,
-            recent_signups: 0,
-        }
-    }
 }
 
 /// Sort order for list queries.
@@ -189,10 +177,11 @@ pub struct AuditEntry {
 // =============================================================================
 
 /// Status of a platform invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlatformInviteStatus {
     /// Invitation is pending acceptance.
+    #[default]
     Pending,
     /// Invitation was accepted and user signed up.
     Accepted,
@@ -200,12 +189,6 @@ pub enum PlatformInviteStatus {
     Revoked,
     /// Invitation expired without being accepted.
     Expired,
-}
-
-impl Default for PlatformInviteStatus {
-    fn default() -> Self {
-        Self::Pending
-    }
 }
 
 /// A platform invitation for new users to sign up.

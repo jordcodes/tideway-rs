@@ -241,7 +241,7 @@ fn model_to_stored_plan(model: billing_plan::Model) -> StoredPlan {
         included_seats: i32_to_u32(model.included_seats),
         features: model.features,
         limits: model.limits,
-        trial_days: model.trial_days.map(|d| i32_to_u32(d)),
+        trial_days: model.trial_days.map(i32_to_u32),
         is_active: model.is_active,
         sort_order: model.sort_order,
         created_at: model.created_at.timestamp() as u64,
@@ -264,7 +264,7 @@ fn plan_to_active_model(plan: &StoredPlan) -> billing_plan::ActiveModel {
         included_seats: Set(u32_to_i32(plan.included_seats)),
         features: Set(plan.features.clone()),
         limits: Set(plan.limits.clone()),
-        trial_days: Set(plan.trial_days.map(|d| u32_to_i32(d))),
+        trial_days: Set(plan.trial_days.map(u32_to_i32)),
         is_active: Set(plan.is_active),
         sort_order: Set(plan.sort_order),
         created_at: Set(now),
@@ -769,7 +769,7 @@ impl PlanStore for SeaOrmBillingStore {
             )
             .col_expr(
                 billing_plan::Column::TrialDays,
-                Expr::value(plan.trial_days.map(|d| u32_to_i32(d))),
+                Expr::value(plan.trial_days.map(u32_to_i32)),
             )
             .col_expr(billing_plan::Column::IsActive, Expr::value(plan.is_active))
             .col_expr(
@@ -1027,7 +1027,7 @@ mod tests {
         assert_eq!(u64_to_usize(100), 100);
         assert_eq!(u64_to_usize(0), 0);
         assert_eq!(u64_to_usize(usize::MAX as u64), usize::MAX);
-        // On 64-bit platforms u64::MAX == usize::MAX, on 32-bit it saturates
-        assert!(u64_to_usize(u64::MAX) <= usize::MAX);
+        // Saturation always yields a valid usize upper bound.
+        assert_eq!(u64_to_usize(u64::MAX), usize::MAX);
     }
 }

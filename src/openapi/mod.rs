@@ -62,6 +62,7 @@ pub fn merge_openapi(mut docs: Vec<utoipa::openapi::OpenApi>) -> utoipa::openapi
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use utoipa::OpenApi;

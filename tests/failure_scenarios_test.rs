@@ -163,10 +163,6 @@ async fn test_error_response_format() {
 
     let response = error.into_response();
     assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
-
-    // Verify response body contains error information
-    // (In a real scenario, we'd parse the JSON body)
-    assert!(true);
 }
 
 #[tokio::test]

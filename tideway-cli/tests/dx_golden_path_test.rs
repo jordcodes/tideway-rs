@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 #[test]
@@ -187,7 +187,7 @@ edition = "2021"
     fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write src/main.rs");
 }
 
-fn write_fake_cargo(fake_cargo_dir: &Path, invocation_log: &PathBuf) {
+fn write_fake_cargo(fake_cargo_dir: &Path, invocation_log: &Path) {
     let fake_cargo = fake_cargo_dir.join("cargo");
     let script = format!(
         "#!/usr/bin/env bash\n\

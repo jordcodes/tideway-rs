@@ -1,3 +1,5 @@
+#![cfg(feature = "auth")]
+
 //! Integration tests for authentication flows.
 //!
 //! These tests verify the complete HTTP request/response cycle for all auth operations.
@@ -286,7 +288,7 @@ impl MfaTokenStore for InMemoryMfaTokenStore {
 
 #[derive(Clone, Default)]
 struct InMemoryRefreshTokenStore {
-    families: Arc<RwLock<HashMap<String, (String, u32, bool)>>>, // family -> (user_id, generation, revoked)
+    families: Arc<RwLock<HashMap<String, RefreshTokenFamilyState>>>, // family -> (user_id, generation, revoked)
 }
 
 impl InMemoryRefreshTokenStore {
@@ -294,6 +296,8 @@ impl InMemoryRefreshTokenStore {
         Self::default()
     }
 }
+
+type RefreshTokenFamilyState = (String, u32, bool);
 
 #[async_trait]
 impl RefreshTokenStore for InMemoryRefreshTokenStore {
@@ -910,11 +914,7 @@ async fn test_timing_safe_user_not_found() {
 
     // Times should be roughly similar (within 100ms is reasonable for test environment)
     // This is a basic check - real timing attacks need more sophisticated analysis
-    let diff = if duration1 > duration2 {
-        duration1 - duration2
-    } else {
-        duration2 - duration1
-    };
+    let diff = duration1.abs_diff(duration2);
 
     assert!(
         diff < Duration::from_millis(100),

@@ -130,11 +130,7 @@ mod tests {
             .build()
             .unwrap();
 
-        let _app = App::with_config(config);
-
-        // In a real test, we would make HTTP requests and verify metrics endpoint
-        // For now, we verify the app was created successfully
-        assert!(true);
+        let _router = App::with_config(config).into_router();
     }
 
     #[tokio::test]
@@ -155,10 +151,8 @@ mod tests {
             std::time::Duration::from_millis(60),
         );
 
-        // Both should be normalized to /api/users/:id
-        // Verify by checking metrics were recorded
-        // (In a real scenario, we'd query the metrics endpoint)
-        assert!(true);
+        let gathered = collector.registry().gather();
+        assert!(!gathered.is_empty());
     }
 
     #[tokio::test]
@@ -170,8 +164,6 @@ mod tests {
             .build()
             .unwrap();
 
-        let _app = App::with_config(config);
-        // Metrics should not be initialized
-        assert!(true);
+        let _router = App::with_config(config).into_router();
     }
 }

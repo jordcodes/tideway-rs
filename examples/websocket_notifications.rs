@@ -39,7 +39,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[async_trait]
     impl WebSocketHandler for NotificationHandler {
-        async fn on_connect(&self, conn: &mut Connection, ctx: &tideway::AppContext) -> Result<()> {
+        async fn on_connect(
+            &self,
+            conn: &mut Connection,
+            _ctx: &tideway::AppContext,
+        ) -> Result<()> {
             tracing::info!(conn_id = %conn.id(), "Client connected");
 
             // In a real app, you'd extract user_id from JWT token

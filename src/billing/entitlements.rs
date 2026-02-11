@@ -102,7 +102,6 @@ pub struct Entitlements {
 
 impl Entitlements {
     /// Create entitlements for no subscription.
-    #[must_use]
     pub fn none() -> Self {
         Self {
             has_subscription: false,

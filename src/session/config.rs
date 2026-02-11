@@ -3,20 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Session backend type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionBackend {
     /// In-memory session store (default, for dev/testing)
+    #[default]
     InMemory,
     /// Cookie-based session store (encrypted cookies)
     #[cfg(feature = "sessions")]
     Cookie,
-}
-
-impl Default for SessionBackend {
-    fn default() -> Self {
-        Self::InMemory
-    }
 }
 
 /// Session configuration

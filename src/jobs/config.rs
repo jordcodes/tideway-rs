@@ -4,20 +4,15 @@ use crate::utils::get_env_with_prefix;
 use serde::{Deserialize, Serialize};
 
 /// Job queue backend type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobBackend {
     /// In-memory queue (for development/testing)
+    #[default]
     InMemory,
     /// Redis-backed queue (for production)
     #[cfg(feature = "jobs-redis")]
     Redis,
-}
-
-impl Default for JobBackend {
-    fn default() -> Self {
-        Self::InMemory
-    }
 }
 
 /// Configuration for background jobs

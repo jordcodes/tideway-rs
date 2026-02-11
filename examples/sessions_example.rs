@@ -68,7 +68,7 @@ async fn main() -> tideway::Result<()> {
     println!("Saved cookie session");
 
     // Use in AppContext
-    let context = tideway::AppContext::builder()
+    let _context = tideway::AppContext::builder()
         .with_sessions(memory_store.clone())
         .build();
 

@@ -1,6 +1,6 @@
 #[cfg(test)]
 #[cfg(feature = "jobs")]
-mod tests {
+mod job_tests {
     use crate::{
         app::AppContext,
         error::Result,

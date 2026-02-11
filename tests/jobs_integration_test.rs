@@ -9,7 +9,6 @@ mod tests {
         jobs::{InMemoryJobQueue, JobRegistry, WorkerPool},
         traits::job::{Job, JobQueue},
     };
-    use tokio::sync::mpsc;
     use tokio::time::{Duration as TokioDuration, sleep};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +73,7 @@ mod tests {
         };
 
         let job_id = queue.enqueue(&job).await.unwrap();
-        let job_data = queue.dequeue().await.unwrap().unwrap();
+        let _job_data = queue.dequeue().await.unwrap().unwrap();
 
         // Fail the job
         queue
@@ -106,7 +105,7 @@ mod tests {
 
         // Fail job multiple times to exceed max retries
         for _ in 0..3 {
-            if let Some(job_data) = queue.dequeue().await.unwrap() {
+            if let Some(_job_data) = queue.dequeue().await.unwrap() {
                 queue
                     .fail(&job_id, "Test failure".to_string())
                     .await
@@ -174,7 +173,7 @@ mod tests {
             message: "Worker test".to_string(),
             should_fail: false,
         };
-        let job_id = queue.enqueue(&job).await.unwrap();
+        let _job_id = queue.enqueue(&job).await.unwrap();
 
         // Give workers time to process
         sleep(TokioDuration::from_millis(500)).await;

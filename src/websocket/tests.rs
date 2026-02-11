@@ -1,6 +1,6 @@
 #[cfg(feature = "websocket")]
 #[cfg(test)]
-mod tests {
+mod websocket_tests {
     use crate::error::TidewayError;
     use crate::websocket::{Connection, ConnectionManager, Message};
     use std::sync::Arc;
@@ -18,7 +18,7 @@ mod tests {
         )));
 
         // Register
-        manager.register(conn.clone()).await;
+        assert!(manager.register(conn.clone()).await.is_ok());
         assert_eq!(manager.connection_count(), 1);
 
         // Unregister
@@ -44,8 +44,8 @@ mod tests {
         )));
 
         // Register connections
-        manager.register(conn1.clone()).await;
-        manager.register(conn2.clone()).await;
+        assert!(manager.register(conn1.clone()).await.is_ok());
+        assert!(manager.register(conn2.clone()).await.is_ok());
 
         // Add to room
         manager.add_to_room("conn-1", "room-1");
@@ -82,8 +82,8 @@ mod tests {
         )));
 
         // Register and add to room
-        manager.register(conn1.clone()).await;
-        manager.register(conn2.clone()).await;
+        assert!(manager.register(conn1.clone()).await.is_ok());
+        assert!(manager.register(conn2.clone()).await.is_ok());
         manager.add_to_room("conn-1", "room-1");
         manager.add_to_room("conn-2", "room-1");
 

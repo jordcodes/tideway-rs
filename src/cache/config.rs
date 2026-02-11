@@ -2,22 +2,17 @@ use crate::utils::get_env_with_prefix;
 use serde::{Deserialize, Serialize};
 
 /// Cache backend type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CacheBackend {
     /// In-memory cache (default)
+    #[default]
     InMemory,
     /// Redis cache (requires cache-redis feature)
     #[cfg(feature = "cache-redis")]
     Redis,
     /// No-op cache (for testing)
     NoOp,
-}
-
-impl Default for CacheBackend {
-    fn default() -> Self {
-        Self::InMemory
-    }
 }
 
 /// Cache configuration

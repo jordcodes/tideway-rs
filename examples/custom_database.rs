@@ -19,7 +19,6 @@ fn main() {
 }
 
 #[cfg(feature = "database")]
-
 // Mock database connection
 struct MockConnection {
     id: u64,
@@ -27,7 +26,7 @@ struct MockConnection {
 
 impl DatabaseConnection for MockConnection {
     fn is_valid(&self) -> bool {
-        true
+        self.id > 0
     }
 }
 

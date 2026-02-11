@@ -284,9 +284,7 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
                     .find(";\n")
                     .map(|idx| insert_at + idx + 2)
                     .unwrap_or(insert_at);
-                let insert = format!(
-                    "    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n"
-                );
+                let insert = "    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n".to_string();
                 contents.insert_str(after, &insert);
             }
         }
@@ -641,7 +639,7 @@ tideway::openapi_doc!(pub(crate) ApiDoc, paths());
         ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
     }
 
-    write_file(&docs_path, &contents)
+    write_file(&docs_path, contents)
         .with_context(|| format!("Failed to write {}", docs_path.display()))?;
     print_success("Created src/openapi_docs.rs");
     Ok(())

@@ -541,13 +541,16 @@ impl PlanBuilder {
     ///
     /// Returns an error if `stripe_price` was not set.
     pub fn done(self) -> Result<PlansBuilder, BillingError> {
+        let id = self.id;
+        let stripe_price_id = self
+            .stripe_price_id
+            .ok_or(BillingError::MissingStripePrice {
+                plan_id: id.clone(),
+            })?;
+
         let config = PlanConfig {
-            id: self.id,
-            stripe_price_id: self
-                .stripe_price_id
-                .ok_or(BillingError::MissingStripePrice {
-                    plan_id: self.id.clone(),
-                })?,
+            id,
+            stripe_price_id,
             extra_seat_price_id: self.extra_seat_price_id,
             included_seats: self.included_seats,
             features: self.features,
@@ -742,7 +745,7 @@ pub fn compare_plans(from_plan: &PlanConfig, to_plan: &PlanConfig) -> PlanCompar
 /// }
 /// ```
 pub fn can_downgrade(
-    from_plan: &PlanConfig,
+    _from_plan: &PlanConfig,
     to_plan: &PlanConfig,
     current_extra_seats: u32,
     current_total_members: u32,
