@@ -59,14 +59,8 @@ fn detect_backend(project_dir: &Path) -> Result<MigrateBackend> {
         .parse::<toml_edit::DocumentMut>()
         .context("Failed to parse Cargo.toml")?;
 
-    let deps = doc.get("dependencies");
-    let has_sea_orm = deps.and_then(|deps| deps.get("sea-orm")).is_some();
-    let has_tideway_db = deps
-        .and_then(|deps| deps.get("tideway"))
-        .and_then(|item| item.get("features"))
-        .and_then(|item| item.as_array())
-        .map(|arr| arr.iter().any(|v| v.as_str() == Some("database")))
-        .unwrap_or(false);
+    let has_sea_orm = has_dependency(&doc, "sea-orm");
+    let has_tideway_db = has_tideway_feature(&doc, "database");
 
     if has_sea_orm || has_tideway_db {
         Ok(MigrateBackend::SeaOrm)
@@ -77,6 +71,47 @@ fn detect_backend(project_dir: &Path) -> Result<MigrateBackend> {
             "For greenfield apps, run `tideway new <app> --preset api`."
         )))
     }
+}
+
+fn has_tideway_feature(doc: &toml_edit::DocumentMut, feature: &str) -> bool {
+    dependency_sections(doc)
+        .into_iter()
+        .filter_map(|deps| deps.get("tideway"))
+        .filter_map(|tideway| tideway.get("features"))
+        .filter_map(|features| features.as_array())
+        .any(|arr| arr.iter().any(|value| value.as_str() == Some(feature)))
+}
+
+fn has_dependency(doc: &toml_edit::DocumentMut, dependency: &str) -> bool {
+    dependency_sections(doc)
+        .into_iter()
+        .any(|deps| deps.get(dependency).is_some())
+}
+
+fn dependency_sections<'a>(doc: &'a toml_edit::DocumentMut) -> Vec<&'a toml_edit::Item> {
+    let mut sections = Vec::new();
+
+    if let Some(item) = doc.get("dependencies") {
+        sections.push(item);
+    }
+
+    if let Some(item) = doc.get("build-dependencies") {
+        sections.push(item);
+    }
+
+    if let Some(item) = doc.get("dev-dependencies") {
+        sections.push(item);
+    }
+
+    if let Some(targets) = doc.get("target").and_then(|item| item.as_table()) {
+        for (_, target) in targets.iter() {
+            if let Some(deps) = target.get("dependencies") {
+                sections.push(deps);
+            }
+        }
+    }
+
+    sections
 }
 
 fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {

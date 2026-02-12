@@ -363,13 +363,18 @@ fn ensure_use_line(mut contents: String, line: &str, anchor: &str) -> String {
 }
 
 fn insert_before_app_builder(mut contents: String, block: &str) -> Result<String> {
-    if let Some(pos) = find_app_builder_start(&contents) {
-        contents.insert_str(pos, block);
-        Ok(contents)
-    } else {
-        print_warning("Could not find app builder; skipping auth wiring");
-        Ok(contents)
+    if let Some((start, _)) = find_app_builder_marker_range(&contents) {
+        contents.insert_str(start, block);
+        return Ok(contents);
     }
+
+    if let Some((start, _)) = find_unmarked_app_builder_statement_range(&contents) {
+        contents.insert_str(start, block);
+        return Ok(contents);
+    }
+
+    print_warning("Could not find app builder; skipping auth wiring");
+    Ok(contents)
 }
 
 fn insert_auth_into_app_builder(mut contents: String) -> Result<String> {
@@ -377,47 +382,60 @@ fn insert_auth_into_app_builder(mut contents: String) -> Result<String> {
         return Ok(contents);
     }
 
-    if let Some(pos) = find_app_builder_start(&contents) {
-        let line_end = contents[pos..]
-            .find('\n')
-            .map(|idx| pos + idx)
-            .unwrap_or(contents.len());
-        let indent = contents[pos..]
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .collect::<String>();
-        let insert = format!(
-            "{}    .with_global_layer(Extension(auth_provider))\n{}    .register_module(auth_module)\n",
-            indent, indent
-        );
-        contents.insert_str(line_end + 1, &insert);
-        Ok(contents)
-    } else {
-        print_warning("Could not find app builder; skipping auth module registration");
-        Ok(contents)
+    let insert = ".with_global_layer(Extension(auth_provider))\n.register_module(auth_module)";
+    if let Some((start, end)) = find_app_builder_marker_range(&contents) {
+        let statement = &contents[start..=end];
+        if let Some(updated) = insert_snippet_into_builder_block(statement, insert) {
+            contents.replace_range(start..=end, &updated);
+            return Ok(contents);
+        }
+        print_warning("Could not update app builder; skipping auth module registration");
+        return Ok(contents);
     }
+
+    if let Some((start, end)) = find_unmarked_app_builder_statement_range(&contents) {
+        let statement = &contents[start..=end];
+        if let Some(updated) = insert_snippet_into_builder_block(statement, insert) {
+            contents.replace_range(start..=end, &updated);
+            return Ok(contents);
+        }
+        print_warning("Could not update app builder; skipping auth module registration");
+        return Ok(contents);
+    }
+
+    print_warning("Could not find app builder; skipping auth module registration");
+    Ok(contents)
 }
 
 fn insert_database_into_app_builder(mut contents: String) -> Result<String> {
-    if let Some(pos) = find_app_builder_start(&contents) {
-        let line_end = contents[pos..]
-            .find('\n')
-            .map(|idx| pos + idx)
-            .unwrap_or(contents.len());
-        let indent = contents[pos..]
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .collect::<String>();
-        let insert = format!(
-            "{}    .with_context(\n{}        AppContext::builder()\n{}            .with_database(Arc::new(SeaOrmPool::new(db, database_url)))\n{}            .build()\n{}    )\n",
-            indent, indent, indent, indent, indent
-        );
-        contents.insert_str(line_end + 1, &insert);
-        Ok(contents)
-    } else {
-        print_warning("Could not find app builder; skipping database wiring");
-        Ok(contents)
+    if contents.contains(".with_database(") {
+        return Ok(contents);
     }
+
+    let insert = ".with_context(\n    AppContext::builder()\n        .with_database(Arc::new(SeaOrmPool::new(db, database_url)))\n        .build()\n)";
+
+    if let Some((start, end)) = find_app_builder_marker_range(&contents) {
+        let statement = &contents[start..=end];
+        if let Some(updated) = insert_snippet_into_builder_block(statement, insert) {
+            contents.replace_range(start..=end, &updated);
+            return Ok(contents);
+        }
+        print_warning("Could not update app builder; skipping database wiring");
+        return Ok(contents);
+    }
+
+    if let Some((start, end)) = find_unmarked_app_builder_statement_range(&contents) {
+        let statement = &contents[start..=end];
+        if let Some(updated) = insert_snippet_into_builder_block(statement, insert) {
+            contents.replace_range(start..=end, &updated);
+            return Ok(contents);
+        }
+        print_warning("Could not update app builder; skipping database wiring");
+        return Ok(contents);
+    }
+
+    print_warning("Could not find app builder; skipping database wiring");
+    Ok(contents)
 }
 
 fn wire_openapi_in_main(project_dir: &Path) -> Result<()> {
@@ -498,10 +516,8 @@ fn insert_openapi_into_app_builder(mut contents: String, config_ref: &str) -> Re
 }
 
 fn find_app_builder_start(contents: &str) -> Option<usize> {
-    if let Some(marker_pos) = contents.find(APP_BUILDER_START_MARKER) {
-        if let Some(line_end) = contents[marker_pos..].find('\n') {
-            return Some(marker_pos + line_end + 1);
-        }
+    if let Some((start, _)) = find_app_builder_marker_range(contents) {
+        return Some(start);
     }
     let mut search_from = 0;
     while let Some(rel_pos) = contents[search_from..].find(" = App::") {
@@ -516,6 +532,73 @@ fn find_app_builder_start(contents: &str) -> Option<usize> {
         search_from = abs_pos + 1;
     }
     None
+}
+
+fn find_app_builder_marker_range(contents: &str) -> Option<(usize, usize)> {
+    let start_marker = contents.find(APP_BUILDER_START_MARKER)?;
+    let start = contents[start_marker..].find('\n').map(|idx| start_marker + idx + 1)?;
+
+    let end_marker = contents.find(APP_BUILDER_END_MARKER)?;
+    if end_marker <= start {
+        return None;
+    }
+
+    let end = contents[..end_marker]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(end_marker);
+    Some((start, end))
+}
+
+fn find_unmarked_app_builder_statement_range(contents: &str) -> Option<(usize, usize)> {
+    let mut search_from = 0;
+    while let Some(rel_pos) = contents[search_from..].find(" = App::") {
+        let abs_pos = search_from + rel_pos;
+        let line_start = contents[..abs_pos]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        if is_app_builder_start_line(&contents[line_start..]) {
+            if let Some(end) = find_statement_terminator(contents, line_start) {
+                return Some((line_start, end));
+            }
+        }
+        search_from = abs_pos + 1;
+    }
+    None
+}
+
+fn is_app_builder_start_line(line_and_rest: &str) -> bool {
+    let line = line_and_rest.lines().next().unwrap_or("").trim();
+    line.starts_with("let ") && line.contains(" = App::")
+}
+
+fn insert_snippet_into_builder_block(statement: &str, snippet: &str) -> Option<String> {
+    let semicolon_pos = statement.rfind(';')?;
+    let line_start = statement[..semicolon_pos]
+        .rfind('\n')
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    let indent = statement[line_start..semicolon_pos]
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect::<String>();
+    let indent = if indent.is_empty() {
+        "        ".to_string()
+    } else {
+        indent
+    };
+
+    let mut updated = String::with_capacity(statement.len() + snippet.len() + indent.len() + 8);
+    updated.push_str(&statement[..semicolon_pos]);
+    for line in snippet.lines() {
+        updated.push('\n');
+        updated.push_str(&indent);
+        updated.push_str(line);
+    }
+    updated.push_str(&statement[semicolon_pos..]);
+
+    Some(updated)
 }
 
 fn find_app_builder_var_name(contents: &str, start_pos: usize) -> Option<String> {
