@@ -106,9 +106,10 @@ impl SecurityConfig {
     /// Load security configuration from environment variables
     pub fn from_env() -> Self {
         let mut config = Self::default();
+        let explicit_hsts_max_age = get_env_with_prefix("SECURITY_HSTS_MAX_AGE").is_some();
 
         if let Some(enabled) = get_env_with_prefix("SECURITY_ENABLED") {
-            config.enabled = enabled.parse().unwrap_or(true);
+            config.enabled = parse_bool_with_default(&enabled, config.enabled);
         }
 
         if let Some(max_age) = get_env_with_prefix("SECURITY_HSTS_MAX_AGE") {
@@ -118,15 +119,16 @@ impl SecurityConfig {
         }
 
         if let Some(preload) = get_env_with_prefix("SECURITY_HSTS_PRELOAD") {
-            config.hsts_preload = preload.parse().unwrap_or(false);
+            config.hsts_preload = parse_bool_with_default(&preload, config.hsts_preload);
         }
 
         if let Some(include_subdomains) = get_env_with_prefix("SECURITY_HSTS_INCLUDE_SUBDOMAINS") {
-            config.hsts_include_subdomains = include_subdomains.parse().unwrap_or(true);
+            config.hsts_include_subdomains =
+                parse_bool_with_default(&include_subdomains, config.hsts_include_subdomains);
         }
 
         if let Some(nosniff) = get_env_with_prefix("SECURITY_NOSNIFF") {
-            config.nosniff = nosniff.parse().unwrap_or(true);
+            config.nosniff = parse_bool_with_default(&nosniff, config.nosniff);
         }
 
         if let Some(frame_options) = get_env_with_prefix("SECURITY_X_FRAME_OPTIONS") {
@@ -160,8 +162,29 @@ impl SecurityConfig {
             config.permissions_policy = Some(permissions);
         }
 
+        if !is_production_like_environment() && !explicit_hsts_max_age {
+            config.hsts_max_age = 0;
+            config.hsts_preload = false;
+        }
+
         config
     }
+}
+
+fn parse_bool_with_default(value: &str, default: bool) -> bool {
+    value.parse().unwrap_or(default)
+}
+
+fn is_production_like_environment() -> bool {
+    [
+        get_env_with_prefix("ENV"),
+        get_env_with_prefix("ENVIRONMENT"),
+        get_env_with_prefix("APP_ENV"),
+        get_env_with_prefix("TIDEWAY_ENV"),
+    ]
+    .into_iter()
+    .filter_map(|env_value| env_value)
+    .any(|env_value| matches!(env_value.to_lowercase().as_str(), "prod" | "production"))
 }
 
 /// Builder for SecurityConfig
@@ -298,5 +321,53 @@ mod tests {
 
         let config = SecurityConfig::builder().allow_framing().build();
         assert_eq!(config.x_frame_options, None);
+    }
+
+    #[test]
+    fn test_from_env_invalid_bool_falls_back_to_defaults() {
+        unsafe {
+            std::env::set_var("TIDEWAY_SECURITY_ENABLED", "not-bool");
+            std::env::set_var("TIDEWAY_SECURITY_NOSNIFF", "maybe");
+        }
+
+        let config = SecurityConfig::from_env();
+        assert!(config.enabled);
+        assert!(config.nosniff);
+
+        unsafe {
+            std::env::remove_var("TIDEWAY_SECURITY_ENABLED");
+            std::env::remove_var("TIDEWAY_SECURITY_NOSNIFF");
+        }
+    }
+
+    #[test]
+    fn test_from_env_disables_hsts_in_non_prod_without_override() {
+        unsafe {
+            std::env::set_var("TIDEWAY_ENV", "development");
+        }
+
+        let config = SecurityConfig::from_env();
+        assert_eq!(config.hsts_max_age, 0);
+        assert!(!config.hsts_preload);
+
+        unsafe {
+            std::env::remove_var("TIDEWAY_ENV");
+        }
+    }
+
+    #[test]
+    fn test_from_env_keeps_hsts_override_in_non_prod() {
+        unsafe {
+            std::env::set_var("TIDEWAY_ENV", "development");
+            std::env::set_var("TIDEWAY_SECURITY_HSTS_MAX_AGE", "86400");
+        }
+
+        let config = SecurityConfig::from_env();
+        assert_eq!(config.hsts_max_age, 86400);
+
+        unsafe {
+            std::env::remove_var("TIDEWAY_ENV");
+            std::env::remove_var("TIDEWAY_SECURITY_HSTS_MAX_AGE");
+        }
     }
 }

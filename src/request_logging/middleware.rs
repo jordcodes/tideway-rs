@@ -306,20 +306,24 @@ fn sanitize_query(query: Option<&str>) -> Option<String> {
 }
 
 fn is_sensitive_query_key_decoded(raw_key: &str) -> bool {
-    let decoded_key = decode_query_key(raw_key);
+    let decoded_key = decode_query_component(raw_key);
     is_sensitive_query_key(&decoded_key)
 }
 
-fn decode_query_key(raw_key: &str) -> String {
-    if !raw_key.as_bytes().iter().any(|c| *c == b'%' || *c == b'+') {
-        return raw_key.to_string();
+fn decode_query_component(raw_value: &str) -> String {
+    if !raw_value
+        .as_bytes()
+        .iter()
+        .any(|c| *c == b'%' || *c == b'+')
+    {
+        return raw_value.to_string();
     }
 
-    let encoded = format!("{raw_key}=");
+    let encoded = format!("{raw_value}=");
     if let Some((decoded, _)) = url::form_urlencoded::parse(encoded.as_bytes()).next() {
         decoded.into_owned()
     } else {
-        raw_key.to_string()
+        raw_value.to_string()
     }
 }
 
@@ -427,5 +431,12 @@ mod tests {
         let query = Some("access%5Ftoken=abc123&page=2");
         let sanitized = sanitize_query(query).unwrap();
         assert_eq!(sanitized, "access%5Ftoken=[REDACTED]&page=2");
+    }
+
+    #[test]
+    fn test_sanitize_query_decodes_values_without_mutation_for_non_sensitive_keys() {
+        let query = Some("filter=abc%2Bdef&page=2");
+        let sanitized = sanitize_query(query).unwrap();
+        assert_eq!(sanitized, "filter=abc%2Bdef&page=2");
     }
 }

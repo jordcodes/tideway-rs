@@ -14,6 +14,9 @@ use async_trait::async_trait;
 ///
 /// TODO: Implement when database-sqlx feature is added
 #[cfg(feature = "database-sqlx")]
+#[deprecated(
+    note = "The database-sqlx backend is currently a placeholder and not yet implemented. Use the SeaORM backend in this release."
+)]
 pub struct SqlxConnectionWrapper {
     // Will hold SQLx connection
 }
@@ -21,7 +24,7 @@ pub struct SqlxConnectionWrapper {
 #[cfg(feature = "database-sqlx")]
 impl DatabaseConnection for SqlxConnectionWrapper {
     fn is_valid(&self) -> bool {
-        true
+        false
     }
 }
 
@@ -29,6 +32,9 @@ impl DatabaseConnection for SqlxConnectionWrapper {
 ///
 /// TODO: Implement when database-sqlx feature is added
 #[cfg(feature = "database-sqlx")]
+#[deprecated(
+    note = "The database-sqlx backend is currently a placeholder and not yet implemented. Use the SeaORM backend in this release."
+)]
 pub struct SqlxPool {
     // Placeholder
 }
@@ -37,7 +43,7 @@ pub struct SqlxPool {
 impl SqlxPool {
     pub async fn new(_url: &str) -> Result<Self> {
         Err(TidewayError::internal(
-            "SqlxPool not yet implemented - database-sqlx feature coming soon",
+            "database-sqlx backend is currently a placeholder and not yet implemented. Use feature `database` (SeaORM) for production support.",
         ))
     }
 }
@@ -46,7 +52,9 @@ impl SqlxPool {
 #[async_trait]
 impl DatabasePool for SqlxPool {
     async fn connection(&self) -> Result<Box<dyn DatabaseConnection>> {
-        Err(TidewayError::internal("SqlxPool not yet implemented"))
+        Err(TidewayError::internal(
+            "database-sqlx backend is currently a placeholder and not yet implemented.",
+        ))
     }
 
     fn is_healthy(&self) -> bool {

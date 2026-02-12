@@ -365,12 +365,34 @@ fn normalize_features(features: &[String]) -> BTreeSet<String> {
         let lowered = trimmed.to_lowercase();
         let mapped = match lowered.as_str() {
             "db" => "database",
+            "dbs" => "database",
             "session" => "sessions",
             other => other,
         };
         normalized.insert(mapped.to_string());
     }
     normalized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_features_aliases() {
+        let features = vec![
+            "db".to_string(),
+            "session".to_string(),
+            "auth".to_string(),
+            "SESSIONS".to_string(),
+        ];
+
+        let normalized = normalize_features(&features);
+        assert!(normalized.contains("database"));
+        assert!(normalized.contains("sessions"));
+        assert!(normalized.contains("auth"));
+        assert_eq!(normalized.len(), 3);
+    }
 }
 
 fn apply_preset(preset: NewPreset, args: &mut NewArgs) {

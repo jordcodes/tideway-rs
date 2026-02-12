@@ -75,22 +75,23 @@ impl RequestLoggingConfig {
         let mut config = Self::default();
 
         if let Some(enabled) = get_env_with_prefix("REQUEST_LOGGING_ENABLED") {
-            config.enabled = enabled.parse().unwrap_or(true);
+            config.enabled = parse_bool_with_default(&enabled, config.enabled);
         }
 
         if let Some(include_headers) = get_env_with_prefix("REQUEST_LOGGING_INCLUDE_HEADERS") {
-            config.include_headers = include_headers.parse().unwrap_or(false);
+            config.include_headers = parse_bool_with_default(&include_headers, config.include_headers);
         }
 
         if let Some(include_response) =
             get_env_with_prefix("REQUEST_LOGGING_INCLUDE_RESPONSE_HEADERS")
         {
-            config.include_response_headers = include_response.parse().unwrap_or(false);
+            config.include_response_headers =
+                parse_bool_with_default(&include_response, config.include_response_headers);
         }
 
         if let Some(preview_size) = get_env_with_prefix("REQUEST_LOGGING_BODY_PREVIEW_SIZE") {
             if let Ok(size) = preview_size.parse() {
-                config.body_preview_size = size;
+                config.body_preview_size = size.min(MAX_BODY_PREVIEW_SIZE);
             }
         }
 
@@ -108,6 +109,10 @@ impl RequestLoggingConfig {
 
         config
     }
+}
+
+fn parse_bool_with_default(value: &str, default: bool) -> bool {
+    value.parse().unwrap_or(default)
 }
 
 fn parse_log_level(s: &str) -> LogLevel {
@@ -192,6 +197,8 @@ fn default_body_preview_size() -> usize {
     256 // First 256 bytes
 }
 
+const MAX_BODY_PREVIEW_SIZE: usize = 1024 * 1024; // 1MB hard cap
+
 fn default_success_level() -> LogLevel {
     LogLevel::Info
 }
@@ -228,5 +235,37 @@ mod tests {
         assert!(config.include_headers);
         assert_eq!(config.body_preview_size, 512);
         assert_eq!(config.success_level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn test_from_env_invalid_bool_falls_back_to_default() {
+        unsafe {
+            std::env::set_var("TIDEWAY_REQUEST_LOGGING_ENABLED", "yes");
+            std::env::set_var("TIDEWAY_REQUEST_LOGGING_INCLUDE_HEADERS", "nope");
+        }
+
+        let config = RequestLoggingConfig::from_env();
+        assert!(config.enabled);
+        assert!(!config.include_headers);
+
+        unsafe {
+            std::env::remove_var("TIDEWAY_REQUEST_LOGGING_ENABLED");
+            std::env::remove_var("TIDEWAY_REQUEST_LOGGING_INCLUDE_HEADERS");
+        }
+    }
+
+    #[test]
+    fn test_from_env_body_preview_size_clamps_to_maximum() {
+        let huge = MAX_BODY_PREVIEW_SIZE.saturating_add(1).to_string();
+        unsafe {
+            std::env::set_var("TIDEWAY_REQUEST_LOGGING_BODY_PREVIEW_SIZE", &huge);
+        }
+
+        let config = RequestLoggingConfig::from_env();
+        assert_eq!(config.body_preview_size, MAX_BODY_PREVIEW_SIZE);
+
+        unsafe {
+            std::env::remove_var("TIDEWAY_REQUEST_LOGGING_BODY_PREVIEW_SIZE");
+        }
     }
 }
