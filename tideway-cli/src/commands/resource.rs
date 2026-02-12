@@ -129,14 +129,14 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 "For existing apps, run `tideway add database`."
             )));
         }
-        if !has_dependency(&cargo_path, "sea-orm") {
+        if !has_dependency_in_cargo(&cargo_path, "sea-orm") {
             return Err(anyhow::anyhow!(error_contract(
                 "SeaORM dependency not found.",
                 "For greenfield apps, run `tideway new <app> --preset api`.",
                 "For existing apps, run `tideway add database`."
             )));
         }
-        if matches!(args.id_type, ResourceIdType::Uuid) && !has_dependency(&cargo_path, "uuid") {
+        if matches!(args.id_type, ResourceIdType::Uuid) && !has_dependency_in_cargo(&cargo_path, "uuid") {
             if args.add_uuid {
                 add_uuid_dependency(&cargo_path)?;
                 print_success("Added uuid dependency to Cargo.toml");
@@ -2004,7 +2004,7 @@ fn has_feature(cargo_path: &Path, feature: &str) -> bool {
     has_tideway_feature(&doc, feature)
 }
 
-fn has_dependency(cargo_path: &Path, dependency: &str) -> bool {
+fn has_dependency_in_cargo(cargo_path: &Path, dependency: &str) -> bool {
     let Ok(contents) = fs::read_to_string(cargo_path) else {
         return false;
     };

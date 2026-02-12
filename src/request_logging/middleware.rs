@@ -2,11 +2,10 @@ use super::config::{LogLevel, RequestLoggingConfig};
 use axum::body::Body;
 use axum::{
     extract::{MatchedPath, Request},
-    http::{HeaderMap, StatusCode},
+    http::{header::CONTENT_LENGTH, HeaderMap, StatusCode},
     response::Response,
 };
 use futures::future::BoxFuture;
-use std::sync::OnceLock;
 use std::time::Instant;
 use tower::Service;
 
@@ -14,16 +13,6 @@ use tower::Service;
 pub fn build_request_logging_layer(config: &RequestLoggingConfig) -> Option<RequestLoggingLayer> {
     if !config.enabled {
         return None;
-    }
-
-    if config.body_preview_size > 0 {
-        static BODY_PREVIEW_WARNED: OnceLock<()> = OnceLock::new();
-        BODY_PREVIEW_WARNED.get_or_init(|| {
-            tracing::warn!(
-                body_preview_size = config.body_preview_size,
-                "request body preview is not implemented yet; REQUEST_LOGGING_BODY_PREVIEW_SIZE is currently ignored"
-            );
-        });
     }
 
     Some(RequestLoggingLayer {
@@ -56,8 +45,8 @@ pub struct RequestLoggingService<S> {
 }
 
 impl<S> Service<Request> for RequestLoggingService<S>
-where
-    S: Service<Request, Response = Response<Body>> + Send + 'static,
+    where
+    S: Service<Request, Response = Response<Body>> + Send + 'static + Clone,
     S::Future: Send,
 {
     type Response = Response<Body>;
@@ -94,6 +83,8 @@ where
             || is_log_level_enabled(config.client_error_level)
             || is_log_level_enabled(config.server_error_level);
 
+        let mut inner = self.inner.clone();
+
         // Extract headers if configured
         let headers = if config.include_headers && any_logging_enabled {
             Some(req.headers().clone())
@@ -101,10 +92,14 @@ where
             None
         };
 
-        let fut = self.inner.call(req);
-
         Box::pin(async move {
-            let response = fut.await?;
+            let (req, request_body_preview) = if config.body_preview_size > 0 && any_logging_enabled {
+                extract_request_body_preview(req, config.body_preview_size).await
+            } else {
+                (req, None)
+            };
+
+            let response = inner.call(req).await?;
             let status = response.status();
             let duration = start.elapsed();
 
@@ -133,6 +128,7 @@ where
             let path_str = path.clone();
             let query_str = query.clone();
             let request_id_str = request_id.clone();
+            let request_body_preview = request_body_preview.clone();
             let headers_clone = headers.clone();
             let response_headers_clone = response_headers.clone();
 
@@ -145,6 +141,7 @@ where
                 status,
                 duration,
                 request_id_str.as_deref(),
+                request_body_preview.as_deref(),
                 headers_clone.as_ref(),
                 response_headers_clone.as_ref(),
             );
@@ -164,6 +161,7 @@ fn log_request_response(
     status: StatusCode,
     duration: std::time::Duration,
     request_id: Option<&str>,
+    request_body_preview: Option<&str>,
     headers: Option<&HeaderMap>,
     response_headers: Option<&HeaderMap>,
 ) {
@@ -213,6 +211,7 @@ fn log_request_response(
                 status = status.as_u16(),
                 duration_ms = duration.as_millis(),
                 request_id = ?request_id,
+                request_body = request_body_preview,
                 headers = ?headers,
                 response_headers = ?response_headers,
                 "{}",
@@ -227,6 +226,7 @@ fn log_request_response(
                 status = status.as_u16(),
                 duration_ms = duration.as_millis(),
                 request_id = ?request_id,
+                request_body = request_body_preview,
                 headers = ?headers,
                 response_headers = ?response_headers,
                 "{}",
@@ -241,6 +241,7 @@ fn log_request_response(
                 status = status.as_u16(),
                 duration_ms = duration.as_millis(),
                 request_id = ?request_id,
+                request_body = request_body_preview,
                 "{}",
                 message
             );
@@ -253,6 +254,7 @@ fn log_request_response(
                 status = status.as_u16(),
                 duration_ms = duration.as_millis(),
                 request_id = ?request_id,
+                request_body = request_body_preview,
                 "{}",
                 message
             );
@@ -265,6 +267,7 @@ fn log_request_response(
                 status = status.as_u16(),
                 duration_ms = duration.as_millis(),
                 request_id = ?request_id,
+                request_body = request_body_preview,
                 "{}",
                 message
             );
@@ -280,6 +283,34 @@ fn is_log_level_enabled(level: LogLevel) -> bool {
         LogLevel::Warn => tracing::enabled!(tracing::Level::WARN),
         LogLevel::Error => tracing::enabled!(tracing::Level::ERROR),
     }
+}
+
+async fn extract_request_body_preview(
+    request: Request,
+    max_bytes: usize,
+) -> (Request, Option<String>) {
+    if max_bytes == 0 {
+        return (request, None);
+    }
+
+    let Some(content_length) = request.headers().get(CONTENT_LENGTH).and_then(|value| {
+        value.to_str().ok().and_then(|value| value.parse::<usize>().ok())
+    }) else {
+        return (request, None);
+    };
+
+    if content_length == 0 || content_length > max_bytes {
+        return (request, None);
+    }
+
+    let (parts, body) = request.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, max_bytes).await else {
+        return (Request::from_parts(parts, Body::empty()), None);
+    };
+
+    let request = Request::from_parts(parts, Body::from(bytes.clone()));
+    let preview = String::from_utf8_lossy(&bytes).to_string();
+    (request, Some(preview))
 }
 
 const REDACTED_QUERY_VALUE: &str = "[REDACTED]";
@@ -351,6 +382,9 @@ fn is_sensitive_query_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use axum::http::header::CONTENT_LENGTH;
+    use axum::http::Request;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
 
@@ -438,5 +472,58 @@ mod tests {
         let query = Some("filter=abc%2Bdef&page=2");
         let sanitized = sanitize_query(query).unwrap();
         assert_eq!(sanitized, "filter=abc%2Bdef&page=2");
+    }
+
+    #[tokio::test]
+    async fn test_extract_request_body_preview_preserves_small_body() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/users")
+            .header(CONTENT_LENGTH, "11")
+            .body(Body::from("hello-world"))
+            .expect("failed to build request");
+
+        let (request, preview) = extract_request_body_preview(request, 20).await;
+        assert_eq!(preview.as_deref(), Some("hello-world"));
+
+        let body = to_bytes(request.into_body(), 20)
+            .await
+            .expect("failed to extract body");
+        assert_eq!(body.as_ref(), b"hello-world");
+    }
+
+    #[tokio::test]
+    async fn test_extract_request_body_preview_skips_large_body_and_preserves_payload() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/users")
+            .header(CONTENT_LENGTH, "12")
+            .body(Body::from("hello-world!!"))
+            .expect("failed to build request");
+
+        let (request, preview) = extract_request_body_preview(request, 5).await;
+        assert!(preview.is_none());
+
+        let body = to_bytes(request.into_body(), 20)
+            .await
+            .expect("failed to extract body");
+        assert_eq!(body.as_ref(), b"hello-world!!");
+    }
+
+    #[tokio::test]
+    async fn test_extract_request_body_preview_skips_missing_content_length() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/users")
+            .body(Body::from("hello-world"))
+            .expect("failed to build request");
+
+        let (request, preview) = extract_request_body_preview(request, 5).await;
+        assert!(preview.is_none());
+
+        let body = to_bytes(request.into_body(), 20)
+            .await
+            .expect("failed to extract body");
+        assert_eq!(body.as_ref(), b"hello-world");
     }
 }

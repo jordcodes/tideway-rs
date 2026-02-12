@@ -90,7 +90,7 @@ impl RequestLoggingConfig {
         }
 
         if let Some(preview_size) = get_env_with_prefix("REQUEST_LOGGING_BODY_PREVIEW_SIZE") {
-            if let Ok(size) = preview_size.parse() {
+            if let Ok(size) = preview_size.parse::<usize>() {
                 config.body_preview_size = size.min(MAX_BODY_PREVIEW_SIZE);
             }
         }

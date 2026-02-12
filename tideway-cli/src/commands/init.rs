@@ -101,7 +101,7 @@ pub fn run(args: InitArgs) -> Result<()> {
         let env_example = generate_env_example(&project_name, &modules, &args);
         let env_path = project_root.join(".env.example");
         // Always overwrite .env.example
-        write_file(env_path, &env_example).context("Failed to write .env.example")?;
+        write_file(&env_path, &env_example).context("Failed to write .env.example")?;
         print_success("Generated .env.example");
     }
 
