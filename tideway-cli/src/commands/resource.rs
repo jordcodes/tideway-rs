@@ -2001,15 +2001,7 @@ fn has_feature(cargo_path: &Path, feature: &str) -> bool {
         return false;
     };
 
-    let Some(tideway) = doc.get("dependencies").and_then(|deps| deps.get("tideway")) else {
-        return false;
-    };
-
-    let Some(features) = tideway.get("features").and_then(|item| item.as_array()) else {
-        return false;
-    };
-
-    features.iter().any(|v| v.as_str() == Some(feature))
+    has_tideway_feature(&doc, feature)
 }
 
 fn has_dependency(cargo_path: &Path, dependency: &str) -> bool {
@@ -2020,9 +2012,7 @@ fn has_dependency(cargo_path: &Path, dependency: &str) -> bool {
         return false;
     };
 
-    doc.get("dependencies")
-        .and_then(|deps| deps.get(dependency))
-        .is_some()
+    has_dependency(&doc, dependency)
 }
 
 fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {

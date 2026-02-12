@@ -29,6 +29,7 @@ impl DetectedModules {
 /// Run the init command
 pub fn run(args: InitArgs) -> Result<()> {
     let src_path = Path::new(&args.src);
+    let project_root = src_path.parent().unwrap_or(Path::new("."));
 
     if args.minimal {
         return run_minimal(src_path, &args);
@@ -43,7 +44,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     }
 
     // Detect project name
-    let project_name = detect_project_name(&args)?;
+    let project_name = detect_project_name(&args, project_root)?;
     let _project_name_pascal = to_pascal_case(&project_name);
 
     print_info(&format!("Project name: {}", project_name.green()));
@@ -98,7 +99,7 @@ pub fn run(args: InitArgs) -> Result<()> {
     // Generate .env.example
     if args.env_example {
         let env_example = generate_env_example(&project_name, &modules, &args);
-        let env_path = Path::new(".env.example");
+        let env_path = project_root.join(".env.example");
         // Always overwrite .env.example
         write_file(env_path, &env_example).context("Failed to write .env.example")?;
         print_success("Generated .env.example");
@@ -140,7 +141,8 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
         println!("\n{} Generating minimal app...\n", "tideway".cyan().bold());
     }
 
-    let project_name = detect_project_name(args)?;
+    let project_root = src_path.parent().unwrap_or(Path::new("."));
+    let project_name = detect_project_name(args, project_root)?;
     let project_name_pascal = to_pascal_case(&project_name);
 
     print_info(&format!("Project name: {}", project_name.green()));
@@ -169,13 +171,13 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
 }
 
 /// Detect project name from Cargo.toml or directory name
-fn detect_project_name(args: &InitArgs) -> Result<String> {
+fn detect_project_name(args: &InitArgs, project_root: &Path) -> Result<String> {
     if let Some(name) = &args.name {
         return Ok(name.clone());
     }
 
     // Try to read from Cargo.toml
-    let cargo_toml = Path::new("Cargo.toml");
+    let cargo_toml = project_root.join("Cargo.toml");
     if cargo_toml.exists() {
         let content = fs::read_to_string(cargo_toml)?;
         if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
@@ -189,9 +191,12 @@ fn detect_project_name(args: &InitArgs) -> Result<String> {
         }
     }
 
-    // Fall back to current directory name
     let cwd = std::env::current_dir()?;
-    let dir_name = cwd.file_name().and_then(|n| n.to_str()).unwrap_or("my_app");
+    let dir_name = project_root
+        .file_name()
+        .or_else(|| cwd.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("my_app");
 
     Ok(dir_name.replace('-', "_"))
 }
