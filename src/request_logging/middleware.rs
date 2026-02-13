@@ -83,7 +83,7 @@ impl<S> Service<Request> for RequestLoggingService<S>
             || is_log_level_enabled(config.client_error_level)
             || is_log_level_enabled(config.server_error_level);
 
-        let mut inner = self.inner.clone();
+        let inner = self.inner.clone();
 
         // Extract headers if configured
         let headers = if config.include_headers && any_logging_enabled {
@@ -93,6 +93,7 @@ impl<S> Service<Request> for RequestLoggingService<S>
         };
 
         Box::pin(async move {
+            let mut inner = inner.clone();
             let (req, request_body_preview) = if config.body_preview_size > 0 && any_logging_enabled {
                 extract_request_body_preview(req, config.body_preview_size).await
             } else {
@@ -102,8 +103,6 @@ impl<S> Service<Request> for RequestLoggingService<S>
             let response = inner.call(req).await?;
             let status = response.status();
             let duration = start.elapsed();
-
-            // Determine log level based on status code
             let log_level = if status.is_success() {
                 config.success_level
             } else if status.is_client_error() {
@@ -116,7 +115,6 @@ impl<S> Service<Request> for RequestLoggingService<S>
                 return Ok(response);
             }
 
-            // Extract response headers if configured
             let response_headers = if config.include_response_headers {
                 Some(response.headers().clone())
             } else {
@@ -384,9 +382,12 @@ mod tests {
     use super::*;
     use axum::body::to_bytes;
     use axum::http::header::CONTENT_LENGTH;
+    use axum::http::StatusCode;
     use axum::http::Request;
+    use axum::{routing::post, Router};
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
+    use tower::ServiceExt;
 
     #[test]
     fn test_disabled_logging() {
@@ -524,6 +525,34 @@ mod tests {
         let body = to_bytes(request.into_body(), 20)
             .await
             .expect("failed to extract body");
+        assert_eq!(body.as_ref(), b"hello-world");
+    }
+
+    async fn echo_body_handler(body: String) -> String {
+        body
+    }
+
+    #[tokio::test]
+    async fn test_request_logging_layer_preserves_request_body() {
+        let config = RequestLoggingConfig {
+            body_preview_size: 16,
+            ..Default::default()
+        };
+        let layer = build_request_logging_layer(&config).expect("request logging layer should be enabled");
+
+        let app = Router::new().route("/echo", post(echo_body_handler)).layer(layer);
+        let request = Request::builder()
+            .uri("/echo")
+            .method("POST")
+            .header(CONTENT_LENGTH, "11")
+            .body(Body::from("hello-world"))
+            .expect("failed to build request");
+
+        let response = app.oneshot(request).await.expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 20)
+            .await
+            .expect("failed to read response body");
         assert_eq!(body.as_ref(), b"hello-world");
     }
 }
