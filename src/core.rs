@@ -180,14 +180,9 @@ impl App {
     /// ```
     #[cfg(feature = "database")]
     pub async fn run_migrations<M: MigratorTrait>(self) -> Result<Self, TidewayError> {
-        let auto_migrate = std::env::var("DATABASE_AUTO_MIGRATE")
-            .map(|v| v.parse::<bool>().unwrap_or(false))
-            .unwrap_or(false);
-
-        if auto_migrate {
-            if self.context.database.is_some() {
-                let conn = self.context.sea_orm_connection()?;
-                crate::database::migration::run_migrations::<M>(&conn).await?;
+        if should_auto_migrate() {
+            if self.context.database_opt().is_some() {
+                run_migrations_with_context::<M>(&self.context).await?;
             } else {
                 tracing::warn!("DATABASE_AUTO_MIGRATE is enabled but no database is configured");
             }
@@ -212,14 +207,13 @@ impl App {
     /// ```
     #[cfg(feature = "database")]
     pub async fn run_migrations_now<M: MigratorTrait>(self) -> Result<Self, TidewayError> {
-        if self.context.database.is_some() {
-            let conn = self.context.sea_orm_connection()?;
-            crate::database::migration::run_migrations::<M>(&conn).await?;
-        } else {
+        if self.context.database_opt().is_none() {
             return Err(TidewayError::internal(
                 "Cannot run migrations: no database configured",
             ));
         }
+
+        run_migrations_with_context::<M>(&self.context).await?;
         Ok(self)
     }
 
@@ -284,14 +278,7 @@ impl App {
     /// axum::serve(listener, router).await?;
     /// ```
     pub fn into_router(self) -> Router {
-        let mut router = self.router.with_state(self.context);
-
-        // Merge any extra routers that don't need AppContext
-        for extra in self.extra_routers {
-            router = router.merge(extra);
-        }
-
-        router
+        build_stateful_router(self.router, self.context, self.extra_routers)
     }
 
     /// Convert the App into an axum Router with Tideway's middleware stack applied.
@@ -300,19 +287,11 @@ impl App {
     /// choice when you want to manually serve the router without losing defaults.
     pub fn into_router_with_middleware(self) -> Router {
         let app = self.with_middleware();
-        let mut router = app.router.with_state(app.context);
-
-        for extra in app.extra_routers {
-            router = router.merge(extra);
-        }
-
-        router = apply_global_layers(router, &app.global_layers);
-
-        if let Some(cors_layer) = crate::cors::build_cors_layer(&app.config.cors) {
-            router = router.layer(cors_layer);
-        }
-
-        router
+        apply_global_layers_with_config(
+            build_stateful_router(app.router, app.context, app.extra_routers),
+            &app.global_layers,
+            &app.config.cors,
+        )
     }
 
     /// Get the router for testing purposes
@@ -447,22 +426,11 @@ impl App {
             }
         };
 
-        // Router<AppContext> means "a router missing AppContext state"
-        // Call with_state to transition Router<AppContext> -> Router<()>
-        // Only Router<()> (a router not missing any state) can be served
-        let mut final_router = app.router.with_state(app.context);
-
-        // Merge any extra routers (Router<()>) that were added via merge_router
-        for extra in app.extra_routers {
-            final_router = final_router.merge(extra);
-        }
-
-        final_router = apply_global_layers(final_router, &app.global_layers);
-
-        // Apply CORS to the final merged router (to cover extra_routers that missed middleware)
-        if let Some(cors_layer) = crate::cors::build_cors_layer(&app.config.cors) {
-            final_router = final_router.layer(cors_layer);
-        }
+        let final_router = apply_global_layers_with_config(
+            build_stateful_router(app.router, app.context, app.extra_routers),
+            &app.global_layers,
+            &app.config.cors,
+        );
 
         axum::serve(
             listener,
@@ -593,6 +561,46 @@ type GlobalLayer = Box<dyn Fn(Router) -> Router + Send + Sync>;
 fn apply_global_layers(mut router: Router, layers: &[GlobalLayer]) -> Router {
     for layer in layers {
         router = layer(router);
+    }
+    router
+}
+
+#[cfg(feature = "database")]
+fn should_auto_migrate() -> bool {
+    std::env::var("DATABASE_AUTO_MIGRATE")
+        .map(|v| v.parse::<bool>().unwrap_or(false))
+        .unwrap_or(false)
+}
+
+#[cfg(feature = "database")]
+async fn run_migrations_with_context<M: MigratorTrait>(
+    context: &AppContext,
+) -> Result<(), TidewayError> {
+    let conn = context.sea_orm_connection()?;
+    crate::database::migration::run_migrations::<M>(&conn).await?;
+    Ok(())
+}
+
+fn build_stateful_router(
+    router: Router<AppContext>,
+    context: AppContext,
+    extra_routers: Vec<Router>,
+) -> Router {
+    let mut router = router.with_state(context);
+    for extra in extra_routers {
+        router = router.merge(extra);
+    }
+    router
+}
+
+fn apply_global_layers_with_config(
+    router: Router,
+    global_layers: &[GlobalLayer],
+    cors_config: &crate::cors::CorsConfig,
+) -> Router {
+    let mut router = apply_global_layers(router, global_layers);
+    if let Some(cors_layer) = crate::cors::build_cors_layer(cors_config) {
+        router = router.layer(cors_layer);
     }
     router
 }

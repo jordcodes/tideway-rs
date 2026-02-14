@@ -30,18 +30,27 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let resource_plural = pluralize(&resource_name);
 
     let cargo_path = project_dir.join("Cargo.toml");
-    let has_openapi = has_feature(&cargo_path, "openapi");
-    let has_database = has_feature(&cargo_path, "database");
+    let cargo_doc = read_cargo_manifest(&cargo_path);
+    let has_openapi = manifest_has_tideway_feature(cargo_doc.as_ref(), "openapi");
+    let has_database = manifest_has_tideway_feature(cargo_doc.as_ref(), "database");
+    let has_sea_orm_dependency = manifest_has_dependency(cargo_doc.as_ref(), "sea-orm");
+    let has_uuid_dependency = manifest_has_dependency(cargo_doc.as_ref(), "uuid");
 
-    validate_resource_args(&args, &resource_name, has_database, &cargo_path)?;
+    validate_resource_args(
+        &args,
+        &resource_name,
+        has_database,
+        has_sea_orm_dependency,
+        has_uuid_dependency,
+    )?;
     let db_backend = if args.db {
-        Some(resolve_db_backend(&project_dir, args.db_backend)?)
+        Some(resolve_db_backend(cargo_doc.as_ref(), args.db_backend)?)
     } else {
         None
     };
 
     if args.db && matches!(args.id_type, ResourceIdType::Uuid) {
-        if args.add_uuid && !has_dependency_in_cargo(&cargo_path, "uuid") {
+        if args.add_uuid && !has_uuid_dependency {
             add_uuid_dependency(&cargo_path)?;
             print_success("Added uuid dependency to Cargo.toml");
         }
@@ -161,7 +170,8 @@ fn validate_resource_args(
     args: &ResourceArgs,
     resource_name: &str,
     has_database: bool,
-    cargo_path: &Path,
+    has_sea_orm_dependency: bool,
+    has_uuid_dependency: bool,
 ) -> Result<()> {
     if args.repo && !args.db {
         return Err(anyhow::anyhow!(error_contract(
@@ -231,7 +241,7 @@ fn validate_resource_args(
                 &format!("For existing apps, run {}.", TIDEWAY_ADD_DATABASE_COMMAND)
             )));
         }
-        if !has_dependency_in_cargo(cargo_path, "sea-orm") {
+        if !has_sea_orm_dependency {
             return Err(anyhow::anyhow!(error_contract(
                 "SeaORM dependency not found.",
                 GREENFIELD_NEW_APP_PRESET_API,
@@ -239,7 +249,7 @@ fn validate_resource_args(
             )));
         }
         if matches!(args.id_type, ResourceIdType::Uuid)
-            && !has_dependency_in_cargo(cargo_path, "uuid")
+            && !has_uuid_dependency
             && !args.add_uuid
         {
             return Err(anyhow::anyhow!(
@@ -256,21 +266,22 @@ fn validate_resource_args(
     Ok(())
 }
 
-fn resolve_db_backend(project_dir: &Path, backend: DbBackend) -> Result<DbBackend> {
+fn resolve_db_backend(
+    cargo_doc: Option<&toml_edit::DocumentMut>,
+    backend: DbBackend,
+) -> Result<DbBackend> {
     match backend {
-        DbBackend::Auto => detect_db_backend(project_dir),
+        DbBackend::Auto => detect_db_backend(cargo_doc),
         DbBackend::SeaOrm => Ok(DbBackend::SeaOrm),
     }
 }
 
-fn detect_db_backend(project_dir: &Path) -> Result<DbBackend> {
-    let cargo_path = project_dir.join("Cargo.toml");
-    let contents = fs::read_to_string(&cargo_path)
-        .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
-    let doc = contents
-        .parse::<toml_edit::DocumentMut>()
-        .context("Failed to parse Cargo.toml")?;
-
+fn detect_db_backend(cargo_doc: Option<&toml_edit::DocumentMut>) -> Result<DbBackend> {
+    let Some(doc) = cargo_doc else {
+        return Err(anyhow::anyhow!(
+            "Could not detect database backend from Cargo.toml"
+        ));
+    };
     let has_sea_orm = has_dependency(&doc, "sea-orm");
     let has_tideway_db = has_tideway_feature(&doc, "database");
 
@@ -283,6 +294,33 @@ fn detect_db_backend(project_dir: &Path) -> Result<DbBackend> {
             "Pass `--db-backend sea-orm` explicitly."
         )))
     }
+}
+
+fn read_cargo_manifest(
+    cargo_path: &Path,
+) -> Option<toml_edit::DocumentMut> {
+    let contents = fs::read_to_string(cargo_path).ok()?;
+    contents.parse::<toml_edit::DocumentMut>().ok()
+}
+
+fn manifest_has_tideway_feature(
+    cargo_doc: Option<&toml_edit::DocumentMut>,
+    feature: &str,
+) -> bool {
+    let Some(doc) = cargo_doc else {
+        return false;
+    };
+    has_tideway_feature(doc, feature)
+}
+
+fn manifest_has_dependency(
+    cargo_doc: Option<&toml_edit::DocumentMut>,
+    dependency: &str,
+) -> bool {
+    let Some(doc) = cargo_doc else {
+        return false;
+    };
+    has_dependency(doc, dependency)
 }
 
 fn has_tideway_feature(doc: &toml_edit::DocumentMut, feature: &str) -> bool {
@@ -1876,28 +1914,6 @@ fn pluralize(name: &str) -> String {
     } else {
         format!("{}s", name)
     }
-}
-
-fn has_feature(cargo_path: &Path, feature: &str) -> bool {
-    let Ok(contents) = fs::read_to_string(cargo_path) else {
-        return false;
-    };
-    let Ok(doc) = contents.parse::<toml_edit::DocumentMut>() else {
-        return false;
-    };
-
-    has_tideway_feature(&doc, feature)
-}
-
-fn has_dependency_in_cargo(cargo_path: &Path, dependency: &str) -> bool {
-    let Ok(contents) = fs::read_to_string(cargo_path) else {
-        return false;
-    };
-    let Ok(doc) = contents.parse::<toml_edit::DocumentMut>() else {
-        return false;
-    };
-
-    has_dependency(&doc, dependency)
 }
 
 fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {

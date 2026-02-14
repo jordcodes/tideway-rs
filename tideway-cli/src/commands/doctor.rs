@@ -181,20 +181,22 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
         );
     }
 
+    let main_contents = fs::read_to_string(src_dir.join("main.rs")).ok();
+
     if tideway_features.contains("openapi") {
-        check_openapi_setup(&src_dir, project_dir, &mut report);
+        check_openapi_setup(&src_dir, main_contents.as_deref(), &mut report);
         check_openapi_doc_coverage(&src_dir, &mut report);
     }
 
     if needs_database {
         check_migration_setup(project_dir, &mut report);
-        check_database_wiring(&src_dir, &mut report);
+        check_database_wiring(&src_dir, main_contents.as_deref(), &mut report);
         check_webhook_idempotency_setup(project_dir, &src_dir, fix, &mut report);
         check_migration_execution_hint(
             project_dir,
-            &src_dir,
             &env_vars,
             &env_example_vars,
+            main_contents.as_deref(),
             &mut report,
         );
     }
@@ -510,7 +512,11 @@ fn apply_env_fixes(
     Ok(())
 }
 
-fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorReport) {
+fn check_openapi_setup(
+    src_dir: &Path,
+    main_contents: Option<&str>,
+    report: &mut DoctorReport,
+) {
     let openapi_docs = src_dir.join("openapi_docs.rs");
     if !openapi_docs.exists() {
         report.warnings.push(format!(
@@ -521,7 +527,7 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
     }
 
     let main_rs = src_dir.join("main.rs");
-    if let Ok(contents) = fs::read_to_string(&main_rs) {
+    if let Some(contents) = main_contents {
         let has_module = contents.contains("mod openapi_docs;");
         let has_router =
             contents.contains("openapi_merge_module") || contents.contains("create_openapi_router");
@@ -532,7 +538,7 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
                 GREENFIELD_NEW_APP_PRESET_API
             ));
         }
-    } else if project_dir.join("src").join("main.rs").exists() {
+    } else if main_rs.exists() {
         report
             .warnings
             .push("Failed to read src/main.rs for OpenAPI wiring check".to_string());
@@ -639,7 +645,7 @@ fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
     }
 }
 
-fn check_database_wiring(src_dir: &Path, report: &mut DoctorReport) {
+fn check_database_wiring(src_dir: &Path, main_contents: Option<&str>, report: &mut DoctorReport) {
     let routes_dir = src_dir.join("routes");
     if !routes_dir.exists() {
         return;
@@ -668,30 +674,28 @@ fn check_database_wiring(src_dir: &Path, report: &mut DoctorReport) {
         return;
     }
 
-    let main_path = src_dir.join("main.rs");
-    let Ok(contents) = fs::read_to_string(&main_path) else {
+    if let Some(contents) = main_contents {
+        if !contents.contains("with_database(") {
+            report.warnings.push(
+                format!(
+                    "DB-backed routes detected but AppContext is not wired (advanced fix: run {}; primary path for new resources: {})",
+                    TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
+                    RESOURCE_WIRE_FLOW
+                ),
+            );
+        }
+    } else if src_dir.join("main.rs").exists() {
         report
             .warnings
             .push("Failed to read src/main.rs for database wiring check".to_string());
-        return;
-    };
-
-    if !contents.contains("with_database(") {
-        report.warnings.push(
-            format!(
-                "DB-backed routes detected but AppContext is not wired (advanced fix: run {}; primary path for new resources: {})",
-                TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
-                RESOURCE_WIRE_FLOW
-            ),
-        );
     }
 }
 
 fn check_migration_execution_hint(
     project_dir: &Path,
-    src_dir: &Path,
     env_vars: &BTreeMap<String, String>,
     env_example_vars: &BTreeMap<String, String>,
+    main_contents: Option<&str>,
     report: &mut DoctorReport,
 ) {
     let migration_lib = project_dir.join("migration").join("src").join("lib.rs");
@@ -701,10 +705,11 @@ fn check_migration_execution_hint(
 
     let has_auto_migrate = env_vars.contains_key("DATABASE_AUTO_MIGRATE")
         || env_example_vars.contains_key("DATABASE_AUTO_MIGRATE");
-    let main_path = src_dir.join("main.rs");
-    let main_contents = fs::read_to_string(&main_path).unwrap_or_default();
-    let has_migration_call =
-        main_contents.contains("run_migrations(") || main_contents.contains("run_migrations_now(");
+    let has_migration_call = main_contents
+        .map(|contents| {
+            contents.contains("run_migrations(") || contents.contains("run_migrations_now(")
+        })
+        .unwrap_or(false);
 
     if !has_auto_migrate && !has_migration_call {
         report.info.push(
