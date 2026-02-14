@@ -670,8 +670,10 @@ fn check_database_wiring(src_dir: &Path, report: &mut DoctorReport) {
 
     if !contents.contains("with_database(") {
         report.warnings.push(
-            "DB-backed routes detected but AppContext is not wired (advanced fix: run `tideway add database --wire`; primary path for new resources: `tideway resource <name> --wire --db --repo --service --paginate --search`)"
-                .to_string(),
+            format!(
+                "DB-backed routes detected but AppContext is not wired (advanced fix: run `tideway add database --wire`; primary path for new resources: {})",
+                RESOURCE_WIRE_FLOW
+            ),
         );
     }
 }
@@ -697,8 +699,10 @@ fn check_migration_execution_hint(
 
     if !has_auto_migrate && !has_migration_call {
         report.info.push(
-            "Migrations detected but not auto-run (set DATABASE_AUTO_MIGRATE=true, call run_migrations, or use `tideway dev`; primary local run command is `tideway dev --fix-env`)"
-                .to_string(),
+            format!(
+                "Migrations detected but not auto-run (set DATABASE_AUTO_MIGRATE=true, call run_migrations, or use `tideway dev`; primary local run command is {})",
+                DEV_FIX_ENV_COMMAND
+            ),
         );
     }
 }

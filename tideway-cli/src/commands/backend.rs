@@ -10,6 +10,7 @@ use crate::commands::file_ops::{
     write_file_with_force_with_message,
     BACKEND_FORCE_OVERWRITE_MESSAGE,
 };
+use crate::commands::messaging::NEW_APP_COMMAND;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success};
 
@@ -117,7 +118,10 @@ pub fn run(args: BackendArgs) -> Result<()> {
             "✓".green().bold()
         );
         print_info(
-            "Note: `tideway backend` is advanced. For greenfield apps, prefer `tideway new <app>`.",
+            &format!(
+                "Note: `tideway backend` is advanced. For greenfield apps, prefer {}.",
+                NEW_APP_COMMAND
+            ),
         );
 
         // Print next steps

@@ -7,6 +7,7 @@ use std::process::Command;
 
 use crate::cli::{MigrateArgs, MigrateBackend};
 use crate::commands::messaging::GREENFIELD_NEW_APP_PRESET_API;
+use crate::commands::messaging::DEV_FIX_ENV_COMMAND;
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
 use crate::{error_contract, is_plan_mode, print_info, print_success, print_warning};
 
@@ -176,7 +177,7 @@ fn ensure_database_url(project_dir: &Path) -> Result<()> {
         error_contract(
             "DATABASE_URL is missing.",
             "Set DATABASE_URL in `.env` and rerun `tideway migrate`.",
-            "Run `tideway dev --fix-env` to bootstrap `.env` from `.env.example`."
+            &format!("Run {} to bootstrap `.env` from `.env.example`.", DEV_FIX_ENV_COMMAND)
         )
     ))
 }
