@@ -193,6 +193,11 @@ let phone = fake::phone();           // "+1234567890"
 
 ### TestDb
 
+Tideway supports two integration profiles:
+
+- Default SQLite in-memory with `TestDb::new()` (fast, zero infra).
+- PostgreSQL-backed tests via `TestDb::new_postgres()` (local Postgres required) or `TIDEWAY_TEST_DB_BACKEND=postgres_container` with the `test-containers` feature (starts a temporary Docker container).
+
 Test database operations in isolation:
 
 ```rust
@@ -200,7 +205,7 @@ use tideway::testing::TestDb;
 
 #[tokio::test]
 async fn test_user_creation() {
-    let db = TestDb::new("sqlite::memory:").await.unwrap();
+    let db = TestDb::new().await.unwrap();
 
     // Seed database
     db.seed("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)")
@@ -228,7 +233,7 @@ Ensure test isolation:
 ```rust
 #[tokio::test]
 async fn test_multiple_operations() {
-    let db = TestDb::new("sqlite::memory:").await.unwrap();
+    let db = TestDb::new().await.unwrap();
 
     db.with_transaction_rollback(|tx| async move {
         // All operations in this block are rolled back

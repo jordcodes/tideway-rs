@@ -55,6 +55,7 @@ Feature flags are opt-in unless marked Default.
 | `organizations-seaorm` | `organizations` | `docs/organizations.md` | — | — |
 | `organizations-billing` | `organizations` | `docs/organizations.md` | — | — |
 | `test-organizations` | `organizations` | `docs/organizations.md` | `tests/` | Tests only |
+| `test-containers` | `testing` | `docs/testing.md` | `docs/testing.md` | Optional container-backed postgres for integration tests |
 | `admin` | `admin` | `docs/admin.md` | — | — |
 
 ## Quick Start
@@ -571,7 +572,7 @@ async fn test_create_user() {
 
 #[tokio::test]
 async fn test_with_database() {
-    let db = TestDb::new("sqlite::memory:").await.unwrap();
+    let db = TestDb::new().await.unwrap();
 
     db.seed("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)").await.unwrap();
 

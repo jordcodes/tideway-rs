@@ -1731,30 +1731,67 @@ fn render_repository_tests(
     _id_type: ResourceIdType,
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    format!(
-        r#"use sea_orm::Database;
+    let test_template = r#"use tideway::testing::{TestDb, TestDbBackend, TestDbConfig};
 use tideway::Result;
 
 use {project_name}::repositories::{resource_name}::{resource_pascal}Repository;
 
+async fn build_test_db() -> Result<TestDb> {
+    let backend = std::env::var("TIDEWAY_TEST_DB_BACKEND")
+        .unwrap_or_else(|_| "postgres".to_string());
+
+    match backend.as_str() {
+        "sqlite" => TestDb::new_with_config(TestDbConfig {
+            backend: TestDbBackend::SqliteMemory,
+            database_url: None,
+        })
+        .await,
+        "postgres_container" => {
+            #[cfg(feature = "test-containers")]
+            {
+                TestDb::new_with_config(TestDbConfig {
+                    backend: TestDbBackend::PostgresContainer,
+                    database_url: None,
+                })
+                .await
+            }
+            #[cfg(not(feature = "test-containers"))]
+            {
+                panic!("Enable the tideway `test-containers` feature to run postgres_container profile");
+            }
+        }
+        "postgres" => {
+            let database_url = match std::env::var("TIDEWAY_TEST_DATABASE_URL") {
+                Ok(url) => Some(url),
+                Err(_) => std::env::var("TEST_DATABASE_URL").ok(),
+            };
+
+            TestDb::new_with_config(TestDbConfig {
+                backend: TestDbBackend::Postgres,
+                database_url,
+            })
+            .await
+        }
+        _ => TestDb::new_postgres().await,
+    }
+}
+
 #[tokio::test]
-#[ignore = "Requires DATABASE_URL and existing migrations"]
-async fn repository_crud_smoke() -> Result<()> {{
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL is required for repository tests");
-    let db = Database::connect(&database_url).await?;
-    let repo = {resource_pascal}Repository::new(db);
+#[ignore = "Configure a DB-backed profile: TIDEWAY_TEST_DB_BACKEND=postgres (default) or postgres_container (requires tideway test-containers). Set TIDEWAY_TEST_DATABASE_URL or TEST_DATABASE_URL if needed."]
+async fn repository_crud_smoke() -> Result<()> {
+    let db = build_test_db().await?;
+    let repo = {resource_pascal}Repository::new(db.connection);
 
     let created = repo.create("Example".to_string()).await?;
     let _ = repo.list().await?;
     repo.delete(created.id).await?;
-    Ok(())
-}}
-"#,
-        project_name = project_name,
-        resource_name = resource_name,
-        resource_pascal = resource_pascal
-    )
+        Ok(())
+}
+"#
+    .replace("{project_name}", project_name)
+    .replace("{resource_name}", resource_name)
+    .replace("{resource_pascal}", &resource_pascal);
+    test_template
 }
 
 fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> Result<()> {

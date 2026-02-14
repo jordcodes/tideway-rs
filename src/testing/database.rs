@@ -31,9 +31,48 @@
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
 use sea_orm_migration::MigratorTrait;
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "test-containers")]
+use std::sync::Arc;
 use url::Url;
 
+#[cfg(feature = "test-containers")]
+mod postgres_container;
+
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Supported test database backends.
+#[derive(Debug, Clone, Copy)]
+pub enum TestDbBackend {
+    /// Fast, in-memory sqlite. Default behavior.
+    SqliteMemory,
+    /// A PostgreSQL database created from `TEST_DATABASE_URL`.
+    Postgres,
+    /// A temporary PostgreSQL container for end-to-end integration parity.
+    #[cfg(feature = "test-containers")]
+    PostgresContainer,
+}
+
+impl Default for TestDbBackend {
+    fn default() -> Self {
+        Self::SqliteMemory
+    }
+}
+
+/// Options for constructing a `TestDb`.
+#[derive(Debug)]
+pub struct TestDbConfig {
+    pub backend: TestDbBackend,
+    pub database_url: Option<String>,
+}
+
+impl Default for TestDbConfig {
+    fn default() -> Self {
+        Self {
+            backend: TestDbBackend::default(),
+            database_url: None,
+        }
+    }
+}
 
 /// Manages a test database connection
 ///
@@ -45,9 +84,38 @@ static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// script or CI/CD step to remove orphaned test databases.
 pub struct TestDb {
     pub connection: DatabaseConnection,
+    #[cfg(feature = "test-containers")]
+    #[allow(dead_code)]
+    container: Option<Arc<postgres_container::PostgresContainer>>,
 }
 
 impl TestDb {
+    /// Create a new test database with explicit options.
+    pub async fn new_with_config(config: TestDbConfig) -> Result<Self, DbErr> {
+        match config.backend {
+            TestDbBackend::SqliteMemory => Self::new().await,
+            TestDbBackend::Postgres => {
+                if let Some(url) = config.database_url {
+                    Self::create_postgres_db_from_base_url(&url).await
+                } else {
+                    Self::new_postgres().await
+                }
+            }
+            #[cfg(feature = "test-containers")]
+            TestDbBackend::PostgresContainer => Self::new_postgres_container().await,
+        }
+    }
+
+    /// Create a new sqlite-memory test database without migrations.
+    pub async fn new_with_sqlite() -> Result<Self, DbErr> {
+        Self::new().await
+    }
+
+    /// Create a new PostgreSQL test database without migrations.
+    pub async fn new_with_postgres_url(database_url: &str) -> Result<Self, DbErr> {
+        Self::create_postgres_db_from_base_url(database_url).await
+    }
+
     /// Create a new test database with SQLite in-memory and run migrations
     ///
     /// # Example
@@ -85,7 +153,11 @@ impl TestDb {
             .await?;
 
         M::up(&connection, None).await?;
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            #[cfg(feature = "test-containers")]
+            container: None,
+        })
     }
 
     /// Create a new test database without running migrations
@@ -116,7 +188,11 @@ impl TestDb {
             .execute_unprepared("PRAGMA busy_timeout=5000;")
             .await?;
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            #[cfg(feature = "test-containers")]
+            container: None,
+        })
     }
 
     /// Create a new PostgreSQL test database and run migrations
@@ -178,15 +254,40 @@ impl TestDb {
         Self::create_postgres_db().await
     }
 
+    /// Create a new PostgreSQL test database in a container with an ephemeral database.
+    ///
+    /// Requires:
+    /// - `docker` CLI available
+    /// - `test-containers` feature enabled
+    #[cfg(feature = "test-containers")]
+    pub async fn new_postgres_container() -> Result<Self, DbErr> {
+        let container = postgres_container::PostgresContainer::start().await?;
+        let connection = Database::connect(&container.connection_url).await?;
+        Ok(Self {
+            connection,
+            container: Some(Arc::new(container)),
+        })
+    }
+
+    /// Create a new PostgreSQL test database in a container and run migrations.
+    #[cfg(feature = "test-containers")]
+    pub async fn new_postgres_container_with_migrator<M: MigratorTrait>() -> Result<Self, DbErr> {
+        let instance = Self::new_postgres_container().await?;
+        M::up(&instance.connection, None).await?;
+        Ok(instance)
+    }
+
     /// Internal helper for PostgreSQL database creation to avoid code duplication
     async fn create_postgres_db() -> Result<Self, DbErr> {
         let base_url = std::env::var("TEST_DATABASE_URL")
             .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/postgres".to_string());
+        Self::create_postgres_db_from_base_url(&base_url).await
+    }
 
+    async fn create_postgres_db_from_base_url(base_url: &str) -> Result<Self, DbErr> {
         // Connect to the default postgres database to create a new test database
-        let admin_connection = Database::connect(&base_url).await?;
+        let admin_connection = Database::connect(base_url).await?;
 
-        // Generate a unique database name using process ID and atomic counter
         let counter = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
         let db_name = format!("test_db_{}_{}", std::process::id(), counter);
 
@@ -212,7 +313,7 @@ impl TestDb {
             .map_err(|e| DbErr::Custom(format!("Failed to close admin connection: {}", e)))?;
 
         // Parse the base URL and replace the database name
-        let test_db_url = build_test_db_url(&base_url, &db_name)?;
+        let test_db_url = build_test_db_url(base_url, &db_name)?;
         let connection = Database::connect(&test_db_url).await.map_err(|e| {
             DbErr::Custom(format!(
                 "Failed to connect to test database '{}': {}",
@@ -220,7 +321,11 @@ impl TestDb {
             ))
         })?;
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            #[cfg(feature = "test-containers")]
+            container: None,
+        })
     }
 
     /// Get a clone of the database connection

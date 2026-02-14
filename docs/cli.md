@@ -140,7 +140,10 @@ tideway resource user --wire --db --paginate --search
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
 Use `--db` to scaffold a SeaORM entity + migration and switch routes to real DB CRUD. With `--wire`, it also wires the database into `main.rs`.
 Use `--repo` to generate a repository layer for DB-backed resources.
-Use `--repo-tests` to generate an ignored CRUD smoke test (requires DATABASE_URL).
+Use `--repo-tests` to generate an ignored CRUD smoke test (defaults to postgres profile).
+Set `TIDEWAY_TEST_DB_BACKEND=postgres_container` to run against a Docker container when
+the `test-containers` feature is enabled, or `TIDEWAY_TEST_DB_BACKEND=postgres` with
+`TEST_DATABASE_URL`/`TIDEWAY_TEST_DATABASE_URL` for local PostgreSQL.
 Use `--service` to generate a thin service layer on top of the repository.
 Use `--id-type` to switch ID generation (int or uuid) for DB scaffolding. Use `--add-uuid` to automatically add the `uuid` dependency.
 Use `--paginate` to add limit/offset query params to list endpoints.
