@@ -1,13 +1,23 @@
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 
 use crate::{ensure_dir, print_warning, write_file};
 
 pub fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
+    write_file_with_force_with_message(path, contents, force, "use --force to overwrite")
+}
+
+pub fn write_file_with_force_with_message(
+    path: &Path,
+    contents: &str,
+    force: bool,
+    skip_message: &str,
+) -> Result<()> {
     if path.exists() && !force {
         print_warning(&format!(
-            "Skipping {} (use --force to overwrite)",
-            path.display()
+            "Skipping {} ({})",
+            path.display(),
+            skip_message
         ));
         return Ok(());
     }
@@ -18,6 +28,23 @@ pub fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result
 
     write_file(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
+}
+
+pub fn write_file_with_force_or_error(
+    path: &Path,
+    contents: &str,
+    force: bool,
+    skip_message: &str,
+) -> Result<()> {
+    if path.exists() && !force {
+        return Err(anyhow!(
+            "File already exists: {} ({})",
+            path.display(),
+            skip_message
+        ));
+    }
+
+    write_file_with_force_with_message(path, contents, true, skip_message)
 }
 
 pub fn ensure_module_decl(contents: &str, module_name: &str) -> String {

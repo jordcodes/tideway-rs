@@ -6,9 +6,9 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
+use crate::commands::file_ops::write_file_with_force_with_message;
 use crate::{
-    TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success, print_warning,
-    write_file,
+    TIDEWAY_VERSION, is_json_output, print_info, print_success, print_warning, write_file,
 };
 
 /// Detected modules in the project
@@ -554,16 +554,10 @@ fn generate_env_example(project_name: &str, modules: &DetectedModules, args: &In
 
 /// Write file with optional force overwrite
 fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        print_warning(&format!(
-            "Skipping {} (use --force to overwrite; `tideway init` is advanced for existing projects)",
-            path.display()
-        ));
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    write_file(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
+    write_file_with_force_with_message(
+        path,
+        content,
+        force,
+        "use --force to overwrite; `tideway init` is advanced for existing projects",
+    )
 }

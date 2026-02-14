@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{Array, InlineTable, Item, Table, Value};
 
 use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
+use crate::commands::file_ops::write_file_with_force_or_error;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info, print_success,
@@ -336,19 +337,12 @@ pub fn expected_files(args: &NewArgs) -> Vec<String> {
     files
 }
 fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        return Err(anyhow!(
-            "File already exists: {} (use --force to overwrite)",
-            path.display()
-        ));
-    }
-
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-
-    write_file(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
+    write_file_with_force_or_error(
+        path,
+        contents,
+        force,
+        "use --force to overwrite",
+    )
 }
 
 fn normalize_project_name(name: &str) -> String {

@@ -5,11 +5,9 @@ use colored::Colorize;
 use std::path::Path;
 
 use crate::cli::{BackendArgs, BackendPreset};
+use crate::commands::file_ops::write_file_with_force_with_message;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{
-    TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success,
-    print_warning, write_file,
-};
+use crate::{TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success};
 
 /// Convert snake_case to PascalCase
 fn to_pascal_case(s: &str) -> String {
@@ -445,13 +443,10 @@ fn generate_migrations(
 }
 
 fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        print_warning(&format!(
-            "Skipping {} (use --force to overwrite; `tideway backend` is an advanced command)",
-            path.display()
-        ));
-        return Ok(());
-    }
-    write_file(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
+    write_file_with_force_with_message(
+        path,
+        content,
+        force,
+        "use --force to overwrite; `tideway backend` is an advanced command",
+    )
 }

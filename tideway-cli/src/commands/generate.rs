@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::{GenerateArgs, Module, Style};
+use crate::commands::file_ops::write_file_with_force_with_message;
 use crate::templates::{TemplateContext, TemplateEngine};
 use crate::{ensure_dir, is_json_output, print_info, print_success, print_warning, write_file};
 
@@ -622,15 +623,7 @@ fn generate_shared(engine: &TemplateEngine, output_path: &Path, args: &GenerateA
 }
 
 fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        print_warning(&format!(
-            "Skipping {} (use --force to overwrite)",
-            path.display()
-        ));
-        return Ok(());
-    }
-    write_file(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
+    write_file_with_force_with_message(path, content, force, "use --force to overwrite")
 }
 
 /// Detect installed shadcn-vue components by checking ./src/components/ui/ subdirectories
