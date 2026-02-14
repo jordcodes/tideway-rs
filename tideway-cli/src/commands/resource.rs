@@ -6,10 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
+use crate::commands::app_builder::{find_app_builder_marker_range, find_unmarked_app_builder_statement_range};
 use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
-
-const APP_BUILDER_START_MARKER: &str = "tideway:app-builder:start";
-const APP_BUILDER_END_MARKER: &str = "tideway:app-builder:end";
 
 pub fn run(args: ResourceArgs) -> Result<()> {
     let project_dir = PathBuf::from(&args.path);
@@ -29,6 +27,20 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let cargo_path = project_dir.join("Cargo.toml");
     let has_openapi = has_feature(&cargo_path, "openapi");
     let has_database = has_feature(&cargo_path, "database");
+
+    validate_resource_args(&args, &resource_name, has_database, &cargo_path)?;
+    let db_backend = if args.db {
+        Some(resolve_db_backend(&project_dir, args.db_backend)?)
+    } else {
+        None
+    };
+
+    if args.db && matches!(args.id_type, ResourceIdType::Uuid) {
+        if args.add_uuid && !has_dependency_in_cargo(&cargo_path, "uuid") {
+            add_uuid_dependency(&cargo_path)?;
+            print_success("Added uuid dependency to Cargo.toml");
+        }
+    }
 
     let routes_dir = src_dir.join("routes");
     ensure_dir(&routes_dir)
@@ -61,97 +73,8 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         print_info("Next steps: add the module to routes/mod.rs and register it in main.rs");
     }
 
-    if args.repo && !args.db {
-        return Err(anyhow::anyhow!(error_contract(
-            "Repository scaffolding requires --db.",
-            &format!("Run `tideway resource {} --db --repo`.", resource_name),
-            "Skip `--repo` if you only want route stubs."
-        )));
-    }
-
-    if args.repo_tests && !args.repo {
-        return Err(anyhow::anyhow!(error_contract(
-            "Repository tests require --repo.",
-            &format!(
-                "Run `tideway resource {} --db --repo --repo-tests`.",
-                resource_name
-            ),
-            "Drop `--repo-tests` if repository scaffolding is not needed."
-        )));
-    }
-
-    if args.service && !args.repo {
-        return Err(anyhow::anyhow!(error_contract(
-            "Service scaffolding requires --repo.",
-            &format!(
-                "Run `tideway resource {} --db --repo --service`.",
-                resource_name
-            ),
-            "Drop `--service` if you only need route/repository layers."
-        )));
-    }
-
-    if args.search && !args.paginate {
-        return Err(anyhow::anyhow!(error_contract(
-            "Search requires --paginate.",
-            &format!(
-                "Run `tideway resource {} --db --paginate --search`.",
-                resource_name
-            ),
-            "Drop `--search` for basic list endpoints."
-        )));
-    }
-
-    if args.search && !args.db {
-        return Err(anyhow::anyhow!(error_contract(
-            "Search requires --db.",
-            &format!(
-                "Run `tideway resource {} --db --paginate --search`.",
-                resource_name
-            ),
-            "Drop `--search` if using non-DB stubs."
-        )));
-    }
-
-    if args.paginate && !args.db {
-        return Err(anyhow::anyhow!(error_contract(
-            "Pagination requires --db.",
-            &format!("Run `tideway resource {} --db --paginate`.", resource_name),
-            "Drop `--paginate` for non-DB stubs."
-        )));
-    }
-
     if args.db {
-        if !has_database {
-            return Err(anyhow::anyhow!(error_contract(
-                "Database scaffolding requires the Tideway `database` feature.",
-                "For greenfield apps, run `tideway new <app> --preset api`.",
-                "For existing apps, run `tideway add database`."
-            )));
-        }
-        if !has_dependency_in_cargo(&cargo_path, "sea-orm") {
-            return Err(anyhow::anyhow!(error_contract(
-                "SeaORM dependency not found.",
-                "For greenfield apps, run `tideway new <app> --preset api`.",
-                "For existing apps, run `tideway add database`."
-            )));
-        }
-        if matches!(args.id_type, ResourceIdType::Uuid) && !has_dependency_in_cargo(&cargo_path, "uuid") {
-            if args.add_uuid {
-                add_uuid_dependency(&cargo_path)?;
-                print_success("Added uuid dependency to Cargo.toml");
-            } else {
-                return Err(anyhow::anyhow!(
-                    "{}",
-                    error_contract(
-                        "UUID id type requires the `uuid` dependency.",
-                        "Rerun with `--add-uuid`.",
-                        "Add `uuid` manually in Cargo.toml then rerun."
-                    )
-                ));
-            }
-        }
-        let backend = resolve_db_backend(&project_dir, args.db_backend)?;
+        let backend = db_backend.expect("db backend should be resolved when --db is enabled");
         match backend {
             DbBackend::SeaOrm => generate_sea_orm_scaffold(
                 &project_dir,
@@ -220,6 +143,105 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         "Primary path reminder: run `tideway dev --fix-env` to boot and verify the new resource.",
     );
     print_success(&format!("Generated {} resource", resource_name));
+    Ok(())
+}
+
+fn validate_resource_args(
+    args: &ResourceArgs,
+    resource_name: &str,
+    has_database: bool,
+    cargo_path: &Path,
+) -> Result<()> {
+    if args.repo && !args.db {
+        return Err(anyhow::anyhow!(error_contract(
+            "Repository scaffolding requires --db.",
+            &format!("Run `tideway resource {} --db --repo`.", resource_name),
+            "Skip `--repo` if you only want route stubs."
+        )));
+    }
+
+    if args.repo_tests && !args.repo {
+        return Err(anyhow::anyhow!(error_contract(
+            "Repository tests require --repo.",
+            &format!(
+                "Run `tideway resource {} --db --repo --repo-tests`.",
+                resource_name
+            ),
+            "Drop `--repo-tests` if repository scaffolding is not needed."
+        )));
+    }
+
+    if args.service && !args.repo {
+        return Err(anyhow::anyhow!(error_contract(
+            "Service scaffolding requires --repo.",
+            &format!(
+                "Run `tideway resource {} --db --repo --service`.",
+                resource_name
+            ),
+            "Drop `--service` if you only need route/repository layers."
+        )));
+    }
+
+    if args.search && !args.paginate {
+        return Err(anyhow::anyhow!(error_contract(
+            "Search requires --paginate.",
+            &format!(
+                "Run `tideway resource {} --db --paginate --search`.",
+                resource_name
+            ),
+            "Drop `--search` for basic list endpoints."
+        )));
+    }
+
+    if args.search && !args.db {
+        return Err(anyhow::anyhow!(error_contract(
+            "Search requires --db.",
+            &format!(
+                "Run `tideway resource {} --db --paginate --search`.",
+                resource_name
+            ),
+            "Drop `--search` if using non-DB stubs."
+        )));
+    }
+
+    if args.paginate && !args.db {
+        return Err(anyhow::anyhow!(error_contract(
+            "Pagination requires --db.",
+            &format!("Run `tideway resource {} --db --paginate`.", resource_name),
+            "Drop `--paginate` for non-DB stubs."
+        )));
+    }
+
+    if args.db {
+        if !has_database {
+            return Err(anyhow::anyhow!(error_contract(
+                "Database scaffolding requires the Tideway `database` feature.",
+                "For greenfield apps, run `tideway new <app> --preset api`.",
+                "For existing apps, run `tideway add database`."
+            )));
+        }
+        if !has_dependency_in_cargo(cargo_path, "sea-orm") {
+            return Err(anyhow::anyhow!(error_contract(
+                "SeaORM dependency not found.",
+                "For greenfield apps, run `tideway new <app> --preset api`.",
+                "For existing apps, run `tideway add database`."
+            )));
+        }
+        if matches!(args.id_type, ResourceIdType::Uuid)
+            && !has_dependency_in_cargo(cargo_path, "uuid")
+            && !args.add_uuid
+        {
+            return Err(anyhow::anyhow!(
+                "{}",
+                error_contract(
+                    "UUID id type requires the `uuid` dependency.",
+                    "Rerun with `--add-uuid`.",
+                    "Add `uuid` manually in Cargo.toml then rerun."
+                )
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -1831,25 +1853,6 @@ fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> R
     Ok(())
 }
 
-fn find_app_builder_marker_range(contents: &str) -> Option<(usize, usize)> {
-    let start_marker = contents.find(APP_BUILDER_START_MARKER)?;
-    let start = contents[start_marker..]
-        .find('\n')
-        .map(|idx| start_marker + idx + 1)?;
-
-    let end_marker = contents.find(APP_BUILDER_END_MARKER)?;
-    if end_marker <= start {
-        return None;
-    }
-
-    let end = contents[..end_marker]
-        .rfind('\n')
-        .map(|idx| idx + 1)
-        .unwrap_or(end_marker);
-
-    Some((start, end))
-}
-
 fn insert_register_into_builder_block(block: &str, register_line: &str) -> Option<String> {
     let stmt_end = block.rfind(';')?;
     let line_start = block[..stmt_end]
@@ -1896,98 +1899,6 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
     } else {
         print_warning("Could not find register_module call in main.rs");
     }
-}
-
-fn find_unmarked_app_builder_statement_range(contents: &str) -> Option<(usize, usize)> {
-    let mut search_from = 0;
-    while let Some(rel_pos) = contents[search_from..].find(" = App::") {
-        let abs_pos = search_from + rel_pos;
-        let line_start = contents[..abs_pos]
-            .rfind('\n')
-            .map(|idx| idx + 1)
-            .unwrap_or(0);
-        if is_app_builder_start_line(&contents[line_start..]) {
-            if let Some(end) = find_statement_terminator(contents, line_start) {
-                return Some((line_start, end));
-            }
-        }
-        search_from = abs_pos + 1;
-    }
-    None
-}
-
-fn is_app_builder_start_line(line_and_rest: &str) -> bool {
-    let line = line_and_rest.lines().next().unwrap_or("").trim();
-    line.starts_with("let ") && line.contains(" = App::")
-}
-
-fn find_statement_terminator(contents: &str, start_pos: usize) -> Option<usize> {
-    let bytes = contents.as_bytes();
-    let mut i = start_pos;
-    let mut paren_depth = 0usize;
-    let mut brace_depth = 0usize;
-    let mut bracket_depth = 0usize;
-    let mut in_single_quote = false;
-    let mut in_double_quote = false;
-    let mut escape = false;
-
-    while i < bytes.len() {
-        let b = bytes[i];
-
-        if !in_single_quote
-            && !in_double_quote
-            && i + 1 < bytes.len()
-            && bytes[i] == b'/'
-            && bytes[i + 1] == b'/'
-        {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-
-        if escape {
-            escape = false;
-            i += 1;
-            continue;
-        }
-
-        if in_single_quote {
-            if b == b'\\' {
-                escape = true;
-            } else if b == b'\'' {
-                in_single_quote = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        if in_double_quote {
-            if b == b'\\' {
-                escape = true;
-            } else if b == b'"' {
-                in_double_quote = false;
-            }
-            i += 1;
-            continue;
-        }
-
-        match b {
-            b'\'' => in_single_quote = true,
-            b'"' => in_double_quote = true,
-            b'(' => paren_depth += 1,
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            b'{' => brace_depth += 1,
-            b'}' => brace_depth = brace_depth.saturating_sub(1),
-            b'[' => bracket_depth += 1,
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b';' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => return Some(i),
-            _ => {}
-        }
-
-        i += 1;
-    }
-    None
 }
 
 fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
