@@ -3,6 +3,7 @@
 pub mod add;
 pub mod backend;
 pub mod dev;
+pub mod file_ops;
 pub mod app_builder;
 pub mod doctor;
 pub mod generate;

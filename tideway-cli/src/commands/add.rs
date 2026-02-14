@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{AddArgs, AddFeature};
+use crate::commands::file_ops::{ensure_module_decl, write_file_with_force};
 use crate::commands::app_builder::{
     find_app_builder_end_insert_at, find_app_builder_marker_range, find_app_builder_start,
     find_app_builder_var_name, find_unmarked_app_builder_statement_range,
@@ -253,13 +254,7 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
     let mut contents = fs::read_to_string(&main_path)
         .with_context(|| format!("Failed to read {}", main_path.display()))?;
 
-    if !contents.contains("mod auth;") {
-        if contents.contains("mod routes;") {
-            contents = contents.replace("mod routes;\n", "mod routes;\nmod auth;\n");
-        } else {
-            contents = format!("mod auth;\n{}", contents);
-        }
-    }
+    contents = ensure_module_decl(&contents, "auth");
 
     contents = ensure_use_line(contents, "use axum::Extension;", "use tideway::auth");
     contents = ensure_use_line(
@@ -464,11 +459,7 @@ fn wire_openapi_in_main(project_dir: &Path) -> Result<()> {
     contents = ensure_use_line(contents, "use tideway::openapi;", "use tideway::");
 
     if !contents.contains("mod openapi_docs;") {
-        if contents.contains("mod routes;") {
-            contents = contents.replace("mod routes;\n", "mod routes;\nmod openapi_docs;\n");
-        } else {
-            contents = format!("mod openapi_docs;\n{}", contents);
-        }
+        contents = ensure_module_decl(&contents, "openapi_docs");
     }
 
     let has_config_var = contents.contains("let config = ConfigBuilder::new()")
@@ -534,23 +525,6 @@ tideway::openapi_doc!(pub(crate) ApiDoc, paths());
     write_file(&docs_path, contents)
         .with_context(|| format!("Failed to write {}", docs_path.display()))?;
     print_success("Created src/openapi_docs.rs");
-    Ok(())
-}
-
-fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        print_warning(&format!(
-            "Skipping {} (use --force to overwrite)",
-            path.display()
-        ));
-        return Ok(());
-    }
-
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-
-    write_file(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
 }
 

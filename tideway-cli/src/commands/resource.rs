@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
+use crate::commands::file_ops::{ensure_module_decl, write_file_with_force};
 use crate::commands::app_builder::{find_app_builder_marker_range, find_unmarked_app_builder_statement_range};
 use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
 
@@ -1055,80 +1056,34 @@ fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str)
 }
 
 fn wire_entities_in_main(src_dir: &Path) -> Result<()> {
-    let main_path = src_dir.join("main.rs");
-    if !main_path.exists() {
-        print_warning("src/main.rs not found; skipping entities wiring");
-        return Ok(());
-    }
-
-    let mut contents = fs::read_to_string(&main_path)
-        .with_context(|| format!("Failed to read {}", main_path.display()))?;
-
-    if contents.contains("mod entities;") {
-        return Ok(());
-    }
-
-    if contents.contains("mod routes;") {
-        contents = contents.replace("mod routes;\n", "mod routes;\nmod entities;\n");
-    } else {
-        contents = format!("mod entities;\n{}", contents);
-    }
-
-    write_file(&main_path, &contents)
-        .with_context(|| format!("Failed to write {}", main_path.display()))?;
-    print_success("Added mod entities to src/main.rs");
-    Ok(())
+    wire_module_in_main(src_dir, "entities")
 }
 
 fn wire_repositories_in_main(src_dir: &Path) -> Result<()> {
-    let main_path = src_dir.join("main.rs");
-    if !main_path.exists() {
-        print_warning("src/main.rs not found; skipping repositories wiring");
-        return Ok(());
-    }
-
-    let mut contents = fs::read_to_string(&main_path)
-        .with_context(|| format!("Failed to read {}", main_path.display()))?;
-
-    if contents.contains("mod repositories;") {
-        return Ok(());
-    }
-
-    if contents.contains("mod routes;") {
-        contents = contents.replace("mod routes;\n", "mod routes;\nmod repositories;\n");
-    } else {
-        contents = format!("mod repositories;\n{}", contents);
-    }
-
-    write_file(&main_path, &contents)
-        .with_context(|| format!("Failed to write {}", main_path.display()))?;
-    print_success("Added mod repositories to src/main.rs");
-    Ok(())
+    wire_module_in_main(src_dir, "repositories")
 }
 
 fn wire_services_in_main(src_dir: &Path) -> Result<()> {
+    wire_module_in_main(src_dir, "services")
+}
+
+fn wire_module_in_main(src_dir: &Path, module_name: &str) -> Result<()> {
     let main_path = src_dir.join("main.rs");
     if !main_path.exists() {
-        print_warning("src/main.rs not found; skipping services wiring");
+        print_warning(&format!("src/main.rs not found; skipping {module_name} wiring"));
         return Ok(());
     }
 
-    let mut contents = fs::read_to_string(&main_path)
+    let contents = fs::read_to_string(&main_path)
         .with_context(|| format!("Failed to read {}", main_path.display()))?;
-
-    if contents.contains("mod services;") {
+    let updated_contents = ensure_module_decl(&contents, module_name);
+    if updated_contents == contents {
         return Ok(());
     }
 
-    if contents.contains("mod routes;") {
-        contents = contents.replace("mod routes;\n", "mod routes;\nmod services;\n");
-    } else {
-        contents = format!("mod services;\n{}", contents);
-    }
-
-    write_file(&main_path, &contents)
+    write_file(&main_path, &updated_contents)
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
-    print_success("Added mod services to src/main.rs");
+    print_success(&format!("Added mod {module_name} to src/main.rs"));
     Ok(())
 }
 
@@ -1899,21 +1854,6 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
     } else {
         print_warning("Could not find register_module call in main.rs");
     }
-}
-
-fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
-    if path.exists() && !force {
-        print_warning(&format!(
-            "Skipping {} (use --force to overwrite)",
-            path.display()
-        ));
-        return Ok(());
-    }
-    if let Some(parent) = path.parent() {
-        ensure_dir(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
-    }
-    write_file(path, contents).with_context(|| format!("Failed to write {}", path.display()))?;
-    Ok(())
 }
 
 fn normalize_name(name: &str) -> String {
