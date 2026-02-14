@@ -664,8 +664,8 @@ mod tests {
         // Wait for server startup (brief retry loop).
         let mut ready = false;
         for _ in 0..30 {
-            match client.get(&url).send().await {
-                Ok(resp) if resp.status().is_success() => {
+            match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(_) => {
                     ready = true;
                     break;
                 }
