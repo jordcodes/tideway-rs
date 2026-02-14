@@ -168,7 +168,12 @@ fn generate_shared(
     if engine.has_template("shared/main") {
         let content = engine.render("shared/main")?;
         let file_path = output_path.join("main.rs");
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "`tideway backend` is an advanced command; use --force to overwrite",
+        )?;
         print_success("Generated main.rs");
     }
 
@@ -176,7 +181,12 @@ fn generate_shared(
     if engine.has_template("shared/lib") {
         let content = engine.render("shared/lib")?;
         let file_path = output_path.join("lib.rs");
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "`tideway backend` is an advanced command; use --force to overwrite",
+        )?;
         print_success("Generated lib.rs");
     }
 
@@ -184,7 +194,12 @@ fn generate_shared(
     if engine.has_template("shared/config") {
         let content = engine.render("shared/config")?;
         let file_path = output_path.join("config.rs");
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "`tideway backend` is an advanced command; use --force to overwrite",
+        )?;
         print_success("Generated config.rs");
     }
 
@@ -192,7 +207,12 @@ fn generate_shared(
     if engine.has_template("shared/error") {
         let content = engine.render("shared/error")?;
         let file_path = output_path.join("error.rs");
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "`tideway backend` is an advanced command; use --force to overwrite",
+        )?;
         print_success("Generated error.rs");
     }
 
@@ -211,7 +231,12 @@ fn generate_entities(
     if engine.has_template("entities/mod") {
         let content = engine.render("entities/mod")?;
         let file_path = entities_path.join("mod.rs");
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "`tideway backend` is an advanced command; use --force to overwrite",
+        )?;
         print_success("Generated entities/mod.rs");
     }
 
@@ -219,7 +244,12 @@ fn generate_entities(
     if engine.has_template("entities/prelude") {
         let content = engine.render("entities/prelude")?;
         let file_path = entities_path.join("prelude.rs");
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "`tideway backend` is an advanced command; use --force to overwrite",
+        )?;
         print_success("Generated entities/prelude.rs");
     }
 
@@ -234,7 +264,12 @@ fn generate_entities(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = entities_path.join(filename);
-            write_file_with_force(&file_path, &content, args.force)?;
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                "`tideway backend` is an advanced command; use --force to overwrite",
+            )?;
             print_success(&format!("Generated entities/{}", filename));
         }
     }
@@ -250,7 +285,12 @@ fn generate_entities(
             if engine.has_template(template_name) {
                 let content = engine.render(template_name)?;
                 let file_path = entities_path.join(filename);
-                write_file_with_force(&file_path, &content, args.force)?;
+                write_file_with_force_with_message(
+                    &file_path,
+                    &content,
+                    args.force,
+                    "`tideway backend` is an advanced command; use --force to overwrite",
+                )?;
                 print_success(&format!("Generated entities/{}", filename));
             }
         }
@@ -277,7 +317,12 @@ fn generate_auth(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = auth_path.join(filename);
-            write_file_with_force(&file_path, &content, args.force)?;
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                "`tideway backend` is an advanced command; use --force to overwrite",
+            )?;
             print_success(&format!("Generated auth/{}", filename));
         }
     }
@@ -303,7 +348,12 @@ fn generate_billing(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = billing_path.join(filename);
-            write_file_with_force(&file_path, &content, args.force)?;
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                "`tideway backend` is an advanced command; use --force to overwrite",
+            )?;
             print_success(&format!("Generated billing/{}", filename));
         }
     }
@@ -329,7 +379,12 @@ fn generate_organizations(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = orgs_path.join(filename);
-            write_file_with_force(&file_path, &content, args.force)?;
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                "`tideway backend` is an advanced command; use --force to overwrite",
+            )?;
             print_success(&format!("Generated organizations/{}", filename));
         }
     }
@@ -355,7 +410,12 @@ fn generate_admin(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = admin_path.join(filename);
-            write_file_with_force(&file_path, &content, args.force)?;
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                "`tideway backend` is an advanced command; use --force to overwrite",
+            )?;
             print_success(&format!("Generated admin/{}", filename));
         }
     }
@@ -372,7 +432,12 @@ fn generate_migrations(
     if engine.has_template("migrations/lib") {
         let content = engine.render("migrations/lib")?;
         let file_path = migrations_path.join("lib.rs");
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "`tideway backend` is an advanced command; use --force to overwrite",
+        )?;
         print_success("Generated migration/src/lib.rs");
     }
 
@@ -402,7 +467,12 @@ fn generate_migrations(
         if engine.has_template(template_name) {
             let content = engine.render(template_name)?;
             let file_path = migrations_path.join(filename);
-            write_file_with_force(&file_path, &content, args.force)?;
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                "`tideway backend` is an advanced command; use --force to overwrite",
+            )?;
             print_success(&format!("Generated migration/src/{}", filename));
         }
     }
@@ -425,7 +495,12 @@ fn generate_migrations(
             if engine.has_template(template_name) {
                 let content = engine.render(template_name)?;
                 let file_path = migrations_path.join(filename);
-                write_file_with_force(&file_path, &content, args.force)?;
+                write_file_with_force_with_message(
+                    &file_path,
+                    &content,
+                    args.force,
+                    "`tideway backend` is an advanced command; use --force to overwrite",
+                )?;
                 print_success(&format!("Generated migration/src/{}", filename));
             }
         }
@@ -434,19 +509,15 @@ fn generate_migrations(
         if engine.has_template("migrations/m005_add_admin_flag") {
             let content = engine.render("migrations/m005_add_admin_flag")?;
             let file_path = migrations_path.join("m005_add_admin_flag.rs");
-            write_file_with_force(&file_path, &content, args.force)?;
+                write_file_with_force_with_message(
+                    &file_path,
+                    &content,
+                    args.force,
+                    "`tideway backend` is an advanced command; use --force to overwrite",
+                )?;
             print_success("Generated migration/src/m005_add_admin_flag.rs");
         }
     }
 
     Ok(())
-}
-
-fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
-    write_file_with_force_with_message(
-        path,
-        content,
-        force,
-        "use --force to overwrite; `tideway backend` is an advanced command",
-    )
 }

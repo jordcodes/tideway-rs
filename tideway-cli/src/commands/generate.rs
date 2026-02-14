@@ -168,14 +168,24 @@ fn generate_auth(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = auth_path.join(filename);
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated auth/{}", filename));
     }
 
     // Generate composable
     let composable_content = engine.render("auth/composables/useAuth")?;
     let composable_path = composables_path.join("useAuth.ts");
-    write_file_with_force(&composable_path, &composable_content, args.force)?;
+    write_file_with_force_with_message(
+        &composable_path,
+        &composable_content,
+        args.force,
+        "use --force to overwrite",
+    )?;
     print_success("Generated auth/composables/useAuth.ts");
 
     // Track shadcn components needed for auth
@@ -221,22 +231,33 @@ fn generate_billing(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = billing_path.join(filename);
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated billing/{}", filename));
     }
 
     // Generate composables
     let composable_content = engine.render("billing/composables/useBilling")?;
     let composable_path = composables_path.join("useBilling.ts");
-    write_file_with_force(&composable_path, &composable_content, args.force)?;
+    write_file_with_force_with_message(
+        &composable_path,
+        &composable_content,
+        args.force,
+        "use --force to overwrite",
+    )?;
     print_success("Generated billing/composables/useBilling.ts");
 
     let plans_composable_content = engine.render("billing/composables/usePlans")?;
     let plans_composable_path = composables_path.join("usePlans.ts");
-    write_file_with_force(
+    write_file_with_force_with_message(
         &plans_composable_path,
         &plans_composable_content,
         args.force,
+        "use --force to overwrite",
     )?;
     print_success("Generated billing/composables/usePlans.ts");
 
@@ -286,14 +307,24 @@ fn generate_organizations(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = orgs_path.join(filename);
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated organizations/{}", filename));
     }
 
     // Generate composable
     let composable_content = engine.render("organizations/composables/useOrganization")?;
     let composable_path = composables_path.join("useOrganization.ts");
-    write_file_with_force(&composable_path, &composable_content, args.force)?;
+    write_file_with_force_with_message(
+        &composable_path,
+        &composable_content,
+        args.force,
+        "use --force to overwrite",
+    )?;
     print_success("Generated organizations/composables/useOrganization.ts");
 
     // Track shadcn components needed for organizations
@@ -341,14 +372,24 @@ fn generate_admin(
     for (filename, template_name) in components {
         let content = engine.render(template_name)?;
         let file_path = admin_path.join(filename);
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated admin/{}", filename));
     }
 
     // Generate composable
     let composable_content = engine.render("admin/composables/useAdmin")?;
     let composable_path = composables_path.join("useAdmin.ts");
-    write_file_with_force(&composable_path, &composable_content, args.force)?;
+    write_file_with_force_with_message(
+        &composable_path,
+        &composable_content,
+        args.force,
+        "use --force to overwrite",
+    )?;
     print_success("Generated admin/composables/useAdmin.ts");
 
     // Track shadcn components needed for admin
@@ -392,7 +433,12 @@ fn generate_admin_views(
     for (filename, template_name) in views {
         let content = engine.render(template_name)?;
         let file_path = admin_views_path.join(filename);
-        write_file_with_force(&file_path, &content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated views/admin/{}", filename));
     }
 
@@ -433,7 +479,12 @@ fn generate_auth_views(
 
     for (filename, content) in views {
         let file_path = auth_views_path.join(filename);
-        write_file_with_force(&file_path, content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated views/auth/{}", filename));
     }
 
@@ -455,7 +506,12 @@ fn generate_billing_views(
 
     for (filename, content) in views {
         let file_path = billing_views_path.join(filename);
-        write_file_with_force(&file_path, content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated views/billing/{}", filename));
     }
 
@@ -483,7 +539,12 @@ fn generate_org_views(
 
     for (filename, content) in views {
         let file_path = org_views_path.join(filename);
-        write_file_with_force(&file_path, content, args.force)?;
+        write_file_with_force_with_message(
+            &file_path,
+            content,
+            args.force,
+            "use --force to overwrite",
+        )?;
         print_success(&format!("Generated views/settings/{}", filename));
     }
 
@@ -607,7 +668,12 @@ fn generate_shared(engine: &TemplateEngine, output_path: &Path, args: &GenerateA
 
     let types_content = engine.render("shared/types/index")?;
     let types_file = types_path.join("index.ts");
-    write_file_with_force(&types_file, &types_content, args.force)?;
+    write_file_with_force_with_message(
+        &types_file,
+        &types_content,
+        args.force,
+        "use --force to overwrite",
+    )?;
     print_success("Generated types/index.ts");
 
     // Generate shared API composable
@@ -616,14 +682,15 @@ fn generate_shared(engine: &TemplateEngine, output_path: &Path, args: &GenerateA
 
     let api_content = engine.render("shared/composables/useApi")?;
     let api_file = composables_path.join("useApi.ts");
-    write_file_with_force(&api_file, &api_content, args.force)?;
+    write_file_with_force_with_message(
+        &api_file,
+        &api_content,
+        args.force,
+        "use --force to overwrite",
+    )?;
     print_success("Generated composables/useApi.ts");
 
     Ok(())
-}
-
-fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
-    write_file_with_force_with_message(path, content, force, "use --force to overwrite")
 }
 
 /// Detect installed shadcn-vue components by checking ./src/components/ui/ subdirectories

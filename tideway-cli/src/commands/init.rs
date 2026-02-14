@@ -83,14 +83,24 @@ pub fn run(args: InitArgs) -> Result<()> {
     // Generate main.rs
     let main_rs = generate_main_rs(&project_name, &modules, &args);
     let main_path = src_path.join("main.rs");
-    write_file_with_force(&main_path, &main_rs, args.force)?;
+    write_file_with_force_with_message(
+        &main_path,
+        &main_rs,
+        args.force,
+        "use --force to overwrite; `tideway init` is advanced for existing projects",
+    )?;
     print_success("Generated main.rs");
 
     // Generate config.rs if it doesn't exist
     let config_path = src_path.join("config.rs");
     if !config_path.exists() || args.force {
         let config_rs = generate_config_rs(&modules, &args);
-        write_file_with_force(&config_path, &config_rs, args.force)?;
+        write_file_with_force_with_message(
+            &config_path,
+            &config_rs,
+            args.force,
+            "use --force to overwrite; `tideway init` is advanced for existing projects",
+        )?;
         print_success("Generated config.rs");
     } else {
         print_info("config.rs already exists, skipping (use --force to overwrite)");
@@ -151,11 +161,21 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
     let routes_rs = generate_minimal_routes_rs();
 
     let main_path = src_path.join("main.rs");
-    write_file_with_force(&main_path, &main_rs, args.force)?;
+    write_file_with_force_with_message(
+        &main_path,
+        &main_rs,
+        args.force,
+        "use --force to overwrite; `tideway init` is advanced for existing projects",
+    )?;
     print_success("Generated main.rs");
 
     let routes_path = src_path.join("routes").join("mod.rs");
-    write_file_with_force(&routes_path, &routes_rs, args.force)?;
+    write_file_with_force_with_message(
+        &routes_path,
+        &routes_rs,
+        args.force,
+        "use --force to overwrite; `tideway init` is advanced for existing projects",
+    )?;
     print_success("Generated routes/mod.rs");
 
     if !is_json_output() {
@@ -550,14 +570,4 @@ fn generate_env_example(project_name: &str, modules: &DetectedModules, args: &In
     }
 
     lines.join("\n")
-}
-
-/// Write file with optional force overwrite
-fn write_file_with_force(path: &Path, content: &str, force: bool) -> Result<()> {
-    write_file_with_force_with_message(
-        path,
-        content,
-        force,
-        "use --force to overwrite; `tideway init` is advanced for existing projects",
-    )
 }
