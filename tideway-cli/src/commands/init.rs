@@ -6,7 +6,11 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
-use crate::commands::file_ops::{to_pascal_case, write_file_with_force_with_message};
+use crate::commands::file_ops::{
+    to_pascal_case,
+    write_file_with_force_with_message,
+    INIT_FORCE_OVERWRITE_MESSAGE,
+};
 use crate::{
     TIDEWAY_VERSION, is_json_output, print_info, print_success, print_warning, write_file,
 };
@@ -87,7 +91,7 @@ pub fn run(args: InitArgs) -> Result<()> {
         &main_path,
         &main_rs,
         args.force,
-        "use --force to overwrite; `tideway init` is advanced for existing projects",
+        INIT_FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated main.rs");
 
@@ -99,7 +103,7 @@ pub fn run(args: InitArgs) -> Result<()> {
             &config_path,
             &config_rs,
             args.force,
-            "use --force to overwrite; `tideway init` is advanced for existing projects",
+            INIT_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated config.rs");
     } else {
@@ -165,7 +169,7 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
         &main_path,
         &main_rs,
         args.force,
-        "use --force to overwrite; `tideway init` is advanced for existing projects",
+        INIT_FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated main.rs");
 
@@ -174,7 +178,7 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
         &routes_path,
         &routes_rs,
         args.force,
-        "use --force to overwrite; `tideway init` is advanced for existing projects",
+        INIT_FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated routes/mod.rs");
 

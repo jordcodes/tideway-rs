@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{Array, InlineTable, Item, Table, Value};
 
 use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
-use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error};
+use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error_default};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info, print_success,
@@ -195,112 +195,82 @@ fn scaffold_files(
     let has_auth_feature = normalize_features(&args.features).contains("auth");
     let is_api_preset = matches!(args.preset, Some(NewPreset::Api));
 
-    write_file_with_force_or_error(
+    write_file_with_force_or_error_default(
         &target_dir.join("Cargo.toml"),
         &engine.render("starter/Cargo.toml")?,
-        args.force,
-        "use --force to overwrite",
-    )?;
-    write_file_with_force_or_error(
+        args.force    )?;
+    write_file_with_force_or_error_default(
         &target_dir.join("src/main.rs"),
         &clean_rust_source(&engine.render("starter/src/main.rs")?),
-        args.force,
-        "use --force to overwrite",
-    )?;
-    write_file_with_force_or_error(
+        args.force    )?;
+    write_file_with_force_or_error_default(
         &target_dir.join("src/routes/mod.rs"),
         &engine.render("starter/src/routes/mod.rs")?,
-        args.force,
-        "use --force to overwrite",
-    )?;
+        args.force    )?;
 
     if has_auth_feature {
-        write_file_with_force_or_error(
+        write_file_with_force_or_error_default(
             &target_dir.join("src/auth/mod.rs"),
             &engine.render("starter/src/auth/mod.rs")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
-        write_file_with_force_or_error(
+            args.force        )?;
+        write_file_with_force_or_error_default(
             &target_dir.join("src/auth/provider.rs"),
             &engine.render("starter/src/auth/provider.rs")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
-        write_file_with_force_or_error(
+            args.force        )?;
+        write_file_with_force_or_error_default(
             &target_dir.join("src/auth/routes.rs"),
             &engine.render("starter/src/auth/routes.rs")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
+            args.force        )?;
     }
 
     if args.with_config {
-        write_file_with_force_or_error(
+        write_file_with_force_or_error_default(
             &target_dir.join("src/config.rs"),
             &engine.render("starter/src/config.rs")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
-        write_file_with_force_or_error(
+            args.force        )?;
+        write_file_with_force_or_error_default(
             &target_dir.join("src/error.rs"),
             &engine.render("starter/src/error.rs")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
+            args.force        )?;
     }
     if args.with_docker {
-        write_file_with_force_or_error(
+        write_file_with_force_or_error_default(
             &target_dir.join("docker-compose.yml"),
             &engine.render("starter/docker-compose")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
+            args.force        )?;
     }
     if args.with_ci {
-        write_file_with_force_or_error(
+        write_file_with_force_or_error_default(
             &target_dir.join(".github/workflows/ci.yml"),
             &engine.render("starter/github-ci")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
+            args.force        )?;
     }
-    write_file_with_force_or_error(
+    write_file_with_force_or_error_default(
         &target_dir.join(".gitignore"),
         &engine.render("starter/gitignore")?,
-        args.force,
-        "use --force to overwrite",
-    )?;
+        args.force    )?;
 
-    write_file_with_force_or_error(
+    write_file_with_force_or_error_default(
         &target_dir.join("tests/health.rs"),
         &engine.render("starter/tests/health")?,
-        args.force,
-        "use --force to overwrite",
-    )?;
+        args.force    )?;
 
     if needs_env {
-        write_file_with_force_or_error(
+        write_file_with_force_or_error_default(
             &target_dir.join(".env.example"),
             &engine.render("starter/env_example")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
+            args.force        )?;
     }
 
     if is_api_preset {
-        write_file_with_force_or_error(
+        write_file_with_force_or_error_default(
             &target_dir.join("migration/Cargo.toml"),
             &engine.render("starter/migration/Cargo.toml")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
-        write_file_with_force_or_error(
+            args.force        )?;
+        write_file_with_force_or_error_default(
             &target_dir.join("migration/src/lib.rs"),
             &engine.render("starter/migration/src/lib.rs")?,
-            args.force,
-            "use --force to overwrite",
-        )?;
+            args.force        )?;
     }
 
     Ok(())
@@ -555,12 +525,10 @@ fn scaffold_backend_preset(
         has_config: false,
     };
     let engine = BackendTemplateEngine::new(context)?;
-    write_file_with_force_or_error(
+    write_file_with_force_or_error_default(
         &target_dir.join("migration/Cargo.toml"),
         &engine.render("starter/migration/Cargo.toml")?,
-        true,
-        "use --force to overwrite",
-    )?;
+        true    )?;
 
     Ok(())
 }

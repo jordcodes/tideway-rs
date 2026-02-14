@@ -3,6 +3,12 @@ use std::path::Path;
 
 use crate::{ensure_dir, print_warning, write_file};
 
+pub const FORCE_OVERWRITE_MESSAGE: &str = "use --force to overwrite";
+pub const BACKEND_FORCE_OVERWRITE_MESSAGE: &str =
+    "`tideway backend` is an advanced command; use --force to overwrite";
+pub const INIT_FORCE_OVERWRITE_MESSAGE: &str =
+    "use --force to overwrite; `tideway init` is advanced for existing projects";
+
 pub fn to_pascal_case(s: &str) -> String {
     s.split('_')
         .filter(|part| !part.is_empty())
@@ -17,7 +23,7 @@ pub fn to_pascal_case(s: &str) -> String {
 }
 
 pub fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
-    write_file_with_force_with_message(path, contents, force, "use --force to overwrite")
+    write_file_with_force_with_message(path, contents, force, FORCE_OVERWRITE_MESSAGE)
 }
 
 pub fn write_file_with_force_with_message(
@@ -58,6 +64,14 @@ pub fn write_file_with_force_or_error(
     }
 
     write_file_with_force_with_message(path, contents, true, skip_message)
+}
+
+pub fn write_file_with_force_or_error_default(
+    path: &Path,
+    contents: &str,
+    force: bool,
+) -> Result<()> {
+    write_file_with_force_or_error(path, contents, force, FORCE_OVERWRITE_MESSAGE)
 }
 
 pub fn ensure_module_decl(contents: &str, module_name: &str) -> String {

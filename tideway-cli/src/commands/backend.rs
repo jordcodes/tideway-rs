@@ -5,7 +5,11 @@ use colored::Colorize;
 use std::path::Path;
 
 use crate::cli::{BackendArgs, BackendPreset};
-use crate::commands::file_ops::{to_pascal_case, write_file_with_force_with_message};
+use crate::commands::file_ops::{
+    to_pascal_case,
+    write_file_with_force_with_message,
+    BACKEND_FORCE_OVERWRITE_MESSAGE,
+};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success};
 
@@ -159,7 +163,7 @@ fn generate_shared(
             &file_path,
             &content,
             args.force,
-            "`tideway backend` is an advanced command; use --force to overwrite",
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated main.rs");
     }
@@ -172,7 +176,7 @@ fn generate_shared(
             &file_path,
             &content,
             args.force,
-            "`tideway backend` is an advanced command; use --force to overwrite",
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated lib.rs");
     }
@@ -185,7 +189,7 @@ fn generate_shared(
             &file_path,
             &content,
             args.force,
-            "`tideway backend` is an advanced command; use --force to overwrite",
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated config.rs");
     }
@@ -198,7 +202,7 @@ fn generate_shared(
             &file_path,
             &content,
             args.force,
-            "`tideway backend` is an advanced command; use --force to overwrite",
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated error.rs");
     }
@@ -222,7 +226,7 @@ fn generate_entities(
             &file_path,
             &content,
             args.force,
-            "`tideway backend` is an advanced command; use --force to overwrite",
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated entities/mod.rs");
     }
@@ -235,7 +239,7 @@ fn generate_entities(
             &file_path,
             &content,
             args.force,
-            "`tideway backend` is an advanced command; use --force to overwrite",
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated entities/prelude.rs");
     }
@@ -255,7 +259,7 @@ fn generate_entities(
                 &file_path,
                 &content,
                 args.force,
-                "`tideway backend` is an advanced command; use --force to overwrite",
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
             print_success(&format!("Generated entities/{}", filename));
         }
@@ -276,7 +280,7 @@ fn generate_entities(
                     &file_path,
                     &content,
                     args.force,
-                    "`tideway backend` is an advanced command; use --force to overwrite",
+                    BACKEND_FORCE_OVERWRITE_MESSAGE,
                 )?;
                 print_success(&format!("Generated entities/{}", filename));
             }
@@ -308,7 +312,7 @@ fn generate_auth(
                 &file_path,
                 &content,
                 args.force,
-                "`tideway backend` is an advanced command; use --force to overwrite",
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
             print_success(&format!("Generated auth/{}", filename));
         }
@@ -339,7 +343,7 @@ fn generate_billing(
                 &file_path,
                 &content,
                 args.force,
-                "`tideway backend` is an advanced command; use --force to overwrite",
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
             print_success(&format!("Generated billing/{}", filename));
         }
@@ -370,7 +374,7 @@ fn generate_organizations(
                 &file_path,
                 &content,
                 args.force,
-                "`tideway backend` is an advanced command; use --force to overwrite",
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
             print_success(&format!("Generated organizations/{}", filename));
         }
@@ -401,7 +405,7 @@ fn generate_admin(
                 &file_path,
                 &content,
                 args.force,
-                "`tideway backend` is an advanced command; use --force to overwrite",
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
             print_success(&format!("Generated admin/{}", filename));
         }
@@ -423,7 +427,7 @@ fn generate_migrations(
             &file_path,
             &content,
             args.force,
-            "`tideway backend` is an advanced command; use --force to overwrite",
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success("Generated migration/src/lib.rs");
     }
@@ -458,7 +462,7 @@ fn generate_migrations(
                 &file_path,
                 &content,
                 args.force,
-                "`tideway backend` is an advanced command; use --force to overwrite",
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
             print_success(&format!("Generated migration/src/{}", filename));
         }
@@ -486,7 +490,7 @@ fn generate_migrations(
                     &file_path,
                     &content,
                     args.force,
-                    "`tideway backend` is an advanced command; use --force to overwrite",
+                    BACKEND_FORCE_OVERWRITE_MESSAGE,
                 )?;
                 print_success(&format!("Generated migration/src/{}", filename));
             }
@@ -500,7 +504,7 @@ fn generate_migrations(
                     &file_path,
                     &content,
                     args.force,
-                    "`tideway backend` is an advanced command; use --force to overwrite",
+                    BACKEND_FORCE_OVERWRITE_MESSAGE,
                 )?;
             print_success("Generated migration/src/m005_add_admin_flag.rs");
         }

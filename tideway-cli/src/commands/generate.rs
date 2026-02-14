@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::{GenerateArgs, Module, Style};
-use crate::commands::file_ops::write_file_with_force_with_message;
+use crate::commands::file_ops::{write_file_with_force_with_message, FORCE_OVERWRITE_MESSAGE};
 use crate::templates::{TemplateContext, TemplateEngine};
 use crate::{ensure_dir, is_json_output, print_info, print_success, print_warning, write_file};
 
@@ -172,7 +172,7 @@ fn generate_auth(
             &file_path,
             &content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated auth/{}", filename));
     }
@@ -184,7 +184,7 @@ fn generate_auth(
         &composable_path,
         &composable_content,
         args.force,
-        "use --force to overwrite",
+        FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated auth/composables/useAuth.ts");
 
@@ -235,7 +235,7 @@ fn generate_billing(
             &file_path,
             &content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated billing/{}", filename));
     }
@@ -247,7 +247,7 @@ fn generate_billing(
         &composable_path,
         &composable_content,
         args.force,
-        "use --force to overwrite",
+        FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated billing/composables/useBilling.ts");
 
@@ -257,7 +257,7 @@ fn generate_billing(
         &plans_composable_path,
         &plans_composable_content,
         args.force,
-        "use --force to overwrite",
+        FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated billing/composables/usePlans.ts");
 
@@ -311,7 +311,7 @@ fn generate_organizations(
             &file_path,
             &content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated organizations/{}", filename));
     }
@@ -323,7 +323,7 @@ fn generate_organizations(
         &composable_path,
         &composable_content,
         args.force,
-        "use --force to overwrite",
+        FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated organizations/composables/useOrganization.ts");
 
@@ -376,7 +376,7 @@ fn generate_admin(
             &file_path,
             &content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated admin/{}", filename));
     }
@@ -388,7 +388,7 @@ fn generate_admin(
         &composable_path,
         &composable_content,
         args.force,
-        "use --force to overwrite",
+        FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated admin/composables/useAdmin.ts");
 
@@ -437,7 +437,7 @@ fn generate_admin_views(
             &file_path,
             &content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated views/admin/{}", filename));
     }
@@ -483,7 +483,7 @@ fn generate_auth_views(
             &file_path,
             content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated views/auth/{}", filename));
     }
@@ -510,7 +510,7 @@ fn generate_billing_views(
             &file_path,
             content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated views/billing/{}", filename));
     }
@@ -543,7 +543,7 @@ fn generate_org_views(
             &file_path,
             content,
             args.force,
-            "use --force to overwrite",
+            FORCE_OVERWRITE_MESSAGE,
         )?;
         print_success(&format!("Generated views/settings/{}", filename));
     }
@@ -672,7 +672,7 @@ fn generate_shared(engine: &TemplateEngine, output_path: &Path, args: &GenerateA
         &types_file,
         &types_content,
         args.force,
-        "use --force to overwrite",
+        FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated types/index.ts");
 
@@ -686,7 +686,7 @@ fn generate_shared(engine: &TemplateEngine, output_path: &Path, args: &GenerateA
         &api_file,
         &api_content,
         args.force,
-        "use --force to overwrite",
+        FORCE_OVERWRITE_MESSAGE,
     )?;
     print_success("Generated composables/useApi.ts");
 
