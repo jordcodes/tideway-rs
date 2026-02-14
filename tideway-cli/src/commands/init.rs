@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
-use crate::commands::file_ops::write_file_with_force_with_message;
+use crate::commands::file_ops::{to_pascal_case, write_file_with_force_with_message};
 use crate::{
     TIDEWAY_VERSION, is_json_output, print_info, print_success, print_warning, write_file,
 };
@@ -219,19 +219,6 @@ fn detect_project_name(args: &InitArgs, project_root: &Path) -> Result<String> {
         .unwrap_or("my_app");
 
     Ok(dir_name.replace('-', "_"))
-}
-
-/// Convert snake_case to PascalCase
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
 }
 
 /// Scan source directory for modules

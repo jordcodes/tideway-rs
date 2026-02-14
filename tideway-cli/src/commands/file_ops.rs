@@ -3,6 +3,19 @@ use std::path::Path;
 
 use crate::{ensure_dir, print_warning, write_file};
 
+pub fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .filter(|part| !part.is_empty())
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
+
 pub fn write_file_with_force(path: &Path, contents: &str, force: bool) -> Result<()> {
     write_file_with_force_with_message(path, contents, force, "use --force to overwrite")
 }
@@ -90,6 +103,16 @@ mod tests {
     fn ensure_module_decl_is_idempotent() {
         let input = "mod config;\nmod services;\nmod routes;\n";
         assert_eq!(ensure_module_decl(input, "services"), input);
+    }
+
+    #[test]
+    fn to_pascal_case_handles_underscores() {
+        assert_eq!(to_pascal_case("hello_world"), "HelloWorld");
+    }
+
+    #[test]
+    fn to_pascal_case_skips_empty_segments() {
+        assert_eq!(to_pascal_case("hello__world"), "HelloWorld");
     }
 
     #[test]

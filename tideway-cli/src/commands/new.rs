@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{Array, InlineTable, Item, Table, Value};
 
 use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
-use crate::commands::file_ops::write_file_with_force_or_error;
+use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info, print_success,
@@ -681,19 +681,6 @@ fn clean_rust_source(source: &str) -> String {
         out.push('\n');
     }
     out
-}
-
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .filter(|part| !part.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
 }
 
 fn should_prompt(args: &NewArgs) -> bool {

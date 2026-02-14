@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::{AddArgs, AddFeature};
-use crate::commands::file_ops::{ensure_module_decl, write_file_with_force};
+use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::app_builder::{
     find_app_builder_end_insert_at, find_app_builder_marker_range, find_app_builder_start,
     find_app_builder_var_name, find_unmarked_app_builder_statement_range,
@@ -542,19 +542,6 @@ fn project_name_from_cargo(contents: &str, project_dir: &Path) -> String {
             .to_string()
     })
     .replace('-', "_")
-}
-
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .filter(|part| !part.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
 }
 
 pub fn array_value(values: &[&str]) -> toml_edit::Value {

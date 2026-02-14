@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
-use crate::commands::file_ops::{ensure_module_decl, write_file_with_force};
+use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::app_builder::{find_app_builder_marker_range, find_unmarked_app_builder_statement_range};
 use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
 
@@ -1866,19 +1866,6 @@ fn pluralize(name: &str) -> String {
     } else {
         format!("{}s", name)
     }
-}
-
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .filter(|part| !part.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
 }
 
 fn has_feature(cargo_path: &Path, feature: &str) -> bool {

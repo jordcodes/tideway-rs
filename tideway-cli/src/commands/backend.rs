@@ -5,22 +5,9 @@ use colored::Colorize;
 use std::path::Path;
 
 use crate::cli::{BackendArgs, BackendPreset};
-use crate::commands::file_ops::write_file_with_force_with_message;
+use crate::commands::file_ops::{to_pascal_case, write_file_with_force_with_message};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success};
-
-/// Convert snake_case to PascalCase
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
-}
 
 /// Run the backend command
 pub fn run(args: BackendArgs) -> Result<()> {
