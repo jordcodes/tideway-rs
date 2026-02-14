@@ -8,6 +8,7 @@ use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
 use crate::commands::messaging::{
     DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
+    TIDEWAY_ADD_DATABASE_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
 };
 use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::app_builder::{find_app_builder_marker_range, find_unmarked_app_builder_statement_range};
@@ -134,7 +135,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
             }
         } else {
             print_info(
-                "Next steps: wire database into main.rs (advanced: `tideway add database --wire`)",
+                &format!(
+                    "Next steps: wire database into main.rs (advanced: {})",
+                    TIDEWAY_ADD_DATABASE_WIRE_COMMAND
+                ),
             );
         }
     }
@@ -224,14 +228,14 @@ fn validate_resource_args(
             return Err(anyhow::anyhow!(error_contract(
                 "Database scaffolding requires the Tideway `database` feature.",
                 GREENFIELD_NEW_APP_PRESET_API,
-                "For existing apps, run `tideway add database`."
+                &format!("For existing apps, run {}.", TIDEWAY_ADD_DATABASE_COMMAND)
             )));
         }
         if !has_dependency_in_cargo(cargo_path, "sea-orm") {
             return Err(anyhow::anyhow!(error_contract(
                 "SeaORM dependency not found.",
                 GREENFIELD_NEW_APP_PRESET_API,
-                "For existing apps, run `tideway add database`."
+                &format!("For existing apps, run {}.", TIDEWAY_ADD_DATABASE_COMMAND)
             )));
         }
         if matches!(args.id_type, ResourceIdType::Uuid)

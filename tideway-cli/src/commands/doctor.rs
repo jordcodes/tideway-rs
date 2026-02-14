@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use crate::cli::DoctorArgs;
 use crate::commands::messaging::{
     DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND, PRIMARY_PATH_REMINDER_CHAIN,
-    RESOURCE_WIRE_FLOW,
+    RESOURCE_WIRE_FLOW, SEA_ORM_MIGRATE_INIT_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
+    TIDEWAY_ADD_OPENAPI_COMMAND, TIDEWAY_ADD_OPENAPI_WIRE_COMMAND, TIDEWAY_BACKEND_COMMAND,
+    TIDEWAY_RESOURCE_WIRE_COMMAND, TIDEWAY_DEV_COMMAND,
 };
 use crate::{is_json_output, print_info, print_success, print_warning, write_file};
 
@@ -512,7 +514,8 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
     let openapi_docs = src_dir.join("openapi_docs.rs");
     if !openapi_docs.exists() {
         report.warnings.push(format!(
-            "OpenAPI is enabled but src/openapi_docs.rs is missing (advanced fix: run `tideway add openapi`; greenfield path: {})",
+            "OpenAPI is enabled but src/openapi_docs.rs is missing (advanced fix: run {}; greenfield path: {})",
+            TIDEWAY_ADD_OPENAPI_COMMAND,
             GREENFIELD_NEW_APP_PRESET_API
         ));
     }
@@ -524,7 +527,8 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
             contents.contains("openapi_merge_module") || contents.contains("create_openapi_router");
         if !has_module || !has_router {
             report.warnings.push(format!(
-                "OpenAPI is enabled but main.rs is not wired (advanced fix: run `tideway add openapi --wire`; greenfield path: {})",
+                "OpenAPI is enabled but main.rs is not wired (advanced fix: run {}; greenfield path: {})",
+                TIDEWAY_ADD_OPENAPI_WIRE_COMMAND,
                 GREENFIELD_NEW_APP_PRESET_API
             ));
         }
@@ -552,7 +556,8 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
     if paths_block.is_empty() {
         report.warnings.push(
             format!(
-                "OpenAPI docs file has no paths() entries (add routes or run `tideway resource --wire`; primary path reminder: {})",
+                "OpenAPI docs file has no paths() entries (add routes or run {}; primary path reminder: {})",
+                TIDEWAY_RESOURCE_WIRE_COMMAND,
                 RESOURCE_WIRE_FLOW
             ),
         );
@@ -593,7 +598,8 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
 
     if !missing.is_empty() {
         report.warnings.push(format!(
-            "OpenAPI docs missing routes for: {} (run `tideway resource --wire` to add; this is part of the primary flow)",
+            "OpenAPI docs missing routes for: {} (run {} to add; this is part of the primary flow)",
+            TIDEWAY_RESOURCE_WIRE_COMMAND,
             missing.join(", ")
         ));
     }
@@ -625,7 +631,9 @@ fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
     let migration_lib = project_dir.join("migration").join("src").join("lib.rs");
     if !migration_lib.exists() {
         report.warnings.push(format!(
-            "Missing migration/src/lib.rs (advanced fix: run `sea-orm-cli migrate init` or `tideway backend`; greenfield path: {})",
+            "Missing migration/src/lib.rs (advanced fix: run {} or {}; greenfield path: {})",
+            SEA_ORM_MIGRATE_INIT_COMMAND,
+            TIDEWAY_BACKEND_COMMAND,
             GREENFIELD_NEW_APP_PRESET_API
         ));
     }
@@ -671,7 +679,8 @@ fn check_database_wiring(src_dir: &Path, report: &mut DoctorReport) {
     if !contents.contains("with_database(") {
         report.warnings.push(
             format!(
-                "DB-backed routes detected but AppContext is not wired (advanced fix: run `tideway add database --wire`; primary path for new resources: {})",
+                "DB-backed routes detected but AppContext is not wired (advanced fix: run {}; primary path for new resources: {})",
+                TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
                 RESOURCE_WIRE_FLOW
             ),
         );
@@ -700,7 +709,8 @@ fn check_migration_execution_hint(
     if !has_auto_migrate && !has_migration_call {
         report.info.push(
             format!(
-                "Migrations detected but not auto-run (set DATABASE_AUTO_MIGRATE=true, call run_migrations, or use `tideway dev`; primary local run command is {})",
+                "Migrations detected but not auto-run (set DATABASE_AUTO_MIGRATE=true, call run_migrations, or use {}; primary local run command is {})",
+                TIDEWAY_DEV_COMMAND,
                 DEV_FIX_ENV_COMMAND
             ),
         );
