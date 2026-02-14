@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
+use crate::commands::messaging::{GREENFIELD_PRIMARY_PATH, NEW_APP_COMMAND};
 use crate::commands::file_ops::{
     to_pascal_case,
     write_file_with_force_with_message,
@@ -60,9 +61,7 @@ pub fn run(args: InitArgs) -> Result<()> {
         print_warning(
             "No modules detected. Advanced fix: run `tideway backend` to generate modules.",
         );
-        print_info(
-            "For greenfield apps, use the primary path: tideway new <app> -> tideway dev --fix-env",
-        );
+        print_info(GREENFIELD_PRIMARY_PATH);
         return Ok(());
     }
 
@@ -121,9 +120,10 @@ pub fn run(args: InitArgs) -> Result<()> {
 
     if !is_json_output() {
         println!("\n{} Initialization complete!\n", "✓".green().bold());
-        print_info(
-            "Note: `tideway init` is an advanced command for existing projects. For new projects, prefer `tideway new`.",
-        );
+        print_info(&format!(
+            "Note: `tideway init` is an advanced command for existing projects. For new projects, prefer {}.",
+            NEW_APP_COMMAND,
+        ));
 
         // Print next steps
         println!("{}", "Next steps:".yellow().bold());
@@ -184,7 +184,10 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
 
     if !is_json_output() {
         println!("\n{} Initialization complete!\n", "✓".green().bold());
-        print_info("Note: `tideway init` is advanced. For a new app, prefer `tideway new <app>`.");
+        print_info(&format!(
+            "Note: `tideway init` is advanced. For a new app, prefer {}.",
+            NEW_APP_COMMAND
+        ));
 
         println!("{}", "Next steps:".yellow().bold());
         println!("  1. cargo run");

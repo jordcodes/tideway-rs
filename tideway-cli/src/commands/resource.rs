@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
 use crate::commands::add::{array_value, wire_database_in_main};
+use crate::commands::messaging::{
+    DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
+};
 use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::app_builder::{find_app_builder_marker_range, find_unmarked_app_builder_statement_range};
 use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
@@ -17,7 +20,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         return Err(anyhow::anyhow!(error_contract(
             &format!("src/ not found in {}", project_dir.display()),
             "Run from a Tideway app root containing src/.",
-            "For a new app, run `tideway new <app>` then rerun this command."
+            &format!("For a new app, run {} then rerun this command.", NEW_APP_COMMAND)
         )));
     }
 
@@ -141,7 +144,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     }
 
     print_info(
-        "Primary path reminder: run `tideway dev --fix-env` to boot and verify the new resource.",
+        &format!(
+            "Primary path reminder: run {} to boot and verify the new resource.",
+            DEV_FIX_ENV_COMMAND
+        ),
     );
     print_success(&format!("Generated {} resource", resource_name));
     Ok(())
@@ -217,14 +223,14 @@ fn validate_resource_args(
         if !has_database {
             return Err(anyhow::anyhow!(error_contract(
                 "Database scaffolding requires the Tideway `database` feature.",
-                "For greenfield apps, run `tideway new <app> --preset api`.",
+                GREENFIELD_NEW_APP_PRESET_API,
                 "For existing apps, run `tideway add database`."
             )));
         }
         if !has_dependency_in_cargo(cargo_path, "sea-orm") {
             return Err(anyhow::anyhow!(error_contract(
                 "SeaORM dependency not found.",
-                "For greenfield apps, run `tideway new <app> --preset api`.",
+                GREENFIELD_NEW_APP_PRESET_API,
                 "For existing apps, run `tideway add database`."
             )));
         }

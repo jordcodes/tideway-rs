@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::cli::{MigrateArgs, MigrateBackend};
+use crate::commands::messaging::GREENFIELD_NEW_APP_PRESET_API;
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
 use crate::{error_contract, is_plan_mode, print_info, print_success, print_warning};
 
@@ -68,7 +69,7 @@ fn detect_backend(project_dir: &Path) -> Result<MigrateBackend> {
         Err(anyhow::anyhow!(error_contract(
             "Could not detect migration backend.",
             "Add SeaORM dependencies or use `--backend sea-orm`.",
-            "For greenfield apps, run `tideway new <app> --preset api`."
+            GREENFIELD_NEW_APP_PRESET_API
         )))
     }
 }

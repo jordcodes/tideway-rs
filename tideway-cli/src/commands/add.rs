@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{AddArgs, AddFeature};
 use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
+use crate::commands::messaging::GREENFIELD_NEW_APP_FIRST;
 use crate::commands::app_builder::{
     find_app_builder_end_insert_at, find_app_builder_marker_range, find_app_builder_start,
     find_app_builder_var_name, find_unmarked_app_builder_statement_range,
@@ -26,7 +27,7 @@ pub fn run(args: AddArgs) -> Result<()> {
         return Err(anyhow::anyhow!(error_contract(
             &format!("Cargo.toml not found in {}", project_dir.display()),
             "Run this command inside a Rust project root.",
-            "For greenfield apps, run `tideway new <app>` first."
+            GREENFIELD_NEW_APP_FIRST,
         )));
     }
 

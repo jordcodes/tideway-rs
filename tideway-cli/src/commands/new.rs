@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use toml_edit::{Array, InlineTable, Item, Table, Value};
 
 use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
+use crate::commands::messaging::PRIMARY_PATH;
 use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error_default};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
@@ -180,7 +181,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     }
 
     print_info(
-        "Primary path: tideway new <app> -> tideway dev --fix-env -> tideway resource <name> --wire --db --repo --service --paginate --search",
+        PRIMARY_PATH,
     );
     print_success("Ready to build");
     Ok(())

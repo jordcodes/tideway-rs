@@ -7,6 +7,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::cli::DoctorArgs;
+use crate::commands::messaging::{
+    DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND, PRIMARY_PATH_REMINDER_CHAIN,
+    RESOURCE_WIRE_FLOW,
+};
 use crate::{is_json_output, print_info, print_success, print_warning, write_file};
 
 #[derive(Debug, Default)]
@@ -30,9 +34,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
 
     if report.info.is_empty() && report.warnings.is_empty() {
         print_success("No issues found");
-        print_info(
-            "Primary path reminder: tideway new <app> -> tideway dev --fix-env -> tideway resource <name> --wire --db --repo --service --paginate --search",
-        );
+        print_info(PRIMARY_PATH_REMINDER_CHAIN);
         return Ok(());
     }
 
@@ -61,7 +63,10 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     );
     print_info(&summary);
     print_info(
-        "Primary path reminder: for greenfield apps use `tideway new <app>`; treat `add`/`init`/`backend` as advanced commands.",
+        &format!(
+            "Primary path reminder: for greenfield apps use {}; treat `add`/`init`/`backend` as advanced commands.",
+            NEW_APP_COMMAND
+        ),
     );
 
     Ok(())
@@ -308,8 +313,9 @@ fn check_env_var(
 
     if env_example_vars.contains_key(key) {
         report.warnings.push(format!(
-            "{} missing in .env (found in .env.example) - copy .env.example and fill values (or use the primary flow: `tideway dev --fix-env`)",
-            key
+            "{} missing in .env (found in .env.example) - copy .env.example and fill values (or use the primary flow: {})",
+            key,
+            DEV_FIX_ENV_COMMAND
         ));
         return env_example_vars.get(key).cloned();
     }
@@ -322,8 +328,9 @@ fn check_env_var(
     }
 
     report.warnings.push(format!(
-        "{} missing - create .env.example (and .env) for local setup (for greenfield apps, prefer `tideway new <app>`)",
-        key
+        "{} missing - create .env.example (and .env) for local setup (for greenfield apps, prefer {})",
+        key,
+        NEW_APP_COMMAND
     ));
     None
 }
@@ -504,10 +511,10 @@ fn apply_env_fixes(
 fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorReport) {
     let openapi_docs = src_dir.join("openapi_docs.rs");
     if !openapi_docs.exists() {
-        report.warnings.push(
-            "OpenAPI is enabled but src/openapi_docs.rs is missing (advanced fix: run `tideway add openapi`; greenfield path: `tideway new <app> --preset api`)"
-                .to_string(),
-        );
+        report.warnings.push(format!(
+            "OpenAPI is enabled but src/openapi_docs.rs is missing (advanced fix: run `tideway add openapi`; greenfield path: {})",
+            GREENFIELD_NEW_APP_PRESET_API
+        ));
     }
 
     let main_rs = src_dir.join("main.rs");
@@ -516,10 +523,10 @@ fn check_openapi_setup(src_dir: &Path, project_dir: &Path, report: &mut DoctorRe
         let has_router =
             contents.contains("openapi_merge_module") || contents.contains("create_openapi_router");
         if !has_module || !has_router {
-            report.warnings.push(
-                "OpenAPI is enabled but main.rs is not wired (advanced fix: run `tideway add openapi --wire`; greenfield path: `tideway new <app> --preset api`)"
-                    .to_string(),
-            );
+            report.warnings.push(format!(
+                "OpenAPI is enabled but main.rs is not wired (advanced fix: run `tideway add openapi --wire`; greenfield path: {})",
+                GREENFIELD_NEW_APP_PRESET_API
+            ));
         }
     } else if project_dir.join("src").join("main.rs").exists() {
         report
@@ -544,8 +551,10 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
     let paths_block = extract_openapi_paths(&docs_contents);
     if paths_block.is_empty() {
         report.warnings.push(
-            "OpenAPI docs file has no paths() entries (add routes or run `tideway resource --wire`; primary path reminder: `tideway resource <name> --wire --db --repo --service --paginate --search`)"
-                .to_string(),
+            format!(
+                "OpenAPI docs file has no paths() entries (add routes or run `tideway resource --wire`; primary path reminder: {})",
+                RESOURCE_WIRE_FLOW
+            ),
         );
         return;
     }
@@ -615,10 +624,10 @@ fn extract_openapi_paths(contents: &str) -> Vec<String> {
 fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
     let migration_lib = project_dir.join("migration").join("src").join("lib.rs");
     if !migration_lib.exists() {
-        report.warnings.push(
-            "Missing migration/src/lib.rs (advanced fix: run `sea-orm-cli migrate init` or `tideway backend`; greenfield path: `tideway new <app> --preset api`)"
-                .to_string(),
-        );
+        report.warnings.push(format!(
+            "Missing migration/src/lib.rs (advanced fix: run `sea-orm-cli migrate init` or `tideway backend`; greenfield path: {})",
+            GREENFIELD_NEW_APP_PRESET_API
+        ));
     }
 }
 
