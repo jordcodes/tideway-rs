@@ -1,0 +1,83 @@
+name: DX Ambiguity Report
+description: Report confusing command or docs paths so Tideway can keep one clear default flow.
+title: "[DX Ambiguity]: "
+labels:
+  - dx
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. The goal is to keep Tideway's primary path clear:
+        `tideway new <app> -> tideway dev --fix-env -> tideway resource <name> --wire --db --repo --service --paginate --search -> tideway migrate`
+  - type: textarea
+    id: goal
+    attributes:
+      label: What were you trying to do?
+      description: Describe the task outcome you wanted (for example, "add auth", "create DB-backed resource", "start existing app").
+      placeholder: I wanted to...
+    validations:
+      required: true
+  - type: dropdown
+    id: ambiguity_surface
+    attributes:
+      label: Where did ambiguity happen?
+      description: Pick the first place where the workflow became unclear.
+      options:
+        - CLI help output
+        - Command error/output message
+        - README onboarding docs
+        - docs/getting_started.md
+        - docs/cli.md
+        - Another docs page
+        - Generated scaffold output
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: competing_paths
+    attributes:
+      label: Which commands or paths looked equally valid?
+      description: List the alternatives that created uncertainty.
+      placeholder: I wasn't sure whether to run `tideway ...` or `tideway ...`
+    validations:
+      required: true
+  - type: textarea
+    id: chosen_path
+    attributes:
+      label: Which path did you choose and what happened?
+      description: Include the command(s) you ran and the observed result.
+      placeholder: I ran...
+    validations:
+      required: true
+  - type: textarea
+    id: expected_guidance
+    attributes:
+      label: What guidance did you expect?
+      description: Tell us what "one obvious path" should have looked like here.
+      placeholder: I expected Tideway to suggest...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction steps
+      description: Provide a short sequence we can run to reproduce the ambiguity.
+      placeholder: |
+        1. Run ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: tideway_cli_version
+    attributes:
+      label: tideway-cli version
+      description: Paste the output of `tideway --version` if available.
+      placeholder: tideway-cli x.y.z
+  - type: input
+    id: rust_version
+    attributes:
+      label: Rust version
+      description: Paste the output of `rustc --version` if available.
+      placeholder: rustc x.y.z
