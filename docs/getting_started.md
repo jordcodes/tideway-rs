@@ -9,14 +9,7 @@ tideway new my_app
 cd my_app
 tideway dev --fix-env
 ```
-
-Or use the API preset:
-
-```bash
-tideway new my_app --preset api
-cd my_app
-tideway dev --fix-env
-```
+For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 
 ## 2) Run the server
 

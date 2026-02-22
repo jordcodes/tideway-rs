@@ -136,16 +136,9 @@ tideway dev --fix-env
 
 Then visit `http://localhost:8000/health`.
 
-Or apply the API preset:
-
-```bash
-tideway new my_app --preset api
-tideway new my_app --preset saas
-tideway new my_app --preset worker
-```
-
 When no flags are provided, the CLI will prompt you interactively (similar to Vite).
 You can disable prompts with `--no-prompt`.
+For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 
 ### Agent Quickstart
 
