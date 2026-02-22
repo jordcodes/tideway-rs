@@ -13,6 +13,9 @@ bash scripts/check_quickstart_parity.sh
 echo "[verify] command taxonomy"
 bash scripts/check_command_taxonomy.sh
 
+echo "[verify] command references"
+bash scripts/check_command_references.sh
+
 echo "[verify] onboarding single path"
 bash scripts/check_onboarding_single_path.sh
 

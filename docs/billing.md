@@ -355,7 +355,7 @@ impl MigrationTrait for Migration {
 
 ### API Routes for Plan Management
 
-The `tideway generate backend` command creates these routes:
+The `tideway backend` command creates these routes:
 
 #### Public Routes (for pricing pages)
 
