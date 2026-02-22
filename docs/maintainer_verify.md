@@ -12,15 +12,18 @@ bash scripts/verify.sh
 
 1. `bash scripts/check_docs_drift.sh`
 2. `bash scripts/check_quickstart_parity.sh`
-3. `bash scripts/check_cli_fs_writes.sh`
-4. `bash scripts/check_public_api_surface.sh`
-5. `cargo test -p tideway-cli --test messaging_contract_test`
-6. `cargo test -p tideway-cli`
-7. `cargo test --lib`
-8. `cargo check --features billing`
-9. `cargo check --all-features`
-10. `cargo test --test prelude_smoke_test`
-11. `cargo test --test feature_gate_contract_test`
+3. `bash scripts/check_command_taxonomy.sh`
+4. `bash scripts/check_command_references.sh`
+5. `bash scripts/check_onboarding_single_path.sh`
+6. `bash scripts/check_cli_fs_writes.sh`
+7. `bash scripts/check_public_api_surface.sh`
+8. `cargo test -p tideway-cli --test messaging_contract_test`
+9. `cargo test -p tideway-cli`
+10. `cargo test --lib`
+11. `cargo check --features billing`
+12. `cargo check --all-features`
+13. `cargo test --test prelude_smoke_test`
+14. `cargo test --test feature_gate_contract_test`
 
 ## Common Failures and Fixes
 
@@ -46,6 +49,48 @@ Symptoms:
 Fix:
 - restore/update `README.md` quickstart commands to the expected canonical flow
 - ensure health-check verification line is present
+
+---
+
+### Command Taxonomy Failure
+
+Symptoms:
+- `docs/cli.md` is missing required Primary/Advanced grouping markers
+- `tideway-cli/src/cli.rs` is missing expected "Advanced: ..." help text for advanced commands
+
+Fix:
+- keep `docs/cli.md` aligned with the required command taxonomy headings and labels
+- keep clap help comments in `tideway-cli/src/cli.rs` aligned with taxonomy rules
+
+---
+
+### Command References Failure
+
+Symptoms:
+- docs contain stale or invalid command forms (for example, legacy backend-generation wording)
+- docs reference unknown top-level `tideway` subcommands
+
+Fix:
+- replace stale command forms with current command names from `docs/cli.md`
+- keep command examples in `README.md`, `NEXT_STEPS.md`, and `docs/**/*.md` aligned with the current CLI
+- re-run:
+
+```bash
+bash scripts/check_command_references.sh
+```
+
+---
+
+### Onboarding Single Path Failure
+
+Symptoms:
+- onboarding docs show competing starts in one section
+- advanced commands appear in onboarding docs without explicit advanced labeling
+
+Fix:
+- keep onboarding docs focused on one recommended start per task
+- in `README.md` and `docs/getting_started.md`, avoid alternative "Or ..." starts in first-run sections
+- mark any `tideway init` / `tideway backend` / `tideway add` usage as advanced when referenced in onboarding docs
 
 ---
 
