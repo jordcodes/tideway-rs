@@ -13,10 +13,6 @@ For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 
 ## 2) Run the server
 
-```bash
-tideway dev --fix-env
-```
-
 Visit:
 - `http://localhost:8000/health`
 - `http://localhost:8000/api`
@@ -26,10 +22,10 @@ Visit:
 ```bash
 tideway resource user --wire --db --repo --service --paginate --search
 tideway migrate
-tideway dev --fix-env
 ```
 
 This command scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring.
+If `tideway dev --fix-env` is not already running, start it now.
 
 ## 4) Add OpenAPI docs (optional)
 

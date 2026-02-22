@@ -60,68 +60,6 @@ Feature flags are opt-in unless marked Default.
 
 ## Quick Start
 
-### Installation
-
-Add Tideway to your `Cargo.toml`:
-
-```toml
-[dependencies]
-tideway = "0.7.16"
-tokio = { version = "1.48", features = ["full"] }
-```
-
-### Hello World
-
-```rust
-use tideway::{self, App, ConfigBuilder};
-
-#[tokio::main]
-async fn main() {
-    // Initialize logging
-    tideway::init_tracing();
-
-    // Create app with default configuration
-    let app = App::new();
-
-    // Start server
-    app.serve().await.unwrap();
-}
-```
-
-### Manual Serving
-
-If you want to serve Tideway with `axum::serve`, use the middleware-aware router:
-
-```rust
-use tideway::App;
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
-
-#[tokio::main]
-async fn main() -> Result<(), std::io::Error> {
-    let app = App::new();
-    let router = app.into_router_with_middleware();
-
-    let listener = TcpListener::bind("0.0.0.0:3000").await?;
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-}
-```
-
-Note: `into_router()` does **not** apply the full middleware stack. Use
-`into_router_with_middleware()` whenever you serve manually.
-
-Run your app:
-
-```bash
-cargo run
-```
-
-Visit `http://localhost:8000/health` to see the built-in health check.
-
 ### CLI (Fastest Start)
 
 Use the CLI to scaffold a minimal Tideway app:
@@ -135,6 +73,10 @@ tideway dev --fix-env
 ```
 
 Then visit `http://localhost:8000/health`.
+
+Canonical next step: add your first DB-backed resource with
+`tideway resource <name> --wire --db --repo --service --paginate --search`,
+then run `tideway migrate`.
 
 When no flags are provided, the CLI will prompt you interactively (similar to Vite).
 You can disable prompts with `--no-prompt`.
@@ -176,6 +118,72 @@ Maintainers: see `docs/maintainer_verify.md` for `scripts/verify.sh` troubleshoo
 | `--with-env` | `--with-env` | Generate `.env.example` |
 | `--no-prompt` | `--no-prompt` | Disable interactive prompts |
 | `--summary` | `--summary false` | Hide the file summary |
+
+### Library Usage (Optional Advanced)
+
+If you prefer integrating Tideway directly as a dependency (without CLI scaffolding):
+
+#### Installation
+
+Add Tideway to your `Cargo.toml`:
+
+```toml
+[dependencies]
+tideway = "0.7.16"
+tokio = { version = "1.48", features = ["full"] }
+```
+
+#### Hello World
+
+```rust
+use tideway::{self, App, ConfigBuilder};
+
+#[tokio::main]
+async fn main() {
+    // Initialize logging
+    tideway::init_tracing();
+
+    // Create app with default configuration
+    let app = App::new();
+
+    // Start server
+    app.serve().await.unwrap();
+}
+```
+
+#### Manual Serving
+
+If you want to serve Tideway with `axum::serve`, use the middleware-aware router:
+
+```rust
+use tideway::App;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
+    let app = App::new();
+    let router = app.into_router_with_middleware();
+
+    let listener = TcpListener::bind("0.0.0.0:3000").await?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+}
+```
+
+Note: `into_router()` does **not** apply the full middleware stack. Use
+`into_router_with_middleware()` whenever you serve manually.
+
+Run your app:
+
+```bash
+cargo run
+```
+
+Visit `http://localhost:8000/health` to see the built-in health check.
 
 ## Core Concepts
 
