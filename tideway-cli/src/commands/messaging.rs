@@ -22,3 +22,9 @@ pub const PRIMARY_PATH_REMINDER_CHAIN: &str =
     "Primary path reminder: tideway new <app> -> `tideway dev --fix-env` -> `tideway resource <name> --wire --db --repo --service --paginate --search`";
 pub const PRIMARY_PATH: &str =
     "Primary path: tideway new <app> -> `tideway dev --fix-env` -> `tideway resource <name> --wire --db --repo --service --paginate --search`";
+
+pub const PRIMARY_PATH_SEQUENCE_PLAIN: &str =
+    "tideway new <app> -> tideway dev --fix-env -> tideway resource <name> --wire --db --repo --service --paginate --search -> tideway migrate";
+pub const CLI_ADVANCED_NOTE: &str =
+    "Advanced commands are for existing projects or nonstandard workflows.";
+pub const CLI_HELP_TRAILER: &str = "Primary commands: new, dev, resource, doctor, migrate.\nAdvanced commands are for existing projects or nonstandard workflows.\nPrimary path (recommended): tideway new <app> -> tideway dev --fix-env -> tideway resource <name> --wire --db --repo --service --paginate --search -> tideway migrate";

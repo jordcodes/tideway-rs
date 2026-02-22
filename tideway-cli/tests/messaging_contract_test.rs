@@ -16,6 +16,24 @@ fn test_dev_plan_mentions_primary_command() {
 }
 
 #[test]
+fn test_root_help_mentions_primary_path_trailer() {
+    let output = run_tideway(&["--help"]);
+    assert_success(&output, "tideway --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Primary path (recommended): tideway new <app>"),
+        "expected canonical path trailer in root help, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Advanced commands are for existing projects or nonstandard workflows."),
+        "expected advanced-command note in root help, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
 fn test_new_mentions_primary_path() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

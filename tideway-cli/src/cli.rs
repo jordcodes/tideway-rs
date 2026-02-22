@@ -1,5 +1,6 @@
 //! CLI argument definitions using clap.
 
+use crate::commands::messaging::CLI_HELP_TRAILER;
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
@@ -7,6 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(author = "JD")]
 #[command(version)]
 #[command(about = "Scaffold Tideway apps and generate components", long_about = None)]
+#[command(after_help = CLI_HELP_TRAILER)]
 pub struct Cli {
     /// Output machine-readable JSON lines
     #[arg(long, global = true, default_value = "false")]
@@ -52,7 +54,7 @@ pub enum Commands {
     /// Primary: run database migrations
     Migrate(MigrateArgs),
 
-    /// List available templates
+    /// Advanced: list available templates (not needed for the primary API path)
     Templates,
 }
 
