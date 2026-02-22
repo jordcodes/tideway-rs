@@ -76,6 +76,7 @@ fn test_resource_wire_scaffold_snapshots() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
     commands::resource::run(resource_args).expect("run tideway resource");
 

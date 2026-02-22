@@ -71,6 +71,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -153,6 +154,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -233,6 +235,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("first run resource command");
@@ -250,6 +253,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
     tideway_cli::commands::resource::run(args).expect("second run resource command");
 
@@ -341,6 +345,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -422,6 +427,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -500,6 +506,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -589,6 +596,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -672,6 +680,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -751,6 +760,7 @@ async fn main() {
         paginate: true,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -832,6 +842,7 @@ async fn main() {
         paginate: true,
         search: true,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -913,6 +924,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -922,6 +934,143 @@ async fn main() {
     assert_file_contains(&project_dir.join("src/routes/user.rs"), "Service");
     let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated_main.contains("mod services;"));
+}
+
+#[test]
+fn test_resource_profile_api_defaults_to_full_stack_when_shape_flags_omitted() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Api,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert!(project_dir.join("src/routes/user.rs").exists());
+    assert!(project_dir.join("src/entities/user.rs").exists());
+    assert!(project_dir.join("src/repositories/user.rs").exists());
+    assert!(project_dir.join("src/services/user.rs").exists());
+    assert!(project_dir.join("migration/src/lib.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/routes/user.rs"),
+        "q: Option<String>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/repositories/user.rs"),
+        "Column::Name.contains",
+    );
+    let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated_main.contains(".register_module(routes::user::UserModule)"));
+    assert!(updated_main.contains("with_database("));
+    assert!(updated_main.contains("mod entities;"));
+    assert!(updated_main.contains("mod repositories;"));
+    assert!(updated_main.contains("mod services;"));
+}
+
+#[test]
+fn test_resource_profile_stub_defaults_to_route_only_when_shape_flags_omitted() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = "0.7"
+"#,
+    );
+
+    let main_before = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main before");
+    let routes_mod_before =
+        fs::read_to_string(project_dir.join("src/routes/mod.rs")).expect("read routes mod before");
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert!(project_dir.join("src/routes/user.rs").exists());
+    assert!(!project_dir.join("src/entities/user.rs").exists());
+    assert!(!project_dir.join("src/repositories/user.rs").exists());
+    assert!(!project_dir.join("src/services/user.rs").exists());
+    assert_eq!(
+        fs::read_to_string(project_dir.join("src/main.rs")).expect("read main after"),
+        main_before,
+    );
+    assert_eq!(
+        fs::read_to_string(project_dir.join("src/routes/mod.rs")).expect("read routes mod after"),
+        routes_mod_before,
+    );
+}
+
+#[test]
+fn test_resource_profile_api_respects_explicit_shape_flags() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = "0.7"
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Api,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert!(project_dir.join("src/routes/user.rs").exists());
+    assert!(!project_dir.join("src/entities/user.rs").exists());
+    let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated_main.contains(".register_module(routes::user::UserModule)"));
+    assert!(!updated_main.contains("with_database("));
 }
 
 #[test]
@@ -993,6 +1142,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     tideway_cli::commands::resource::run(args).expect("run resource command");
@@ -1070,6 +1220,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     let err = tideway_cli::commands::resource::run(args).expect_err("expected error");
@@ -1150,6 +1301,7 @@ async fn main() {
         paginate: false,
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
     };
 
     let err = tideway_cli::commands::resource::run(args).expect_err("expected error");
@@ -1170,4 +1322,67 @@ fn assert_file_contains(path: &Path, needle: &str) {
         needle,
         contents
     );
+}
+
+fn create_resource_project_fixture(project_dir: &Path, dependency_lines: &str) {
+    fs::create_dir_all(project_dir.join("src/routes")).expect("create routes");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+{}
+"#,
+            dependency_lines.trim()
+        ),
+    )
+    .expect("write Cargo.toml");
+
+    fs::write(
+        project_dir.join("src/routes/mod.rs"),
+        r#"
+use axum::{routing::get, Router};
+use tideway::{AppContext, MessageResponse, RouteModule};
+
+pub struct ApiModule;
+
+impl RouteModule for ApiModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new().route("/", get(root))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/api")
+    }
+}
+
+async fn root() -> MessageResponse {
+    MessageResponse::success("Tideway is running")
+}
+"#,
+    )
+    .expect("write routes mod");
+
+    fs::write(
+        project_dir.join("src/main.rs"),
+        r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = app;
+}
+"#,
+    )
+    .expect("write main.rs");
 }

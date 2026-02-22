@@ -125,6 +125,8 @@ When adding OpenAPI, the CLI creates `src/openapi_docs.rs` if it does not exist.
 Generate a CRUD route module for a resource.
 
 ```bash
+tideway resource user
+tideway resource user --profile stub
 tideway resource user --wire
 tideway resource invoice_item --wire --with-tests false
 tideway resource user --wire --db
@@ -136,6 +138,10 @@ tideway resource user --wire --db --id-type uuid --add-uuid
 tideway resource user --wire --db --paginate
 tideway resource user --wire --db --paginate --search
 ```
+
+`--profile api` is the default and applies full-stack defaults (`--wire --db --repo --service --paginate --search`) when no shape flags are set.
+Use `--profile stub` for lightweight route-only scaffolding.
+If you pass shape flags explicitly (`--wire`, `--db`, `--repo`, `--service`, `--paginate`, `--search`), Tideway uses those exact flags and does not apply profile defaults.
 
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
 Use `--db` to scaffold a SeaORM entity + migration and switch routes to real DB CRUD. With `--wire`, it also wires the database into `main.rs`.

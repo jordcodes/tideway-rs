@@ -324,6 +324,10 @@ pub struct ResourceArgs {
     /// Database backend for scaffolding
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,
+
+    /// Scaffold profile: `api` (full-stack) or `stub` (route-only)
+    #[arg(long, value_enum, default_value = "api")]
+    pub profile: ResourceProfile,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
@@ -340,6 +344,14 @@ pub enum DbBackend {
     Auto,
     /// SeaORM entities + migrations
     SeaOrm,
+}
+
+#[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ResourceProfile {
+    /// Full API path defaults (wire + db + repo + service + paginate + search)
+    Api,
+    /// Lightweight route-only scaffold (legacy default style)
+    Stub,
 }
 
 #[derive(Parser, Debug)]

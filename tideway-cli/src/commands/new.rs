@@ -8,7 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml_edit::{Array, InlineTable, Item, Table, Value};
 
-use crate::cli::{BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType};
+use crate::cli::{
+    BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType, ResourceProfile,
+};
 use crate::commands::messaging::PRIMARY_PATH;
 use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error_default};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
@@ -485,6 +487,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         paginate: false,
         search: false,
         db_backend: DbBackend::Auto,
+        profile: ResourceProfile::Stub,
     };
 
     crate::commands::resource::run(args)?;
@@ -549,6 +552,7 @@ fn scaffold_wizard_resource(target_dir: &Path, resource: ResourceWizardOptions) 
         paginate: resource.paginate,
         search: resource.search,
         db_backend: DbBackend::Auto,
+        profile: ResourceProfile::Stub,
     };
 
     crate::commands::resource::run(args)?;

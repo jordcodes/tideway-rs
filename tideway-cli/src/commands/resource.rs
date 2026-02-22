@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cli::{DbBackend, ResourceArgs, ResourceIdType};
+use crate::cli::{DbBackend, ResourceArgs, ResourceIdType, ResourceProfile};
 use crate::commands::add::{array_value, wire_database_in_main};
 use crate::commands::messaging::{
     DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
@@ -15,6 +15,9 @@ use crate::commands::app_builder::{find_app_builder_marker_range, find_unmarked_
 use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
 
 pub fn run(args: ResourceArgs) -> Result<()> {
+    let mut args = args;
+    apply_profile_defaults(&mut args);
+
     let project_dir = PathBuf::from(&args.path);
     let src_dir = project_dir.join("src");
     if !src_dir.exists() {
@@ -164,6 +167,20 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     );
     print_success(&format!("Generated {} resource", resource_name));
     Ok(())
+}
+
+fn apply_profile_defaults(args: &mut ResourceArgs) {
+    let has_shape_overrides =
+        args.wire || args.db || args.repo || args.service || args.paginate || args.search;
+
+    if matches!(args.profile, ResourceProfile::Api) && !has_shape_overrides {
+        args.wire = true;
+        args.db = true;
+        args.repo = true;
+        args.service = true;
+        args.paginate = true;
+        args.search = true;
+    }
 }
 
 fn validate_resource_args(
