@@ -19,6 +19,9 @@ bash scripts/check_command_references.sh
 echo "[verify] onboarding single path"
 bash scripts/check_onboarding_single_path.sh
 
+echo "[verify] release template dx metrics"
+bash scripts/check_release_template_dx_metrics.sh
+
 echo "[verify] cli filesystem policy"
 bash scripts/check_cli_fs_writes.sh
 

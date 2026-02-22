@@ -15,15 +15,16 @@ bash scripts/verify.sh
 3. `bash scripts/check_command_taxonomy.sh`
 4. `bash scripts/check_command_references.sh`
 5. `bash scripts/check_onboarding_single_path.sh`
-6. `bash scripts/check_cli_fs_writes.sh`
-7. `bash scripts/check_public_api_surface.sh`
-8. `cargo test -p tideway-cli --test messaging_contract_test`
-9. `cargo test -p tideway-cli`
-10. `cargo test --lib`
-11. `cargo check --features billing`
-12. `cargo check --all-features`
-13. `cargo test --test prelude_smoke_test`
-14. `cargo test --test feature_gate_contract_test`
+6. `bash scripts/check_release_template_dx_metrics.sh`
+7. `bash scripts/check_cli_fs_writes.sh`
+8. `bash scripts/check_public_api_surface.sh`
+9. `cargo test -p tideway-cli --test messaging_contract_test`
+10. `cargo test -p tideway-cli`
+11. `cargo test --lib`
+12. `cargo check --features billing`
+13. `cargo check --all-features`
+14. `cargo test --test prelude_smoke_test`
+15. `cargo test --test feature_gate_contract_test`
 
 ## Common Failures and Fixes
 
@@ -91,6 +92,24 @@ Fix:
 - keep onboarding docs focused on one recommended start per task
 - in `README.md` and `docs/getting_started.md`, avoid alternative "Or ..." starts in first-run sections
 - mark any `tideway init` / `tideway backend` / `tideway add` usage as advanced when referenced in onboarding docs
+
+---
+
+### Release Template DX Metrics Failure
+
+Symptoms:
+- missing `.github/RELEASE_TEMPLATE.md`
+- release template does not include the required DX gate checklist or metrics snapshot lines
+
+Fix:
+- restore/update `.github/RELEASE_TEMPLATE.md` with:
+  - DX gate status checklist: quickstart parity, docs drift, scaffold idempotency, golden path integration tests
+  - metrics snapshot fields from `ROADMAP_2026_DX_EXECUTION.md`
+- re-run:
+
+```bash
+bash scripts/check_release_template_dx_metrics.sh
+```
 
 ---
 
