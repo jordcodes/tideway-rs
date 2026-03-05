@@ -7,6 +7,7 @@ Tideway provides comprehensive testing utilities inspired by .NET's Alba framewo
 Tideway's testing utilities provide:
 
 - **Alba-style Testing**: Fluent API for HTTP endpoint testing
+- **Reusable Test Hosts**: Shared router setup with before/after hooks
 - **Test Fixtures**: Factory pattern for creating test data
 - **Database Testing**: Isolated database testing with transactions
 - **Fake Data**: Helpers for generating test data
@@ -32,7 +33,8 @@ async fn test_hello() {
         .execute()
         .await
         .assert_ok()
-        .assert_json_path("message", json!("Hello, World!"));
+        .assert_json_path("message", json!("Hello, World!"))
+        .await;
 }
 ```
 
@@ -52,8 +54,31 @@ async fn test_create_user() {
         }))
         .execute()
         .await
-        .assert_status(201)
-        .assert_json_path("data.email", json!("test@example.com"));
+        .assert_created()
+        .assert_json_path("data.email", json!("test@example.com"))
+        .await;
+}
+```
+
+### Alba-Style TestHost
+
+```rust
+use tideway::testing::TestHost;
+use serde_json::json;
+
+#[tokio::test]
+async fn test_with_host_hooks() {
+    let host = TestHost::new(create_tideway_app()).before_each(|request| {
+        request
+            .headers_mut()
+            .insert("x-trace", "spec-123".parse().unwrap());
+    });
+
+    host.scenario(|scenario| {
+        scenario.get("/api/health");
+        scenario.header_should_exist("x-request-id");
+        scenario.json_should_contain(json!({ "ok": true }));
+    }).await;
 }
 ```
 
@@ -63,7 +88,7 @@ async fn test_create_user() {
 
 ```rust
 response.assert_ok();        // 200 OK
-response.assert_status(201); // Specific status code
+response.assert_created();   // 201 Created
 response.assert_not_found(); // 404 Not Found
 response.assert_bad_request(); // 400 Bad Request
 ```
@@ -74,10 +99,10 @@ response.assert_bad_request(); // 400 Bad Request
 response.assert_json(); // Validates JSON response
 
 // Assert specific JSON path
-response.assert_json_path("data.id", json!(123));
+response.assert_json_path("data.id", json!(123)).await;
 
 // Assert response contains text
-response.assert_contains("success");
+response.assert_contains("success").await;
 ```
 
 ### Header Assertions
@@ -103,7 +128,7 @@ get(app, "/api/users")
 
 ```rust
 get(app, "/api/protected")
-    .with_auth("Bearer token-123")
+    .with_auth("token-123")
     .execute()
     .await
     .assert_ok();
@@ -126,7 +151,7 @@ post(app, "/api/users")
     .with_json(&user_data)
     .execute()
     .await
-    .assert_status(201);
+    .assert_created();
 
 put(app, "/api/users/123")
     .with_json(&update_data)
@@ -258,7 +283,8 @@ async fn test_not_found() {
         .execute()
         .await
         .assert_not_found()
-        .assert_json_path("error", json!("Not found: User not found"));
+        .assert_json_path("error", json!("Not found: User not found"))
+        .await;
 }
 ```
 
@@ -277,7 +303,8 @@ async fn test_validation_error() {
         .execute()
         .await
         .assert_bad_request()
-        .assert_json_path("field_errors.email", json!(["must be a valid email"]));
+        .assert_json_path("field_errors.email", json!(["must be a valid email"]))
+        .await;
 }
 ```
 
@@ -291,7 +318,7 @@ async fn test_unauthorized() {
     get(app, "/api/protected")
         .execute()
         .await
-        .assert_status(401);
+        .assert_unauthorized();
 }
 
 #[tokio::test]
@@ -300,7 +327,7 @@ async fn test_authorized() {
     let token = create_test_token();
 
     get(app, "/api/protected")
-        .with_auth(&format!("Bearer {}", token))
+        .with_auth(&token)
         .execute()
         .await
         .assert_ok();
@@ -323,7 +350,7 @@ async fn test_debug_response() {
     response.dump().await;
 
     // Or get response body as string
-    let body = response.text().await;
+    let body = response.body_string().await;
     println!("Response: {}", body);
 }
 ```
@@ -355,7 +382,8 @@ mod tests {
             .execute()
             .await
             .assert_ok()
-            .assert_json_path("data", json!([]));
+            .assert_json_path("data", json!([]))
+            .await;
     }
 
     #[tokio::test]
@@ -372,8 +400,9 @@ mod tests {
             .with_json(&user_data)
             .execute()
             .await
-            .assert_status(201)
-            .assert_json_path("data.email", user_data["email"]);
+            .assert_created()
+            .assert_json_path("data.email", user_data["email"].clone())
+            .await;
     }
 
     #[tokio::test]
@@ -387,7 +416,8 @@ mod tests {
             .execute()
             .await
             .assert_ok()
-            .assert_json_path("data.id", json!(user.id));
+            .assert_json_path("data.id", json!(user.id))
+            .await;
     }
 }
 ```

@@ -78,6 +78,16 @@ impl Scenario {
         self
     }
 
+    /// Convenience alias for `header`.
+    pub fn with_header(self, key: &str, value: &str) -> Self {
+        self.header(key, value)
+    }
+
+    /// Alba-style alias for `header`.
+    pub fn with_request_header(self, key: &str, value: &str) -> Self {
+        self.header(key, value)
+    }
+
     /// Set the Authorization header with Bearer token
     pub fn bearer_token(self, token: &str) -> Self {
         self.header("Authorization", &format!("Bearer {}", token))
@@ -126,11 +136,19 @@ impl Scenario {
         self.request
             .headers_mut()
             .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        self.request
+            .headers_mut()
+            .insert(header::ACCEPT, "application/json".parse().unwrap());
         self
     }
 
     /// Alias for json_body
     pub fn json<T: Serialize>(self, body: &T) -> Self {
+        self.json_body(body)
+    }
+
+    /// Convenience alias for `json_body`.
+    pub fn with_json<T: Serialize>(self, body: &T) -> Self {
         self.json_body(body)
     }
 

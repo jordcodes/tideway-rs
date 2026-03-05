@@ -560,16 +560,18 @@ use tideway::testing::fake;
 #[tokio::test]
 async fn test_create_user() {
     let app = create_app();
+    let user_data = serde_json::json!({
+        "email": fake::email(),
+        "name": fake::name(),
+    });
 
-    let response = post(app, "/api/users")
-        .with_json(&serde_json::json!({
-            "email": fake::email(),
-            "name": fake::name(),
-        }))
+    post(app, "/api/users")
+        .with_json(&user_data)
         .execute()
         .await
-        .assert_status(201)
-        .assert_json_path("data.email", fake::email());
+        .assert_created()
+        .assert_json_path("data.email", user_data["email"].clone())
+        .await;
 }
 
 #[tokio::test]
@@ -922,7 +924,7 @@ async fn test_create_user() {
         }))
         .execute()
         .await
-        .assert_status(201);
+        .assert_created();
 }
 ```
 

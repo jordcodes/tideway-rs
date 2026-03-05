@@ -68,10 +68,12 @@ mod app;
 #[cfg(feature = "database")]
 mod database;
 mod fixtures;
+mod host;
 mod scenario;
 
 pub use app::{AuthTestApp, TestApp};
 #[cfg(feature = "database")]
 pub use database::{TestDb, TestDbBackend, TestDbConfig};
 pub use fixtures::{TestFactory, TestUser, fake};
+pub use host::{HostScenario, RequestSummary, ScenarioFailure, ScenarioOutcome, TestHost};
 pub use scenario::{Scenario, ScenarioAssert, delete, get, patch, post, put};
