@@ -9,6 +9,8 @@ tideway new my_app
 cd my_app
 tideway dev --fix-env
 ```
+`tideway new my_app` is the encouraged API-first path.
+Use `--no-prompt` for the same defaults in CI/non-interactive runs, or `--preset minimal` if you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 
 ## 2) Run the server
@@ -27,14 +29,19 @@ tideway migrate
 This command scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring.
 If `tideway dev --fix-env` is not already running, start it now.
 
-## 4) Add OpenAPI docs (optional)
+## 4) OpenAPI docs
+
+If you followed the API-first scaffold, OpenAPI is already wired when enabled. Visit:
+
+- `http://localhost:8000/swagger-ui`
+- `http://localhost:8000/api-docs/openapi.json`
 
 If you prefer manual route modules and composition contracts, see:
 - `docs/module_contracts.md`
 - `docs/advanced_composition.md`
 - `README.md` Core Concepts section
 
-If you enable the `openapi` feature, you can define small docs per module and merge them:
+If you enable the `openapi` feature manually, you can define small docs per module and merge them:
 
 ```rust
 #[cfg(feature = "openapi")]

@@ -17,13 +17,14 @@ OpenAPI support is controlled via environment variables:
 ### Environment Variables
 
 ```bash
-# Enable/disable OpenAPI documentation (default: true)
+# Framework defaults: false for all three values below.
+# The API preset scaffold writes these as `true` in `.env.example` for local development.
 OPENAPI_ENABLED=true
 
-# Enable/disable Swagger UI (default: true)
+# Enable/disable Swagger UI
 OPENAPI_SWAGGER_UI=true
 
-# Serve OpenAPI spec JSON endpoint (default: true)
+# Serve OpenAPI spec JSON endpoint
 OPENAPI_SERVE_SPEC=true
 
 # Control visibility of endpoints (default: all)
@@ -47,8 +48,8 @@ OPENAPI_SPEC_PATH=/api-docs/openapi.json
 
 Once your application is running with OpenAPI enabled:
 
-1. **Swagger UI**: Visit `http://localhost:8080/swagger-ui` to explore the API interactively
-2. **OpenAPI Spec**: Download the spec from `http://localhost:8080/api-docs/openapi.json`
+1. **Swagger UI**: Visit `http://localhost:8000/swagger-ui` to explore the API interactively
+2. **OpenAPI Spec**: Download the spec from `http://localhost:8000/api-docs/openapi.json`
 
 ## Usage Scenarios
 

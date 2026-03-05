@@ -39,7 +39,8 @@ Create a new starter project.
 tideway new my_app
 ```
 
-If you run it without extra flags, it will prompt for options.
+If you run it without extra flags, it will prompt for options and default to the API-first path.
+In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
 
 Use a preset to apply common defaults:
 
@@ -73,10 +74,10 @@ Skip prompts in CI:
 tideway new my_app --no-prompt
 ```
 
-Hide the generated file summary:
+Explicit minimal starter:
 
 ```bash
-tideway new my_app --summary false
+tideway new my_app --preset minimal --no-prompt
 ```
 
 Always generate `.env.example`:
@@ -226,4 +227,5 @@ tideway migrate up -- --num 2
 ## Notes
 
 - Canonical path: `new` -> `dev --fix-env` -> `resource ...` -> `migrate`.
+- `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
 - `tideway doctor` is a quick sanity check before deploying.

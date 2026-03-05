@@ -1,4 +1,4 @@
-//! New command - scaffold a minimal Tideway app.
+//! New command - scaffold a Tideway app.
 
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
@@ -638,13 +638,13 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
         Some(NewPreset::Api) => {
             println!("{}", "First request:".yellow().bold());
             println!("  curl http://localhost:8000/api/todos");
-            println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
+            println!("  # OpenAPI (if enabled): http://localhost:8000/swagger-ui");
             println!();
         }
         Some(NewPreset::Saas) => {
             println!("{}", "SaaS smoke checks:".yellow().bold());
             println!("  curl http://localhost:8000/health");
-            println!("  # OpenAPI (if enabled): http://localhost:8000/docs");
+            println!("  # OpenAPI (if enabled): http://localhost:8000/swagger-ui");
             println!();
         }
         Some(NewPreset::Worker) => {

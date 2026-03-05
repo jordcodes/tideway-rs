@@ -62,7 +62,7 @@ Feature flags are opt-in unless marked Default.
 
 ### CLI (Fastest Start)
 
-Use the CLI to scaffold a minimal Tideway app:
+Use the CLI to scaffold the recommended API-first Tideway app:
 
 ```bash
 cargo install tideway-cli
@@ -73,13 +73,15 @@ tideway dev --fix-env
 ```
 
 Then visit `http://localhost:8000/health`.
+If OpenAPI is enabled, visit `http://localhost:8000/swagger-ui`.
 
 Canonical next step: add your first DB-backed resource with
 `tideway resource <name> --wire --db --repo --service --paginate --search`,
 then run `tideway migrate`.
 
 When no flags are provided, the CLI will prompt you interactively (similar to Vite).
-You can disable prompts with `--no-prompt`.
+Use `--no-prompt` for the same API-first defaults in CI/non-interactive runs.
+Use `--preset minimal` only when you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 
 ### Agent Quickstart
@@ -117,7 +119,6 @@ Maintainers: see `docs/maintainer_verify.md` for `scripts/verify.sh` troubleshoo
 | `--with-ci` | `--with-ci` | Add GitHub Actions workflow |
 | `--with-env` | `--with-env` | Generate `.env.example` |
 | `--no-prompt` | `--no-prompt` | Disable interactive prompts |
-| `--summary` | `--summary false` | Hide the file summary |
 
 ### Library Usage (Optional Advanced)
 
