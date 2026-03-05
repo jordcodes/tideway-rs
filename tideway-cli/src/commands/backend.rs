@@ -6,9 +6,7 @@ use std::path::Path;
 
 use crate::cli::{BackendArgs, BackendPreset};
 use crate::commands::file_ops::{
-    to_pascal_case,
-    write_file_with_force_with_message,
-    BACKEND_FORCE_OVERWRITE_MESSAGE,
+    BACKEND_FORCE_OVERWRITE_MESSAGE, to_pascal_case, write_file_with_force_with_message,
 };
 use crate::commands::messaging::NEW_APP_COMMAND;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
@@ -117,12 +115,10 @@ pub fn run(args: BackendArgs) -> Result<()> {
             "\n{} Backend scaffolding generated successfully!\n",
             "✓".green().bold()
         );
-        print_info(
-            &format!(
-                "Note: `tideway backend` is advanced. For greenfield apps, prefer {}.",
-                NEW_APP_COMMAND
-            ),
-        );
+        print_info(&format!(
+            "Note: `tideway backend` is advanced. For greenfield apps, prefer {}.",
+            NEW_APP_COMMAND
+        ));
 
         // Print next steps
         println!("{}", "Next steps:".yellow().bold());
@@ -504,12 +500,12 @@ fn generate_migrations(
         if engine.has_template("migrations/m005_add_admin_flag") {
             let content = engine.render("migrations/m005_add_admin_flag")?;
             let file_path = migrations_path.join("m005_add_admin_flag.rs");
-                write_file_with_force_with_message(
-                    &file_path,
-                    &content,
-                    args.force,
-                    BACKEND_FORCE_OVERWRITE_MESSAGE,
-                )?;
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
+            )?;
             print_success("Generated migration/src/m005_add_admin_flag.rs");
         }
     }

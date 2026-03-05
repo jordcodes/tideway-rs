@@ -2,7 +2,7 @@ use super::config::{LogLevel, RequestLoggingConfig};
 use axum::body::Body;
 use axum::{
     extract::{MatchedPath, Request},
-    http::{header::CONTENT_LENGTH, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::CONTENT_LENGTH},
     response::Response,
 };
 use futures::future::BoxFuture;
@@ -45,7 +45,7 @@ pub struct RequestLoggingService<S> {
 }
 
 impl<S> Service<Request> for RequestLoggingService<S>
-    where
+where
     S: Service<Request, Response = Response<Body>> + Send + 'static + Clone,
     S::Future: Send,
 {
@@ -94,7 +94,8 @@ impl<S> Service<Request> for RequestLoggingService<S>
 
         Box::pin(async move {
             let mut inner = inner.clone();
-            let (req, request_body_preview) = if config.body_preview_size > 0 && any_logging_enabled {
+            let (req, request_body_preview) = if config.body_preview_size > 0 && any_logging_enabled
+            {
                 extract_request_body_preview(req, config.body_preview_size).await
             } else {
                 (req, None)
@@ -292,7 +293,10 @@ async fn extract_request_body_preview(
     }
 
     let Some(content_length) = request.headers().get(CONTENT_LENGTH).and_then(|value| {
-        value.to_str().ok().and_then(|value| value.parse::<usize>().ok())
+        value
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
     }) else {
         return (request, None);
     };
@@ -381,13 +385,13 @@ fn is_sensitive_query_key(key: &str) -> bool {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
-    use axum::http::header::CONTENT_LENGTH;
-    use axum::http::StatusCode;
     use axum::http::Request;
-    use axum::{routing::post, Router};
+    use axum::http::StatusCode;
+    use axum::http::header::CONTENT_LENGTH;
+    use axum::{Router, routing::post};
+    use tower::ServiceExt;
     use tracing::Level;
     use tracing_subscriber::fmt::Subscriber;
-    use tower::ServiceExt;
 
     #[test]
     fn test_disabled_logging() {
@@ -538,9 +542,12 @@ mod tests {
             body_preview_size: 16,
             ..Default::default()
         };
-        let layer = build_request_logging_layer(&config).expect("request logging layer should be enabled");
+        let layer =
+            build_request_logging_layer(&config).expect("request logging layer should be enabled");
 
-        let app = Router::new().route("/echo", post(echo_body_handler)).layer(layer);
+        let app = Router::new()
+            .route("/echo", post(echo_body_handler))
+            .layer(layer);
         let request = Request::builder()
             .uri("/echo")
             .method("POST")

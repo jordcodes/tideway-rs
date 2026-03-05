@@ -54,7 +54,9 @@ pub fn run(args: DevArgs) -> Result<()> {
             }
         } else {
             command.env("DATABASE_AUTO_MIGRATE", "true");
-            print_info("Setting DATABASE_AUTO_MIGRATE=true for this run. Use --no-migrate to disable.");
+            print_info(
+                "Setting DATABASE_AUTO_MIGRATE=true for this run. Use --no-migrate to disable.",
+            );
         }
     }
 

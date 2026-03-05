@@ -19,11 +19,11 @@ impl PostgresContainer {
         let image = std::env::var("TIDEWAY_TEST_POSTGRES_IMAGE")
             .unwrap_or_else(|_| "postgres:16-alpine".to_string());
 
-        let username = std::env::var("TIDEWAY_TEST_PG_USER")
-            .unwrap_or_else(|_| "postgres".to_string());
+        let username =
+            std::env::var("TIDEWAY_TEST_PG_USER").unwrap_or_else(|_| "postgres".to_string());
 
-        let password = std::env::var("TIDEWAY_TEST_PG_PASSWORD")
-            .unwrap_or_else(|_| "postgres".to_string());
+        let password =
+            std::env::var("TIDEWAY_TEST_PG_PASSWORD").unwrap_or_else(|_| "postgres".to_string());
 
         let port = allocate_host_port()?;
 

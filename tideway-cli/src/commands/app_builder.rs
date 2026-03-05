@@ -5,7 +5,9 @@ const APP_BUILDER_END_MARKER: &str = "tideway:app-builder:end";
 
 pub fn find_app_builder_marker_range(contents: &str) -> Option<(usize, usize)> {
     let start_marker = contents.find(APP_BUILDER_START_MARKER)?;
-    let start = contents[start_marker..].find('\n').map(|idx| start_marker + idx + 1)?;
+    let start = contents[start_marker..]
+        .find('\n')
+        .map(|idx| start_marker + idx + 1)?;
 
     let end_marker = contents.find(APP_BUILDER_END_MARKER)?;
     if end_marker <= start {
@@ -187,9 +189,7 @@ pub fn find_statement_terminator(contents: &str, start_pos: usize) -> Option<usi
             b'}' => brace_depth = brace_depth.saturating_sub(1),
             b'[' => bracket_depth += 1,
             b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b';' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => {
-                return Some(i)
-            }
+            b';' if paren_depth == 0 && brace_depth == 0 && bracket_depth == 0 => return Some(i),
             _ => {}
         }
 

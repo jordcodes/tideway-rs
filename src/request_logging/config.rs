@@ -79,7 +79,8 @@ impl RequestLoggingConfig {
         }
 
         if let Some(include_headers) = get_env_with_prefix("REQUEST_LOGGING_INCLUDE_HEADERS") {
-            config.include_headers = parse_bool_with_default(&include_headers, config.include_headers);
+            config.include_headers =
+                parse_bool_with_default(&include_headers, config.include_headers);
         }
 
         if let Some(include_response) =

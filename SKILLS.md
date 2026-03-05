@@ -18,10 +18,15 @@ This file provides a concise, agent-friendly guide to working on the Tideway cod
 ## Golden Path (API Project)
 If starting a new API app:
 - `tideway new my_app` (wizard)
-- Choose preset (API or B2B backend).
-- Generate first resource.
 - `tideway dev --fix-env`
+- Generate first resource.
 - `tideway migrate` (when using DB)
+
+Notes:
+- `tideway new my_app` is the encouraged API-first path.
+- `tideway new my_app --no-prompt` follows the same API-first defaults in CI/non-interactive runs.
+- Use `tideway new my_app --preset minimal --no-prompt` only when you explicitly want the lightweight starter.
+- Treat `backend`, `add`, and `init` as advanced commands for existing or nonstandard projects.
 
 If adding a resource:
 - `tideway resource carehome --wire --db --repo --service --paginate --search`
@@ -35,7 +40,7 @@ If adding a resource:
 
 ## Conventions
 - Resources follow: routes -> repo -> service layering when DB-backed.
-- OpenAPI wiring is optional but prefer it when `openapi` feature is enabled.
+- API-first scaffolds should wire OpenAPI automatically when the `openapi` feature is enabled.
 - Keep generated file paths stable; prefer additive changes over breaking rewrites.
 - Prefer SeaORM for DB scaffolding.
 
@@ -60,4 +65,5 @@ If adding a resource:
 
 ## When In Doubt
 - Run `tideway doctor` to surface missing features.
-- Use `tideway init` to re-wire `main.rs` after adding modules.
+- Prefer the primary path for greenfield work: `tideway new` -> `tideway dev --fix-env` -> `tideway resource ...` -> `tideway migrate`.
+- Use `tideway init` only for advanced existing-project wiring.

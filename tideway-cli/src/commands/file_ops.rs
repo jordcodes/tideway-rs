@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::path::Path;
 
 use crate::{ensure_dir, print_warning, write_file};
@@ -33,11 +33,7 @@ pub fn write_file_with_force_with_message(
     skip_message: &str,
 ) -> Result<()> {
     if path.exists() && !force {
-        print_warning(&format!(
-            "Skipping {} ({})",
-            path.display(),
-            skip_message
-        ));
+        print_warning(&format!("Skipping {} ({})", path.display(), skip_message));
         return Ok(());
     }
 
@@ -147,7 +143,8 @@ mod tests {
         let path = dir.path().join("blocked.rs");
         fs::write(&path, "original").unwrap();
 
-        let err = write_file_with_force_or_error(&path, "updated", false, "must force").unwrap_err();
+        let err =
+            write_file_with_force_or_error(&path, "updated", false, "must force").unwrap_err();
         assert!(err.to_string().contains("File already exists"));
         assert!(err.to_string().contains("must force"));
         assert_eq!(fs::read_to_string(&path).unwrap(), "original");

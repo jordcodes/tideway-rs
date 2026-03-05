@@ -30,9 +30,9 @@
 
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
 use sea_orm_migration::MigratorTrait;
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "test-containers")]
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use url::Url;
 
 #[cfg(feature = "test-containers")]

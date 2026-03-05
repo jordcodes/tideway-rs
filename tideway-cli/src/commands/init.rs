@@ -6,12 +6,10 @@ use std::fs;
 use std::path::Path;
 
 use crate::cli::InitArgs;
-use crate::commands::messaging::{GREENFIELD_PRIMARY_PATH, NEW_APP_COMMAND};
 use crate::commands::file_ops::{
-    to_pascal_case,
-    write_file_with_force_with_message,
-    INIT_FORCE_OVERWRITE_MESSAGE,
+    INIT_FORCE_OVERWRITE_MESSAGE, to_pascal_case, write_file_with_force_with_message,
 };
+use crate::commands::messaging::{GREENFIELD_PRIMARY_PATH, NEW_APP_COMMAND};
 use crate::{
     TIDEWAY_VERSION, is_json_output, print_info, print_success, print_warning, write_file,
 };
