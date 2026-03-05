@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use tideway_cli::cli::{NewArgs, ResourceArgs};
+use tideway_cli::cli::{NewArgs, NewPreset, ResourceArgs};
 use tideway_cli::commands;
 
 #[test]
@@ -11,7 +11,7 @@ fn test_new_minimal_scaffold_snapshots() {
 
     let args = NewArgs {
         name: Some("my_app".to_string()),
-        preset: None,
+        preset: Some(NewPreset::Minimal),
         features: Vec::new(),
         with_config: false,
         with_docker: false,
@@ -49,7 +49,7 @@ fn test_resource_wire_scaffold_snapshots() {
 
     let new_args = NewArgs {
         name: Some("my_app".to_string()),
-        preset: None,
+        preset: Some(NewPreset::Minimal),
         features: Vec::new(),
         with_config: false,
         with_docker: false,

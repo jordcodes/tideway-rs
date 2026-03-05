@@ -8,10 +8,11 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::DoctorArgs;
 use crate::commands::messaging::{
-    DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND, PRIMARY_PATH_REMINDER_CHAIN,
-    RESOURCE_WIRE_FLOW, SEA_ORM_MIGRATE_INIT_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
-    TIDEWAY_ADD_OPENAPI_COMMAND, TIDEWAY_ADD_OPENAPI_WIRE_COMMAND, TIDEWAY_BACKEND_COMMAND,
-    TIDEWAY_RESOURCE_WIRE_COMMAND, TIDEWAY_DEV_COMMAND,
+    DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
+    PRIMARY_PATH_REMINDER_CHAIN, RESOURCE_WIRE_FLOW, SEA_ORM_MIGRATE_INIT_COMMAND,
+    TIDEWAY_ADD_DATABASE_WIRE_COMMAND, TIDEWAY_ADD_OPENAPI_COMMAND,
+    TIDEWAY_ADD_OPENAPI_WIRE_COMMAND, TIDEWAY_BACKEND_COMMAND, TIDEWAY_DEV_COMMAND,
+    TIDEWAY_RESOURCE_WIRE_COMMAND,
 };
 use crate::{is_json_output, print_info, print_success, print_warning, write_file};
 
@@ -64,12 +65,10 @@ pub fn run(args: DoctorArgs) -> Result<()> {
         report.warnings.len()
     );
     print_info(&summary);
-    print_info(
-        &format!(
-            "Primary path reminder: for greenfield apps use {}; treat `add`/`init`/`backend` as advanced commands.",
-            NEW_APP_COMMAND
-        ),
-    );
+    print_info(&format!(
+        "Primary path reminder: for greenfield apps use {}; treat `add`/`init`/`backend` as advanced commands.",
+        NEW_APP_COMMAND
+    ));
 
     Ok(())
 }
@@ -123,8 +122,8 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
 
     let env_file = project_dir.join(".env");
     let env_example_file = project_dir.join(".env.example");
-    let env_vars = read_env_map(&env_file).unwrap_or_default();
-    let env_example_vars = read_env_map(&env_example_file).unwrap_or_default();
+    let mut env_vars = read_env_map(&env_file).unwrap_or_default();
+    let mut env_example_vars = read_env_map(&env_example_file).unwrap_or_default();
     let project_name = project_name_from_cargo(&cargo_toml, project_dir);
 
     let needs_database = tideway_features.contains("database") || detected.contains("database");
@@ -139,6 +138,8 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             needs_auth,
             &mut report,
         )?;
+        env_vars = read_env_map(&env_file).unwrap_or_default();
+        env_example_vars = read_env_map(&env_example_file).unwrap_or_default();
     }
 
     if needs_database {
@@ -512,11 +513,7 @@ fn apply_env_fixes(
     Ok(())
 }
 
-fn check_openapi_setup(
-    src_dir: &Path,
-    main_contents: Option<&str>,
-    report: &mut DoctorReport,
-) {
+fn check_openapi_setup(src_dir: &Path, main_contents: Option<&str>, report: &mut DoctorReport) {
     let openapi_docs = src_dir.join("openapi_docs.rs");
     if !openapi_docs.exists() {
         report.warnings.push(format!(
@@ -638,9 +635,7 @@ fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
     if !migration_lib.exists() {
         report.warnings.push(format!(
             "Missing migration/src/lib.rs (advanced fix: run {} or {}; greenfield path: {})",
-            SEA_ORM_MIGRATE_INIT_COMMAND,
-            TIDEWAY_BACKEND_COMMAND,
-            GREENFIELD_NEW_APP_PRESET_API
+            SEA_ORM_MIGRATE_INIT_COMMAND, TIDEWAY_BACKEND_COMMAND, GREENFIELD_NEW_APP_PRESET_API
         ));
     }
 }

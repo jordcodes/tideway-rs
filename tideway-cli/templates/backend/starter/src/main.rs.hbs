@@ -19,8 +19,15 @@ use tideway::auth::{JwtIssuer, JwtIssuerConfig};
 {{/if}}
 
 mod routes;
+{{#if has_openapi_feature}}
+#[cfg(feature = "openapi")]
+mod openapi_docs;
+{{/if}}
 {{#if has_auth_feature}}
 mod auth;
+{{/if}}
+{{#if has_database_feature}}
+mod entities;
 {{/if}}
 {{#if has_config}}
 mod config;
@@ -34,6 +41,13 @@ async fn main() -> Result<(), std::io::Error> {
     init_tracing_with_config(&config.tideway);
 {{else}}
     init_tracing();
+    {{#if has_openapi_feature}}
+    #[cfg(feature = "openapi")]
+    let config = tideway::ConfigBuilder::new()
+        .from_env()
+        .build()
+        .expect("Invalid TIDEWAY_* config");
+    {{/if}}
 {{/if}}
 
 {{#if has_database_feature}}
@@ -87,6 +101,20 @@ async fn main() -> Result<(), std::io::Error> {
 {{/if}}
         .register_module(routes::ApiModule);
     // tideway:app-builder:end
+
+{{#if has_openapi_feature}}
+    #[cfg(feature = "openapi")]
+    let app = if {{#if has_config}}config.tideway{{else}}config{{/if}}.openapi.enabled {
+        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);
+        let openapi_router = tideway::openapi::create_openapi_router(
+            openapi,
+            &{{#if has_config}}config.tideway{{else}}config{{/if}}.openapi,
+        );
+        app.merge_router(openapi_router)
+    } else {
+        app
+    };
+{{/if}}
 
     app.serve().await
 }

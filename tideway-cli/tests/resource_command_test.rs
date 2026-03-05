@@ -612,6 +612,67 @@ async fn main() {
 }
 
 #[test]
+fn test_resource_command_updates_single_line_empty_migration_vector() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migration src");
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        r#"//! Database migrations.
+
+pub use sea_orm_migration::prelude::*;
+
+pub struct Migrator;
+
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        vec![]
+    }
+}
+"#,
+    )
+    .expect("write migration lib");
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: true,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let migration_lib = project_dir.join("migration/src/lib.rs");
+    assert_file_contains(&migration_lib, "mod m001_create_users;");
+    assert_file_contains(&migration_lib, "Box::new(m001_create_users::Migration),");
+    assert!(
+        !fs::read_to_string(&migration_lib)
+            .expect("read migration lib")
+            .contains("vec![]"),
+        "expected vec![] to be expanded into a multi-line migration list"
+    );
+}
+
+#[test]
 fn test_resource_command_generates_repository_tests() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -972,10 +1033,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
     assert!(project_dir.join("src/repositories/user.rs").exists());
     assert!(project_dir.join("src/services/user.rs").exists());
     assert!(project_dir.join("migration/src/lib.rs").exists());
-    assert_file_contains(
-        &project_dir.join("src/routes/user.rs"),
-        "q: Option<String>",
-    );
+    assert_file_contains(&project_dir.join("src/routes/user.rs"), "q: Option<String>");
     assert_file_contains(
         &project_dir.join("src/repositories/user.rs"),
         "Column::Name.contains",
@@ -999,7 +1057,8 @@ tideway = "0.7"
 "#,
     );
 
-    let main_before = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main before");
+    let main_before =
+        fs::read_to_string(project_dir.join("src/main.rs")).expect("read main before");
     let routes_mod_before =
         fs::read_to_string(project_dir.join("src/routes/mod.rs")).expect("read routes mod before");
 
@@ -1285,7 +1344,8 @@ async fn main() {
 "#;
     fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
 
-    let before_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main before");
+    let before_main =
+        fs::read_to_string(project_dir.join("src/main.rs")).expect("read main before");
 
     let args = ResourceArgs {
         name: "user".to_string(),
@@ -1305,7 +1365,10 @@ async fn main() {
     };
 
     let err = tideway_cli::commands::resource::run(args).expect_err("expected error");
-    assert!(err.to_string().contains("Repository scaffolding requires --db."));
+    assert!(
+        err.to_string()
+            .contains("Repository scaffolding requires --db.")
+    );
     assert!(!project_dir.join("src/routes/user.rs").exists());
     assert_eq!(
         fs::read_to_string(project_dir.join("src/main.rs")).expect("read main after"),

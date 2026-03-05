@@ -54,6 +54,39 @@ fn test_golden_path_new_then_doctor_then_dev_plan() {
 }
 
 #[test]
+fn test_golden_path_no_prompt_scaffold_accepts_primary_resource_flow() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_output = run_tideway(&[
+        "new",
+        "my_app",
+        "--no-prompt",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&new_output, "tideway new");
+
+    let resource_output = run_tideway(&[
+        "resource",
+        "user",
+        "--wire",
+        "--db",
+        "--repo",
+        "--service",
+        "--paginate",
+        "--search",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&resource_output, "tideway resource");
+
+    assert!(project_dir.join("src/routes/user.rs").exists());
+    assert!(project_dir.join("src/repositories/user.rs").exists());
+    assert!(project_dir.join("src/services/user.rs").exists());
+}
+
+#[test]
 fn test_dev_fix_env_copies_env_example_and_passes_env_to_cargo() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

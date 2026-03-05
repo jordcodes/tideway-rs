@@ -9,7 +9,7 @@ fn test_new_command_generates_starter_files() {
 
     let args = NewArgs {
         name: Some("my_app".to_string()),
-        preset: None,
+        preset: Some(NewPreset::Minimal),
         features: Vec::new(),
         with_config: false,
         with_docker: false,
@@ -28,6 +28,41 @@ fn test_new_command_generates_starter_files() {
     assert_file_contains(&project_dir.join("src/routes/mod.rs"), "Tideway is running");
     assert!(project_dir.join(".gitignore").exists());
     assert!(project_dir.join("tests/health.rs").exists());
+}
+
+#[test]
+fn test_new_command_no_prompt_defaults_to_api_preset() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: None,
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"auth\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"database\"");
+    assert!(project_dir.join("src/config.rs").exists());
+    assert!(project_dir.join("docker-compose.yml").exists());
+    assert!(project_dir.join(".github/workflows/ci.yml").exists());
+    assert!(project_dir.join(".env.example").exists());
+    assert!(project_dir.join("src/routes/todo.rs").exists());
+    assert!(
+        project_dir
+            .join("migration/src/m001_create_todos.rs")
+            .exists()
+    );
 }
 
 #[test]
@@ -267,11 +302,25 @@ fn test_new_command_with_preset_api() {
             .join("migration/src/m001_create_todos.rs")
             .exists()
     );
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m001_create_todos::Migration)",
+    );
     assert!(project_dir.join("src/entities/mod.rs").exists());
     assert!(project_dir.join("src/entities/todo.rs").exists());
     assert!(project_dir.join("src/routes/todo.rs").exists());
     assert!(project_dir.join("src/openapi_docs.rs").exists());
     assert_file_contains(&project_dir.join("src/main.rs"), "mod entities;");
+    assert_file_contains(&project_dir.join("src/main.rs"), "mod openapi_docs;");
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        "tideway::openapi::create_openapi_router",
+    );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        "tideway::openapi_merge_module!(openapi_docs, ApiDoc)",
+    );
+    assert_file_contains(&project_dir.join(".env.example"), "OPENAPI_ENABLED=true");
 }
 
 #[test]

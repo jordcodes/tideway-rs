@@ -6,12 +6,14 @@ use std::path::{Path, PathBuf};
 
 use crate::cli::{DbBackend, ResourceArgs, ResourceIdType, ResourceProfile};
 use crate::commands::add::{array_value, wire_database_in_main};
+use crate::commands::app_builder::{
+    find_app_builder_marker_range, find_unmarked_app_builder_statement_range,
+};
+use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::messaging::{
     DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
     TIDEWAY_ADD_DATABASE_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
 };
-use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
-use crate::commands::app_builder::{find_app_builder_marker_range, find_unmarked_app_builder_statement_range};
 use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
 
 pub fn run(args: ResourceArgs) -> Result<()> {
@@ -24,7 +26,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         return Err(anyhow::anyhow!(error_contract(
             &format!("src/ not found in {}", project_dir.display()),
             "Run from a Tideway app root containing src/.",
-            &format!("For a new app, run {} then rerun this command.", NEW_APP_COMMAND)
+            &format!(
+                "For a new app, run {} then rerun this command.",
+                NEW_APP_COMMAND
+            )
         )));
     }
 
@@ -146,12 +151,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 wire_services_in_main(&src_dir)?;
             }
         } else {
-            print_info(
-                &format!(
-                    "Next steps: wire database into main.rs (advanced: {})",
-                    TIDEWAY_ADD_DATABASE_WIRE_COMMAND
-                ),
-            );
+            print_info(&format!(
+                "Next steps: wire database into main.rs (advanced: {})",
+                TIDEWAY_ADD_DATABASE_WIRE_COMMAND
+            ));
         }
     }
 
@@ -159,12 +162,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         print_info("Added unit tests to the resource module");
     }
 
-    print_info(
-        &format!(
-            "Primary path reminder: run {} to boot and verify the new resource.",
-            DEV_FIX_ENV_COMMAND
-        ),
-    );
+    print_info(&format!(
+        "Primary path reminder: run {} to boot and verify the new resource.",
+        DEV_FIX_ENV_COMMAND
+    ));
     print_success(&format!("Generated {} resource", resource_name));
     Ok(())
 }
@@ -265,10 +266,7 @@ fn validate_resource_args(
                 &format!("For existing apps, run {}.", TIDEWAY_ADD_DATABASE_COMMAND)
             )));
         }
-        if matches!(args.id_type, ResourceIdType::Uuid)
-            && !has_uuid_dependency
-            && !args.add_uuid
-        {
+        if matches!(args.id_type, ResourceIdType::Uuid) && !has_uuid_dependency && !args.add_uuid {
             return Err(anyhow::anyhow!(
                 "{}",
                 error_contract(
@@ -313,27 +311,19 @@ fn detect_db_backend(cargo_doc: Option<&toml_edit::DocumentMut>) -> Result<DbBac
     }
 }
 
-fn read_cargo_manifest(
-    cargo_path: &Path,
-) -> Option<toml_edit::DocumentMut> {
+fn read_cargo_manifest(cargo_path: &Path) -> Option<toml_edit::DocumentMut> {
     let contents = fs::read_to_string(cargo_path).ok()?;
     contents.parse::<toml_edit::DocumentMut>().ok()
 }
 
-fn manifest_has_tideway_feature(
-    cargo_doc: Option<&toml_edit::DocumentMut>,
-    feature: &str,
-) -> bool {
+fn manifest_has_tideway_feature(cargo_doc: Option<&toml_edit::DocumentMut>, feature: &str) -> bool {
     let Some(doc) = cargo_doc else {
         return false;
     };
     has_tideway_feature(doc, feature)
 }
 
-fn manifest_has_dependency(
-    cargo_doc: Option<&toml_edit::DocumentMut>,
-    dependency: &str,
-) -> bool {
+fn manifest_has_dependency(cargo_doc: Option<&toml_edit::DocumentMut>, dependency: &str) -> bool {
     let Some(doc) = cargo_doc else {
         return false;
     };
@@ -1135,7 +1125,9 @@ fn wire_services_in_main(src_dir: &Path) -> Result<()> {
 fn wire_module_in_main(src_dir: &Path, module_name: &str) -> Result<()> {
     let main_path = src_dir.join("main.rs");
     if !main_path.exists() {
-        print_warning(&format!("src/main.rs not found; skipping {module_name} wiring"));
+        print_warning(&format!(
+            "src/main.rs not found; skipping {module_name} wiring"
+        ));
         return Ok(());
     }
 
@@ -1435,6 +1427,24 @@ fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
             lines.insert(
                 end,
                 format!("{entry_indent}Box::new({}::Migration),", mod_name),
+            );
+            contents = lines.join("\n");
+            if !contents.ends_with('\n') {
+                contents.push('\n');
+            }
+        } else if let Some(line_idx) = lines.iter().position(|line| line.contains("vec![]")) {
+            let base_indent = lines[line_idx]
+                .chars()
+                .take_while(|c| c.is_whitespace())
+                .collect::<String>();
+            let entry_indent = format!("{base_indent}    ");
+            lines.splice(
+                line_idx..=line_idx,
+                [
+                    format!("{base_indent}vec!["),
+                    format!("{entry_indent}Box::new({}::Migration),", mod_name),
+                    format!("{base_indent}]"),
+                ],
             );
             contents = lines.join("\n");
             if !contents.ends_with('\n') {

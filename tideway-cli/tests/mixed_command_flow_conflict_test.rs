@@ -38,7 +38,9 @@ fn test_new_then_backend_warns_and_preserves_main_without_force() {
 
     let stdout = String::from_utf8_lossy(&backend_output.stdout);
     assert!(
-        stdout.contains("`tideway backend` is advanced. For greenfield apps, prefer `tideway new <app>`."),
+        stdout.contains(
+            "`tideway backend` is advanced. For greenfield apps, prefer `tideway new <app>`."
+        ),
         "expected advanced backend warning in mixed flow, got:\n{}",
         stdout
     );
@@ -83,12 +85,12 @@ fn test_new_then_init_surfaces_primary_path_guidance() {
 
     let stdout = String::from_utf8_lossy(&init_output.stdout);
     assert!(
-        stdout.contains("No modules detected. Advanced fix: run `tideway backend`"),
-        "expected no-modules advanced guidance in mixed flow, got:\n{}",
+        stdout.contains("`tideway init` is an advanced command for existing projects"),
+        "expected advanced init guidance in mixed flow, got:\n{}",
         stdout
     );
     assert!(
-        stdout.contains("For greenfield apps, use the primary path"),
+        stdout.contains("For new projects, prefer `tideway new <app>`"),
         "expected primary path reminder in mixed flow, got:\n{}",
         stdout
     );

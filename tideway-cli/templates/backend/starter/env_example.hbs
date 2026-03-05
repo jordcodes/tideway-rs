@@ -12,3 +12,10 @@ DATABASE_URL=postgres://postgres:postgres@localhost:5432/{{project_name}}
 JWT_SECRET=your-super-secret-jwt-key-change-in-production
 
 {{/if}}
+{{#if has_openapi_feature}}
+# OpenAPI
+OPENAPI_ENABLED=true
+OPENAPI_SWAGGER_UI=true
+OPENAPI_SERVE_SPEC=true
+
+{{/if}}

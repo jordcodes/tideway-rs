@@ -1,6 +1,7 @@
 use std::fs;
 use std::process::Command;
 
+use tideway_cli::cli::{NewArgs, NewPreset};
 use tideway_cli::commands::doctor::analyze_project;
 
 #[test]
@@ -273,6 +274,49 @@ tideway = { version = "0.7", features = ["database"] }
         "expected env copy fix, got {:?}",
         report.fixes
     );
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|line| line.contains("DATABASE_URL missing in .env")),
+        "expected no stale DATABASE_URL warning after fix, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn test_doctor_no_openapi_warning_for_api_preset_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run tideway new");
+
+    let env_example =
+        fs::read_to_string(project_dir.join(".env.example")).expect("read env example");
+    fs::write(project_dir.join(".env"), env_example).expect("write env");
+
+    let report = analyze_project(&project_dir, false).expect("analyze project");
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("OpenAPI")),
+        "expected no OpenAPI warnings, got {:?}",
+        report.warnings
+    );
 }
 
 #[test]
@@ -317,6 +361,15 @@ tideway = { version = "0.7", features = ["database", "auth"] }
             .any(|line| line.contains("Updated .env.example with missing keys")),
         "expected env example update fix, got {:?}",
         report.fixes
+    );
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|line| line.contains("DATABASE_URL missing in .env")
+                || line.contains("JWT_SECRET missing in .env")),
+        "expected no stale env warnings after fix, got {:?}",
+        report.warnings
     );
 }
 

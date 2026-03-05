@@ -11,8 +11,8 @@ use toml_edit::{Array, InlineTable, Item, Table, Value};
 use crate::cli::{
     BackendPreset, DbBackend, NewArgs, NewPreset, ResourceArgs, ResourceIdType, ResourceProfile,
 };
-use crate::commands::messaging::PRIMARY_PATH;
 use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error_default};
+use crate::commands::messaging::PRIMARY_PATH;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info, print_success,
@@ -43,10 +43,6 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         return Ok(());
     }
 
-    if let Some(preset) = args.preset {
-        apply_preset(preset, &mut args);
-    }
-
     let name = args.name.clone().ok_or_else(|| {
         anyhow!(error_contract(
             "Project name is required.",
@@ -58,9 +54,12 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     let mut wizard = WizardOptions::default();
     if should_prompt(&args) {
         wizard = prompt_for_options(&mut args)?;
-        if let Some(preset) = args.preset {
-            apply_preset(preset, &mut args);
-        }
+    } else if should_default_to_api_preset(&args) {
+        args.preset = Some(NewPreset::Api);
+    }
+
+    if let Some(preset) = args.preset {
+        apply_preset(preset, &mut args);
     }
 
     let dir_name = args.path.clone().unwrap_or_else(|| name.clone());
@@ -182,9 +181,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         print_preset_next_steps(args.preset);
     }
 
-    print_info(
-        PRIMARY_PATH,
-    );
+    print_info(PRIMARY_PATH);
     print_success("Ready to build");
     Ok(())
 }
@@ -201,79 +198,94 @@ fn scaffold_files(
     write_file_with_force_or_error_default(
         &target_dir.join("Cargo.toml"),
         &engine.render("starter/Cargo.toml")?,
-        args.force    )?;
+        args.force,
+    )?;
     write_file_with_force_or_error_default(
         &target_dir.join("src/main.rs"),
         &clean_rust_source(&engine.render("starter/src/main.rs")?),
-        args.force    )?;
+        args.force,
+    )?;
     write_file_with_force_or_error_default(
         &target_dir.join("src/routes/mod.rs"),
         &engine.render("starter/src/routes/mod.rs")?,
-        args.force    )?;
+        args.force,
+    )?;
 
     if has_auth_feature {
         write_file_with_force_or_error_default(
             &target_dir.join("src/auth/mod.rs"),
             &engine.render("starter/src/auth/mod.rs")?,
-            args.force        )?;
+            args.force,
+        )?;
         write_file_with_force_or_error_default(
             &target_dir.join("src/auth/provider.rs"),
             &engine.render("starter/src/auth/provider.rs")?,
-            args.force        )?;
+            args.force,
+        )?;
         write_file_with_force_or_error_default(
             &target_dir.join("src/auth/routes.rs"),
             &engine.render("starter/src/auth/routes.rs")?,
-            args.force        )?;
+            args.force,
+        )?;
     }
 
     if args.with_config {
         write_file_with_force_or_error_default(
             &target_dir.join("src/config.rs"),
             &engine.render("starter/src/config.rs")?,
-            args.force        )?;
+            args.force,
+        )?;
         write_file_with_force_or_error_default(
             &target_dir.join("src/error.rs"),
             &engine.render("starter/src/error.rs")?,
-            args.force        )?;
+            args.force,
+        )?;
     }
     if args.with_docker {
         write_file_with_force_or_error_default(
             &target_dir.join("docker-compose.yml"),
             &engine.render("starter/docker-compose")?,
-            args.force        )?;
+            args.force,
+        )?;
     }
     if args.with_ci {
         write_file_with_force_or_error_default(
             &target_dir.join(".github/workflows/ci.yml"),
             &engine.render("starter/github-ci")?,
-            args.force        )?;
+            args.force,
+        )?;
     }
     write_file_with_force_or_error_default(
         &target_dir.join(".gitignore"),
         &engine.render("starter/gitignore")?,
-        args.force    )?;
+        args.force,
+    )?;
 
     write_file_with_force_or_error_default(
         &target_dir.join("tests/health.rs"),
         &engine.render("starter/tests/health")?,
-        args.force    )?;
+        args.force,
+    )?;
 
     if needs_env {
         write_file_with_force_or_error_default(
             &target_dir.join(".env.example"),
             &engine.render("starter/env_example")?,
-            args.force        )?;
+            args.force,
+        )?;
     }
 
     if is_api_preset {
         write_file_with_force_or_error_default(
             &target_dir.join("migration/Cargo.toml"),
             &engine.render("starter/migration/Cargo.toml")?,
-            args.force        )?;
+            args.force,
+        )?;
         write_file_with_force_or_error_default(
             &target_dir.join("migration/src/lib.rs"),
             &engine.render("starter/migration/src/lib.rs")?,
-            args.force        )?;
+            args.force,
+        )?;
     }
 
     Ok(())
@@ -532,7 +544,8 @@ fn scaffold_backend_preset(
     write_file_with_force_or_error_default(
         &target_dir.join("migration/Cargo.toml"),
         &engine.render("starter/migration/Cargo.toml")?,
-        true    )?;
+        true,
+    )?;
 
     Ok(())
 }
@@ -601,6 +614,16 @@ fn ensure_dependency_inline(deps: &mut Table, name: &str, version: &str, feature
 fn needs_env_from_args(args: &NewArgs) -> bool {
     let features = normalize_features(&args.features);
     features.contains("auth") || features.contains("database") || args.with_config || args.with_env
+}
+
+fn should_default_to_api_preset(args: &NewArgs) -> bool {
+    args.preset.is_none()
+        && args.features.is_empty()
+        && !args.with_config
+        && !args.with_docker
+        && !args.with_ci
+        && !args.with_env
+        && (args.no_prompt || !Term::stdout().is_term())
 }
 
 fn should_suggest_migrate(preset: Option<NewPreset>, has_database_feature: bool) -> bool {
