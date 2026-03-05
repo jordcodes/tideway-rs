@@ -22,6 +22,7 @@ pub struct SqlxConnectionWrapper {
 }
 
 #[cfg(feature = "database-sqlx")]
+#[allow(deprecated)]
 impl DatabaseConnection for SqlxConnectionWrapper {
     fn is_valid(&self) -> bool {
         false
@@ -40,6 +41,7 @@ pub struct SqlxPool {
 }
 
 #[cfg(feature = "database-sqlx")]
+#[allow(deprecated)]
 impl SqlxPool {
     pub async fn new(_url: &str) -> Result<Self> {
         Err(TidewayError::internal(
@@ -50,6 +52,7 @@ impl SqlxPool {
 
 #[cfg(feature = "database-sqlx")]
 #[async_trait]
+#[allow(deprecated)]
 impl DatabasePool for SqlxPool {
     async fn connection(&self) -> Result<Box<dyn DatabaseConnection>> {
         Err(TidewayError::internal(

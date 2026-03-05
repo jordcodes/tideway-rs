@@ -65,3 +65,33 @@ fn feature_gate_warnings_mode_still_compiles() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn isolated_feature_builds_stay_warning_free() {
+    for feature in ["billing", "database-sqlx", "openapi"] {
+        let output = Command::new("cargo")
+            .args([
+                "check",
+                "-p",
+                "tideway",
+                "--no-default-features",
+                "--features",
+                feature,
+            ])
+            .output()
+            .unwrap_or_else(|_| panic!("run cargo check for isolated feature {feature}"));
+
+        assert!(
+            output.status.success(),
+            "expected isolated feature build to succeed for {feature}.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.contains("unused import: `error::TidewayError`"),
+            "isolated feature build leaked the core warning for {feature}.\nstderr:\n{stderr}"
+        );
+    }
+}

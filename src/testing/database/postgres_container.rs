@@ -115,8 +115,8 @@ async fn wait_for_postgres_readiness(connection_url: &str) -> Result<(), DbErr> 
 
     while Instant::now() < deadline {
         let connection = Database::connect(connection_url).await;
-        if connection.is_ok() {
-            let _ = connection.unwrap().close().await;
+        if let Ok(connection) = connection {
+            let _ = connection.close().await;
             return Ok(());
         }
 

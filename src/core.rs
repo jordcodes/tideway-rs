@@ -1,10 +1,12 @@
 use crate::{
-    app::AppContext, compression::build_compression_layer, config::Config, error::TidewayError,
-    http::RouteModule, middleware::MakeRequestUuid, ratelimit::build_rate_limit_layer,
+    app::AppContext, compression::build_compression_layer, config::Config, http::RouteModule,
+    middleware::MakeRequestUuid, ratelimit::build_rate_limit_layer,
     request_logging::build_request_logging_layer, security::build_security_headers_layer,
     timeout::build_timeout_layer,
 };
 
+#[cfg(feature = "database")]
+use crate::error::TidewayError;
 use axum::{Router, extract::DefaultBodyLimit};
 #[cfg(feature = "database")]
 use sea_orm_migration::MigratorTrait;

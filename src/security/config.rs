@@ -183,7 +183,7 @@ fn is_production_like_environment() -> bool {
         get_env_with_prefix("TIDEWAY_ENV"),
     ]
     .into_iter()
-    .filter_map(|env_value| env_value)
+    .flatten()
     .any(|env_value| matches!(env_value.to_lowercase().as_str(), "prod" | "production"))
 }
 

@@ -41,9 +41,10 @@ mod postgres_container;
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Supported test database backends.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum TestDbBackend {
     /// Fast, in-memory sqlite. Default behavior.
+    #[default]
     SqliteMemory,
     /// A PostgreSQL database created from `TEST_DATABASE_URL`.
     Postgres,
@@ -52,26 +53,11 @@ pub enum TestDbBackend {
     PostgresContainer,
 }
 
-impl Default for TestDbBackend {
-    fn default() -> Self {
-        Self::SqliteMemory
-    }
-}
-
 /// Options for constructing a `TestDb`.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct TestDbConfig {
     pub backend: TestDbBackend,
     pub database_url: Option<String>,
-}
-
-impl Default for TestDbConfig {
-    fn default() -> Self {
-        Self {
-            backend: TestDbBackend::default(),
-            database_url: None,
-        }
-    }
 }
 
 /// Manages a test database connection
