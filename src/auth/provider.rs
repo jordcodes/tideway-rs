@@ -76,4 +76,17 @@ pub trait AuthProvider: Send + Sync + Clone + 'static {
     async fn validate_user(&self, _user: &Self::User) -> Result<()> {
         Ok(())
     }
+
+    /// Test-only helper for building claims from a synthetic user identity.
+    ///
+    /// This is only compiled when the `test-auth-bypass` feature is enabled.
+    /// Override it if you want Tideway's test harness to support
+    /// `with_test_user(...)` / `X-Test-User-Id` for your provider.
+    #[cfg(feature = "test-auth-bypass")]
+    async fn test_claims(&self, _user_id: &str) -> Result<Self::Claims> {
+        Err(crate::error::TidewayError::internal(
+            "Test auth bypass is enabled, but this auth provider does not implement `AuthProvider::test_claims`. \
+             Override `test_claims` or use `with_test_claims(...)` / `X-Test-Claims` in tests.",
+        ))
+    }
 }

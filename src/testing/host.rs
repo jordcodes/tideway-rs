@@ -13,6 +13,8 @@ use serde::de::DeserializeOwned;
 use tower::ServiceExt;
 
 use crate::App;
+#[cfg(feature = "test-auth-bypass")]
+use crate::auth::extractors::{TEST_CLAIMS_HEADER, TEST_USER_ID_HEADER, encode_test_claims_header};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 type BeforeEachHook = Arc<dyn for<'a> Fn(&'a mut Request<Body>) -> BoxFuture<'a, ()> + Send + Sync>;
@@ -283,6 +285,19 @@ impl HostScenario {
     /// Convenience alias for `bearer_token`.
     pub fn with_auth(&mut self, token: &str) -> &mut Self {
         self.bearer_token(token)
+    }
+
+    /// Set the test bypass user identity when the `test-auth-bypass` feature is enabled.
+    #[cfg(feature = "test-auth-bypass")]
+    pub fn with_test_user(&mut self, user_id: &str) -> &mut Self {
+        self.header(TEST_USER_ID_HEADER, user_id)
+    }
+
+    /// Set synthetic claims for test bypass when the `test-auth-bypass` feature is enabled.
+    #[cfg(feature = "test-auth-bypass")]
+    pub fn with_test_claims<T: Serialize>(&mut self, claims: &T) -> &mut Self {
+        let encoded = encode_test_claims_header(claims);
+        self.header(TEST_CLAIMS_HEADER, &encoded)
     }
 
     /// Add query parameters to the request URI.

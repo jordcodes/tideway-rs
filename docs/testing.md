@@ -134,6 +134,23 @@ get(app, "/api/protected")
     .assert_ok();
 ```
 
+With `test-auth-bypass`, you can also inject a synthetic authenticated identity:
+
+```rust,ignore
+host.scenario(|scenario| {
+    scenario.get("/api/me");
+    scenario.with_test_user("user-123");
+}).await;
+
+host.scenario(|scenario| {
+    scenario.get("/api/admin");
+    scenario.with_test_claims(&MyClaims {
+        sub: "admin-1".into(),
+        role: "admin".into(),
+    });
+}).await;
+```
+
 ### Custom Headers
 
 ```rust

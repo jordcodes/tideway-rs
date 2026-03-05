@@ -144,7 +144,7 @@ websocket = ["dashmap"]
 # Email sending
 email = ["lettre"]
 # Testing helper to bypass auth (for tests only)
-test-auth-bypass = []
+test-auth-bypass = ["auth"]
 # Password hashing with Argon2
 auth = ["argon2"]
 # MFA support (TOTP + backup codes)

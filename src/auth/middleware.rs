@@ -1,4 +1,6 @@
 use crate::app::AuthProviderExtension;
+#[cfg(feature = "test-auth-bypass")]
+use crate::auth::extractors::resolve_test_claims;
 use crate::auth::{provider::AuthProvider, token::TokenExtractor};
 use crate::error::TidewayError;
 use axum::{extract::Request, middleware::Next, response::Response};
@@ -44,14 +46,22 @@ impl<P: AuthProvider> RequireAuth<P> {
         // Get the auth provider from extensions
         let provider = resolve_provider::<P>(&request)?;
 
-        // Extract token
         let (parts, body) = request.into_parts();
-        let token = TokenExtractor::from_header(&parts)?;
 
-        // Verify token
-        let claims = Arc::new(provider.verify_token(&token).await?);
+        #[cfg(feature = "test-auth-bypass")]
+        let claims = if let Some(claims) = resolve_test_claims(&parts, &provider).await? {
+            Arc::new(claims)
+        } else {
+            let token = TokenExtractor::from_header(&parts)?;
+            Arc::new(provider.verify_token(&token).await?)
+        };
 
-        // Load user
+        #[cfg(not(feature = "test-auth-bypass"))]
+        let claims = {
+            let token = TokenExtractor::from_header(&parts)?;
+            Arc::new(provider.verify_token(&token).await?)
+        };
+
         let user = provider.load_user(&claims).await?;
 
         // Validate user

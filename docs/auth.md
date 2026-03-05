@@ -70,6 +70,42 @@ match response {
 }
 ```
 
+## Testing With `test-auth-bypass`
+
+For integration tests, enable the test-only bypass feature:
+
+```toml
+[dependencies]
+tideway = { version = "0.7", features = ["auth", "test-auth-bypass"] }
+```
+
+Then use `TestHost` or the lower-level request DSL to inject either a synthetic
+user id or a full claims object:
+
+```rust,ignore
+use tideway::testing::TestHost;
+
+let host = TestHost::new(app);
+
+host.scenario(|scenario| {
+    scenario.get("/api/me");
+    scenario.with_test_user("user-123");
+}).await;
+
+host.scenario(|scenario| {
+    scenario.get("/api/admin");
+    scenario.with_test_claims(&MyClaims {
+        sub: "admin-1".into(),
+        role: "admin".into(),
+    });
+    scenario.status_code_should_be(200);
+}).await;
+```
+
+`with_test_user(...)` calls `AuthProvider::test_claims(...)`, so your provider
+should override that method when this feature is enabled. `with_test_claims(...)`
+skips token verification and deserializes the supplied claims payload directly.
+
 ## Storage Traits
 
 Implement these traits to connect the auth system to your database.

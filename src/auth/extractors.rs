@@ -2,6 +2,8 @@ use crate::app::AuthProviderExtension;
 use crate::auth::{provider::AuthProvider, token::TokenExtractor};
 use crate::error::TidewayError;
 use axum::{extract::FromRequestParts, http::request::Parts};
+#[cfg(feature = "test-auth-bypass")]
+use base64::Engine;
 use std::future::Future;
 use std::sync::Arc;
 
@@ -19,6 +21,57 @@ fn resolve_provider<P: AuthProvider>(parts: &Parts) -> Result<P, TidewayError> {
     Err(TidewayError::internal(
         "Auth provider not found in request extensions",
     ))
+}
+
+#[cfg(feature = "test-auth-bypass")]
+pub(crate) const TEST_USER_ID_HEADER: &str = "X-Test-User-Id";
+#[cfg(feature = "test-auth-bypass")]
+pub(crate) const TEST_CLAIMS_HEADER: &str = "X-Test-Claims";
+
+#[cfg(feature = "test-auth-bypass")]
+pub(crate) fn encode_test_claims_header<T: serde::Serialize>(claims: &T) -> String {
+    let json = serde_json::to_vec(claims).expect("test claims should serialize");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
+}
+
+#[cfg(feature = "test-auth-bypass")]
+fn decode_test_claims_header<P: AuthProvider>(
+    parts: &Parts,
+) -> Result<Option<P::Claims>, TidewayError> {
+    let Some(raw) = parts.headers.get(TEST_CLAIMS_HEADER) else {
+        return Ok(None);
+    };
+
+    let raw = raw
+        .to_str()
+        .map_err(|_| TidewayError::unauthorized("Invalid X-Test-Claims header"))?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(raw)
+        .map_err(|_| TidewayError::unauthorized("Invalid X-Test-Claims encoding"))?;
+
+    serde_json::from_slice(&bytes).map(Some).map_err(|error| {
+        TidewayError::unauthorized(format!("Invalid X-Test-Claims payload: {error}"))
+    })
+}
+
+#[cfg(feature = "test-auth-bypass")]
+pub(crate) async fn resolve_test_claims<P: AuthProvider>(
+    parts: &Parts,
+    provider: &P,
+) -> Result<Option<P::Claims>, TidewayError> {
+    if let Some(claims) = decode_test_claims_header::<P>(parts)? {
+        return Ok(Some(claims));
+    }
+
+    let Some(user_id) = parts.headers.get(TEST_USER_ID_HEADER) else {
+        return Ok(None);
+    };
+
+    let user_id = user_id
+        .to_str()
+        .map_err(|_| TidewayError::unauthorized("Invalid X-Test-User-Id header"))?;
+
+    provider.test_claims(user_id).await.map(Some)
 }
 
 /// Trait for users that can be administrators.
@@ -83,17 +136,17 @@ where
                 return Ok(AuthUser(user));
             }
 
-            // Test bypass: Check for X-Test-User header
             #[cfg(feature = "test-auth-bypass")]
             {
-                if let Some(_test_user_id) = parts.headers.get("X-Test-User-Id") {
-                    // In test mode, we skip token verification
-                    // Note: This requires P::Claims to implement Default trait
-                    // Users must ensure their Claims type implements Default when using test-auth-bypass
-                    return Err(TidewayError::internal(
-                        "Test auth bypass requires Claims to implement Default trait. \
-                        Implement Default for your Claims type or disable test-auth-bypass feature.",
-                    ));
+                if let Some(claims) = resolve_test_claims(parts, &provider).await? {
+                    let claims = Arc::new(claims);
+                    let user = provider.load_user(&claims).await?;
+                    provider.validate_user(&user).await?;
+
+                    parts.extensions.insert(user.clone());
+                    parts.extensions.insert(Arc::clone(&claims));
+
+                    return Ok(AuthUser(user));
                 }
             }
 
@@ -166,6 +219,25 @@ where
                 return Ok(OptionalAuth(None));
             }
 
+            #[cfg(feature = "test-auth-bypass")]
+            {
+                if let Some(claims) = resolve_test_claims(parts, &provider).await? {
+                    let claims = Arc::new(claims);
+                    match provider.load_user(&claims).await {
+                        Ok(user) => {
+                            if provider.validate_user(&user).await.is_ok() {
+                                parts.extensions.insert(user.clone());
+                                parts.extensions.insert(Arc::clone(&claims));
+                                return Ok(OptionalAuth(Some(user)));
+                            }
+                        }
+                        Err(_) => return Ok(OptionalAuth(None)),
+                    }
+
+                    return Ok(OptionalAuth(None));
+                }
+            }
+
             // Try to extract token
             let token = match TokenExtractor::from_header(parts) {
                 Ok(t) => t,
@@ -228,6 +300,13 @@ where
         Box::pin(async move {
             let provider = resolve_provider::<P>(parts)?;
 
+            #[cfg(feature = "test-auth-bypass")]
+            {
+                if let Some(claims) = resolve_test_claims(parts, &provider).await? {
+                    return Ok(Claims(claims));
+                }
+            }
+
             let token = TokenExtractor::from_header(parts)?;
             let claims = provider.verify_token(&token).await?;
 
@@ -259,6 +338,15 @@ where
             }
 
             let provider = resolve_provider::<P>(parts)?;
+
+            #[cfg(feature = "test-auth-bypass")]
+            {
+                if let Some(claims) = resolve_test_claims(parts, &provider).await? {
+                    let claims = Arc::new(claims);
+                    parts.extensions.insert(Arc::clone(&claims));
+                    return Ok(ClaimsRef(claims));
+                }
+            }
 
             let token = TokenExtractor::from_header(parts)?;
             let claims = Arc::new(provider.verify_token(&token).await?);
@@ -326,6 +414,22 @@ where
                     return Err(TidewayError::forbidden("Admin privileges required"));
                 }
                 return Ok(RequireAdmin(user));
+            }
+
+            #[cfg(feature = "test-auth-bypass")]
+            {
+                if let Some(claims) = resolve_test_claims(parts, &provider).await? {
+                    let claims = Arc::new(claims);
+                    let user = provider.load_user(&claims).await?;
+                    provider.validate_user(&user).await?;
+                    parts.extensions.insert(Arc::clone(&claims));
+
+                    if !user.is_admin() {
+                        return Err(TidewayError::forbidden("Admin privileges required"));
+                    }
+
+                    return Ok(RequireAdmin(user));
+                }
             }
 
             // Extract token from Authorization header

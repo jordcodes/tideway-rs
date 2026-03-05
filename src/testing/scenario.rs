@@ -29,6 +29,8 @@
 //! }
 //! ```
 
+#[cfg(feature = "test-auth-bypass")]
+use crate::auth::extractors::{TEST_CLAIMS_HEADER, TEST_USER_ID_HEADER, encode_test_claims_header};
 use axum::{
     Router,
     body::Body,
@@ -96,6 +98,19 @@ impl Scenario {
     /// Alias for bearer_token - set Authorization header with Bearer token
     pub fn with_auth(self, token: &str) -> Self {
         self.bearer_token(token)
+    }
+
+    /// Set the test bypass user identity when the `test-auth-bypass` feature is enabled.
+    #[cfg(feature = "test-auth-bypass")]
+    pub fn with_test_user(self, user_id: &str) -> Self {
+        self.header(TEST_USER_ID_HEADER, user_id)
+    }
+
+    /// Set synthetic claims for test bypass when the `test-auth-bypass` feature is enabled.
+    #[cfg(feature = "test-auth-bypass")]
+    pub fn with_test_claims<T: Serialize>(self, claims: &T) -> Self {
+        let encoded = encode_test_claims_header(claims);
+        self.header(TEST_CLAIMS_HEADER, &encoded)
     }
 
     /// Add query parameters to the request URI

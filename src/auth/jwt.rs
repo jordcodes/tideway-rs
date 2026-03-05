@@ -246,6 +246,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
 mod tests {
     use super::*;
     use jsonwebtoken::{EncodingKey, Header, encode};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
     struct TestClaims {
@@ -268,7 +269,11 @@ mod tests {
         // Create a valid HS256 token
         let claims = TestClaims {
             sub: "user123".to_string(),
-            exp: (chrono::Utc::now() + chrono::Duration::hours(1)).timestamp() as usize,
+            exp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .saturating_add(Duration::from_secs(60 * 60))
+                .as_secs() as usize,
         };
 
         let valid_token = encode(
