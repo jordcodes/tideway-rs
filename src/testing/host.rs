@@ -21,6 +21,17 @@ type BeforeEachHook = Arc<dyn for<'a> Fn(&'a mut Request<Body>) -> BoxFuture<'a,
 type AfterEachHook = Arc<dyn for<'a> Fn(&'a ScenarioOutcome) -> BoxFuture<'a, ()> + Send + Sync>;
 type ScenarioAssertion = Box<dyn Fn(&ScenarioOutcome) -> Result<(), String> + Send + Sync>;
 
+/// Builder for constructing a `TestHost` with test-time overrides.
+///
+/// This allows tests to swap dependencies or mutate the `App` before the host
+/// is materialized, which is the closest Tideway analogue to Alba host setup.
+pub struct TestHostBuilder {
+    app: App,
+    with_middleware: bool,
+    before_each: Option<BeforeEachHook>,
+    after_each: Option<AfterEachHook>,
+}
+
 /// Reusable Alba-style host for in-process Tideway integration tests.
 ///
 /// Unlike the lower-level `Scenario` helper, `TestHost` reuses a single router,
@@ -54,6 +65,11 @@ pub struct TestHost {
 }
 
 impl TestHost {
+    /// Create a builder from an application for test-time overrides.
+    pub fn builder(app: App) -> TestHostBuilder {
+        TestHostBuilder::new(app)
+    }
+
     /// Build a test host from a Tideway `App`, including middleware.
     pub fn new(app: App) -> Self {
         Self::from_router(app.into_router_with_middleware())
@@ -194,6 +210,100 @@ impl TestHost {
                 failures,
             })
         }
+    }
+}
+
+impl TestHostBuilder {
+    pub fn new(app: App) -> Self {
+        Self {
+            app,
+            with_middleware: true,
+            before_each: None,
+            after_each: None,
+        }
+    }
+
+    /// Transform the underlying app before the host is built.
+    pub fn configure_app<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(App) -> App,
+    {
+        self.app = configure(self.app);
+        self
+    }
+
+    /// Transform the app context before the host is built.
+    pub fn configure_context<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(crate::app::AppContextBuilder) -> crate::app::AppContextBuilder,
+    {
+        self.app = self.app.map_context(configure);
+        self
+    }
+
+    /// Build the host without Tideway's middleware stack.
+    pub fn without_middleware(mut self) -> Self {
+        self.with_middleware = false;
+        self
+    }
+
+    /// Build the host with Tideway's middleware stack applied.
+    pub fn with_middleware(mut self) -> Self {
+        self.with_middleware = true;
+        self
+    }
+
+    /// Register a synchronous action that runs before every scenario.
+    pub fn before_each<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&mut Request<Body>) + Send + Sync + 'static,
+    {
+        self.before_each = Some(Arc::new(move |request| {
+            hook(request);
+            Box::pin(async {})
+        }));
+        self
+    }
+
+    /// Register an asynchronous action that runs before every scenario.
+    pub fn before_each_async<F>(mut self, hook: F) -> Self
+    where
+        F: for<'a> Fn(&'a mut Request<Body>) -> BoxFuture<'a, ()> + Send + Sync + 'static,
+    {
+        self.before_each = Some(Arc::new(hook));
+        self
+    }
+
+    /// Register a synchronous action that runs after every scenario.
+    pub fn after_each<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&ScenarioOutcome) + Send + Sync + 'static,
+    {
+        self.after_each = Some(Arc::new(move |outcome| {
+            hook(outcome);
+            Box::pin(async {})
+        }));
+        self
+    }
+
+    /// Register an asynchronous action that runs after every scenario.
+    pub fn after_each_async<F>(mut self, hook: F) -> Self
+    where
+        F: for<'a> Fn(&'a ScenarioOutcome) -> BoxFuture<'a, ()> + Send + Sync + 'static,
+    {
+        self.after_each = Some(Arc::new(hook));
+        self
+    }
+
+    pub fn build(self) -> TestHost {
+        let mut host = if self.with_middleware {
+            TestHost::new(self.app)
+        } else {
+            TestHost::without_middleware(self.app)
+        };
+        host.before_each = self.before_each;
+        host.after_each = self.after_each;
+        host
     }
 }
 

@@ -82,6 +82,35 @@ async fn test_with_host_hooks() {
 }
 ```
 
+### Host Setup Overrides
+
+Use `TestHost::builder(...)` when a spec needs to alter the app before the
+shared host is materialized:
+
+```rust,ignore
+use std::sync::Arc;
+use tideway::testing::TestHost;
+
+let host = TestHost::builder(app)
+    .configure_app(|app| {
+        app.merge_router(extra_router())
+    })
+    .configure_context(|context| {
+        context.with_auth_provider(Arc::new(test_provider()))
+    })
+    .without_middleware()
+    .before_each(|request| {
+        request
+            .headers_mut()
+            .insert("x-trace", "spec-123".parse().unwrap());
+    })
+    .build();
+```
+
+This is the closest Tideway equivalent to Alba host bootstrapping: you can swap
+dependencies, register extra routes, or drop Tideway middleware for a focused
+integration spec without rebuilding the whole app by hand.
+
 ## Assertions
 
 ### Status Code Assertions

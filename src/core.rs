@@ -165,6 +165,18 @@ impl App {
         self
     }
 
+    /// Transform the application context while preserving existing dependencies.
+    ///
+    /// This is especially useful in tests when you want to override one dependency
+    /// without rebuilding the full `AppContext` from scratch.
+    pub fn map_context<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(crate::app::AppContextBuilder) -> crate::app::AppContextBuilder,
+    {
+        self.context = configure(self.context.to_builder()).build();
+        self
+    }
+
     /// Run database migrations if DATABASE_AUTO_MIGRATE=true
     ///
     /// This method checks the `DATABASE_AUTO_MIGRATE` environment variable and runs

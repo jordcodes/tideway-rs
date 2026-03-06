@@ -81,6 +81,27 @@ impl AppContext {
         AppContextBuilder::new()
     }
 
+    /// Create a builder pre-populated with the current context values.
+    pub fn to_builder(&self) -> AppContextBuilder {
+        AppContextBuilder {
+            #[cfg(feature = "database")]
+            database: self.database.clone(),
+            #[cfg(feature = "cache")]
+            cache: self.cache.clone(),
+            #[cfg(feature = "sessions")]
+            sessions: self.sessions.clone(),
+            #[cfg(feature = "jobs")]
+            jobs: self.jobs.clone(),
+            #[cfg(feature = "websocket")]
+            websocket_manager: self.websocket_manager.clone(),
+            #[cfg(feature = "metrics")]
+            metrics: self.metrics.clone(),
+            #[cfg(feature = "email")]
+            mailer: self.mailer.clone(),
+            auth_provider: self.auth_provider.clone(),
+        }
+    }
+
     /// Get the database pool, returning an error if not configured
     #[cfg(feature = "database")]
     pub fn database(&self) -> crate::error::Result<&Arc<dyn DatabasePool>> {
