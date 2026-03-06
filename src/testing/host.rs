@@ -346,6 +346,22 @@ impl HostScenario {
         self.json(body)
     }
 
+    /// Set URL-encoded form data from a serializable type.
+    pub fn form<T: Serialize>(&mut self, body: &T) -> &mut Self {
+        let encoded = serde_urlencoded::to_string(body).unwrap();
+        *self.request.body_mut() = Body::from(encoded);
+        self.request.headers_mut().insert(
+            header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        self
+    }
+
+    /// Convenience alias for `form`.
+    pub fn with_form<T: Serialize>(&mut self, body: &T) -> &mut Self {
+        self.form(body)
+    }
+
     /// Set a plain-text request body.
     pub fn text_body(&mut self, body: impl Into<String>) -> &mut Self {
         *self.request.body_mut() = Body::from(body.into());
@@ -400,6 +416,31 @@ impl HostScenario {
                 Ok(())
             } else {
                 Err(format!("Expected header '{key}' to exist"))
+            }
+        })
+    }
+
+    /// Assert that the response is a redirect and has a matching `Location` header.
+    pub fn redirect_to_should_be(&mut self, expected: &str) -> &mut Self {
+        let expected = expected.to_string();
+        self.assert_with(move |outcome| {
+            if !outcome.status().is_redirection() {
+                return Err(format!(
+                    "Expected redirect status, got {}",
+                    outcome.status()
+                ));
+            }
+
+            let Some(location) = outcome.header(header::LOCATION.as_str()) else {
+                return Err("Expected Location header to exist".to_string());
+            };
+
+            if location == expected {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Expected redirect location '{expected}', got '{location}'"
+                ))
             }
         })
     }

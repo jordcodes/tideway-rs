@@ -167,6 +167,27 @@ impl Scenario {
         self.json_body(body)
     }
 
+    /// Set URL-encoded form data from a serializable type.
+    pub fn form_body<T: Serialize>(mut self, body: &T) -> Self {
+        let encoded = serde_urlencoded::to_string(body).unwrap();
+        *self.request.body_mut() = Body::from(encoded);
+        self.request.headers_mut().insert(
+            header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        self
+    }
+
+    /// Alias for `form_body`.
+    pub fn form<T: Serialize>(self, body: &T) -> Self {
+        self.form_body(body)
+    }
+
+    /// Convenience alias for `form_body`.
+    pub fn with_form<T: Serialize>(self, body: &T) -> Self {
+        self.form_body(body)
+    }
+
     /// Set plain text body
     pub fn text_body(mut self, body: impl Into<String>) -> Self {
         *self.request.body_mut() = Body::from(body.into());
@@ -253,6 +274,23 @@ impl ScenarioAssert {
             .get(key)
             .unwrap_or_else(|| panic!("Header '{}' not found", key));
         self
+    }
+
+    /// Assert the response is an HTTP redirect and has a Location header.
+    pub fn assert_redirect(self) -> Self {
+        let status = self.response.status();
+        assert!(
+            status.is_redirection(),
+            "Expected redirect status, got {}",
+            status
+        );
+        self.assert_header_exists(header::LOCATION.as_str())
+    }
+
+    /// Assert the response redirects to the expected location.
+    pub fn assert_redirect_to(self, expected: &str) -> Self {
+        self.assert_redirect()
+            .assert_header(header::LOCATION.as_str(), expected)
     }
 
     /// Assert status is one of the expected codes
@@ -598,5 +636,48 @@ mod tests {
             .await
             .assert_status_any(&[StatusCode::OK, StatusCode::CREATED])
             .assert_header_exists("x-test");
+    }
+
+    #[tokio::test]
+    async fn test_form_alias() {
+        #[derive(Deserialize)]
+        struct LoginForm {
+            email: String,
+        }
+
+        async fn form_handler(axum::Form(form): axum::Form<LoginForm>) -> Json<serde_json::Value> {
+            Json(json!({ "email": form.email }))
+        }
+
+        let app = Router::new().route("/form", axum::routing::post(form_handler));
+
+        let response = post(app, "/form")
+            .with_form(&[("email", "test@example.com")])
+            .send()
+            .await
+            .assert_json_ok();
+
+        assert_eq!(
+            response.json_value().await["email"],
+            json!("test@example.com")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_assert_redirect_to() {
+        async fn redirect_handler() -> axum::response::Response {
+            axum::response::Response::builder()
+                .status(StatusCode::FOUND)
+                .header(header::LOCATION, "/target")
+                .body(Body::empty())
+                .unwrap()
+        }
+
+        let app = Router::new().route("/redirect", axum::routing::get(redirect_handler));
+
+        get(app, "/redirect")
+            .send()
+            .await
+            .assert_redirect_to("/target");
     }
 }

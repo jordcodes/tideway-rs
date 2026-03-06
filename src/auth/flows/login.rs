@@ -521,6 +521,7 @@ where
         ))
     }
 
+    #[cfg(feature = "auth-mfa")]
     async fn generate_mfa_token(&self, user: &U::User) -> Result<String> {
         let token = generate_secure_token();
         let token_hash = hash_mfa_token(&token);
@@ -535,6 +536,7 @@ where
 }
 
 /// Generate a secure random token.
+#[cfg(feature = "auth-mfa")]
 fn generate_secure_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
@@ -723,6 +725,7 @@ mod tests {
         matches!(response, LoginResponse::Error { .. })
     }
 
+    #[cfg(feature = "auth-mfa")]
     fn is_mfa_required(response: &LoginResponse) -> bool {
         matches!(response, LoginResponse::MfaRequired { .. })
     }

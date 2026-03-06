@@ -177,6 +177,19 @@ put(app, "/api/users/123")
     .assert_ok();
 ```
 
+### Form Posts
+
+```rust
+post(app, "/login")
+    .with_form(&[
+        ("email", "test@example.com"),
+        ("password", "secret"),
+    ])
+    .execute()
+    .await
+    .assert_ok();
+```
+
 ## Test Fixtures
 
 ### TestFactory Trait
@@ -303,6 +316,15 @@ async fn test_not_found() {
         .assert_json_path("error", json!("Not found: User not found"))
         .await;
 }
+```
+
+### Testing Redirects
+
+```rust
+get(app, "/legacy")
+    .execute()
+    .await
+    .assert_redirect_to("/new-path");
 ```
 
 ### Testing Validation Errors

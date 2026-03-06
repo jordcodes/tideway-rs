@@ -2,9 +2,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use axum::body::Body;
+use axum::extract::Form;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use axum::{Json, Router, routing::get, routing::post};
+use serde::Deserialize;
 use serde_json::json;
 use tideway::App;
 use tideway::testing::{TestHost, post as test_post};
@@ -185,4 +187,53 @@ async fn test_scenario_aliases_match_documented_api() {
         .assert_header("x-test", "1");
 
     assert_eq!(response.json_value().await["ok"], json!(true));
+}
+
+#[tokio::test]
+async fn test_host_supports_form_posts() {
+    #[derive(Deserialize)]
+    struct SignupForm {
+        email: String,
+    }
+
+    async fn signup(Form(form): Form<SignupForm>) -> Json<serde_json::Value> {
+        Json(json!({ "email": form.email }))
+    }
+
+    let app = App::new().merge_router(Router::new().route("/signup", post(signup)));
+    let host = TestHost::new(app);
+
+    let outcome = host
+        .scenario(|scenario| {
+            scenario.post("/signup");
+            scenario.with_form(&[("email", "form@example.com")]);
+            scenario.json_path_should_be("email", json!("form@example.com"));
+        })
+        .await;
+
+    assert_eq!(outcome.json_value()["email"], json!("form@example.com"));
+}
+
+#[tokio::test]
+async fn test_host_supports_redirect_assertions() {
+    async fn redirect_handler() -> Response<Body> {
+        Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("location", "/done")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    let app = App::new().merge_router(Router::new().route("/old", get(redirect_handler)));
+    let host = TestHost::new(app);
+
+    let outcome = host
+        .scenario(|scenario| {
+            scenario.get("/old");
+            scenario.status_code_should_be(303);
+            scenario.redirect_to_should_be("/done");
+        })
+        .await;
+
+    assert_eq!(outcome.status(), StatusCode::SEE_OTHER);
 }
