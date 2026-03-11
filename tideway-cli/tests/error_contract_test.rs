@@ -88,6 +88,35 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
 }
 
 #[test]
+fn test_dev_unreachable_postgres_uses_error_contract() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_basic_project(&project_dir);
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join(".env"),
+        "DATABASE_URL=postgres://postgres:postgres@127.0.0.1:1/my_app\n",
+    )
+    .expect("write .env");
+
+    let output = run_tideway(&["dev", "--path", project_dir.to_str().expect("utf8 path")]);
+    assert_failure(&output, "tideway dev");
+    assert_error_contract(&output);
+}
+
+#[test]
 fn test_json_mode_emits_structured_error_fields() {
     let output = run_tideway(&["--json", "new", "--no-prompt"]);
     assert_failure(&output, "tideway --json new --no-prompt");

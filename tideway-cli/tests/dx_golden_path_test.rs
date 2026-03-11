@@ -192,6 +192,74 @@ fn test_dev_fix_env_copies_env_example_and_passes_env_to_cargo() {
 }
 
 #[test]
+fn test_dev_fails_fast_when_postgres_server_is_unreachable() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_output = run_tideway(&[
+        "new",
+        "my_app",
+        "--no-prompt",
+        "--preset",
+        "api",
+        "--with-docker",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&new_output, "tideway new --preset api --with-docker");
+
+    let unreachable_port = reserve_local_port();
+    configure_env_example_database_url(
+        &project_dir,
+        &format!(
+            "postgres://postgres:postgres@127.0.0.1:{}/my_app",
+            unreachable_port
+        ),
+    );
+
+    let fake_cargo_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_cargo_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("cargo-invocation.log");
+    write_fake_cargo(&fake_cargo_dir, &invocation_log);
+
+    let output = run_tideway_with_path(
+        &[
+            "dev",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+            "--fix-env",
+        ],
+        &fake_cargo_dir,
+    );
+    assert!(
+        !output.status.success(),
+        "expected tideway dev to fail fast.\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("Problem: Postgres is not reachable"),
+        "expected fail-fast Postgres problem, got:\n{}",
+        combined
+    );
+    assert!(
+        combined.contains("docker compose up -d"),
+        "expected docker compose guidance, got:\n{}",
+        combined
+    );
+    assert!(
+        !invocation_log.exists(),
+        "expected cargo run to be skipped when preflight fails"
+    );
+}
+
+#[test]
 fn test_dev_warns_when_env_missing_without_fix() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -223,6 +291,46 @@ fn test_dev_warns_when_env_missing_without_fix() {
         stdout.contains("Missing .env"),
         "expected missing env warning, got:\n{}",
         stdout
+    );
+}
+
+#[test]
+fn test_migrate_accepts_sqlite_database_url() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_database_project(&project_dir);
+    fs::write(
+        project_dir.join(".env"),
+        "DATABASE_URL=sqlite:./my_app.db?mode=rwc\n",
+    )
+    .expect("write .env");
+
+    let fake_bin_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_bin_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("sea-orm-cli.log");
+    write_fake_sea_orm_cli(&fake_bin_dir, &invocation_log);
+
+    let output = run_tideway_with_path(
+        &[
+            "migrate",
+            "status",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ],
+        &fake_bin_dir,
+    );
+    assert_success(&output, "tideway migrate status");
+
+    let invocation = fs::read_to_string(&invocation_log).expect("read invocation log");
+    assert!(
+        invocation.contains("ARG:migrate"),
+        "expected sea-orm-cli migrate invocation, got:\n{}",
+        invocation
+    );
+    assert!(
+        invocation.contains("ARG:status"),
+        "expected sea-orm-cli status invocation, got:\n{}",
+        invocation
     );
 }
 
@@ -269,6 +377,29 @@ edition = "2021"
     fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write src/main.rs");
 }
 
+fn create_minimal_database_project(project_dir: &Path) {
+    create_minimal_project(project_dir);
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migration/src");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        "// migration lib placeholder\n",
+    )
+    .expect("write migration lib");
+}
+
 fn write_fake_cargo(fake_cargo_dir: &Path, invocation_log: &Path) {
     let fake_cargo = fake_cargo_dir.join("cargo");
     let script = format!(
@@ -289,6 +420,29 @@ exit 0\n",
         let mut perms = fs::metadata(&fake_cargo).expect("metadata").permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&fake_cargo, perms).expect("set executable bit");
+    }
+}
+
+fn write_fake_sea_orm_cli(fake_bin_dir: &Path, invocation_log: &Path) {
+    let fake_sea_orm_cli = fake_bin_dir.join("sea-orm-cli");
+    let script = format!(
+        "#!/usr/bin/env bash\n\
+set -euo pipefail\n\
+log=\"{}\"\n\
+echo \"ARG:$1\" > \"$log\"\n\
+echo \"ARG:$2\" >> \"$log\"\n\
+exit 0\n",
+        invocation_log.display()
+    );
+    fs::write(&fake_sea_orm_cli, script).expect("write fake sea-orm-cli script");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&fake_sea_orm_cli)
+            .expect("metadata")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&fake_sea_orm_cli, perms).expect("set executable bit");
     }
 }
 
@@ -319,6 +473,22 @@ fn configure_env_example_for_boot(project_dir: &Path, port: u16) {
             updated.push("TIDEWAY_HOST=127.0.0.1".to_string());
         } else if line.starts_with("TIDEWAY_PORT=") {
             updated.push(format!("TIDEWAY_PORT={}", port));
+        } else {
+            updated.push(line.to_string());
+        }
+    }
+
+    fs::write(env_example_path, updated.join("\n") + "\n").expect("write .env.example");
+}
+
+fn configure_env_example_database_url(project_dir: &Path, database_url: &str) {
+    let env_example_path = project_dir.join(".env.example");
+    let contents = fs::read_to_string(&env_example_path).expect("read .env.example");
+    let mut updated = Vec::new();
+
+    for line in contents.lines() {
+        if line.starts_with("DATABASE_URL=") {
+            updated.push(format!("DATABASE_URL={}", database_url));
         } else {
             updated.push(line.to_string());
         }

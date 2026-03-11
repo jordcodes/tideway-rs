@@ -8,6 +8,7 @@ use std::process::Command;
 use crate::cli::{MigrateArgs, MigrateBackend};
 use crate::commands::messaging::DEV_FIX_ENV_COMMAND;
 use crate::commands::messaging::GREENFIELD_NEW_APP_PRESET_API;
+use crate::database::{resolve_database_url, validate_database_url};
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
 use crate::{error_contract, is_plan_mode, print_info, print_success, print_warning};
 
@@ -160,55 +161,28 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
 }
 
 fn ensure_database_url(project_dir: &Path) -> Result<()> {
-    if let Some(env_map) = read_env_map(&project_dir.join(".env")) {
-        if let Some(value) = env_map.get("DATABASE_URL") {
-            validate_database_url(value)?;
-            return Ok(());
-        }
-    }
-
-    if let Ok(value) = std::env::var("DATABASE_URL") {
-        validate_database_url(&value)?;
-        return Ok(());
-    }
-
-    Err(anyhow::anyhow!(
-        "{}",
-        error_contract(
-            "DATABASE_URL is missing.",
-            "Set DATABASE_URL in `.env` and rerun `tideway migrate`.",
-            &format!(
-                "Run {} to bootstrap `.env` from `.env.example`.",
-                DEV_FIX_ENV_COMMAND
-            )
-        )
-    ))
-}
-
-fn validate_database_url(value: &str) -> Result<()> {
-    if !value.contains("://") {
+    let env_map = read_env_map(&project_dir.join(".env"));
+    let Some(value) = resolve_database_url(&env_map) else {
         return Err(anyhow::anyhow!(
             "{}",
             error_contract(
-                &format!("DATABASE_URL looks invalid (missing scheme): {}", value),
-                "Use a URL like `postgres://...` or `sqlite:...`.",
-                "Regenerate config with `tideway doctor --fix` and update DATABASE_URL."
+                "DATABASE_URL is missing.",
+                "Set DATABASE_URL in `.env` and rerun `tideway migrate`.",
+                &format!(
+                    "Run {} to bootstrap `.env` from `.env.example`.",
+                    DEV_FIX_ENV_COMMAND
+                )
             )
         ));
-    }
+    };
 
-    let lower = value.to_lowercase();
-    let valid = lower.starts_with("postgres://")
-        || lower.starts_with("postgresql://")
-        || lower.starts_with("sqlite:");
-
-    if !valid {
+    if let Err(err) = validate_database_url(&value) {
         return Err(anyhow::anyhow!(
             "{}",
             error_contract(
-                &format!("DATABASE_URL scheme looks invalid: {}", value),
-                "Use `postgres://`, `postgresql://`, or `sqlite:`.",
-                "Update `.env` and rerun `tideway migrate status`."
+                &err.to_string(),
+                "Use a URL like `postgres://...` or `sqlite:...`.",
+                "Regenerate config with `tideway doctor --fix` and update DATABASE_URL."
             )
         ));
     }
