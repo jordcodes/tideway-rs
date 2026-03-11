@@ -139,6 +139,11 @@ impl ConfigBuilder {
         }
     }
 
+    /// Seed a builder from an existing `Config`.
+    pub fn from_config(config: Config) -> Self {
+        Self { config }
+    }
+
     pub fn with_host(mut self, host: impl Into<String>) -> Self {
         self.config.server.host = host.into();
         self
@@ -463,6 +468,20 @@ mod tests {
 
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.server.port, 8000);
+    }
+
+    #[test]
+    fn test_config_builder_from_config() {
+        let config = ConfigBuilder::new()
+            .with_host("127.0.0.1")
+            .with_port(4000)
+            .build()
+            .unwrap();
+
+        let rebuilt = ConfigBuilder::from_config(config.clone()).build().unwrap();
+
+        assert_eq!(rebuilt.server.host, config.server.host);
+        assert_eq!(rebuilt.server.port, config.server.port);
     }
 
     #[test]

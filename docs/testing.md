@@ -111,6 +111,28 @@ This is the closest Tideway equivalent to Alba host bootstrapping: you can swap
 dependencies, register extra routes, or drop Tideway middleware for a focused
 integration spec without rebuilding the whole app by hand.
 
+### Config And Environment Overrides
+
+When the spec needs to vary runtime settings before the app exists, start from
+`TestHost::bootstrap()` instead of a prebuilt `App`:
+
+```rust,ignore
+use tideway::testing::TestHost;
+
+let host = TestHost::bootstrap()
+    .from_env()
+    .with_env_var("TIDEWAY_MAX_BODY_SIZE", "1024")
+    .configure_config(|mut config| {
+        config.dev.enabled = true;
+        config
+    })
+    .configure_app(|app| app.register_module(ApiModule))
+    .build();
+```
+
+Use `from_config(...)` or `from_config_builder(...)` when you want an explicit
+starting point instead of the default config.
+
 ## Assertions
 
 ### Status Code Assertions

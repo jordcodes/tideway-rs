@@ -76,6 +76,7 @@ pub use app::{AuthTestApp, TestApp};
 pub use database::{TestDb, TestDbBackend, TestDbConfig};
 pub use fixtures::{TestFactory, TestUser, fake};
 pub use host::{
-    HostScenario, RequestSummary, ScenarioFailure, ScenarioOutcome, TestHost, TestHostBuilder,
+    HostScenario, RequestSummary, ScenarioFailure, ScenarioOutcome, TestHost, TestHostBootstrap,
+    TestHostBuilder,
 };
 pub use scenario::{Scenario, ScenarioAssert, delete, get, patch, post, put};

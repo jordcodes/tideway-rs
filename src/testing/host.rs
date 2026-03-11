@@ -1,7 +1,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::{
     Router,
@@ -12,14 +12,98 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use tower::ServiceExt;
 
-use crate::App;
 #[cfg(feature = "test-auth-bypass")]
 use crate::auth::extractors::{TEST_CLAIMS_HEADER, TEST_USER_ID_HEADER, encode_test_claims_header};
+use crate::{App, Config, ConfigBuilder};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 type BeforeEachHook = Arc<dyn for<'a> Fn(&'a mut Request<Body>) -> BoxFuture<'a, ()> + Send + Sync>;
 type AfterEachHook = Arc<dyn for<'a> Fn(&'a ScenarioOutcome) -> BoxFuture<'a, ()> + Send + Sync>;
 type ScenarioAssertion = Box<dyn Fn(&ScenarioOutcome) -> Result<(), String> + Send + Sync>;
+type AppTransform = Box<dyn FnOnce(App) -> App + Send>;
+type ConfigTransform = Box<dyn FnOnce(Config) -> Config + Send>;
+
+static TEST_HOST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+enum ConfigSource {
+    Built(Config),
+    Builder(ConfigBuilder),
+}
+
+struct EnvOverride {
+    key: String,
+    value: Option<String>,
+}
+
+struct ScopedEnvOverrides {
+    previous: Vec<(String, Option<String>)>,
+}
+
+impl ScopedEnvOverrides {
+    fn apply(overrides: &[EnvOverride]) -> Self {
+        let previous = overrides
+            .iter()
+            .map(|override_| (override_.key.clone(), std::env::var(&override_.key).ok()))
+            .collect::<Vec<_>>();
+
+        for override_ in overrides {
+            unsafe {
+                if let Some(value) = &override_.value {
+                    std::env::set_var(&override_.key, value);
+                } else {
+                    std::env::remove_var(&override_.key);
+                }
+            }
+        }
+
+        Self { previous }
+    }
+}
+
+impl Drop for ScopedEnvOverrides {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.iter().rev() {
+            unsafe {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+}
+
+fn build_host(
+    app: App,
+    with_middleware: bool,
+    before_each: Option<BeforeEachHook>,
+    after_each: Option<AfterEachHook>,
+) -> TestHost {
+    let mut host = if with_middleware {
+        TestHost::new(app)
+    } else {
+        TestHost::without_middleware(app)
+    };
+    host.before_each = before_each;
+    host.after_each = after_each;
+    host
+}
+
+/// Bootstrap a `TestHost` from config and test-time environment overrides.
+///
+/// This is the Alba-style path when a spec needs to shape runtime settings
+/// before the app is materialized.
+pub struct TestHostBootstrap {
+    config_source: ConfigSource,
+    config_transforms: Vec<ConfigTransform>,
+    app_transforms: Vec<AppTransform>,
+    env_overrides: Vec<EnvOverride>,
+    load_from_env: bool,
+    with_middleware: bool,
+    before_each: Option<BeforeEachHook>,
+    after_each: Option<AfterEachHook>,
+}
 
 /// Builder for constructing a `TestHost` with test-time overrides.
 ///
@@ -65,6 +149,21 @@ pub struct TestHost {
 }
 
 impl TestHost {
+    /// Create a bootstrap builder from default config.
+    pub fn bootstrap() -> TestHostBootstrap {
+        TestHostBootstrap::new()
+    }
+
+    /// Create a bootstrap builder from an explicit config.
+    pub fn from_config(config: Config) -> TestHostBootstrap {
+        TestHostBootstrap::from_config(config)
+    }
+
+    /// Create a bootstrap builder from a `ConfigBuilder`.
+    pub fn from_config_builder(builder: ConfigBuilder) -> TestHostBootstrap {
+        TestHostBootstrap::from_config_builder(builder)
+    }
+
     /// Create a builder from an application for test-time overrides.
     pub fn builder(app: App) -> TestHostBuilder {
         TestHostBuilder::new(app)
@@ -213,6 +312,195 @@ impl TestHost {
     }
 }
 
+impl TestHostBootstrap {
+    pub fn new() -> Self {
+        Self {
+            config_source: ConfigSource::Builder(ConfigBuilder::new()),
+            config_transforms: Vec::new(),
+            app_transforms: Vec::new(),
+            env_overrides: Vec::new(),
+            load_from_env: false,
+            with_middleware: true,
+            before_each: None,
+            after_each: None,
+        }
+    }
+
+    pub fn from_config(config: Config) -> Self {
+        Self {
+            config_source: ConfigSource::Built(config),
+            ..Self::new()
+        }
+    }
+
+    pub fn from_config_builder(builder: ConfigBuilder) -> Self {
+        Self {
+            config_source: ConfigSource::Builder(builder),
+            ..Self::new()
+        }
+    }
+
+    /// Transform the final config before the app is materialized.
+    pub fn configure_config<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(Config) -> Config + Send + 'static,
+    {
+        self.config_transforms.push(Box::new(configure));
+        self
+    }
+
+    /// Transform the `ConfigBuilder` before it is built.
+    pub fn configure_config_builder<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(ConfigBuilder) -> ConfigBuilder,
+    {
+        let builder = match self.config_source {
+            ConfigSource::Built(config) => ConfigBuilder::from_config(config),
+            ConfigSource::Builder(builder) => builder,
+        };
+        self.config_source = ConfigSource::Builder(configure(builder));
+        self
+    }
+
+    /// Load config from the environment at build time.
+    pub fn from_env(mut self) -> Self {
+        self.load_from_env = true;
+        self
+    }
+
+    /// Transform the app after config has been materialized.
+    pub fn configure_app<F>(mut self, configure: F) -> Self
+    where
+        F: FnOnce(App) -> App + Send + 'static,
+    {
+        self.app_transforms.push(Box::new(configure));
+        self
+    }
+
+    /// Transform the app context before the host is built.
+    pub fn configure_context<F>(self, configure: F) -> Self
+    where
+        F: FnOnce(crate::app::AppContextBuilder) -> crate::app::AppContextBuilder + Send + 'static,
+    {
+        self.configure_app(move |app| app.map_context(configure))
+    }
+
+    /// Override an environment variable while config is being materialized.
+    pub fn with_env_var(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.set_env_override(key.into(), Some(value.into()));
+        self
+    }
+
+    /// Remove an environment variable while config is being materialized.
+    pub fn without_env_var(mut self, key: impl Into<String>) -> Self {
+        self.set_env_override(key.into(), None);
+        self
+    }
+
+    /// Build the host without Tideway's middleware stack.
+    pub fn without_middleware(mut self) -> Self {
+        self.with_middleware = false;
+        self
+    }
+
+    /// Build the host with Tideway's middleware stack applied.
+    pub fn with_middleware(mut self) -> Self {
+        self.with_middleware = true;
+        self
+    }
+
+    /// Register a synchronous action that runs before every scenario.
+    pub fn before_each<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&mut Request<Body>) + Send + Sync + 'static,
+    {
+        self.before_each = Some(Arc::new(move |request| {
+            hook(request);
+            Box::pin(async {})
+        }));
+        self
+    }
+
+    /// Register an asynchronous action that runs before every scenario.
+    pub fn before_each_async<F>(mut self, hook: F) -> Self
+    where
+        F: for<'a> Fn(&'a mut Request<Body>) -> BoxFuture<'a, ()> + Send + Sync + 'static,
+    {
+        self.before_each = Some(Arc::new(hook));
+        self
+    }
+
+    /// Register a synchronous action that runs after every scenario.
+    pub fn after_each<F>(mut self, hook: F) -> Self
+    where
+        F: Fn(&ScenarioOutcome) + Send + Sync + 'static,
+    {
+        self.after_each = Some(Arc::new(move |outcome| {
+            hook(outcome);
+            Box::pin(async {})
+        }));
+        self
+    }
+
+    /// Register an asynchronous action that runs after every scenario.
+    pub fn after_each_async<F>(mut self, hook: F) -> Self
+    where
+        F: for<'a> Fn(&'a ScenarioOutcome) -> BoxFuture<'a, ()> + Send + Sync + 'static,
+    {
+        self.after_each = Some(Arc::new(hook));
+        self
+    }
+
+    pub fn build(self) -> TestHost {
+        self.try_build()
+            .expect("test host bootstrap should build successfully")
+    }
+
+    pub fn try_build(self) -> crate::Result<TestHost> {
+        let _lock = TEST_HOST_ENV_LOCK.lock().unwrap();
+        let _env = ScopedEnvOverrides::apply(&self.env_overrides);
+
+        let builder = match self.config_source {
+            ConfigSource::Built(config) => ConfigBuilder::from_config(config),
+            ConfigSource::Builder(builder) => builder,
+        };
+        let mut config = if self.load_from_env {
+            builder.from_env().build()?
+        } else {
+            builder.build()?
+        };
+
+        for transform in self.config_transforms {
+            config = transform(config);
+        }
+        let config = ConfigBuilder::from_config(config).build()?;
+
+        let mut app = App::with_config(config);
+        for transform in self.app_transforms {
+            app = transform(app);
+        }
+
+        Ok(build_host(
+            app,
+            self.with_middleware,
+            self.before_each,
+            self.after_each,
+        ))
+    }
+
+    fn set_env_override(&mut self, key: String, value: Option<String>) {
+        if let Some(existing) = self
+            .env_overrides
+            .iter_mut()
+            .find(|existing| existing.key == key)
+        {
+            existing.value = value;
+        } else {
+            self.env_overrides.push(EnvOverride { key, value });
+        }
+    }
+}
+
 impl TestHostBuilder {
     pub fn new(app: App) -> Self {
         Self {
@@ -296,14 +584,12 @@ impl TestHostBuilder {
     }
 
     pub fn build(self) -> TestHost {
-        let mut host = if self.with_middleware {
-            TestHost::new(self.app)
-        } else {
-            TestHost::without_middleware(self.app)
-        };
-        host.before_each = self.before_each;
-        host.after_each = self.after_each;
-        host
+        build_host(
+            self.app,
+            self.with_middleware,
+            self.before_each,
+            self.after_each,
+        )
     }
 }
 

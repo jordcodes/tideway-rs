@@ -929,7 +929,8 @@ async fn test_create_user() {
 ```
 
 For Alba-style host bootstrapping and dependency overrides, prefer
-`TestHost::builder(app)`; see [`docs/testing.md`](docs/testing.md).
+`TestHost::builder(app)` for prebuilt apps and `TestHost::bootstrap()` when the
+spec needs config or environment overrides; see [`docs/testing.md`](docs/testing.md).
 
 See [`docs/testing.md`](docs/testing.md) and [`examples/testing_example.rs`](examples/testing_example.rs) for more patterns.
 
