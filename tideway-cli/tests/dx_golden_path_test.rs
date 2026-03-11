@@ -1,6 +1,13 @@
 use std::fs;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[test]
 fn test_golden_path_new_then_doctor_then_dev_plan() {
@@ -84,6 +91,48 @@ fn test_golden_path_no_prompt_scaffold_accepts_primary_resource_flow() {
     assert!(project_dir.join("src/routes/user.rs").exists());
     assert!(project_dir.join("src/repositories/user.rs").exists());
     assert!(project_dir.join("src/services/user.rs").exists());
+}
+
+#[test]
+fn test_golden_path_default_api_boots_and_serves_health() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_output = run_tideway(&[
+        "new",
+        "my_app",
+        "--no-prompt",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&new_output, "tideway new");
+
+    patch_scaffold_to_workspace(&project_dir);
+
+    let port = reserve_local_port();
+    configure_env_example_for_boot(&project_dir, port);
+
+    let log_path = temp_dir.path().join("tideway-dev.log");
+    let stdout_log = File::create(&log_path).expect("create dev log");
+    let stderr_log = stdout_log.try_clone().expect("clone dev log handle");
+    let target_dir = temp_dir.path().join("cargo-target");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
+    command
+        .arg("dev")
+        .arg("--fix-env")
+        .arg("--path")
+        .arg(project_dir.to_str().expect("project path utf8"))
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .stdout(Stdio::from(stdout_log))
+        .stderr(Stdio::from(stderr_log));
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn().expect("run tideway dev");
+
+    wait_for_health(&mut child, port, Duration::from_secs(120), &log_path);
+
+    terminate_process_tree(&mut child);
 }
 
 #[test]
@@ -241,4 +290,113 @@ exit 0\n",
         perms.set_mode(0o755);
         fs::set_permissions(&fake_cargo, perms).expect("set executable bit");
     }
+}
+
+fn patch_scaffold_to_workspace(project_dir: &Path) {
+    let cargo_path = project_dir.join("Cargo.toml");
+    let mut contents = fs::read_to_string(&cargo_path).expect("read Cargo.toml");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let macros_root = workspace_root.join("tideway-macros");
+    contents.push_str(&format!(
+        "\n[patch.crates-io]\n\
+tideway = {{ path = \"{}\" }}\n\
+tideway-macros = {{ path = \"{}\" }}\n",
+        workspace_root.display(),
+        macros_root.display()
+    ));
+    fs::write(cargo_path, contents).expect("write patched Cargo.toml");
+}
+
+fn configure_env_example_for_boot(project_dir: &Path, port: u16) {
+    let env_example_path = project_dir.join(".env.example");
+    let contents = fs::read_to_string(&env_example_path).expect("read .env.example");
+    let mut updated = Vec::new();
+
+    for line in contents.lines() {
+        if line.starts_with("TIDEWAY_HOST=") {
+            updated.push("TIDEWAY_HOST=127.0.0.1".to_string());
+        } else if line.starts_with("TIDEWAY_PORT=") {
+            updated.push(format!("TIDEWAY_PORT={}", port));
+        } else {
+            updated.push(line.to_string());
+        }
+    }
+
+    fs::write(env_example_path, updated.join("\n") + "\n").expect("write .env.example");
+}
+
+fn reserve_local_port() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind ephemeral port");
+    let port = listener.local_addr().expect("local addr").port();
+    drop(listener);
+    port
+}
+
+fn wait_for_health(child: &mut std::process::Child, port: u16, timeout: Duration, log_path: &Path) {
+    let start = Instant::now();
+
+    loop {
+        if health_check(port) {
+            return;
+        }
+
+        if let Some(status) = child.try_wait().expect("poll tideway dev") {
+            let log = fs::read_to_string(log_path).unwrap_or_default();
+            panic!(
+                "tideway dev exited before health check.\nstatus: {}\nlog:\n{}",
+                status, log
+            );
+        }
+
+        if start.elapsed() > timeout {
+            terminate_process_tree(child);
+            let log = fs::read_to_string(log_path).unwrap_or_default();
+            panic!(
+                "timed out waiting for /health on port {}.\nlog:\n{}",
+                port, log
+            );
+        }
+
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn health_check(port: u16) -> bool {
+    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+        return false;
+    };
+
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+
+    response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200")
+}
+
+fn terminate_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = Command::new("kill")
+            .arg("-TERM")
+            .arg("--")
+            .arg(format!("-{}", child.id()))
+            .status();
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+
+    let _ = child.wait();
 }

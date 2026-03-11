@@ -131,6 +131,10 @@ pub struct BackendTemplateContext {
     pub has_organizations: bool,
     /// Database type ("postgres" or "sqlite")
     pub database: String,
+    /// Example DATABASE_URL for starter templates
+    pub database_url: String,
+    /// Whether the selected starter database is SQLite
+    pub is_sqlite_database: bool,
     /// Tideway crate version for scaffolding
     pub tideway_version: String,
     /// Tideway feature list for starter templates

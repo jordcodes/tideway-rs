@@ -320,6 +320,48 @@ fn test_doctor_no_openapi_warning_for_api_preset_scaffold() {
 }
 
 #[test]
+fn test_doctor_fix_recreates_sqlite_env_for_api_preset_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run tideway new");
+
+    fs::remove_file(project_dir.join(".env")).ok();
+    fs::remove_file(project_dir.join(".env.example")).expect("remove env example");
+
+    let report = analyze_project(&project_dir, true).expect("analyze project");
+    let env_example =
+        fs::read_to_string(project_dir.join(".env.example")).expect("read env example");
+
+    assert!(
+        env_example.contains("DATABASE_URL=sqlite:./my_app.db?mode=rwc"),
+        "expected sqlite env example, got:\n{}",
+        env_example
+    );
+    assert!(
+        report
+            .fixes
+            .iter()
+            .any(|line| line.contains("Created .env.example")),
+        "expected env example creation fix, got {:?}",
+        report.fixes
+    );
+}
+
+#[test]
 fn test_doctor_fix_updates_env_example_with_missing_keys() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

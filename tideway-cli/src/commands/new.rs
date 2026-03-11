@@ -70,6 +70,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     let has_database_feature = features.contains("database");
     let has_openapi_feature = features.contains("openapi");
     let has_tideway_features = !features.is_empty();
+    let starter_database = starter_database_for(&args);
 
     let target_dir = PathBuf::from(&dir_name);
     if target_dir.exists() {
@@ -94,7 +95,9 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         project_name: project_name.clone(),
         project_name_pascal,
         has_organizations: false,
-        database: "postgres".to_string(),
+        database: starter_database.to_string(),
+        database_url: starter_database_url(&project_name, starter_database),
+        is_sqlite_database: starter_database == "sqlite",
         tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: features.iter().cloned().collect(),
         has_tideway_features,
@@ -411,7 +414,12 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
     }
 
     match preset {
-        NewPreset::Api | NewPreset::Saas => {
+        NewPreset::Api => {
+            args.with_config = true;
+            args.with_ci = true;
+            args.with_env = true;
+        }
+        NewPreset::Saas => {
             args.with_config = true;
             args.with_docker = true;
             args.with_ci = true;
@@ -467,7 +475,7 @@ fn print_presets() {
     println!("Available presets:");
     println!("  - minimal: basic starter (no extra features)");
     println!(
-        "  - api: auth + database + openapi + validation, plus config, docker, CI, env, and a sample DB-backed resource"
+        "  - api: auth + database + openapi + validation, plus config, CI, env, and a sample DB-backed resource (SQLite local dev by default; add --with-docker for Postgres)"
     );
     println!(
         "  - saas: b2b backend modules (auth, billing, organizations, admin) + api defaults + production scaffolding"
@@ -531,6 +539,8 @@ fn scaffold_backend_preset(
         project_name_pascal: to_pascal_case(project_name),
         has_organizations,
         database: "postgres".to_string(),
+        database_url: starter_database_url(project_name, "postgres"),
+        is_sqlite_database: false,
         tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: Vec::new(),
         has_tideway_features: false,
@@ -614,6 +624,23 @@ fn ensure_dependency_inline(deps: &mut Table, name: &str, version: &str, feature
 fn needs_env_from_args(args: &NewArgs) -> bool {
     let features = normalize_features(&args.features);
     features.contains("auth") || features.contains("database") || args.with_config || args.with_env
+}
+
+fn starter_database_for(args: &NewArgs) -> &'static str {
+    match args.preset {
+        Some(NewPreset::Api) if !args.with_docker => "sqlite",
+        _ => "postgres",
+    }
+}
+
+fn starter_database_url(project_name: &str, database: &str) -> String {
+    match database {
+        "sqlite" => format!("sqlite:./{}.db?mode=rwc", project_name),
+        _ => format!(
+            "postgres://postgres:postgres@localhost:5432/{}",
+            project_name
+        ),
+    }
 }
 
 fn should_default_to_api_preset(args: &NewArgs) -> bool {

@@ -17,8 +17,9 @@ use utoipa_swagger_ui::SwaggerUi;
 pub fn create_openapi_router(openapi: utoipa::openapi::OpenApi, config: &OpenApiConfig) -> Router {
     let mut router = Router::new();
 
-    // Add dedicated JSON spec endpoint if enabled
-    if config.serve_spec {
+    // Swagger UI already serves the configured spec URL via `.url(...)`, so only
+    // mount a separate JSON route when the spec is requested without Swagger UI.
+    if config.serve_spec && !config.swagger_ui {
         let openapi_clone = openapi.clone();
         let spec_path = config.spec_path.clone();
 
@@ -125,6 +126,17 @@ mod tests {
     fn test_openapi_components_macro() {
         let openapi = ComponentsDoc::openapi();
         assert!(!openapi.info.title.is_empty());
+    }
+
+    #[test]
+    fn test_create_openapi_router_with_swagger_and_spec_enabled() {
+        let mut config = OpenApiConfig::default();
+        config.enabled = true;
+        config.swagger_ui = true;
+        config.serve_spec = true;
+
+        let router = create_openapi_router(ADoc::openapi(), &config);
+        let _ = router;
     }
 
     #[test]

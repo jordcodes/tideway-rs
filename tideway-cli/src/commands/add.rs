@@ -213,6 +213,11 @@ fn scaffold_auth(
         project_name_pascal: project_name_pascal.to_string(),
         has_organizations: false,
         database: "postgres".to_string(),
+        database_url: format!(
+            "postgres://postgres:postgres@localhost:5432/{}",
+            project_name
+        ),
+        is_sqlite_database: false,
         tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: vec!["auth".to_string()],
         has_tideway_features: true,

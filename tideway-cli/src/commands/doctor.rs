@@ -125,6 +125,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     let mut env_vars = read_env_map(&env_file).unwrap_or_default();
     let mut env_example_vars = read_env_map(&env_example_file).unwrap_or_default();
     let project_name = project_name_from_cargo(&cargo_toml, project_dir);
+    let database_backend = infer_database_backend(&cargo_toml);
 
     let needs_database = tideway_features.contains("database") || detected.contains("database");
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
@@ -135,6 +136,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             &env_example_file,
             &project_name,
             needs_database,
+            database_backend,
             needs_auth,
             &mut report,
         )?;
@@ -395,6 +397,7 @@ fn validate_package_metadata(cargo_toml: &toml::Value) -> Option<String> {
 fn env_example_template(
     project_name: &str,
     needs_database: bool,
+    database_backend: &str,
     needs_auth: bool,
 ) -> Option<Vec<String>> {
     let mut lines = Vec::new();
@@ -407,10 +410,14 @@ fn env_example_template(
 
     if needs_database {
         lines.push("# Database".to_string());
-        lines.push(format!(
-            "DATABASE_URL=postgres://postgres:postgres@localhost:5432/{}",
-            project_name
-        ));
+        let database_url = match database_backend {
+            "sqlite" => format!("DATABASE_URL=sqlite:./{}.db?mode=rwc", project_name),
+            _ => format!(
+                "DATABASE_URL=postgres://postgres:postgres@localhost:5432/{}",
+                project_name
+            ),
+        };
+        lines.push(database_url);
         lines.push(String::new());
     }
 
@@ -449,10 +456,13 @@ fn apply_env_fixes(
     env_example_file: &Path,
     project_name: &str,
     needs_database: bool,
+    database_backend: &str,
     needs_auth: bool,
     report: &mut DoctorReport,
 ) -> Result<()> {
-    let Some(lines) = env_example_template(project_name, needs_database, needs_auth) else {
+    let Some(lines) =
+        env_example_template(project_name, needs_database, database_backend, needs_auth)
+    else {
         return Ok(());
     };
     let expected_vars = parse_env_map(&lines.join("\n"));
@@ -511,6 +521,26 @@ fn apply_env_fixes(
     }
 
     Ok(())
+}
+
+fn infer_database_backend(cargo_toml: &toml::Value) -> &'static str {
+    if dependency_has_feature(cargo_toml, "sea-orm", "sqlx-sqlite")
+        || dependency_has_feature(cargo_toml, "sea-orm-migration", "sqlx-sqlite")
+    {
+        "sqlite"
+    } else {
+        "postgres"
+    }
+}
+
+fn dependency_has_feature(cargo_toml: &toml::Value, dependency: &str, feature: &str) -> bool {
+    cargo_toml
+        .get("dependencies")
+        .and_then(|deps| deps.get(dependency))
+        .and_then(|dep| dep.as_table())
+        .and_then(|table| table.get("features"))
+        .and_then(|features| features.as_array())
+        .is_some_and(|features| features.iter().any(|value| value.as_str() == Some(feature)))
 }
 
 fn check_openapi_setup(src_dir: &Path, main_contents: Option<&str>, report: &mut DoctorReport) {

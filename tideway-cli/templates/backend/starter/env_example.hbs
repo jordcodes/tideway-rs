@@ -4,7 +4,7 @@ TIDEWAY_PORT=8000
 
 {{#if has_database_feature}}
 # Database
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/{{project_name}}
+DATABASE_URL={{{database_url}}}
 
 {{/if}}
 {{#if has_auth_feature}}

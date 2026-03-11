@@ -16,7 +16,7 @@ impl RouteModule for TodoModule {
     fn routes(&self) -> Router<AppContext> {
         Router::new()
             .route("/", get(list_todos).post(create_todo))
-            .route("/:id", get(get_todo).put(update_todo).delete(delete_todo))
+            .route("/{id}", get(get_todo).put(update_todo).delete(delete_todo))
     }
 
     fn prefix(&self) -> Option<&str> {

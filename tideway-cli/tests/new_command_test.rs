@@ -55,9 +55,13 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
     assert_file_contains(&project_dir.join("Cargo.toml"), "\"auth\"");
     assert_file_contains(&project_dir.join("Cargo.toml"), "\"database\"");
     assert!(project_dir.join("src/config.rs").exists());
-    assert!(project_dir.join("docker-compose.yml").exists());
+    assert!(!project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join(".env.example").exists());
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "DATABASE_URL=sqlite:./my_app.db?mode=rwc",
+    );
     assert!(project_dir.join("src/routes/todo.rs").exists());
     assert!(
         project_dir
@@ -318,12 +322,19 @@ fn test_new_command_with_preset_api() {
     assert_file_contains(&cargo_toml, "\"database\"");
     assert_file_contains(&cargo_toml, "\"openapi\"");
     assert_file_contains(&cargo_toml, "\"validation\"");
+    assert_file_contains(&cargo_toml, "\"sqlx-sqlite\"");
+    assert_file_not_contains(&cargo_toml, "\"sqlx-postgres\"");
     assert!(project_dir.join("src/config.rs").exists());
-    assert!(project_dir.join("docker-compose.yml").exists());
+    assert!(!project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join(".env.example").exists());
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "DATABASE_URL=sqlite:./my_app.db?mode=rwc",
+    );
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert!(project_dir.join("migration/Cargo.toml").exists());
+    assert_file_contains(&project_dir.join("migration/Cargo.toml"), "\"sqlx-sqlite\"");
     assert!(project_dir.join("migration/src/lib.rs").exists());
     assert!(
         project_dir
@@ -367,6 +378,36 @@ fn test_new_command_with_preset_api() {
         "mod openapi_docs {",
     );
     assert_file_contains(&project_dir.join(".env.example"), "OPENAPI_ENABLED=true");
+    assert_file_contains(&project_dir.join(".gitignore"), "*.db");
+}
+
+#[test]
+fn test_new_command_with_preset_api_and_docker_keeps_postgres_path() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: true,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    assert!(project_dir.join("docker-compose.yml").exists());
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "DATABASE_URL=postgres://postgres:postgres@localhost:5432/my_app",
+    );
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"sqlx-postgres\"");
 }
 
 #[test]

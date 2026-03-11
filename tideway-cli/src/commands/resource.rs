@@ -961,7 +961,7 @@ impl RouteModule for {resource_pascal}Module {{
     fn routes(&self) -> Router<AppContext> {{
         Router::new()
             .route("/", get(list_{resource_plural}).post(create_{resource_name}))
-            .route("/:id", get(get_{resource_name}).put(update_{resource_name}).delete(delete_{resource_name}))
+            .route("/{{id}}", get(get_{resource_name}).put(update_{resource_name}).delete(delete_{resource_name}))
     }}
 
     fn prefix(&self) -> Option<&str> {{

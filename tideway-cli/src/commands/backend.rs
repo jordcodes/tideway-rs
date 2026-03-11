@@ -69,6 +69,11 @@ pub fn run(args: BackendArgs) -> Result<()> {
         project_name_pascal: to_pascal_case(&args.name),
         has_organizations,
         database: args.database.clone(),
+        database_url: match args.database.as_str() {
+            "sqlite" => format!("sqlite:./{}.db?mode=rwc", args.name),
+            _ => format!("postgres://postgres:postgres@localhost:5432/{}", args.name),
+        },
+        is_sqlite_database: args.database == "sqlite",
         tideway_version: TIDEWAY_VERSION.to_string(),
         tideway_features: Vec::new(),
         has_tideway_features: false,
