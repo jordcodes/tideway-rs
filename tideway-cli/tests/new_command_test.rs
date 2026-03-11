@@ -1,5 +1,6 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tideway_cli::cli::{NewArgs, NewPreset};
 
 #[test]
@@ -135,6 +136,33 @@ fn test_new_command_compiles_with_features_smoke() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         panic!("cargo check failed: {}", stderr);
     }
+}
+
+#[test]
+fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    patch_scaffold_to_workspace(&project_dir);
+
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
 }
 
 #[test]
@@ -312,6 +340,10 @@ fn test_new_command_with_preset_api() {
     assert!(project_dir.join("src/openapi_docs.rs").exists());
     assert_file_contains(&project_dir.join("src/main.rs"), "mod entities;");
     assert_file_contains(&project_dir.join("src/main.rs"), "mod openapi_docs;");
+    assert_file_not_contains(
+        &project_dir.join("src/main.rs"),
+        "#[cfg(feature = \"openapi\")]",
+    );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
         "tideway::openapi::create_openapi_router",
@@ -319,6 +351,20 @@ fn test_new_command_with_preset_api() {
     assert_file_contains(
         &project_dir.join("src/main.rs"),
         "tideway::openapi_merge_module!(openapi_docs, ApiDoc)",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/openapi_docs.rs"),
+        "#[cfg(feature = \"openapi\")]",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/routes/todo.rs"),
+        "#[cfg_attr(feature = \"openapi\"",
+    );
+    assert_file_not_contains(&project_dir.join("src/routes/todo.rs"), ".with_json(");
+    assert_file_not_contains(&project_dir.join("src/routes/todo.rs"), "#[cfg(test)]");
+    assert_file_not_contains(
+        &project_dir.join("src/routes/todo.rs"),
+        "mod openapi_docs {",
     );
     assert_file_contains(&project_dir.join(".env.example"), "OPENAPI_ENABLED=true");
 }
@@ -418,4 +464,58 @@ fn assert_file_contains(path: &Path, needle: &str) {
         path.display(),
         needle
     );
+}
+
+fn assert_file_not_contains(path: &Path, needle: &str) {
+    let contents = fs::read_to_string(path).expect("read file");
+    assert!(
+        !contents.contains(needle),
+        "expected {} to not contain {}, got:\n{}",
+        path.display(),
+        needle,
+        contents
+    );
+}
+
+fn patch_scaffold_to_workspace(project_dir: &Path) {
+    let cargo_path = project_dir.join("Cargo.toml");
+    let mut contents = fs::read_to_string(&cargo_path).expect("read Cargo.toml");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let macros_root = workspace_root.join("tideway-macros");
+
+    contents.push_str(&format!(
+        "\n[patch.crates-io]\ntideway = {{ path = \"{}\" }}\ntideway-macros = {{ path = \"{}\" }}\n",
+        escape_toml_path(workspace_root),
+        escape_toml_path(&macros_root),
+    ));
+
+    fs::write(cargo_path, contents).expect("write Cargo.toml patch section");
+}
+
+fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
+    let output = Command::new("cargo")
+        .args(args)
+        .current_dir(project_dir)
+        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
+        .output()
+        .expect("run cargo");
+
+    if !output.status.success() {
+        panic!(
+            "cargo {} failed.\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn escape_toml_path(path: &Path) -> String {
+    path_to_string(path).replace('\\', "\\\\")
+}
+
+fn path_to_string(path: &Path) -> String {
+    PathBuf::from(path).to_string_lossy().into_owned()
 }

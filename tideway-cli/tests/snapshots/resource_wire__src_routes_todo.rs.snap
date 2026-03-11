@@ -1,6 +1,6 @@
 //! Todo routes.
 
-use axum::{routing::{delete, get, post, put}, Json, Router};
+use axum::{routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use tideway::{AppContext, MessageResponse, Result, RouteModule};
 
@@ -23,6 +23,7 @@ impl RouteModule for TodoModule {
         Some("/api/todos")
     }
 }
+
 
 #[derive(Debug, Serialize)]
 
@@ -64,11 +65,10 @@ async fn create_todo(Json(body): Json<CreateRequest>) -> Result<MessageResponse>
 }
 
 
-async fn update_todo(Json(body): Json<CreateRequest>) -> Result<MessageResponse> {
+async fn update_todo(Json(body): Json<UpdateRequest>) -> Result<MessageResponse> {
     let name = body.name.unwrap_or_else(|| "Todo".to_string());
     Ok(MessageResponse::success(format!("Updated {}", name)))
 }
-
 
 async fn delete_todo() -> Result<MessageResponse> {
     Ok(MessageResponse::success("Deleted"))
@@ -101,11 +101,9 @@ mod tests {
             .into_router();
 
         post(app, "/api/todos")
-            .with_json(&serde_json::json!({ "name": "Example" }))
+            .json(&serde_json::json!({ "name": "Example" }))
             .execute()
             .await
             .assert_ok();
     }
 }
-
-

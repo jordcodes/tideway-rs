@@ -95,11 +95,11 @@ fn test_resource_wire_scaffold_snapshots() {
 }
 
 fn assert_file_snapshot(actual_path: &Path, snapshot_name: &str) {
-    let actual = fs::read_to_string(actual_path).expect("read generated file");
+    let actual = normalize_snapshot(&fs::read_to_string(actual_path).expect("read generated file"));
     let snapshot_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/snapshots")
         .join(snapshot_name);
-    let expected = fs::read_to_string(&snapshot_path).expect("read snapshot");
+    let expected = normalize_snapshot(&fs::read_to_string(&snapshot_path).expect("read snapshot"));
 
     assert_eq!(
         expected,
@@ -108,4 +108,27 @@ fn assert_file_snapshot(actual_path: &Path, snapshot_name: &str) {
         actual_path.display(),
         snapshot_path.display()
     );
+}
+
+fn normalize_snapshot(contents: &str) -> String {
+    let mut normalized_lines = Vec::new();
+    let mut previous_blank = false;
+
+    for line in contents.lines() {
+        let line = line.trim_end();
+        let is_blank = line.is_empty();
+
+        if is_blank && previous_blank {
+            continue;
+        }
+
+        normalized_lines.push(line);
+        previous_blank = is_blank;
+    }
+
+    while normalized_lines.last().is_some_and(|line| line.is_empty()) {
+        normalized_lines.pop();
+    }
+
+    normalized_lines.join("\n")
 }

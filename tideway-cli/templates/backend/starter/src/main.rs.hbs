@@ -20,7 +20,6 @@ use tideway::auth::{JwtIssuer, JwtIssuerConfig};
 
 mod routes;
 {{#if has_openapi_feature}}
-#[cfg(feature = "openapi")]
 mod openapi_docs;
 {{/if}}
 {{#if has_auth_feature}}
@@ -42,7 +41,6 @@ async fn main() -> Result<(), std::io::Error> {
 {{else}}
     init_tracing();
     {{#if has_openapi_feature}}
-    #[cfg(feature = "openapi")]
     let config = tideway::ConfigBuilder::new()
         .from_env()
         .build()
@@ -103,7 +101,6 @@ async fn main() -> Result<(), std::io::Error> {
     // tideway:app-builder:end
 
 {{#if has_openapi_feature}}
-    #[cfg(feature = "openapi")]
     let app = if {{#if has_config}}config.tideway{{else}}config{{/if}}.openapi.enabled {
         let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);
         let openapi_router = tideway::openapi::create_openapi_router(

@@ -57,6 +57,9 @@ See `ROADMAP_2026_DX_EXECUTION.md` (source of truth) for:
 - 90-day DX execution plan with acceptance criteria
 - Ownership model, metrics dashboard, and immediate backlog
 
+Concrete execution plan from the March 11, 2026 DX review:
+- `DX_IMPLEMENTATION_PLAN_2026-03-11.md`
+
 ## Notes
 
 - All core phases (1-6) are complete

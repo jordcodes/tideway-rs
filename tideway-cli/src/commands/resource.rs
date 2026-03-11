@@ -158,8 +158,10 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         }
     }
 
-    if args.with_tests {
+    if args.with_tests && !args.db {
         print_info("Added unit tests to the resource module");
+    } else if args.with_tests && args.db {
+        print_info("Skipped route unit tests for the DB-backed resource");
     }
 
     print_info(&format!(
@@ -401,7 +403,7 @@ fn render_resource_module(
     } else {
         ""
     };
-    let tests_block = if with_tests {
+    let tests_block = if with_tests && !with_db {
         format!(
             r#"
 
@@ -430,7 +432,7 @@ mod tests {{
             .into_router();
 
         post(app, "/api/{resource_plural}")
-            .with_json(&serde_json::json!({{ "name": "Example" }}))
+            .json(&serde_json::json!({{ "name": "Example" }}))
             .execute()
             .await
             .assert_ok();
@@ -458,45 +460,17 @@ mod tests {{
         ""
     };
 
-    let openapi_paths = if has_openapi {
-        format!(
-            r#"
-#[cfg(feature = "openapi")]
-mod openapi_docs {{
-    use super::*;
-    use utoipa::OpenApi;
-
-    #[derive(OpenApi)]
-    #[openapi(
-        paths(
-            list_{resource_plural},
-            get_{resource_name},
-            create_{resource_name},
-            update_{resource_name},
-            delete_{resource_name}
-        ),
-        components(schemas({resource_pascal}, CreateRequest, UpdateRequest))
-    )]
-    pub struct {resource_pascal}Api;
-}}
-"#,
-            resource_pascal = resource_pascal,
-            resource_name = resource_name,
-            resource_plural = resource_plural,
-        )
-    } else {
-        String::new()
-    };
+    let openapi_paths = String::new();
 
     let openapi_attrs = if has_openapi {
         format!(
             r#"
-#[cfg_attr(feature = "openapi", utoipa::path(
+#[utoipa::path(
     get,
     path = "/api/{resource_plural}",
     {pagination_params}
     responses((status = 200, body = [{resource_pascal}]))
-))]
+)]
 "#,
             resource_plural = resource_plural,
             resource_pascal = resource_pascal,
@@ -513,11 +487,11 @@ mod openapi_docs {{
     let openapi_attrs_get = if has_openapi {
         format!(
             r#"
-#[cfg_attr(feature = "openapi", utoipa::path(
+#[utoipa::path(
     get,
     path = "/api/{resource_plural}/{{id}}",
     responses((status = 200, body = {resource_pascal}))
-))]
+)]
 "#,
             resource_plural = resource_plural,
             resource_pascal = resource_pascal,
@@ -529,12 +503,12 @@ mod openapi_docs {{
     let openapi_attrs_create = if has_openapi {
         format!(
             r#"
-#[cfg_attr(feature = "openapi", utoipa::path(
+#[utoipa::path(
     post,
     path = "/api/{resource_plural}",
     request_body = CreateRequest,
     responses((status = 200, body = MessageResponse))
-))]
+)]
 "#,
             resource_plural = resource_plural,
         )
@@ -545,12 +519,12 @@ mod openapi_docs {{
     let openapi_attrs_update = if has_openapi {
         format!(
             r#"
-#[cfg_attr(feature = "openapi", utoipa::path(
+#[utoipa::path(
     put,
     path = "/api/{resource_plural}/{{id}}",
     request_body = UpdateRequest,
     responses((status = 200, body = MessageResponse))
-))]
+)]
 "#,
             resource_plural = resource_plural,
         )
@@ -561,11 +535,11 @@ mod openapi_docs {{
     let openapi_attrs_delete = if has_openapi {
         format!(
             r#"
-#[cfg_attr(feature = "openapi", utoipa::path(
+#[utoipa::path(
     delete,
     path = "/api/{resource_plural}/{{id}}",
     responses((status = 200, body = MessageResponse))
-))]
+)]
 "#,
             resource_plural = resource_plural,
         )
@@ -614,7 +588,7 @@ mod openapi_docs {{
 
     let pagination_struct = if paginate {
         let attrs = if has_openapi {
-            "#[cfg_attr(feature = \"openapi\", derive(IntoParams))]"
+            "#[derive(IntoParams)]"
         } else {
             ""
         };
@@ -666,6 +640,11 @@ pub struct PaginationParams {{
         )
     } else {
         String::new()
+    };
+    let query_binding = if pagination_query.is_empty() {
+        format!("    let query = {resource_name}::Entity::find();")
+    } else {
+        format!("    let mut query = {resource_name}::Entity::find();")
     };
 
     let handlers = if with_db && with_repo && with_service {
@@ -835,7 +814,7 @@ async fn delete_{resource_name}(
 {openapi_attrs}
 async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}{list_params}) -> Result<Json<Vec<{resource_pascal}>>> {{
     let db = ctx.sea_orm_connection()?;
-    let mut query = {resource_name}::Entity::find();
+{query_binding}
 {pagination_query}
     let models = query.all(&db).await?;
     let items = models
@@ -916,6 +895,7 @@ async fn delete_{resource_name}(
             id_type_str = id_type_str,
             list_params = list_params,
             list_param_prefix = list_param_prefix,
+            query_binding = query_binding,
             pagination_query = pagination_query,
         )
     } else {
@@ -940,7 +920,7 @@ async fn create_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
 }}
 
 {openapi_attrs_update}
-async fn update_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
+async fn update_{resource_name}(Json(body): Json<UpdateRequest>) -> Result<MessageResponse> {{
     let name = body.name.unwrap_or_else(|| "{resource_pascal}".to_string());
     Ok(MessageResponse::success(format!("Updated {{}}", name)))
 }}
@@ -965,7 +945,7 @@ async fn delete_{resource_name}() -> Result<MessageResponse> {{
     format!(
         r#"//! {resource_pascal} routes.
 
-use axum::{{routing::{{delete, get, post, put}}, {extract_import}Json, Router}};
+use axum::{{routing::get, {extract_import}Json, Router}};
 use serde::{{Deserialize, Serialize}};
 use tideway::{{AppContext, MessageResponse, Result, RouteModule}};
 {openapi_import}
@@ -1146,7 +1126,6 @@ fn wire_module_in_main(src_dir: &Path, module_name: &str) -> Result<()> {
 
 fn render_openapi_docs_file(paths: &[String]) -> String {
     let mut output = String::new();
-    output.push_str("#[cfg(feature = \"openapi\")]\n");
     output.push_str("tideway::openapi_doc!(\n");
     output.push_str("    pub(crate) ApiDoc,\n");
     output.push_str("    paths(\n");

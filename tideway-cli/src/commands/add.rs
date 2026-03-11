@@ -496,7 +496,7 @@ fn insert_openapi_into_app_builder(mut contents: String, config_ref: &str) -> Re
         // Insert after app builder block to keep code readable.
         if let Some(insert_at) = find_app_builder_end_insert_at(&contents, pos) {
             let block = format!(
-                "\n    #[cfg(feature = \"openapi\")]\n    if {config_ref}.openapi.enabled {{\n        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);\n        let openapi_router = tideway::openapi::create_openapi_router(openapi, &{config_ref}.openapi);\n        {app_var} = {app_var}.merge_router(openapi_router);\n    }}\n"
+                "\n    if {config_ref}.openapi.enabled {{\n        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);\n        let openapi_router = tideway::openapi::create_openapi_router(openapi, &{config_ref}.openapi);\n        {app_var} = {app_var}.merge_router(openapi_router);\n    }}\n"
             );
             contents.insert_str(insert_at, &block);
         } else {
@@ -515,8 +515,7 @@ fn ensure_openapi_docs_file(project_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let contents = r#"#[cfg(feature = "openapi")]
-tideway::openapi_doc!(pub(crate) ApiDoc, paths());
+    let contents = r#"tideway::openapi_doc!(pub(crate) ApiDoc, paths());
 "#;
 
     if let Some(parent) = docs_path.parent() {

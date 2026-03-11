@@ -100,6 +100,13 @@ mod tests {
     }
 
     #[test]
+    fn test_openapi_merge_macro_single_doc() {
+        let openapi = crate::openapi_merge!(ADoc);
+        let title = openapi.info.title;
+        assert!(!title.is_empty());
+    }
+
+    #[test]
     fn test_merge_openapi_empty() {
         let openapi = merge_openapi(Vec::new());
         assert_eq!(openapi.info.title, "tideway");
@@ -217,9 +224,10 @@ macro_rules! openapi_components {
 #[macro_export]
 macro_rules! openapi_merge {
     ($first:ty $(, $rest:ty)* $(,)?) => {{
-        let mut doc = <$first as utoipa::OpenApi>::openapi();
-        $(doc.merge(<$rest as utoipa::OpenApi>::openapi());)+
-        doc
+        $crate::openapi::merge_openapi(vec![
+            <$first as utoipa::OpenApi>::openapi()
+            $(, <$rest as utoipa::OpenApi>::openapi())*
+        ])
     }};
 }
 

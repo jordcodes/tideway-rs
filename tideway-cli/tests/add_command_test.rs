@@ -489,7 +489,12 @@ async fn main() {
     let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated.contains("create_openapi_router"));
     assert!(updated.contains("openapi_merge_module"));
+    assert!(!updated.contains("#[cfg(feature = \"openapi\")]"));
     assert!(project_dir.join("src/openapi_docs.rs").exists());
+    assert_file_not_contains(
+        &project_dir.join("src/openapi_docs.rs"),
+        "#[cfg(feature = \"openapi\")]",
+    );
 }
 
 #[test]
@@ -546,6 +551,7 @@ async fn main() {
     assert!(updated.contains("openapi_merge_module"));
     assert!(updated.contains("server = server.merge_router(openapi_router);"));
     assert!(project_dir.join("src/openapi_docs.rs").exists());
+    assert!(!updated.contains("#[cfg(feature = \"openapi\")]"));
 }
 
 #[test]
@@ -674,6 +680,17 @@ fn assert_file_contains(path: &Path, needle: &str) {
     assert!(
         contents.contains(needle),
         "expected {} to contain {}, got:\n{}",
+        path.display(),
+        needle,
+        contents
+    );
+}
+
+fn assert_file_not_contains(path: &Path, needle: &str) {
+    let contents = fs::read_to_string(path).expect("read file");
+    assert!(
+        !contents.contains(needle),
+        "expected {} to not contain {}, got:\n{}",
         path.display(),
         needle,
         contents
