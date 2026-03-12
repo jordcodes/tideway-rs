@@ -68,16 +68,20 @@ Use the CLI to scaffold the recommended API-first Tideway app:
 cargo install tideway-cli
 tideway new my_app
 cd my_app
-tideway doctor --fix
 tideway dev --fix-env
 ```
 
 Then visit `http://localhost:8000/health`.
 If OpenAPI is enabled, visit `http://localhost:8000/swagger-ui`.
 
+The default API-first scaffold uses SQLite for local development.
+If you want local Postgres instead, add `--with-docker` and start it with `docker compose up -d`.
+
 Canonical next step: add your first DB-backed resource with
 `tideway resource <name> --wire --db --repo --service --paginate --search`,
 then run `tideway migrate`.
+
+Optional sanity check: run `tideway doctor` if you want a project/setup audit before you keep building.
 
 When no flags are provided, the CLI will prompt you interactively (similar to Vite).
 Use `--no-prompt` for the same API-first defaults in CI/non-interactive runs.

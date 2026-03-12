@@ -56,6 +56,38 @@ fn test_new_mentions_primary_path() {
 }
 
 #[test]
+fn test_new_keeps_dev_as_primary_next_step_and_doctor_optional() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let output = run_tideway(&[
+        "new",
+        "my_app",
+        "--no-prompt",
+        "--path",
+        project_dir.to_str().expect("utf8 path"),
+    ]);
+    assert_success(&output, "tideway new");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("2. tideway dev --fix-env"),
+        "expected dev to stay in numbered next steps, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Optional: run `tideway doctor`"),
+        "expected optional doctor note, got:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("2. tideway doctor --fix"),
+        "doctor should not be shown as a required numbered next step, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
 fn test_resource_mentions_primary_path_reminder() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

@@ -168,13 +168,13 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         println!("\n{}", "Next steps:".yellow().bold());
         println!("  1. cd {}", dir_name);
         let mut step = 2;
-        println!("  {}. tideway doctor --fix", step);
-        step += 1;
         if args.with_docker {
             println!("  {}. docker compose up -d", step);
             step += 1;
         }
         println!("  {}. tideway dev --fix-env", step);
+        println!();
+        println!("Optional: run `tideway doctor` for a project/setup audit.");
         println!();
         if should_suggest_migrate(args.preset, has_database_feature) {
             println!("Tip: run `tideway migrate` when you need explicit migration control.");

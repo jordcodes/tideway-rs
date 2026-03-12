@@ -12,6 +12,8 @@ tideway dev --fix-env
 `tideway new my_app` is the encouraged API-first path.
 Use `--no-prompt` for the same defaults in CI/non-interactive runs, or `--preset minimal` if you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
+The default API scaffold uses SQLite locally, so this path boots without extra database setup.
+If you want local Postgres instead, run `tideway new my_app --with-docker`, then `docker compose up -d` before `tideway dev --fix-env`.
 
 ## 2) Run the server
 
@@ -28,6 +30,7 @@ tideway migrate
 
 This command scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring.
 If `tideway dev --fix-env` is not already running, start it now.
+Run `tideway doctor` when you want a quick sanity check; it is not required for the happy path.
 
 ## 4) OpenAPI docs
 

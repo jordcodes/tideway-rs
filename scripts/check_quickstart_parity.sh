@@ -25,7 +25,6 @@ read -r -d '' expected_fast_start <<'EOF' || true
 cargo install tideway-cli
 tideway new my_app
 cd my_app
-tideway doctor --fix
 tideway dev --fix-env
 EOF
 
@@ -45,6 +44,10 @@ done
 
 if ! grep -Fq 'Then visit `http://localhost:8000/health`.' README.md; then
   fail "README quickstart must include the health endpoint verification line."
+fi
+
+if ! grep -Fq 'The default API-first scaffold uses SQLite for local development.' README.md; then
+  fail "README quickstart must mention the default local SQLite path."
 fi
 
 echo "[quickstart-parity] OK"

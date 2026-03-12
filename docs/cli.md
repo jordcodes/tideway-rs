@@ -41,6 +41,7 @@ tideway new my_app
 
 If you run it without extra flags, it will prompt for options and default to the API-first path.
 In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
+For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
 
 Use a preset to apply common defaults:
 
@@ -56,7 +57,7 @@ List presets:
 tideway new --preset list
 ```
 
-With features and local Postgres:
+With features and explicit local Postgres:
 
 ```bash
 tideway new my_app --features auth,database --with-docker
@@ -88,7 +89,7 @@ tideway new my_app --with-env
 
 Available presets:
 - `minimal` - basic starter
-- `api` - auth + database + openapi + validation, plus config, docker, CI, env, and a DB-backed sample resource
+- `api` - auth + database + openapi + validation, plus config, CI, env, and a DB-backed sample resource (SQLite local dev by default; add `--with-docker` for Postgres)
 - `saas` - b2b backend modules (auth, billing, organizations, admin) + api defaults and production scaffolding
 - `worker` - jobs-first scaffold (database + jobs + redis + metrics) with config, docker, CI, env
 
@@ -170,6 +171,8 @@ Fix missing `.env.example`:
 tideway doctor --fix
 ```
 
+`tideway doctor` is optional for the recommended new-app path; use it as a sanity check or when recovering from setup drift.
+
 ### `tideway backend` (advanced)
 
 Generate a full backend preset.
@@ -228,4 +231,4 @@ tideway migrate up -- --num 2
 
 - Canonical path: `new` -> `dev --fix-env` -> `resource ...` -> `migrate`.
 - `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
-- `tideway doctor` is a quick sanity check before deploying.
+- `tideway doctor` is a quick sanity check and repair tool, not a required first-run step.
