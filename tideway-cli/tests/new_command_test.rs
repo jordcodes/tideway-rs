@@ -65,6 +65,13 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
         "DATABASE_URL=sqlite:./my_app.db?mode=rwc",
     );
     assert!(project_dir.join("src/routes/todo.rs").exists());
+    assert!(project_dir.join("src/repositories/todo.rs").exists());
+    assert!(project_dir.join("src/services/todo.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/routes/todo.rs"),
+        "Query(params): Query<PaginationParams>",
+    );
+    assert_file_contains(&project_dir.join("src/routes/todo.rs"), "params.q");
     assert!(
         project_dir
             .join("migration/src/m001_create_todos.rs")
@@ -376,9 +383,15 @@ fn test_new_command_with_preset_api() {
     );
     assert!(project_dir.join("src/entities/mod.rs").exists());
     assert!(project_dir.join("src/entities/todo.rs").exists());
+    assert!(project_dir.join("src/repositories/mod.rs").exists());
+    assert!(project_dir.join("src/repositories/todo.rs").exists());
+    assert!(project_dir.join("src/services/mod.rs").exists());
+    assert!(project_dir.join("src/services/todo.rs").exists());
     assert!(project_dir.join("src/routes/todo.rs").exists());
     assert!(project_dir.join("src/openapi_docs.rs").exists());
     assert_file_contains(&project_dir.join("src/main.rs"), "mod entities;");
+    assert_file_contains(&project_dir.join("src/main.rs"), "mod repositories;");
+    assert_file_contains(&project_dir.join("src/main.rs"), "mod services;");
     assert_file_contains(&project_dir.join("src/main.rs"), "mod openapi_docs;");
     assert_file_not_contains(
         &project_dir.join("src/main.rs"),
@@ -405,6 +418,19 @@ fn test_new_command_with_preset_api() {
     assert_file_not_contains(
         &project_dir.join("src/routes/todo.rs"),
         "mod openapi_docs {",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/todo.rs"),
+        "Query(params): Query<PaginationParams>",
+    );
+    assert_file_contains(&project_dir.join("src/routes/todo.rs"), "params.q");
+    assert_file_contains(
+        &project_dir.join("src/repositories/todo.rs"),
+        "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/todo.rs"),
+        "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>)",
     );
     assert_file_contains(&project_dir.join(".env.example"), "OPENAPI_ENABLED=true");
     assert_file_contains(&project_dir.join(".gitignore"), "*.db");

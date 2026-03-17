@@ -333,6 +333,10 @@ pub fn expected_files(args: &NewArgs) -> Vec<String> {
         files.push("migration/src/m001_create_todos.rs".to_string());
         files.push("src/entities/mod.rs".to_string());
         files.push("src/entities/todo.rs".to_string());
+        files.push("src/repositories/mod.rs".to_string());
+        files.push("src/repositories/todo.rs".to_string());
+        files.push("src/services/mod.rs".to_string());
+        files.push("src/services/todo.rs".to_string());
         files.push("src/routes/todo.rs".to_string());
         files.push("src/openapi_docs.rs".to_string());
     }
@@ -496,9 +500,9 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
     let args = ResourceArgs {
         name: "todo".to_string(),
         path: target_dir.to_string_lossy().to_string(),
-        wire: true,
+        wire: false,
         with_tests: true,
-        db: true,
+        db: false,
         repo: false,
         repo_tests: false,
         service: false,
@@ -507,7 +511,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         paginate: false,
         search: false,
         db_backend: DbBackend::Auto,
-        profile: ResourceProfile::Stub,
+        profile: ResourceProfile::Api,
     };
 
     crate::commands::resource::run(args)?;
