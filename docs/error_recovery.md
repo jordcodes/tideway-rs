@@ -113,7 +113,7 @@ tideway migrate status
 
 Primary:
 ```bash
-tideway dev --fix-env
+tideway dev
 tideway migrate status
 ```
 
@@ -129,7 +129,7 @@ Primary (new app):
 ```bash
 tideway new my_app
 cd my_app
-tideway dev --fix-env
+tideway dev
 ```
 
 Advanced (existing project):

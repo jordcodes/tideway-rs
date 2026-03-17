@@ -172,7 +172,7 @@ pub fn run(mut args: NewArgs) -> Result<()> {
             println!("  {}. docker compose up -d", step);
             step += 1;
         }
-        println!("  {}. tideway dev --fix-env", step);
+        println!("  {}. tideway dev", step);
         println!();
         println!("Optional: run `tideway doctor` for a project/setup audit.");
         println!();
@@ -677,7 +677,7 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
         Some(NewPreset::Worker) => {
             println!("{}", "Worker smoke checks:".yellow().bold());
             println!("  # Ensure REDIS_URL and DATABASE_URL are set in .env");
-            println!("  tideway dev --fix-env");
+            println!("  tideway dev");
             println!();
         }
         _ => {}

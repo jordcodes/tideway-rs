@@ -361,8 +361,7 @@ fn is_local_postgres_host(host: &str) -> bool {
 
 fn postgres_primary_fix(project_dir: &Path, host: &str) -> String {
     if is_local_postgres_host(host) && project_dir.join("docker-compose.yml").exists() {
-        "Run `docker compose up -d` in the project root, then rerun `tideway dev --fix-env`."
-            .to_string()
+        "Run `docker compose up -d` in the project root, then rerun `tideway dev`.".to_string()
     } else {
         "Start Postgres for the configured DATABASE_URL, then rerun `tideway dev`.".to_string()
     }

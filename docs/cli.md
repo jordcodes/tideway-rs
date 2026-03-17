@@ -210,7 +210,7 @@ Run a Tideway app in dev mode (loads `.env`, optional migrations).
 
 ```bash
 tideway dev
-tideway dev --fix-env
+tideway dev
 tideway dev --no-migrate
 tideway dev -- --release
 ```
@@ -229,6 +229,6 @@ tideway migrate up -- --num 2
 
 ## Notes
 
-- Canonical path: `new` -> `dev --fix-env` -> `resource ...` -> `migrate`.
+- Canonical path: `new` -> `dev` -> `resource ...` -> `migrate`.
 - `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
 - `tideway doctor` is a quick sanity check and repair tool, not a required first-run step.

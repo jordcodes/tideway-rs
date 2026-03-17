@@ -27,7 +27,7 @@ pub fn ensure_project_dir(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn ensure_env(project_dir: &Path, fix_env: bool) -> Result<()> {
+pub fn ensure_env(project_dir: &Path, _fix_env: bool) -> Result<()> {
     let env_path = project_dir.join(".env");
     if env_path.exists() {
         return Ok(());
@@ -39,14 +39,9 @@ pub fn ensure_env(project_dir: &Path, fix_env: bool) -> Result<()> {
         return Ok(());
     }
 
-    if fix_env {
-        fs::copy(&env_example_path, &env_path)
-            .with_context(|| format!("Failed to copy {}", env_example_path.display()))?;
-        print_success("Created .env from .env.example");
-        return Ok(());
-    }
-
-    print_warning("Missing .env (copy .env.example or run with --fix-env)");
+    fs::copy(&env_example_path, &env_path)
+        .with_context(|| format!("Failed to copy {}", env_example_path.display()))?;
+    print_success("Created .env from .env.example");
     Ok(())
 }
 

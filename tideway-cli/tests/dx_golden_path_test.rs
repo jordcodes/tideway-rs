@@ -120,7 +120,6 @@ fn test_golden_path_default_api_boots_and_serves_health() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
     command
         .arg("dev")
-        .arg("--fix-env")
         .arg("--path")
         .arg(project_dir.to_str().expect("project path utf8"))
         .env("CARGO_TARGET_DIR", &target_dir)
@@ -136,7 +135,7 @@ fn test_golden_path_default_api_boots_and_serves_health() {
 }
 
 #[test]
-fn test_dev_fix_env_copies_env_example_and_passes_env_to_cargo() {
+fn test_dev_bootstraps_env_example_and_passes_env_to_cargo() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
     create_minimal_project(&project_dir);
@@ -156,11 +155,10 @@ fn test_dev_fix_env_copies_env_example_and_passes_env_to_cargo() {
             "dev",
             "--path",
             project_dir.to_str().expect("project path utf8"),
-            "--fix-env",
         ],
         &fake_cargo_dir,
     );
-    assert_success(&output, "tideway dev --fix-env");
+    assert_success(&output, "tideway dev");
 
     assert!(
         project_dir.join(".env").exists(),
@@ -227,7 +225,6 @@ fn test_dev_fails_fast_when_postgres_server_is_unreachable() {
             "dev",
             "--path",
             project_dir.to_str().expect("project path utf8"),
-            "--fix-env",
         ],
         &fake_cargo_dir,
     );
@@ -260,7 +257,7 @@ fn test_dev_fails_fast_when_postgres_server_is_unreachable() {
 }
 
 #[test]
-fn test_dev_warns_when_env_missing_without_fix() {
+fn test_dev_bootstraps_env_when_example_exists() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
     create_minimal_project(&project_dir);
@@ -282,14 +279,14 @@ fn test_dev_warns_when_env_missing_without_fix() {
     assert_success(&output, "tideway dev");
 
     assert!(
-        !project_dir.join(".env").exists(),
-        "expected .env to remain absent without --fix-env"
+        project_dir.join(".env").exists(),
+        "expected .env to be created automatically"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Missing .env"),
-        "expected missing env warning, got:\n{}",
+        stdout.contains("Created .env from .env.example"),
+        "expected env bootstrap message, got:\n{}",
         stdout
     );
 }

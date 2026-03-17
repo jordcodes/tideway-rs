@@ -5,7 +5,7 @@ This page documents advanced alternatives to the canonical Tideway onboarding st
 Canonical onboarding style:
 - Define modules with `module!`.
 - Register modules with `App::register_module(...)`.
-- Use `tideway new` + `tideway dev --fix-env` + `tideway resource ... --wire ...`.
+- Use `tideway new` + `tideway dev` + `tideway resource ... --wire ...`.
 
 ## Grouped Route Syntax
 

@@ -192,7 +192,7 @@ pub struct DevArgs {
     #[arg(long, default_value = "false")]
     pub no_env: bool,
 
-    /// Create .env from .env.example when missing
+    /// Legacy alias: eagerly create .env from .env.example when missing
     #[arg(long, default_value = "false")]
     pub fix_env: bool,
 
@@ -223,7 +223,7 @@ pub struct MigrateArgs {
     #[arg(long, default_value = "false")]
     pub no_env: bool,
 
-    /// Create .env from .env.example when missing
+    /// Legacy alias: eagerly create .env from .env.example when missing
     #[arg(long, default_value = "false")]
     pub fix_env: bool,
 

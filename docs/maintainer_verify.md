@@ -50,7 +50,7 @@ Symptoms:
 
 Fix:
 - restore/update `README.md` quickstart commands to the expected canonical flow
-- keep the default quickstart aligned with `tideway new my_app -> tideway dev --fix-env`
+- keep the default quickstart aligned with `tideway new my_app -> tideway dev`
 - mention the SQLite local-dev default when the quickstart path changes
 - ensure health-check verification line is present
 
