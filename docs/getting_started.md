@@ -117,6 +117,9 @@ let app = App::with_config(config)
     .register_module(routes::ApiModule);
 ```
 
+`with_dev_mode(true)` enables the dev middleware branch.
+Use `DevConfigBuilder` when you want specific dev tooling such as request dumping.
+
 If you need to manually serve with Axum, use the same make-service path as `serve()`:
 
 ```rust

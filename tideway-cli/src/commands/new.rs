@@ -522,10 +522,7 @@ mod tests {
     }
 }
 
-fn apply_primary_wizard_choice(
-    preset_choice: usize,
-    args: &mut NewArgs,
-) -> bool {
+fn apply_primary_wizard_choice(preset_choice: usize, args: &mut NewArgs) -> bool {
     match preset_choice {
         0 => {
             args.preset = Some(NewPreset::Api);

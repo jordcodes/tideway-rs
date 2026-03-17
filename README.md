@@ -14,10 +14,10 @@
 - **Trait-Based Extensibility**: Swap database, cache, session, and email implementations easily
 - **Production Middleware**: Compression, security headers, timeouts, and Prometheus metrics
 - **Request Validation**: Type-safe validation with custom validators and extractors
-- **Enhanced Error Handling**: Rich error responses with context, IDs, and stack traces
+- **Enhanced Error Handling**: Rich error responses with context, IDs, and production-safe server error redaction
 - **Background Jobs**: In-memory and Redis-backed job queues with retry logic
 - **Email**: SMTP and console mailers with support for Resend, SendGrid, and more
-- **Developer Experience**: Alba-style testing, test fixtures, dev mode debugging tools
+- **Developer Experience**: Alba-style testing, test fixtures, and opt-in dev request dumping
 - **WebSocket Support**: Real-time communication with connection management and broadcasting
 - **Type-Safe**: Full Rust type safety with excellent error messages
 - **Production Ready**: Graceful shutdown, request IDs, and structured logging out of the box
@@ -401,7 +401,7 @@ All errors automatically return JSON responses with:
 - Unique error ID for tracking
 - Optional details and context
 - Field-specific validation errors
-- Stack traces (in dev mode)
+- Optional stack traces when you explicitly build a dev response with `ErrorInfo`
 
 ```json
 {
@@ -589,7 +589,7 @@ async fn test_with_database() {
 
 ### 9. Development Mode
 
-Enable development mode for enhanced debugging:
+Enable development mode for request dumping and other dev-only diagnostics:
 
 ```rust
 use tideway::{ConfigBuilder, DevConfigBuilder};
@@ -604,6 +604,9 @@ let config = ConfigBuilder::new()
     )
     .build()?;  // Returns Result<Config> - validates configuration
 ```
+
+`with_request_dumper(true)` is applied by Tideway's middleware stack.
+`with_stack_traces(true)` currently sets the dev preference used when you explicitly build enhanced error responses with `ErrorInfo` and `into_response_with_info(..., true)`; it is not yet auto-injected into every `TidewayError` response.
 
 **Environment Variables:**
 - `TIDEWAY_DEV_MODE` - Enable dev mode (default: false)
@@ -959,11 +962,11 @@ cargo test
 - [x] Dependency injection with AppContext
 - [x] Custom validators (UUID, slug, phone, JSON, duration)
 - [x] ValidatedQuery and ValidatedForm extractors
-- [x] Enhanced error handling (context, IDs, stack traces)
+- [x] Enhanced error handling (context, IDs, production-safe error responses)
 - [x] Alba-style testing utilities
 - [x] Test fixtures and fake data helpers
 - [x] Database testing improvements (seed, reset, transactions)
-- [x] Development mode (enhanced errors, request dumper)
+- [x] Development mode configuration and request dumper
 - [x] Response helpers (paginated, created, no_content)
 - [x] WebSocket support (connection management, rooms, broadcasting)
 

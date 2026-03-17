@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 
 /// Development mode configuration
 ///
-/// Controls development-specific features like enhanced error responses
-/// and request/response dumping.
+/// Controls development-specific features like request/response dumping
+/// and other dev-only diagnostics.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DevConfig {
-    /// Enable development mode (enhanced errors, request dumper, etc.)
+    /// Enable development mode middleware and related diagnostics.
     #[serde(default)]
     pub enabled: bool,
-    /// Include stack traces in error responses
+    /// Include stack traces in explicitly enhanced dev error responses
     #[serde(default)]
     pub include_stack_traces: bool,
     /// Enable request/response dumper middleware

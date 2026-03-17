@@ -9,7 +9,7 @@ Tideway's error handling system provides:
 - **Unified Error Type**: `TidewayError` for all application errors
 - **Error Context**: Additional context, details, and field errors
 - **Error Tracking**: Unique error IDs for tracking and debugging
-- **Development Mode**: Enhanced error responses with stack traces
+- **Development Mode**: Opt-in request dumping plus explicit dev-mode error responses when you build them
 
 ## Basic Usage
 
@@ -180,7 +180,7 @@ With context and field errors (client errors only):
 
 ### Development Mode Response
 
-With full error details and stack traces:
+When you explicitly build `ErrorInfo` and convert with `into_response_with_info(..., true)`, Tideway can include full error details and stack traces:
 
 ```json
 {
@@ -191,7 +191,7 @@ With full error details and stack traces:
 }
 ```
 
-**WARNING**: Never enable dev mode in production - it exposes sensitive information!
+**WARNING**: Never enable dev mode in production - it can expose sensitive information!
 
 ## Error Info
 
@@ -256,11 +256,15 @@ let config = ConfigBuilder::new()
     .with_dev_config(
         DevConfigBuilder::new()
             .enabled(true)
+            .with_request_dumper(true)
             .with_stack_traces(true)
             .build()
     )
     .build();
 ```
+
+`with_request_dumper(true)` is wired into Tideway's middleware stack.
+`with_stack_traces(true)` currently configures the dev preference used when you explicitly construct enhanced error responses with `ErrorInfo` and `into_response_with_info(..., true)`; it is not yet automatically injected into every `TidewayError` response.
 
 ### Environment Variables
 
@@ -276,7 +280,7 @@ TIDEWAY_DEV_STACK_TRACES=true
 3. **Field Errors**: Provide field-specific errors for validation
 4. **Error IDs**: Use custom error IDs for tracking
 5. **Error Messages**: Provide clear, actionable error messages
-6. **Development Mode**: Enable stack traces only in development
+6. **Development Mode**: Use stack traces only in development, and only on explicitly enhanced responses until automatic runtime wiring is expanded
 
 ## Error Handling Patterns
 
