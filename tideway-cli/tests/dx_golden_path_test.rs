@@ -149,6 +149,22 @@ fn test_golden_path_saas_scaffold_supports_doctor_and_dev_plan() {
         project_dir.to_str().expect("project path utf8"),
     ]);
     assert_success(&new_output, "tideway new --preset saas");
+    let new_stdout = String::from_utf8_lossy(&new_output.stdout);
+    assert!(
+        !new_stdout.contains("`tideway backend` is advanced"),
+        "expected saas preset to stay on the new-command path, got:\n{}",
+        new_stdout
+    );
+    assert!(
+        !new_stdout.contains("Add dependencies to Cargo.toml"),
+        "expected saas preset to avoid backend-manual dependency guidance, got:\n{}",
+        new_stdout
+    );
+    assert!(
+        new_stdout.contains("curl http://localhost:8000/billing/plans"),
+        "expected saas smoke check in output, got:\n{}",
+        new_stdout
+    );
 
     let doctor_output = run_tideway(&[
         "--json",
@@ -157,6 +173,12 @@ fn test_golden_path_saas_scaffold_supports_doctor_and_dev_plan() {
         project_dir.to_str().expect("project path utf8"),
     ]);
     assert_success(&doctor_output, "tideway doctor");
+    let doctor_stdout = String::from_utf8_lossy(&doctor_output.stdout);
+    assert!(
+        !doctor_stdout.contains("OpenAPI"),
+        "expected saas doctor output to stay free of stale openapi warnings, got:\n{}",
+        doctor_stdout
+    );
 
     let dev_output = run_tideway(&[
         "--plan",

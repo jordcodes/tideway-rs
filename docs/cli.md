@@ -44,6 +44,7 @@ The first interactive screen promotes `api`, `saas`, and `worker`; `minimal`, ba
 In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
 For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
 The API preset already seeds a sample `todo` resource wired through entity, repository, and service layers, with `limit`, `offset`, and `q` support on the list endpoint.
+The SaaS preset generates the B2B auth/billing/organizations/admin backend scaffold with Postgres Docker, CI, env defaults, and a public `GET /billing/plans` smoke endpoint.
 
 Use a preset to apply common defaults:
 
@@ -92,7 +93,7 @@ tideway new my_app --with-env
 Available presets:
 - `minimal` - basic starter
 - `api` - auth + database + openapi + validation, plus config, CI, env, and a sample `todo` resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add `--with-docker` for Postgres)
-- `saas` - b2b backend modules (auth, billing, organizations, admin) + api defaults and production scaffolding
+- `saas` - b2b backend scaffold with auth, billing, organizations, admin, docker, CI, env, and billing-ready defaults
 - `worker` - jobs-first scaffold (database + jobs + redis + metrics) with config, docker, CI, env
 
 ### `tideway init` (advanced)

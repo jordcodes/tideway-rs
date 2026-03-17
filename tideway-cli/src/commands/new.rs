@@ -38,7 +38,7 @@ struct ResourceWizardOptions {
 
 const PRIMARY_PRESET_OPTIONS: [&str; 4] = [
     "API preset (recommended: auth + database + openapi + validation + full-stack todo sample)",
-    "SaaS preset (b2b backend + api defaults)",
+    "SaaS preset (b2b auth + billing + orgs + admin)",
     "Worker preset (jobs + redis + metrics)",
     "Advanced options (minimal, backend presets, custom)",
 ];
@@ -85,6 +85,10 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     let has_openapi_feature = features.contains("openapi");
     let has_tideway_features = !features.is_empty();
     let starter_database = starter_database_for(&args);
+    let backend_preset = args
+        .preset
+        .and_then(preset_backend_preset)
+        .or(wizard.backend_preset.clone());
 
     let target_dir = PathBuf::from(&dir_name);
     if target_dir.exists() {
@@ -124,24 +128,24 @@ pub fn run(mut args: NewArgs) -> Result<()> {
     let engine = BackendTemplateEngine::new(context)?;
 
     let needs_env = needs_env_from_args(&args);
-    scaffold_files(&target_dir, &engine, &args, needs_env)?;
+    scaffold_files(
+        &target_dir,
+        &engine,
+        &args,
+        needs_env,
+        backend_preset.is_some(),
+    )?;
     if matches!(args.preset, Some(NewPreset::Api)) {
         scaffold_api_preset(&target_dir)?;
     }
-    if let Some(preset) = args.preset {
-        if let Some(backend_preset) = preset_backend_preset(preset) {
-            scaffold_backend_preset(&target_dir, &project_name, backend_preset)?;
-            ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
-        }
-    }
-    if let Some(backend_preset) = wizard.backend_preset {
+    if let Some(backend_preset) = backend_preset.clone() {
         scaffold_backend_preset(&target_dir, &project_name, backend_preset)?;
         ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
     }
     if let Some(resource) = wizard.resource {
         scaffold_wizard_resource(&target_dir, resource)?;
     }
-    let created = expected_files(&args);
+    let created = expected_files_for(&args, backend_preset.as_ref());
 
     if !is_json_output() {
         println!(
@@ -208,6 +212,7 @@ fn scaffold_files(
     engine: &BackendTemplateEngine,
     args: &NewArgs,
     needs_env: bool,
+    is_backend_scaffold: bool,
 ) -> Result<()> {
     let has_auth_feature = normalize_features(&args.features).contains("auth");
     let is_api_preset = matches!(args.preset, Some(NewPreset::Api));
@@ -217,46 +222,48 @@ fn scaffold_files(
         &engine.render("starter/Cargo.toml")?,
         args.force,
     )?;
-    write_file_with_force_or_error_default(
-        &target_dir.join("src/main.rs"),
-        &clean_rust_source(&engine.render("starter/src/main.rs")?),
-        args.force,
-    )?;
-    write_file_with_force_or_error_default(
-        &target_dir.join("src/routes/mod.rs"),
-        &engine.render("starter/src/routes/mod.rs")?,
-        args.force,
-    )?;
+    if !is_backend_scaffold {
+        write_file_with_force_or_error_default(
+            &target_dir.join("src/main.rs"),
+            &clean_rust_source(&engine.render("starter/src/main.rs")?),
+            args.force,
+        )?;
+        write_file_with_force_or_error_default(
+            &target_dir.join("src/routes/mod.rs"),
+            &engine.render("starter/src/routes/mod.rs")?,
+            args.force,
+        )?;
 
-    if has_auth_feature {
-        write_file_with_force_or_error_default(
-            &target_dir.join("src/auth/mod.rs"),
-            &engine.render("starter/src/auth/mod.rs")?,
-            args.force,
-        )?;
-        write_file_with_force_or_error_default(
-            &target_dir.join("src/auth/provider.rs"),
-            &engine.render("starter/src/auth/provider.rs")?,
-            args.force,
-        )?;
-        write_file_with_force_or_error_default(
-            &target_dir.join("src/auth/routes.rs"),
-            &engine.render("starter/src/auth/routes.rs")?,
-            args.force,
-        )?;
-    }
+        if has_auth_feature {
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/auth/mod.rs"),
+                &engine.render("starter/src/auth/mod.rs")?,
+                args.force,
+            )?;
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/auth/provider.rs"),
+                &engine.render("starter/src/auth/provider.rs")?,
+                args.force,
+            )?;
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/auth/routes.rs"),
+                &engine.render("starter/src/auth/routes.rs")?,
+                args.force,
+            )?;
+        }
 
-    if args.with_config {
-        write_file_with_force_or_error_default(
-            &target_dir.join("src/config.rs"),
-            &engine.render("starter/src/config.rs")?,
-            args.force,
-        )?;
-        write_file_with_force_or_error_default(
-            &target_dir.join("src/error.rs"),
-            &engine.render("starter/src/error.rs")?,
-            args.force,
-        )?;
+        if args.with_config {
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/config.rs"),
+                &engine.render("starter/src/config.rs")?,
+                args.force,
+            )?;
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/error.rs"),
+                &engine.render("starter/src/error.rs")?,
+                args.force,
+            )?;
+        }
     }
     if args.with_docker {
         write_file_with_force_or_error_default(
@@ -284,7 +291,7 @@ fn scaffold_files(
         args.force,
     )?;
 
-    if needs_env {
+    if needs_env && !is_backend_scaffold {
         write_file_with_force_or_error_default(
             &target_dir.join(".env.example"),
             &engine.render("starter/env_example")?,
@@ -309,23 +316,30 @@ fn scaffold_files(
 }
 
 pub fn expected_files(args: &NewArgs) -> Vec<String> {
+    expected_files_for(args, None)
+}
+
+fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) -> Vec<String> {
     let needs_env = needs_env_from_args(args);
     let has_auth_feature = normalize_features(&args.features).contains("auth");
-    let mut files = vec![
-        "Cargo.toml".to_string(),
-        "src/main.rs".to_string(),
-        "src/routes/mod.rs".to_string(),
-    ];
+    let mut files = vec!["Cargo.toml".to_string()];
 
-    if has_auth_feature {
-        files.push("src/auth/mod.rs".to_string());
-        files.push("src/auth/provider.rs".to_string());
-        files.push("src/auth/routes.rs".to_string());
-    }
+    if let Some(backend_preset) = backend_preset {
+        files.extend(backend_preset_expected_files(backend_preset));
+    } else {
+        files.push("src/main.rs".to_string());
+        files.push("src/routes/mod.rs".to_string());
 
-    if args.with_config {
-        files.push("src/config.rs".to_string());
-        files.push("src/error.rs".to_string());
+        if has_auth_feature {
+            files.push("src/auth/mod.rs".to_string());
+            files.push("src/auth/provider.rs".to_string());
+            files.push("src/auth/routes.rs".to_string());
+        }
+
+        if args.with_config {
+            files.push("src/config.rs".to_string());
+            files.push("src/error.rs".to_string());
+        }
     }
     if args.with_docker {
         files.push("docker-compose.yml".to_string());
@@ -353,6 +367,49 @@ pub fn expected_files(args: &NewArgs) -> Vec<String> {
         files.push("src/services/todo.rs".to_string());
         files.push("src/routes/todo.rs".to_string());
         files.push("src/openapi_docs.rs".to_string());
+    }
+
+    files
+}
+
+fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
+    let mut files = vec![
+        "src/main.rs".to_string(),
+        "src/lib.rs".to_string(),
+        "src/config.rs".to_string(),
+        "src/error.rs".to_string(),
+        "src/entities/mod.rs".to_string(),
+        "src/entities/prelude.rs".to_string(),
+        "src/entities/user.rs".to_string(),
+        "src/entities/refresh_token_family.rs".to_string(),
+        "src/entities/verification_token.rs".to_string(),
+        "src/auth/mod.rs".to_string(),
+        "src/auth/routes.rs".to_string(),
+        "src/auth/store.rs".to_string(),
+        "src/billing/mod.rs".to_string(),
+        "src/billing/routes.rs".to_string(),
+        "src/admin/mod.rs".to_string(),
+        "src/admin/routes.rs".to_string(),
+        "migration/Cargo.toml".to_string(),
+        "migration/src/lib.rs".to_string(),
+        "migration/src/m001_create_users.rs".to_string(),
+        "migration/src/m002_create_refresh_token_families.rs".to_string(),
+        "migration/src/m003_create_verification_tokens.rs".to_string(),
+        "migration/src/m004_create_billing.rs".to_string(),
+        "migration/src/m008_create_billing_plans.rs".to_string(),
+        "migration/src/m009_create_webhook_processed_events.rs".to_string(),
+    ];
+
+    if *preset == BackendPreset::B2b {
+        files.push("src/entities/organization.rs".to_string());
+        files.push("src/entities/organization_member.rs".to_string());
+        files.push("src/organizations/mod.rs".to_string());
+        files.push("src/organizations/routes.rs".to_string());
+        files.push("migration/src/m005_create_organizations.rs".to_string());
+        files.push("migration/src/m006_create_organization_members.rs".to_string());
+        files.push("migration/src/m007_add_admin_flag.rs".to_string());
+    } else {
+        files.push("migration/src/m005_add_admin_flag.rs".to_string());
     }
 
     files
@@ -408,7 +465,7 @@ mod tests {
         );
         assert_eq!(
             PRIMARY_PRESET_OPTIONS[1],
-            "SaaS preset (b2b backend + api defaults)"
+            "SaaS preset (b2b auth + billing + orgs + admin)"
         );
         assert_eq!(
             PRIMARY_PRESET_OPTIONS[2],
@@ -575,7 +632,6 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
             "billing-seaorm",
             "organizations",
             "admin",
-            "openapi",
             "validation",
             "metrics",
         ],
@@ -658,7 +714,7 @@ fn print_presets() {
         "  - api: auth + database + openapi + validation, plus config, CI, env, and a sample todo resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add --with-docker for Postgres)"
     );
     println!(
-        "  - saas: b2b backend modules (auth, billing, organizations, admin) + api defaults + production scaffolding"
+        "  - saas: b2b backend scaffold with auth, billing, organizations, admin, docker, CI, env, and billing-ready defaults"
     );
     println!(
         "  - worker: jobs-first starter (database + jobs + redis + metrics) with config, docker, CI, and env"
@@ -712,8 +768,29 @@ fn scaffold_backend_preset(
         database: "postgres".to_string(),
     };
 
-    crate::commands::backend::run(backend_args)?;
+    crate::commands::backend::scaffold(
+        &backend_args,
+        crate::commands::backend::BackendScaffoldMode::EmbeddedInNew,
+    )?;
 
+    let engine = backend_template_engine(project_name, has_organizations)?;
+    write_file_with_force_or_error_default(
+        &target_dir.join("migration/Cargo.toml"),
+        &engine.render("starter/migration/Cargo.toml")?,
+        true,
+    )?;
+    write_file(
+        &target_dir.join(".env.example"),
+        &engine.render("shared/env_example")?,
+    )?;
+
+    Ok(())
+}
+
+fn backend_template_engine(
+    project_name: &str,
+    has_organizations: bool,
+) -> Result<BackendTemplateEngine> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
         project_name_pascal: to_pascal_case(project_name),
@@ -730,14 +807,8 @@ fn scaffold_backend_preset(
         needs_arc: false,
         has_config: false,
     };
-    let engine = BackendTemplateEngine::new(context)?;
-    write_file_with_force_or_error_default(
-        &target_dir.join("migration/Cargo.toml"),
-        &engine.render("starter/migration/Cargo.toml")?,
-        true,
-    )?;
 
-    Ok(())
+    BackendTemplateEngine::new(context)
 }
 
 fn scaffold_wizard_resource(target_dir: &Path, resource: ResourceWizardOptions) -> Result<()> {
@@ -864,7 +935,7 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
         Some(NewPreset::Saas) => {
             println!("{}", "SaaS smoke checks:".yellow().bold());
             println!("  curl http://localhost:8000/health");
-            println!("  # OpenAPI (if enabled): http://localhost:8000/swagger-ui");
+            println!("  curl http://localhost:8000/billing/plans");
             println!();
         }
         Some(NewPreset::Worker) => {

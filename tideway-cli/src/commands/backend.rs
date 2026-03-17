@@ -12,8 +12,32 @@ use crate::commands::messaging::NEW_APP_COMMAND;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success};
 
+#[derive(Copy, Clone)]
+pub(crate) enum BackendScaffoldMode {
+    Cli,
+    EmbeddedInNew,
+}
+
+impl BackendScaffoldMode {
+    fn emit_header(self) -> bool {
+        matches!(self, Self::Cli)
+    }
+
+    fn emit_progress(self) -> bool {
+        matches!(self, Self::Cli)
+    }
+
+    fn emit_summary(self) -> bool {
+        matches!(self, Self::Cli)
+    }
+}
+
 /// Run the backend command
 pub fn run(args: BackendArgs) -> Result<()> {
+    scaffold(&args, BackendScaffoldMode::Cli)
+}
+
+pub(crate) fn scaffold(args: &BackendArgs, mode: BackendScaffoldMode) -> Result<()> {
     let plan_mode = is_plan_mode();
     let has_organizations = args.preset == BackendPreset::B2b;
     let preset_name = match args.preset {
@@ -21,7 +45,7 @@ pub fn run(args: BackendArgs) -> Result<()> {
         BackendPreset::B2b => "B2B (Auth + Billing + Organizations + Admin)",
     };
 
-    if !is_json_output() {
+    if mode.emit_header() && !is_json_output() {
         if plan_mode {
             println!(
                 "\n{} Planning {} backend scaffolding\n",
@@ -50,7 +74,9 @@ pub fn run(args: BackendArgs) -> Result<()> {
     if !output_path.exists() {
         ensure_dir(output_path)
             .with_context(|| format!("Failed to create output directory: {}", args.output))?;
-        print_info(&format!("Created directory: {}", args.output));
+        if mode.emit_progress() {
+            print_info(&format!("Created directory: {}", args.output));
+        }
     }
 
     if !migrations_path.exists() {
@@ -60,7 +86,9 @@ pub fn run(args: BackendArgs) -> Result<()> {
                 args.migrations_output
             )
         })?;
-        print_info(&format!("Created directory: {}", args.migrations_output));
+        if mode.emit_progress() {
+            print_info(&format!("Created directory: {}", args.migrations_output));
+        }
     }
 
     // Create template context
@@ -88,34 +116,36 @@ pub fn run(args: BackendArgs) -> Result<()> {
     let engine = BackendTemplateEngine::new(context)?;
 
     // Generate shared files
-    generate_shared(&engine, output_path, &args)?;
+    generate_shared(&engine, output_path, args, mode.emit_progress())?;
 
     // Generate entities
-    generate_entities(&engine, output_path, &args)?;
+    generate_entities(&engine, output_path, args, mode.emit_progress())?;
 
     // Generate auth module
-    generate_auth(&engine, output_path, &args)?;
+    generate_auth(&engine, output_path, args, mode.emit_progress())?;
 
     // Generate billing module
-    generate_billing(&engine, output_path, &args)?;
+    generate_billing(&engine, output_path, args, mode.emit_progress())?;
 
     // Generate organizations module (B2B only)
     if has_organizations {
-        generate_organizations(&engine, output_path, &args)?;
+        generate_organizations(&engine, output_path, args, mode.emit_progress())?;
     }
 
     // Generate admin module
-    generate_admin(&engine, output_path, &args)?;
+    generate_admin(&engine, output_path, args, mode.emit_progress())?;
 
     // Generate migrations
-    generate_migrations(&engine, migrations_path, &args)?;
+    generate_migrations(&engine, migrations_path, args, mode.emit_progress())?;
 
     if plan_mode {
-        print_info("Plan complete: no files were written");
+        if mode.emit_summary() {
+            print_info("Plan complete: no files were written");
+        }
         return Ok(());
     }
 
-    if !is_json_output() {
+    if mode.emit_summary() && !is_json_output() {
         println!(
             "\n{} Backend scaffolding generated successfully!\n",
             "✓".green().bold()
@@ -158,10 +188,17 @@ pub fn run(args: BackendArgs) -> Result<()> {
     Ok(())
 }
 
+fn report_generated(emit_progress: bool, path: &str) {
+    if emit_progress {
+        print_success(&format!("Generated {}", path));
+    }
+}
+
 fn generate_shared(
     engine: &BackendTemplateEngine,
     output_path: &Path,
     args: &BackendArgs,
+    emit_progress: bool,
 ) -> Result<()> {
     // Generate main.rs
     if engine.has_template("shared/main") {
@@ -173,7 +210,7 @@ fn generate_shared(
             args.force,
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
-        print_success("Generated main.rs");
+        report_generated(emit_progress, "main.rs");
     }
 
     // Generate lib.rs
@@ -186,7 +223,7 @@ fn generate_shared(
             args.force,
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
-        print_success("Generated lib.rs");
+        report_generated(emit_progress, "lib.rs");
     }
 
     // Generate config.rs
@@ -199,7 +236,7 @@ fn generate_shared(
             args.force,
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
-        print_success("Generated config.rs");
+        report_generated(emit_progress, "config.rs");
     }
 
     // Generate error.rs
@@ -212,7 +249,7 @@ fn generate_shared(
             args.force,
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
-        print_success("Generated error.rs");
+        report_generated(emit_progress, "error.rs");
     }
 
     Ok(())
@@ -222,6 +259,7 @@ fn generate_entities(
     engine: &BackendTemplateEngine,
     output_path: &Path,
     args: &BackendArgs,
+    emit_progress: bool,
 ) -> Result<()> {
     let entities_path = output_path.join("entities");
     ensure_dir(&entities_path)?;
@@ -236,7 +274,7 @@ fn generate_entities(
             args.force,
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
-        print_success("Generated entities/mod.rs");
+        report_generated(emit_progress, "entities/mod.rs");
     }
 
     // Generate entities/prelude.rs
@@ -249,7 +287,7 @@ fn generate_entities(
             args.force,
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
-        print_success("Generated entities/prelude.rs");
+        report_generated(emit_progress, "entities/prelude.rs");
     }
 
     // Generate core entities
@@ -269,7 +307,7 @@ fn generate_entities(
                 args.force,
                 BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
-            print_success(&format!("Generated entities/{}", filename));
+            report_generated(emit_progress, &format!("entities/{}", filename));
         }
     }
 
@@ -290,7 +328,7 @@ fn generate_entities(
                     args.force,
                     BACKEND_FORCE_OVERWRITE_MESSAGE,
                 )?;
-                print_success(&format!("Generated entities/{}", filename));
+                report_generated(emit_progress, &format!("entities/{}", filename));
             }
         }
     }
@@ -302,6 +340,7 @@ fn generate_auth(
     engine: &BackendTemplateEngine,
     output_path: &Path,
     args: &BackendArgs,
+    emit_progress: bool,
 ) -> Result<()> {
     let auth_path = output_path.join("auth");
     ensure_dir(&auth_path)?;
@@ -322,7 +361,7 @@ fn generate_auth(
                 args.force,
                 BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
-            print_success(&format!("Generated auth/{}", filename));
+            report_generated(emit_progress, &format!("auth/{}", filename));
         }
     }
 
@@ -333,6 +372,7 @@ fn generate_billing(
     engine: &BackendTemplateEngine,
     output_path: &Path,
     args: &BackendArgs,
+    emit_progress: bool,
 ) -> Result<()> {
     let billing_path = output_path.join("billing");
     ensure_dir(&billing_path)?;
@@ -353,7 +393,7 @@ fn generate_billing(
                 args.force,
                 BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
-            print_success(&format!("Generated billing/{}", filename));
+            report_generated(emit_progress, &format!("billing/{}", filename));
         }
     }
 
@@ -364,6 +404,7 @@ fn generate_organizations(
     engine: &BackendTemplateEngine,
     output_path: &Path,
     args: &BackendArgs,
+    emit_progress: bool,
 ) -> Result<()> {
     let orgs_path = output_path.join("organizations");
     ensure_dir(&orgs_path)?;
@@ -384,7 +425,7 @@ fn generate_organizations(
                 args.force,
                 BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
-            print_success(&format!("Generated organizations/{}", filename));
+            report_generated(emit_progress, &format!("organizations/{}", filename));
         }
     }
 
@@ -395,6 +436,7 @@ fn generate_admin(
     engine: &BackendTemplateEngine,
     output_path: &Path,
     args: &BackendArgs,
+    emit_progress: bool,
 ) -> Result<()> {
     let admin_path = output_path.join("admin");
     ensure_dir(&admin_path)?;
@@ -415,7 +457,7 @@ fn generate_admin(
                 args.force,
                 BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
-            print_success(&format!("Generated admin/{}", filename));
+            report_generated(emit_progress, &format!("admin/{}", filename));
         }
     }
 
@@ -426,6 +468,7 @@ fn generate_migrations(
     engine: &BackendTemplateEngine,
     migrations_path: &Path,
     args: &BackendArgs,
+    emit_progress: bool,
 ) -> Result<()> {
     // Generate migration lib.rs
     if engine.has_template("migrations/lib") {
@@ -437,7 +480,7 @@ fn generate_migrations(
             args.force,
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
-        print_success("Generated migration/src/lib.rs");
+        report_generated(emit_progress, "migration/src/lib.rs");
     }
 
     // Core migrations (always generated)
@@ -472,7 +515,7 @@ fn generate_migrations(
                 args.force,
                 BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
-            print_success(&format!("Generated migration/src/{}", filename));
+            report_generated(emit_progress, &format!("migration/src/{}", filename));
         }
     }
 
@@ -500,7 +543,7 @@ fn generate_migrations(
                     args.force,
                     BACKEND_FORCE_OVERWRITE_MESSAGE,
                 )?;
-                print_success(&format!("Generated migration/src/{}", filename));
+                report_generated(emit_progress, &format!("migration/src/{}", filename));
             }
         }
     } else {
@@ -514,7 +557,7 @@ fn generate_migrations(
                 args.force,
                 BACKEND_FORCE_OVERWRITE_MESSAGE,
             )?;
-            print_success("Generated migration/src/m005_add_admin_flag.rs");
+            report_generated(emit_progress, "migration/src/m005_add_admin_flag.rs");
         }
     }
 

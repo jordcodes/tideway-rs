@@ -510,7 +510,7 @@ fn test_new_command_with_preset_saas() {
     assert_file_contains(&cargo_toml, "\"billing\"");
     assert_file_contains(&cargo_toml, "\"organizations\"");
     assert_file_contains(&cargo_toml, "\"admin\"");
-    assert_file_contains(&cargo_toml, "\"openapi\"");
+    assert_file_not_contains(&cargo_toml, "\"openapi\"");
     assert!(project_dir.join(".env.example").exists());
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
@@ -518,6 +518,26 @@ fn test_new_command_with_preset_saas() {
     assert!(project_dir.join("src/billing/mod.rs").exists());
     assert!(project_dir.join("src/organizations/mod.rs").exists());
     assert!(project_dir.join("src/admin/mod.rs").exists());
+    assert!(project_dir.join("src/lib.rs").exists());
+    assert!(!project_dir.join("src/routes/mod.rs").exists());
+    assert!(!project_dir.join("src/auth/provider.rs").exists());
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "STRIPE_SECRET_KEY=sk_test_replace_me",
+    );
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "STRIPE_WEBHOOK_SECRET=whsec_replace_me",
+    );
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "STRIPE_PRICE_ID=price_replace_me",
+    );
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "APP_URL=http://localhost:8000",
+    );
+    assert_file_not_contains(&project_dir.join(".env.example"), "OPENAPI_ENABLED");
 }
 
 #[test]
