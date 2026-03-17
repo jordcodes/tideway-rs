@@ -325,7 +325,7 @@ pub struct ResourceArgs {
     #[arg(long, value_enum, default_value = "auto")]
     pub db_backend: DbBackend,
 
-    /// Scaffold profile: `api` (full-stack) or `stub` (route-only)
+    /// Scaffold profile: `api`, `tenant`, `owned`, `admin`, `event`, or `stub`
     #[arg(long, value_enum, default_value = "api")]
     pub profile: ResourceProfile,
 }
@@ -350,6 +350,14 @@ pub enum DbBackend {
 pub enum ResourceProfile {
     /// Full API path defaults (wire + db + repo + service + paginate + search)
     Api,
+    /// SaaS tenant or organization resource defaults
+    Tenant,
+    /// Tenant-owned domain resource defaults
+    Owned,
+    /// Admin or operator-facing resource defaults
+    Admin,
+    /// Audit/event stream resource defaults
+    Event,
     /// Lightweight route-only scaffold (legacy default style)
     Stub,
 }

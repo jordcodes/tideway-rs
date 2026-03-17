@@ -1219,6 +1219,156 @@ tideway = "0.7"
 }
 
 #[test]
+fn test_resource_profile_tenant_generates_tenant_fields() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "organization".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Tenant,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert_file_contains(
+        &project_dir.join("src/routes/organization.rs"),
+        "pub slug: String,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/organization.rs"),
+        "pub status: String,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/entities/organization.rs"),
+        "pub created_at: i64,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/repositories/organization.rs"),
+        "pub async fn create(&self, name: String, slug: String, status: String)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/repositories/organization.rs"),
+        "current_timestamp()",
+    );
+}
+
+#[test]
+fn test_resource_profile_owned_respects_explicit_shape_flags() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = "0.7"
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "subscription".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Owned,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert!(project_dir.join("src/routes/subscription.rs").exists());
+    assert!(!project_dir.join("src/entities/subscription.rs").exists());
+    assert!(
+        !project_dir
+            .join("src/repositories/subscription.rs")
+            .exists()
+    );
+    assert!(!project_dir.join("src/services/subscription.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "pub organization_id: String,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "pub owner_id: String,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "pub status: String,",
+    );
+}
+
+#[test]
+fn test_resource_profile_event_generates_event_search_and_service_shape() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "audit_event".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Event,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert_file_contains(
+        &project_dir.join("src/entities/audit_event.rs"),
+        "pub payload_json: String,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/repositories/audit_event.rs"),
+        "audit_event::Column::EventType.contains(search)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/audit_event.rs"),
+        "pub async fn create(&self, event_type: String, actor_id: String, subject_id: String, payload_json: String)",
+    );
+}
+
+#[test]
 fn test_resource_command_adds_uuid_dependency() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

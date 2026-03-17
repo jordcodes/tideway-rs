@@ -16,6 +16,707 @@ use crate::commands::messaging::{
 };
 use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResourceFieldType {
+    String,
+    Bool,
+    I64,
+}
+
+impl ResourceFieldType {
+    fn rust_type(self) -> &'static str {
+        match self {
+            Self::String => "String",
+            Self::Bool => "bool",
+            Self::I64 => "i64",
+        }
+    }
+
+    fn migration_column(self, column_enum: &str) -> String {
+        match self {
+            Self::String => format!("ColumnDef::new({column_enum}).string().not_null()"),
+            Self::Bool => format!("ColumnDef::new({column_enum}).boolean().not_null()"),
+            Self::I64 => format!("ColumnDef::new({column_enum}).big_integer().not_null()"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FieldSource {
+    Request,
+    CurrentTimestamp,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResourceFieldSpec {
+    name: &'static str,
+    ty: ResourceFieldType,
+    include_in_create: bool,
+    include_in_update: bool,
+    create_source: FieldSource,
+    update_source: Option<FieldSource>,
+    search: bool,
+    stub_value: &'static str,
+    json_value: &'static str,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResourceSchema {
+    display_field: &'static str,
+    display_fallback: &'static str,
+    fields: &'static [ResourceFieldSpec],
+}
+
+const NAME_FIELDS: [ResourceFieldSpec; 1] = [ResourceFieldSpec {
+    name: "name",
+    ty: ResourceFieldType::String,
+    include_in_create: true,
+    include_in_update: true,
+    create_source: FieldSource::Request,
+    update_source: Some(FieldSource::Request),
+    search: true,
+    stub_value: "\"User\".to_string()",
+    json_value: "\"Example\"",
+}];
+
+const TENANT_FIELDS: [ResourceFieldSpec; 5] = [
+    ResourceFieldSpec {
+        name: "name",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: true,
+        stub_value: "\"Acme\".to_string()",
+        json_value: "\"Acme\"",
+    },
+    ResourceFieldSpec {
+        name: "slug",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"acme\".to_string()",
+        json_value: "\"acme\"",
+    },
+    ResourceFieldSpec {
+        name: "status",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"active\".to_string()",
+        json_value: "\"active\"",
+    },
+    ResourceFieldSpec {
+        name: "created_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: None,
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+    ResourceFieldSpec {
+        name: "updated_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: Some(FieldSource::CurrentTimestamp),
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+];
+
+const OWNED_FIELDS: [ResourceFieldSpec; 6] = [
+    ResourceFieldSpec {
+        name: "organization_id",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"org_demo\".to_string()",
+        json_value: "\"org_demo\"",
+    },
+    ResourceFieldSpec {
+        name: "owner_id",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"user_demo\".to_string()",
+        json_value: "\"user_demo\"",
+    },
+    ResourceFieldSpec {
+        name: "name",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: true,
+        stub_value: "\"Example\".to_string()",
+        json_value: "\"Example\"",
+    },
+    ResourceFieldSpec {
+        name: "status",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"active\".to_string()",
+        json_value: "\"active\"",
+    },
+    ResourceFieldSpec {
+        name: "created_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: None,
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+    ResourceFieldSpec {
+        name: "updated_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: Some(FieldSource::CurrentTimestamp),
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+];
+
+const ADMIN_FIELDS: [ResourceFieldSpec; 5] = [
+    ResourceFieldSpec {
+        name: "email",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: true,
+        stub_value: "\"admin@example.com\".to_string()",
+        json_value: "\"admin@example.com\"",
+    },
+    ResourceFieldSpec {
+        name: "role",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"admin\".to_string()",
+        json_value: "\"admin\"",
+    },
+    ResourceFieldSpec {
+        name: "enabled",
+        ty: ResourceFieldType::Bool,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "true",
+        json_value: "true",
+    },
+    ResourceFieldSpec {
+        name: "created_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: None,
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+    ResourceFieldSpec {
+        name: "updated_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: Some(FieldSource::CurrentTimestamp),
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+];
+
+const EVENT_FIELDS: [ResourceFieldSpec; 6] = [
+    ResourceFieldSpec {
+        name: "event_type",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: true,
+        stub_value: "\"user.created\".to_string()",
+        json_value: "\"user.created\"",
+    },
+    ResourceFieldSpec {
+        name: "actor_id",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"user_demo\".to_string()",
+        json_value: "\"user_demo\"",
+    },
+    ResourceFieldSpec {
+        name: "subject_id",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"invoice_demo\".to_string()",
+        json_value: "\"invoice_demo\"",
+    },
+    ResourceFieldSpec {
+        name: "payload_json",
+        ty: ResourceFieldType::String,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: false,
+        stub_value: "\"{\\\"source\\\":\\\"api\\\"}\".to_string()",
+        json_value: "\"{\\\"source\\\":\\\"api\\\"}\"",
+    },
+    ResourceFieldSpec {
+        name: "created_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: None,
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+    ResourceFieldSpec {
+        name: "updated_at",
+        ty: ResourceFieldType::I64,
+        include_in_create: false,
+        include_in_update: false,
+        create_source: FieldSource::CurrentTimestamp,
+        update_source: Some(FieldSource::CurrentTimestamp),
+        search: false,
+        stub_value: "1_700_000_000_i64",
+        json_value: "1_700_000_000",
+    },
+];
+
+fn resource_schema(profile: ResourceProfile) -> ResourceSchema {
+    match profile {
+        ResourceProfile::Api | ResourceProfile::Stub => ResourceSchema {
+            display_field: "name",
+            display_fallback: "User",
+            fields: &NAME_FIELDS,
+        },
+        ResourceProfile::Tenant => ResourceSchema {
+            display_field: "name",
+            display_fallback: "Acme",
+            fields: &TENANT_FIELDS,
+        },
+        ResourceProfile::Owned => ResourceSchema {
+            display_field: "name",
+            display_fallback: "Example",
+            fields: &OWNED_FIELDS,
+        },
+        ResourceProfile::Admin => ResourceSchema {
+            display_field: "email",
+            display_fallback: "admin@example.com",
+            fields: &ADMIN_FIELDS,
+        },
+        ResourceProfile::Event => ResourceSchema {
+            display_field: "event_type",
+            display_fallback: "user.created",
+            fields: &EVENT_FIELDS,
+        },
+    }
+}
+
+fn create_request_fields(schema: ResourceSchema) -> Vec<ResourceFieldSpec> {
+    schema
+        .fields
+        .iter()
+        .copied()
+        .filter(|field| field.include_in_create)
+        .collect()
+}
+
+fn update_request_fields(schema: ResourceSchema) -> Vec<ResourceFieldSpec> {
+    schema
+        .fields
+        .iter()
+        .copied()
+        .filter(|field| field.include_in_update)
+        .collect()
+}
+
+fn search_field(schema: ResourceSchema) -> Option<ResourceFieldSpec> {
+    schema.fields.iter().copied().find(|field| field.search)
+}
+
+fn uses_generated_timestamps(schema: ResourceSchema) -> bool {
+    schema.fields.iter().any(|field| {
+        field.create_source == FieldSource::CurrentTimestamp
+            || field.update_source == Some(FieldSource::CurrentTimestamp)
+    })
+}
+
+fn current_timestamp_helper() -> &'static str {
+    r#"
+fn current_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+"#
+}
+
+fn render_response_struct_fields(schema: ResourceSchema) -> String {
+    let mut output = String::from("    pub id: String,\n");
+    for field in schema.fields {
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            field.name,
+            field.ty.rust_type()
+        ));
+    }
+    output
+}
+
+fn render_request_struct_fields(fields: &[ResourceFieldSpec], optional: bool) -> String {
+    let mut output = String::new();
+    for field in fields {
+        let ty = if optional {
+            format!("Option<{}>", field.ty.rust_type())
+        } else {
+            field.ty.rust_type().to_string()
+        };
+        output.push_str(&format!("    pub {}: {},\n", field.name, ty));
+    }
+    output
+}
+
+fn render_response_init_fields(schema: ResourceSchema, source: &str, indent: &str) -> String {
+    let mut output = format!("{indent}id: {source}.id.to_string(),\n");
+    for field in schema.fields {
+        output.push_str(&format!(
+            "{indent}{}: {}.{},\n",
+            field.name, source, field.name
+        ));
+    }
+    output
+}
+
+fn render_stub_response_fields(
+    schema: ResourceSchema,
+    indent: &str,
+    default_display: &str,
+) -> String {
+    let mut output = format!("{indent}id: \"demo\".to_string(),\n");
+    for field in schema.fields {
+        let value = if schema.fields.len() == 1 && field.name == schema.display_field {
+            format!("\"{}\".to_string()", default_display)
+        } else {
+            field.stub_value.to_string()
+        };
+        output.push_str(&format!("{indent}{}: {},\n", field.name, value));
+    }
+    output
+}
+
+fn render_active_model_create_assignments(
+    schema: ResourceSchema,
+    source: &str,
+    indent: &str,
+) -> String {
+    let mut output = String::new();
+    for field in schema.fields {
+        let value = match field.create_source {
+            FieldSource::Request => format!("{source}.{}", field.name),
+            FieldSource::CurrentTimestamp => "current_timestamp()".to_string(),
+        };
+        output.push_str(&format!("{indent}{}: Set({}),\n", field.name, value));
+    }
+    output
+}
+
+fn render_active_model_update_assignments(
+    schema: ResourceSchema,
+    source: &str,
+    target: &str,
+    indent: &str,
+) -> String {
+    let mut output = String::new();
+    for field in schema.fields {
+        match field.update_source {
+            Some(FieldSource::Request) => {
+                output.push_str(&format!(
+                    "{indent}if let Some({name}) = {source}.{name} {{\n{indent}    {target}.{name} = Set({name});\n{indent}}}\n",
+                    name = field.name,
+                ));
+            }
+            Some(FieldSource::CurrentTimestamp) => {
+                output.push_str(&format!(
+                    "{indent}{target}.{name} = Set(current_timestamp());\n",
+                    name = field.name,
+                ));
+            }
+            None => {}
+        }
+    }
+    output
+}
+
+fn render_create_test_json_fields(schema: ResourceSchema) -> String {
+    let fields = create_request_fields(schema);
+    fields
+        .iter()
+        .map(|field| format!("\"{}\": {}", field.name, field.json_value))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_create_signature_args(schema: ResourceSchema, optional: bool) -> String {
+    let fields = if optional {
+        update_request_fields(schema)
+    } else {
+        create_request_fields(schema)
+    };
+    fields
+        .iter()
+        .map(|field| {
+            let ty = if optional {
+                format!("Option<{}>", field.ty.rust_type())
+            } else {
+                field.ty.rust_type().to_string()
+            };
+            format!("{}: {}", field.name, ty)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_call_args(schema: ResourceSchema, source: &str, optional: bool) -> String {
+    let fields = if optional {
+        update_request_fields(schema)
+    } else {
+        create_request_fields(schema)
+    };
+    fields
+        .iter()
+        .map(|field| format!("{source}.{}", field.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_param_names(schema: ResourceSchema, optional: bool) -> String {
+    let fields = if optional {
+        update_request_fields(schema)
+    } else {
+        create_request_fields(schema)
+    };
+    fields
+        .iter()
+        .map(|field| field.name.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_stub_call_args(schema: ResourceSchema, optional: bool) -> String {
+    let fields = if optional {
+        update_request_fields(schema)
+    } else {
+        create_request_fields(schema)
+    };
+    fields
+        .iter()
+        .map(|field| field.stub_value.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn display_fallback_value(schema: ResourceSchema, default_display: &str) -> String {
+    if schema.fields.len() == 1 && schema.display_field == "name" {
+        format!("\"{}\".to_string()", default_display)
+    } else {
+        format!("\"{}\".to_string()", schema.display_fallback)
+    }
+}
+
+fn render_entity_fields(schema: ResourceSchema) -> String {
+    let mut output = String::new();
+    for field in schema.fields {
+        output.push_str(&format!(
+            "    pub {}: {},\n",
+            field.name,
+            field.ty.rust_type()
+        ));
+    }
+    output
+}
+
+fn render_migration_columns(schema: ResourceSchema, table_enum: &str) -> String {
+    schema
+        .fields
+        .iter()
+        .map(|field| {
+            let column_enum = to_pascal_case(field.name);
+            format!(
+                "                    .col({})\n",
+                field
+                    .ty
+                    .migration_column(&format!("{table_enum}::{column_enum}"))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn render_timestamp_helper_if_needed(schema: ResourceSchema) -> String {
+    if uses_generated_timestamps(schema) {
+        current_timestamp_helper().to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn search_column_expr(resource_name: &str, schema: ResourceSchema) -> Option<String> {
+    search_field(schema)
+        .map(|field| format!("{resource_name}::Column::{}", to_pascal_case(field.name)))
+}
+
+fn render_search_query(resource_name: &str, schema: ResourceSchema, search_var: &str) -> String {
+    let Some(column) = search_column_expr(resource_name, schema) else {
+        return String::new();
+    };
+    format!(
+        "        if let Some(search) = {search_var}.as_deref() {{ query = query.filter({column}.contains(search)); }}\n"
+    )
+}
+
+fn render_param_create_assignments(schema: ResourceSchema, indent: &str) -> String {
+    let mut output = String::new();
+    for field in schema.fields {
+        let value = match field.create_source {
+            FieldSource::Request => field.name.to_string(),
+            FieldSource::CurrentTimestamp => "current_timestamp()".to_string(),
+        };
+        output.push_str(&format!("{indent}{}: Set({}),\n", field.name, value));
+    }
+    output
+}
+
+fn render_param_update_assignments(schema: ResourceSchema, target: &str, indent: &str) -> String {
+    let mut output = String::new();
+    for field in schema.fields {
+        match field.update_source {
+            Some(FieldSource::Request) => {
+                output.push_str(&format!(
+                    "{indent}if let Some({name}) = {name} {{\n{indent}    {target}.{name} = Set({name});\n{indent}}}\n",
+                    name = field.name,
+                ));
+            }
+            Some(FieldSource::CurrentTimestamp) => {
+                output.push_str(&format!(
+                    "{indent}{target}.{name} = Set(current_timestamp());\n",
+                    name = field.name,
+                ));
+            }
+            None => {}
+        }
+    }
+    output
+}
+
+fn render_migration_idents(schema: ResourceSchema) -> String {
+    schema
+        .fields
+        .iter()
+        .map(|field| format!("    {},\n", to_pascal_case(field.name)))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn render_search_stub_value(schema: ResourceSchema) -> String {
+    search_field(schema)
+        .map(|field| field.stub_value.to_string())
+        .unwrap_or_else(|| "\"Example\".to_string()".to_string())
+}
+
+fn render_repository_list_signature(
+    resource_name: &str,
+    schema: ResourceSchema,
+    paginate: bool,
+    search: bool,
+) -> String {
+    if paginate {
+        if search {
+            format!(
+                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
+            )
+        } else {
+            format!(
+                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
+            )
+        }
+    } else {
+        let _ = schema;
+        format!("pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{")
+    }
+}
+
+fn render_repository_list_body(
+    resource_name: &str,
+    schema: ResourceSchema,
+    paginate: bool,
+    search: bool,
+) -> String {
+    if paginate {
+        let search_query = if search {
+            render_search_query(resource_name, schema, "search")
+        } else {
+            String::new()
+        };
+        format!(
+            "        let mut query = {resource_name}::Entity::find();\n        if let Some(limit) = limit {{ query = query.limit(limit); }}\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
+        )
+    } else {
+        format!("        Ok({resource_name}::Entity::find().all(&self.db).await?)")
+    }
+}
+
 pub fn run(args: ResourceArgs) -> Result<()> {
     let mut args = args;
     apply_profile_defaults(&mut args);
@@ -75,6 +776,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         &resource_plural,
         args.with_tests,
         has_openapi,
+        args.profile,
         args.db,
         args.repo,
         args.service,
@@ -103,6 +805,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 &resource_name,
                 &resource_plural,
                 args.id_type,
+                args.profile,
             )?,
             DbBackend::Auto => {
                 return Err(anyhow::anyhow!(error_contract(
@@ -120,6 +823,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 args.id_type,
                 args.paginate,
                 args.search,
+                args.profile,
             )?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
@@ -128,6 +832,9 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                     &project_name,
                     &resource_name,
                     args.id_type,
+                    args.paginate,
+                    args.search,
+                    args.profile,
                 )?;
             }
             if args.service {
@@ -137,6 +844,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                     args.id_type,
                     args.paginate,
                     args.search,
+                    args.profile,
                 )?;
             }
         }
@@ -176,7 +884,16 @@ fn apply_profile_defaults(args: &mut ResourceArgs) {
     let has_shape_overrides =
         args.wire || args.db || args.repo || args.service || args.paginate || args.search;
 
-    if matches!(args.profile, ResourceProfile::Api) && !has_shape_overrides {
+    if !has_shape_overrides
+        && matches!(
+            args.profile,
+            ResourceProfile::Api
+                | ResourceProfile::Tenant
+                | ResourceProfile::Owned
+                | ResourceProfile::Admin
+                | ResourceProfile::Event
+        )
+    {
         args.wire = true;
         args.db = true;
         args.repo = true;
@@ -380,6 +1097,7 @@ fn render_resource_module(
     resource_plural: &str,
     with_tests: bool,
     has_openapi: bool,
+    profile: ResourceProfile,
     with_db: bool,
     with_repo: bool,
     with_service: bool,
@@ -388,6 +1106,7 @@ fn render_resource_module(
     search: bool,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
+    let schema = resource_schema(profile);
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
     } else {
@@ -403,6 +1122,24 @@ fn render_resource_module(
     } else {
         ""
     };
+    let create_fields = create_request_fields(schema);
+    let update_fields = update_request_fields(schema);
+    let response_struct_fields = render_response_struct_fields(schema);
+    let create_request_struct_fields = render_request_struct_fields(&create_fields, false);
+    let update_request_struct_fields = render_request_struct_fields(&update_fields, true);
+    let create_call_args = render_call_args(schema, "body", false);
+    let update_call_args = render_call_args(schema, "body", true);
+    let create_active_model_assignments =
+        render_active_model_create_assignments(schema, "body", "        ");
+    let update_active_model_assignments =
+        render_active_model_update_assignments(schema, "body", "active", "    ");
+    let response_init_fields = render_response_init_fields(schema, "model", "            ");
+    let single_response_init_fields = render_response_init_fields(schema, "model", "        ");
+    let stub_response_init_fields =
+        render_stub_response_fields(schema, "        ", resource_pascal);
+    let create_test_json_fields = render_create_test_json_fields(schema);
+    let display_fallback = display_fallback_value(schema, resource_pascal);
+    let timestamp_helper = render_timestamp_helper_if_needed(schema);
     let tests_block = if with_tests && !with_db {
         format!(
             r#"
@@ -432,7 +1169,7 @@ mod tests {{
             .into_router();
 
         post(app, "/api/{resource_plural}")
-            .json(&serde_json::json!({{ "name": "Example" }}))
+            .json(&serde_json::json!({{ {create_test_json_fields} }}))
             .execute()
             .await
             .assert_ok();
@@ -442,6 +1179,7 @@ mod tests {{
             resource_pascal = resource_pascal,
             resource_name = resource_name,
             resource_plural = resource_plural,
+            create_test_json_fields = create_test_json_fields,
         )
     } else {
         String::new()
@@ -627,10 +1365,7 @@ pub struct PaginationParams {{
     };
     let pagination_query = if paginate {
         let search_query = if search {
-            format!(
-                "    if let Some(q) = params.q.as_deref() {{ query = query.filter({resource_name}::Column::Name.contains(q)); }}\n",
-                resource_name = resource_name
-            )
+            render_search_query(resource_name, schema, "params.q")
         } else {
             String::new()
         };
@@ -658,9 +1393,7 @@ async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
-            id: model.id.to_string(),
-            name: model.name,
-        }})
+{response_init_fields}        }})
         .collect();
     Ok(Json(items))
 }}
@@ -677,9 +1410,7 @@ async fn get_{resource_name}(
         .await?
         .ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
     Ok(Json({resource_pascal} {{
-        id: model.id.to_string(),
-        name: model.name,
-    }}))
+{single_response_init_fields}    }}))
 }}
 
 {openapi_attrs_create}
@@ -689,7 +1420,7 @@ async fn create_{resource_name}(
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     let service = {resource_pascal}Service::new(repo);
-    service.create(body.name).await?;
+    service.create({create_call_args}).await?;
     Ok(MessageResponse::success("Created"))
 }}
 
@@ -701,7 +1432,7 @@ async fn update_{resource_name}(
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     let service = {resource_pascal}Service::new(repo);
-    service.update(id, body.name).await?;
+    service.update(id, {update_call_args}).await?;
     Ok(MessageResponse::success("Updated"))
 }}
 
@@ -729,6 +1460,10 @@ async fn delete_{resource_name}(
             list_param_prefix = list_param_prefix,
             list_params = list_params,
             list_args = list_args,
+            response_init_fields = response_init_fields,
+            single_response_init_fields = single_response_init_fields,
+            create_call_args = create_call_args,
+            update_call_args = update_call_args,
         )
     } else if with_db && with_repo {
         format!(
@@ -740,9 +1475,7 @@ async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
-            id: model.id.to_string(),
-            name: model.name,
-        }})
+{response_init_fields}        }})
         .collect();
     Ok(Json(items))
 }}
@@ -758,9 +1491,7 @@ async fn get_{resource_name}(
         .await?
         .ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
     Ok(Json({resource_pascal} {{
-        id: model.id.to_string(),
-        name: model.name,
-    }}))
+{single_response_init_fields}    }}))
 }}
 
 {openapi_attrs_create}
@@ -769,7 +1500,7 @@ async fn create_{resource_name}(
     {body_extractor},
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
-    repo.create(body.name).await?;
+    repo.create({create_call_args}).await?;
     Ok(MessageResponse::success("Created"))
 }}
 
@@ -780,7 +1511,7 @@ async fn update_{resource_name}(
     Json(body): Json<UpdateRequest>,
 ) -> Result<MessageResponse> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
-    repo.update(id, body.name).await?;
+    repo.update(id, {update_call_args}).await?;
     Ok(MessageResponse::success("Updated"))
 }}
 
@@ -807,10 +1538,16 @@ async fn delete_{resource_name}(
             list_param_prefix = list_param_prefix,
             list_params = list_params,
             list_args = list_args,
+            response_init_fields = response_init_fields,
+            single_response_init_fields = single_response_init_fields,
+            create_call_args = create_call_args,
+            update_call_args = update_call_args,
         )
     } else if with_db {
         format!(
             r#"
+{timestamp_helper}
+
 {openapi_attrs}
 async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}{list_params}) -> Result<Json<Vec<{resource_pascal}>>> {{
     let db = ctx.sea_orm_connection()?;
@@ -820,9 +1557,7 @@ async fn list_{resource_plural}(State(ctx): State<AppContext>{list_param_prefix}
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
-            id: model.id.to_string(),
-            name: model.name,
-        }})
+{response_init_fields}        }})
         .collect();
     Ok(Json(items))
 }}
@@ -836,9 +1571,7 @@ async fn get_{resource_name}(
     let model = {resource_name}::Entity::find_by_id(id).one(&db).await?;
     let model = model.ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
     Ok(Json({resource_pascal} {{
-        id: model.id.to_string(),
-        name: model.name,
-    }}))
+{single_response_init_fields}    }}))
 }}
 
 {openapi_attrs_create}
@@ -848,9 +1581,7 @@ async fn create_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let active = {resource_name}::ActiveModel {{
-{create_id_field}
-        name: Set(body.name),
-        ..Default::default()
+{create_id_field}{create_active_model_assignments}        ..Default::default()
     }};
     active.insert(&db).await?;
     Ok(MessageResponse::success("Created"))
@@ -866,10 +1597,7 @@ async fn update_{resource_name}(
     let model = {resource_name}::Entity::find_by_id(id).one(&db).await?;
     let model = model.ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
     let mut active: {resource_name}::ActiveModel = model.into();
-    if let Some(name) = body.name {{
-        active.name = Set(name);
-    }}
-    active.update(&db).await?;
+{update_active_model_assignments}    active.update(&db).await?;
     Ok(MessageResponse::success("Updated"))
 }}
 
@@ -897,6 +1625,12 @@ async fn delete_{resource_name}(
             list_param_prefix = list_param_prefix,
             query_binding = query_binding,
             pagination_query = pagination_query,
+            response_init_fields = response_init_fields,
+            single_response_init_fields = single_response_init_fields,
+            timestamp_helper = timestamp_helper,
+            create_id_field = create_id_field,
+            create_active_model_assignments = create_active_model_assignments,
+            update_active_model_assignments = update_active_model_assignments,
         )
     } else {
         format!(
@@ -909,20 +1643,18 @@ async fn list_{resource_plural}() -> Json<Vec<{resource_pascal}>> {{
 {openapi_attrs_get}
 async fn get_{resource_name}() -> Result<Json<{resource_pascal}>> {{
     Ok(Json({resource_pascal} {{
-        id: "demo".to_string(),
-        name: "{resource_pascal}".to_string(),
-    }}))
+{stub_response_init_fields}    }}))
 }}
 
 {openapi_attrs_create}
 async fn create_{resource_name}({body_extractor}) -> Result<MessageResponse> {{
-    Ok(MessageResponse::success(format!("Created {{}}", body.name)))
+    Ok(MessageResponse::success(format!("Created {{}}", body.{display_field})))
 }}
 
 {openapi_attrs_update}
 async fn update_{resource_name}(Json(body): Json<UpdateRequest>) -> Result<MessageResponse> {{
-    let name = body.name.unwrap_or_else(|| "{resource_pascal}".to_string());
-    Ok(MessageResponse::success(format!("Updated {{}}", name)))
+    let {display_field} = body.{display_field}.unwrap_or_else(|| {display_fallback});
+    Ok(MessageResponse::success(format!("Updated {{}}", {display_field})))
 }}
 
 {openapi_attrs_delete}
@@ -939,6 +1671,9 @@ async fn delete_{resource_name}() -> Result<MessageResponse> {{
             openapi_attrs_update = openapi_attrs_update,
             openapi_attrs_delete = openapi_attrs_delete,
             body_extractor = body_extractor,
+            stub_response_init_fields = stub_response_init_fields,
+            display_field = schema.display_field,
+            display_fallback = display_fallback,
         )
     };
 
@@ -972,21 +1707,17 @@ impl RouteModule for {resource_pascal}Module {{
 #[derive(Debug, Serialize)]
 {openapi_schema}
 pub struct {resource_pascal} {{
-    pub id: String,
-    pub name: String,
-}}
+{response_struct_fields}}}
 
 #[derive(Deserialize)]
 {openapi_schema}
 pub struct CreateRequest {{
-    pub name: String,
-}}
+{create_request_struct_fields}}}
 
 #[derive(Deserialize)]
 {openapi_schema}
 pub struct UpdateRequest {{
-    pub name: Option<String>,
-}}
+{update_request_struct_fields}}}
 
 {pagination_struct}
 {handlers}
@@ -1008,6 +1739,9 @@ pub struct UpdateRequest {{
         entities_import = entities_import,
         repositories_import = repositories_import,
         services_import = services_import,
+        response_struct_fields = response_struct_fields,
+        create_request_struct_fields = create_request_struct_fields,
+        update_request_struct_fields = update_request_struct_fields,
     )
 }
 
@@ -1144,6 +1878,7 @@ fn generate_sea_orm_scaffold(
     resource_name: &str,
     resource_plural: &str,
     id_type: ResourceIdType,
+    profile: ResourceProfile,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let entities_dir = src_dir.join("entities");
@@ -1159,7 +1894,7 @@ fn generate_sea_orm_scaffold(
     wire_entities_mod(&entities_mod, resource_name)?;
 
     let entity_path = entities_dir.join(format!("{}.rs", resource_name));
-    let entity_contents = render_sea_orm_entity(resource_name, resource_plural, id_type);
+    let entity_contents = render_sea_orm_entity(resource_name, resource_plural, id_type, profile);
     write_file_with_force(&entity_path, &entity_contents, false)?;
 
     let migration_root = project_dir.join("migration");
@@ -1173,7 +1908,7 @@ fn generate_sea_orm_scaffold(
     }
 
     let (migration_mod, migration_file) = next_migration_name(&migration_src, resource_plural)?;
-    let migration_contents = render_sea_orm_migration(resource_plural, id_type);
+    let migration_contents = render_sea_orm_migration(resource_plural, id_type, profile);
     let migration_path = migration_src.join(&migration_file);
     write_file_with_force(&migration_path, &migration_contents, false)?;
 
@@ -1206,8 +1941,11 @@ fn render_sea_orm_entity(
     resource_name: &str,
     resource_plural: &str,
     id_type: ResourceIdType,
+    profile: ResourceProfile,
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
+    let schema = resource_schema(profile);
+    let entity_fields = render_entity_fields(schema);
     let id_field = if matches!(id_type, ResourceIdType::Uuid) {
         "    #[sea_orm(primary_key, auto_increment = false)]\n    pub id: Uuid,\n"
     } else {
@@ -1228,8 +1966,7 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "{resource_plural}")]
 pub struct Model {{
 {id_field}
-    pub name: String,
-}}
+{entity_fields}}}
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {{}}
@@ -1239,7 +1976,8 @@ impl ActiveModelBehavior for ActiveModel {{}}
         resource_pascal = resource_pascal,
         resource_plural = resource_plural,
         id_field = id_field,
-        uuid_import = uuid_import
+        uuid_import = uuid_import,
+        entity_fields = entity_fields,
     )
 }
 
@@ -1276,8 +2014,15 @@ fn next_migration_name(migration_src: &Path, resource_plural: &str) -> Result<(S
     Ok((mod_name, file_name))
 }
 
-fn render_sea_orm_migration(resource_plural: &str, id_type: ResourceIdType) -> String {
+fn render_sea_orm_migration(
+    resource_plural: &str,
+    id_type: ResourceIdType,
+    profile: ResourceProfile,
+) -> String {
     let table_enum = to_pascal_case(resource_plural);
+    let schema = resource_schema(profile);
+    let columns = render_migration_columns(schema, &table_enum);
+    let column_idents = render_migration_idents(schema);
     let id_column = if matches!(id_type, ResourceIdType::Uuid) {
         format!(
             "ColumnDef::new({table_enum}::Id)\n                            .uuid()\n                            .not_null()\n                            .primary_key()"
@@ -1304,8 +2049,7 @@ impl MigrationTrait for Migration {{
                     .col(
                         {id_column},
                     )
-                    .col(ColumnDef::new({table_enum}::Name).string().not_null())
-                    .to_owned(),
+{columns}                    .to_owned(),
             )
             .await
     }}
@@ -1321,11 +2065,12 @@ impl MigrationTrait for Migration {{
 enum {table_enum} {{
     Table,
     Id,
-    Name,
-}}
+{column_idents}}}
 "#,
         table_enum = table_enum,
-        id_column = id_column
+        id_column = id_column,
+        columns = columns,
+        column_idents = column_idents,
     )
 }
 
@@ -1461,6 +2206,7 @@ fn generate_repository(
     id_type: ResourceIdType,
     paginate: bool,
     search: bool,
+    profile: ResourceProfile,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
@@ -1475,7 +2221,7 @@ fn generate_repository(
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
-    let repo_contents = render_repository(resource_name, id_type, paginate, search);
+    let repo_contents = render_repository(resource_name, id_type, paginate, search, profile);
     write_file_with_force(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
@@ -1498,8 +2244,11 @@ fn render_repository(
     id_type: ResourceIdType,
     paginate: bool,
     search: bool,
+    profile: ResourceProfile,
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
+    let schema = resource_schema(profile);
+    let current_timestamp_helper = render_timestamp_helper_if_needed(schema);
     let (id_type_str, uuid_import) = if matches!(id_type, ResourceIdType::Uuid) {
         ("uuid::Uuid", "use uuid::Uuid;\n")
     } else {
@@ -1510,34 +2259,12 @@ fn render_repository(
     } else {
         ""
     };
-    let list_signature = if paginate {
-        if search {
-            format!(
-                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
-            )
-        } else {
-            format!(
-                "pub async fn list(&self, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
-            )
-        }
-    } else {
-        format!("pub async fn list(&self) -> Result<Vec<{resource_name}::Model>> {{")
-    };
-    let list_params = if paginate {
-        let search_query = if search {
-            format!(
-                "        if let Some(search) = search.as_deref() {{ query = query.filter({resource_name}::Column::Name.contains(search)); }}\n"
-            )
-        } else {
-            String::new()
-        };
-        format!(
-            "        let mut query = {resource_name}::Entity::find();\n        if let Some(limit) = limit {{ query = query.limit(limit); }}\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
-            search_query = search_query,
-        )
-    } else {
-        format!("        Ok({resource_name}::Entity::find().all(&self.db).await?)")
-    };
+    let list_signature = render_repository_list_signature(resource_name, schema, paginate, search);
+    let list_params = render_repository_list_body(resource_name, schema, paginate, search);
+    let create_signature_args = render_create_signature_args(schema, false);
+    let update_signature_args = render_create_signature_args(schema, true);
+    let create_assignments = render_param_create_assignments(schema, "            ");
+    let update_assignments = render_param_update_assignments(schema, "active", "        ");
     let sea_orm_imports = match (paginate, search) {
         (true, true) => {
             "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};"
@@ -1552,6 +2279,7 @@ fn render_repository(
         r#"{sea_orm_imports}
 use tideway::Result;
 {uuid_import}
+{current_timestamp_helper}
 
 use crate::entities::{resource_name};
 
@@ -1572,24 +2300,24 @@ impl {resource_pascal}Repository {{
         Ok({resource_name}::Entity::find_by_id(id).one(&self.db).await?)
     }}
 
-    pub async fn create(&self, name: String) -> Result<{resource_name}::Model> {{
+    pub async fn create(&self, {create_signature_args}) -> Result<{resource_name}::Model> {{
         let active = {resource_name}::ActiveModel {{
 {create_id_field}
-            name: Set(name),
-            ..Default::default()
+{create_assignments}            ..Default::default()
         }};
         Ok(active.insert(&self.db).await?)
     }}
 
-    pub async fn update(&self, id: {id_type}, name: Option<String>) -> Result<{resource_name}::Model> {{
+    pub async fn update(
+        &self,
+        id: {id_type},
+        {update_signature_args},
+    ) -> Result<{resource_name}::Model> {{
         let model = {resource_name}::Entity::find_by_id(id).one(&self.db).await?;
         let model =
             model.ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
         let mut active: {resource_name}::ActiveModel = model.into();
-        if let Some(name) = name {{
-            active.name = Set(name);
-        }}
-        Ok(active.update(&self.db).await?)
+{update_assignments}        Ok(active.update(&self.db).await?)
     }}
 
     pub async fn delete(&self, id: {id_type}) -> Result<()> {{
@@ -1607,7 +2335,12 @@ impl {resource_pascal}Repository {{
         create_id_field = create_id_field,
         list_signature = list_signature,
         list_params = list_params,
-        sea_orm_imports = sea_orm_imports
+        sea_orm_imports = sea_orm_imports,
+        current_timestamp_helper = current_timestamp_helper,
+        create_signature_args = create_signature_args,
+        update_signature_args = update_signature_args,
+        create_assignments = create_assignments,
+        update_assignments = update_assignments,
     )
 }
 
@@ -1617,6 +2350,7 @@ fn generate_service(
     id_type: ResourceIdType,
     paginate: bool,
     search: bool,
+    profile: ResourceProfile,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
@@ -1632,7 +2366,7 @@ fn generate_service(
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
-    let service_contents = render_service(resource_name, id_type, paginate, search);
+    let service_contents = render_service(resource_name, id_type, paginate, search, profile);
     write_file_with_force(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
@@ -1655,8 +2389,14 @@ fn render_service(
     id_type: ResourceIdType,
     paginate: bool,
     search: bool,
+    profile: ResourceProfile,
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
+    let schema = resource_schema(profile);
+    let create_signature_args = render_create_signature_args(schema, false);
+    let update_signature_args = render_create_signature_args(schema, true);
+    let create_call_args = render_param_names(schema, false);
+    let update_call_args = render_param_names(schema, true);
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
     } else {
@@ -1714,16 +2454,16 @@ impl {resource_pascal}Service {{
         self.repo.get(id).await
     }}
 
-    pub async fn create(&self, name: String) -> Result<crate::entities::{resource_name}::Model> {{
-        self.repo.create(name).await
+    pub async fn create(&self, {create_signature_args}) -> Result<crate::entities::{resource_name}::Model> {{
+        self.repo.create({create_call_args}).await
     }}
 
     pub async fn update(
         &self,
         id: {id_type},
-        name: Option<String>,
+        {update_signature_args},
     ) -> Result<crate::entities::{resource_name}::Model> {{
-        self.repo.update(id, name).await
+        self.repo.update(id, {update_call_args}).await
     }}
 
     pub async fn delete(&self, id: {id_type}) -> Result<()> {{
@@ -1736,7 +2476,11 @@ impl {resource_pascal}Service {{
         id_type = id_type_str,
         uuid_import = uuid_import,
         list_signature = list_signature,
-        list_body = list_body
+        list_body = list_body,
+        create_signature_args = create_signature_args,
+        update_signature_args = update_signature_args,
+        create_call_args = create_call_args,
+        update_call_args = update_call_args,
     )
 }
 
@@ -1745,12 +2489,22 @@ fn generate_repository_tests(
     project_name: &str,
     resource_name: &str,
     id_type: ResourceIdType,
+    paginate: bool,
+    search: bool,
+    profile: ResourceProfile,
 ) -> Result<()> {
     let tests_dir = project_dir.join("tests");
     ensure_dir(&tests_dir).with_context(|| format!("Failed to create {}", tests_dir.display()))?;
 
     let file_path = tests_dir.join(format!("repository_{}.rs", resource_name));
-    let contents = render_repository_tests(project_name, resource_name, id_type);
+    let contents = render_repository_tests(
+        project_name,
+        resource_name,
+        id_type,
+        paginate,
+        search,
+        profile,
+    );
     write_file_with_force(&file_path, &contents, false)?;
     print_success("Generated repository tests");
     Ok(())
@@ -1760,8 +2514,25 @@ fn render_repository_tests(
     project_name: &str,
     resource_name: &str,
     _id_type: ResourceIdType,
+    paginate: bool,
+    search: bool,
+    profile: ResourceProfile,
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
+    let schema = resource_schema(profile);
+    let create_call_args = render_stub_call_args(schema, false);
+    let list_call = if paginate {
+        if search {
+            format!(
+                "repo.list(Some(20), Some(0), Some({})).await?",
+                render_search_stub_value(schema)
+            )
+        } else {
+            "repo.list(Some(20), Some(0)).await?".to_string()
+        }
+    } else {
+        "repo.list().await?".to_string()
+    };
     let test_template = r#"use tideway::testing::{TestDb, TestDbBackend, TestDbConfig};
 use tideway::Result;
 
@@ -1813,15 +2584,17 @@ async fn repository_crud_smoke() -> Result<()> {
     let db = build_test_db().await?;
     let repo = {resource_pascal}Repository::new(db.connection);
 
-    let created = repo.create("Example".to_string()).await?;
-    let _ = repo.list().await?;
+    let created = repo.create({create_call_args}).await?;
+    let _ = {list_call};
     repo.delete(created.id).await?;
         Ok(())
 }
 "#
     .replace("{project_name}", project_name)
     .replace("{resource_name}", resource_name)
-    .replace("{resource_pascal}", &resource_pascal);
+    .replace("{resource_pascal}", &resource_pascal)
+    .replace("{create_call_args}", &create_call_args)
+    .replace("{list_call}", &list_call);
     test_template
 }
 

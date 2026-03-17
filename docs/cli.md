@@ -132,6 +132,10 @@ Generate a CRUD route module for a resource.
 ```bash
 tideway resource user
 tideway resource user --profile stub
+tideway resource organization --profile tenant
+tideway resource subscription --profile owned
+tideway resource admin_user --profile admin
+tideway resource audit_event --profile event
 tideway resource user --wire
 tideway resource invoice_item --wire
 tideway resource user --wire --db
@@ -145,7 +149,11 @@ tideway resource user --wire --db --paginate --search
 ```
 
 `--profile api` is the default and applies full-stack defaults (`--wire --db --repo --service --paginate --search`) when no shape flags are set.
-Use `--profile stub` for lightweight route-only scaffolding.
+`--profile tenant` generates a tenant or organization-shaped schema (`name`, `slug`, `status`, timestamps).
+`--profile owned` generates a tenant-owned resource shape (`organization_id`, `owner_id`, `name`, `status`, timestamps).
+`--profile admin` generates an operator/admin shape (`email`, `role`, `enabled`, timestamps).
+`--profile event` generates an audit/event shape (`event_type`, `actor_id`, `subject_id`, `payload_json`, timestamps).
+`--profile stub` keeps the lightweight route-only scaffold.
 If you pass shape flags explicitly (`--wire`, `--db`, `--repo`, `--service`, `--paginate`, `--search`), Tideway uses those exact flags and does not apply profile defaults.
 
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
