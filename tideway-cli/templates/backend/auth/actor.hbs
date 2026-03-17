@@ -1,0 +1,212 @@
+//! Shared request actor helpers for authenticated SaaS routes.
+
+use axum::http::HeaderMap;
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use tideway::auth::{AccessTokenClaims, JwtVerifier};
+use tideway::{Result, TidewayError};
+use uuid::Uuid;
+
+use crate::entities::user;
+{{#if has_organizations}}
+use crate::entities::organization_member;
+{{/if}}
+
+#[derive(Clone, Debug)]
+pub struct RequestActor {
+    pub user: user::Model,
+    {{#if has_organizations}}
+    pub membership: Option<organization_member::Model>,
+    {{/if}}
+}
+
+impl RequestActor {
+    pub async fn from_headers(headers: &HeaderMap, db: &DatabaseConnection) -> Result<Self> {
+        let verifier = jwt_verifier_from_env()?;
+        Self::from_headers_with_verifier(headers, db, &verifier).await
+    }
+
+    pub async fn from_headers_with_verifier(
+        headers: &HeaderMap,
+        db: &DatabaseConnection,
+        verifier: &JwtVerifier<AccessTokenClaims>,
+    ) -> Result<Self> {
+        let user = authenticated_user(headers, db, verifier).await?;
+        Ok(Self {
+            user,
+            {{#if has_organizations}}
+            membership: None,
+            {{/if}}
+        })
+    }
+
+    pub fn require_admin(&self) -> Result<()> {
+        if self.user.is_platform_admin {
+            Ok(())
+        } else {
+            Err(TidewayError::Forbidden("Admin access required".into()))
+        }
+    }
+
+    {{#if has_organizations}}
+    pub async fn for_current_organization(
+        headers: &HeaderMap,
+        db: &DatabaseConnection,
+    ) -> Result<Self> {
+        let verifier = jwt_verifier_from_env()?;
+        Self::for_current_organization_with_verifier(headers, db, &verifier).await
+    }
+
+    pub async fn for_current_organization_with_verifier(
+        headers: &HeaderMap,
+        db: &DatabaseConnection,
+        verifier: &JwtVerifier<AccessTokenClaims>,
+    ) -> Result<Self> {
+        let user = authenticated_user(headers, db, verifier).await?;
+        let membership = resolve_current_membership(headers, db, &user).await?;
+        Ok(Self {
+            user,
+            membership: Some(membership),
+        })
+    }
+
+    pub async fn for_organization(
+        headers: &HeaderMap,
+        db: &DatabaseConnection,
+        organization_id: &str,
+    ) -> Result<Self> {
+        let verifier = jwt_verifier_from_env()?;
+        Self::for_organization_with_verifier(headers, db, &verifier, organization_id).await
+    }
+
+    pub async fn for_organization_with_verifier(
+        headers: &HeaderMap,
+        db: &DatabaseConnection,
+        verifier: &JwtVerifier<AccessTokenClaims>,
+        organization_id: &str,
+    ) -> Result<Self> {
+        let user = authenticated_user(headers, db, verifier).await?;
+        let membership = load_membership(db, organization_id, user.id)
+            .await?
+            .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+        Ok(Self {
+            user,
+            membership: Some(membership),
+        })
+    }
+
+    pub fn organization_id(&self) -> Result<&str> {
+        self.membership
+            .as_ref()
+            .map(|membership| membership.organization_id.as_str())
+            .ok_or_else(|| TidewayError::Forbidden("Organization context required".into()))
+    }
+
+    pub fn owner_id(&self) -> String {
+        self.user.id.to_string()
+    }
+
+    pub fn require_org_role(&self, allowed_roles: &[&str]) -> Result<()> {
+        let membership = self
+            .membership
+            .as_ref()
+            .ok_or_else(|| TidewayError::Forbidden("Organization context required".into()))?;
+
+        if allowed_roles.iter().any(|role| membership.role == *role) {
+            Ok(())
+        } else {
+            Err(TidewayError::Forbidden("Insufficient permissions".into()))
+        }
+    }
+    {{/if}}
+}
+
+fn jwt_verifier_from_env() -> Result<JwtVerifier<AccessTokenClaims>> {
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .map_err(|_| TidewayError::Unauthorized("JWT auth is not configured".into()))?;
+    Ok(JwtVerifier::<AccessTokenClaims>::from_secret(
+        jwt_secret.as_bytes(),
+    ))
+}
+
+fn bearer_token<'a>(headers: &'a HeaderMap) -> Result<&'a str> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))
+}
+
+async fn authenticated_user(
+    headers: &HeaderMap,
+    db: &DatabaseConnection,
+    verifier: &JwtVerifier<AccessTokenClaims>,
+) -> Result<user::Model> {
+    let token = bearer_token(headers)?;
+    let token_data = verifier.verify(token).await?;
+
+    let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
+        .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
+
+    user::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))
+}
+
+{{#if has_organizations}}
+async fn resolve_current_membership(
+    headers: &HeaderMap,
+    db: &DatabaseConnection,
+    user: &user::Model,
+) -> Result<organization_member::Model> {
+    if let Some(org_id) = headers
+        .get("x-organization-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return load_membership(db, org_id, user.id)
+            .await?
+            .ok_or_else(|| TidewayError::NotFound("Organization not found".into()));
+    }
+
+    if let Some(org_id) = user.organization_id.as_deref() {
+        if let Some(membership) = load_membership(db, org_id, user.id).await? {
+            return Ok(membership);
+        }
+    }
+
+    let mut memberships = organization_member::Entity::find()
+        .filter(organization_member::Column::UserId.eq(user.id))
+        .all(db)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+    match memberships.len() {
+        0 => Err(TidewayError::Forbidden(
+            "Organization membership required".into(),
+        )),
+        1 => Ok(memberships.remove(0)),
+        _ => Err(TidewayError::BadRequest(
+            "Multiple organizations found; send x-organization-id".into(),
+        )),
+    }
+}
+
+async fn load_membership(
+    db: &DatabaseConnection,
+    organization_id: &str,
+    user_id: Uuid,
+) -> Result<Option<organization_member::Model>> {
+    organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(organization_id))
+        .filter(organization_member::Column::UserId.eq(user_id))
+        .one(db)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))
+}
+{{/if}}

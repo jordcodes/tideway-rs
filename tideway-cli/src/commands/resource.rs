@@ -69,6 +69,7 @@ struct ResourceSchema {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ResourceGenerationContext {
+    shared_saas_actor: bool,
     saas_owned_scope: bool,
     saas_admin_guard: bool,
 }
@@ -896,9 +897,11 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
         src_dir.join("auth/mod.rs").exists() && src_dir.join("entities/user.rs").exists();
     let has_saas_organizations = src_dir.join("entities/organization_member.rs").exists();
     let has_saas_admin = src_dir.join("admin/mod.rs").exists();
+    let has_shared_saas_actor = src_dir.join("auth/actor.rs").exists();
     let full_stack = args.db && args.repo && args.service;
 
     ResourceGenerationContext {
+        shared_saas_actor: has_shared_saas_actor,
         saas_owned_scope: full_stack
             && matches!(args.profile, ResourceProfile::Owned)
             && has_saas_auth
@@ -1331,28 +1334,61 @@ async fn authenticated_user(headers: &HeaderMap, db: &DatabaseConnection) -> Res
 
 async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor> {
     let user = authenticated_user(headers, db).await?;
-    let organization_id = user
-        .organization_id
-        .clone()
-        .ok_or_else(|| TidewayError::Forbidden("Organization context required".into()))?;
+    let membership = resolve_current_membership(headers, db, &user).await?;
 
-    let membership = organization_member::Entity::find()
-        .filter(organization_member::Column::OrganizationId.eq(organization_id.clone()))
+    Ok(OwnedActor {
+        organization_id: membership.organization_id,
+        owner_id: user.id.to_string(),
+    })
+}
+
+async fn resolve_current_membership(
+    headers: &HeaderMap,
+    db: &DatabaseConnection,
+    user: &user::Model,
+) -> Result<organization_member::Model> {
+    if let Some(org_id) = headers
+        .get("x-organization-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return organization_member::Entity::find()
+            .filter(organization_member::Column::OrganizationId.eq(org_id))
+            .filter(organization_member::Column::UserId.eq(user.id))
+            .one(db)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?
+            .ok_or_else(|| TidewayError::NotFound("Organization not found".into()));
+    }
+
+    if let Some(org_id) = user.organization_id.as_deref() {
+        if let Some(membership) = organization_member::Entity::find()
+            .filter(organization_member::Column::OrganizationId.eq(org_id))
+            .filter(organization_member::Column::UserId.eq(user.id))
+            .one(db)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?
+        {
+            return Ok(membership);
+        }
+    }
+
+    let mut memberships = organization_member::Entity::find()
         .filter(organization_member::Column::UserId.eq(user.id))
-        .one(db)
+        .all(db)
         .await
         .map_err(|error| TidewayError::Database(error.to_string()))?;
 
-    if membership.is_none() {
-        return Err(TidewayError::Forbidden(
+    match memberships.len() {
+        0 => Err(TidewayError::Forbidden(
             "Organization membership required".into(),
-        ));
+        )),
+        1 => Ok(memberships.remove(0)),
+        _ => Err(TidewayError::BadRequest(
+            "Multiple organizations found; send x-organization-id".into(),
+        )),
     }
-
-    Ok(OwnedActor {
-        organization_id,
-        owner_id: user.id.to_string(),
-    })
 }
 "#
 }
@@ -1412,13 +1448,17 @@ fn render_resource_module(
     let schema = resource_schema(profile);
     let route_create_fields = route_request_fields(schema, profile, context, false);
     let route_update_fields = route_request_fields(schema, profile, context, true);
+    let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_owned_scope;
+    let uses_shared_saas_admin_actor = context.shared_saas_actor && context.saas_admin_guard;
+    let uses_inline_auth_helpers =
+        (context.saas_owned_scope || context.saas_admin_guard) && !context.shared_saas_actor;
+    let uses_auth_headers = context.saas_owned_scope || context.saas_admin_guard;
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
     } else {
         "i32"
     };
-    let uses_auth_helpers = context.saas_owned_scope || context.saas_admin_guard;
-    let uuid_import = if matches!(id_type, ResourceIdType::Uuid) || uses_auth_helpers {
+    let uuid_import = if matches!(id_type, ResourceIdType::Uuid) || uses_inline_auth_helpers {
         "use uuid::Uuid;\n"
     } else {
         ""
@@ -1593,13 +1633,13 @@ mod tests {{
 
     let extract_import = if with_db {
         if paginate {
-            if uses_auth_helpers {
+            if uses_auth_headers {
                 "extract::{Path, Query, State}, http::HeaderMap, "
             } else {
                 "extract::{Path, Query, State}, "
             }
         } else {
-            if uses_auth_helpers {
+            if uses_auth_headers {
                 "extract::{Path, State}, http::HeaderMap, "
             } else {
                 "extract::{Path, State}, "
@@ -1608,7 +1648,7 @@ mod tests {{
     } else {
         ""
     };
-    let sea_orm_imports = if context.saas_owned_scope || context.saas_admin_guard {
+    let sea_orm_imports = if uses_inline_auth_helpers {
         "use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};\n"
     } else if with_db {
         match (paginate, search) {
@@ -1624,9 +1664,15 @@ mod tests {{
     } else {
         ""
     };
-    let entities_import = if context.saas_owned_scope {
+    let actor_import =
+        if context.shared_saas_actor && (context.saas_owned_scope || context.saas_admin_guard) {
+            "use crate::auth::RequestActor;\n"
+        } else {
+            ""
+        };
+    let entities_import = if uses_inline_auth_helpers && context.saas_owned_scope {
         "use crate::entities::{organization_member, user};\n".to_string()
-    } else if context.saas_admin_guard {
+    } else if uses_inline_auth_helpers && context.saas_admin_guard {
         "use crate::entities::user;\n".to_string()
     } else if with_db {
         format!("use crate::entities::{resource_name};\n")
@@ -1701,19 +1747,19 @@ pub struct PaginationParams {{
     } else {
         format!("    let mut query = {resource_name}::Entity::find();")
     };
-    let auth_support_code = if context.saas_owned_scope {
+    let auth_support_code = if uses_inline_auth_helpers && context.saas_owned_scope {
         render_saas_owned_route_support_code().to_string()
-    } else if context.saas_admin_guard {
+    } else if uses_inline_auth_helpers && context.saas_admin_guard {
         render_saas_admin_route_support_code().to_string()
     } else {
         String::new()
     };
-    let tideway_imports = if uses_auth_helpers {
+    let tideway_imports = if uses_inline_auth_helpers {
         "use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};\n"
     } else {
         "use tideway::{AppContext, MessageResponse, Result, RouteModule};\n"
     };
-    let auth_imports = if uses_auth_helpers {
+    let auth_imports = if uses_inline_auth_helpers {
         "use tideway::auth::{AccessTokenClaims, JwtVerifier};\n"
     } else {
         ""
@@ -1724,7 +1770,127 @@ pub struct PaginationParams {{
         format!(", {list_args}")
     };
 
-    let handlers = if context.saas_owned_scope && with_db && with_repo && with_service {
+    let handlers = if uses_shared_saas_owned_actor && with_db && with_repo && with_service {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap{list_param_prefix}{list_params},
+) -> Result<Json<Vec<{resource_pascal}>>> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::for_current_organization(&headers, &db).await?;
+    let organization_id = actor.organization_id()?.to_string();
+    let owner_id = actor.owner_id();
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let models = service
+        .list_owned(&organization_id, &owner_id{list_args_with_prefix})
+        .await?;
+    let items = models
+        .into_iter()
+        .map(|model| {resource_pascal} {{
+{response_init_fields}        }})
+        .collect();
+    Ok(Json(items))
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<Json<{resource_pascal}>> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::for_current_organization(&headers, &db).await?;
+    let organization_id = actor.organization_id()?.to_string();
+    let owner_id = actor.owner_id();
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let model = service
+        .get_required_owned(id, &organization_id, &owner_id)
+        .await?;
+    Ok(Json({resource_pascal} {{
+{single_response_init_fields}    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    {body_extractor},
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::for_current_organization(&headers, &db).await?;
+    let organization_id = actor.organization_id()?.to_string();
+    let owner_id = actor.owner_id();
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service
+        .create_owned(&organization_id, &owner_id, {scoped_create_call_args})
+        .await?;
+    Ok(MessageResponse::success("Created"))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+    Json(body): Json<UpdateRequest>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::for_current_organization(&headers, &db).await?;
+    let organization_id = actor.organization_id()?.to_string();
+    let owner_id = actor.owner_id();
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service
+        .update_owned(id, &organization_id, &owner_id, {scoped_update_call_args})
+        .await?;
+    Ok(MessageResponse::success("Updated"))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::for_current_organization(&headers, &db).await?;
+    let organization_id = actor.organization_id()?.to_string();
+    let owner_id = actor.owner_id();
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service.delete_owned(id, &organization_id, &owner_id).await?;
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+            id_type_str = id_type_str,
+            list_param_prefix = list_param_prefix,
+            list_params = list_params,
+            list_args_with_prefix = list_args_with_prefix,
+            response_init_fields = response_init_fields,
+            single_response_init_fields = single_response_init_fields,
+            scoped_create_call_args = scoped_create_call_args,
+            scoped_update_call_args = scoped_update_call_args,
+        )
+    } else if uses_inline_auth_helpers
+        && context.saas_owned_scope
+        && with_db
+        && with_repo
+        && with_service
+    {
         format!(
             r#"
 {openapi_attrs}
@@ -1831,7 +1997,114 @@ async fn delete_{resource_name}(
             scoped_create_call_args = scoped_create_call_args,
             scoped_update_call_args = scoped_update_call_args,
         )
-    } else if context.saas_admin_guard && with_db && with_repo && with_service {
+    } else if uses_shared_saas_admin_actor && with_db && with_repo && with_service {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap{list_param_prefix}{list_params},
+) -> Result<Json<Vec<{resource_pascal}>>> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::from_headers(&headers, &db).await?;
+    actor.require_admin()?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let models = service.list({list_args}).await?;
+    let items = models
+        .into_iter()
+        .map(|model| {resource_pascal} {{
+{response_init_fields}        }})
+        .collect();
+    Ok(Json(items))
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<Json<{resource_pascal}>> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::from_headers(&headers, &db).await?;
+    actor.require_admin()?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let model = service.get_required(id).await?;
+    Ok(Json({resource_pascal} {{
+{single_response_init_fields}    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    {body_extractor},
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::from_headers(&headers, &db).await?;
+    actor.require_admin()?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service.create({create_call_args}).await?;
+    Ok(MessageResponse::success("Created"))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+    Json(body): Json<UpdateRequest>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::from_headers(&headers, &db).await?;
+    actor.require_admin()?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service.update(id, {update_call_args}).await?;
+    Ok(MessageResponse::success("Updated"))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = RequestActor::from_headers(&headers, &db).await?;
+    actor.require_admin()?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service.delete(id).await?;
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+            id_type_str = id_type_str,
+            list_param_prefix = list_param_prefix,
+            list_params = list_params,
+            list_args = list_args,
+            response_init_fields = response_init_fields,
+            single_response_init_fields = single_response_init_fields,
+            create_call_args = create_call_args,
+            update_call_args = update_call_args,
+        )
+    } else if uses_inline_auth_helpers
+        && context.saas_admin_guard
+        && with_db
+        && with_repo
+        && with_service
+    {
         format!(
             r#"
 {openapi_attrs}
@@ -2230,6 +2503,7 @@ use serde::{{Deserialize, Serialize}};
 {openapi_import}
 {sea_orm_imports}
 {uuid_import}
+{actor_import}
 {entities_import}
 {repositories_import}
 {services_import}
@@ -2284,6 +2558,7 @@ pub struct UpdateRequest {{
         extract_import = extract_import,
         sea_orm_imports = sea_orm_imports,
         uuid_import = uuid_import,
+        actor_import = actor_import,
         entities_import = entities_import,
         repositories_import = repositories_import,
         services_import = services_import,

@@ -346,6 +346,7 @@ fn generate_auth(
     ensure_dir(&auth_path)?;
 
     let templates = [
+        ("actor.rs", "auth/actor"),
         ("mod.rs", "auth/mod"),
         ("routes.rs", "auth/routes"),
         ("store.rs", "auth/store"),

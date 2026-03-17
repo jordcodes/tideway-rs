@@ -1,7 +1,9 @@
 //! Authentication module.
 
+mod actor;
 mod routes;
 mod store;
 
+pub use actor::RequestActor;
 pub use routes::AuthModule;
 pub use store::{DbRefreshTokenStore, DbUserStore, InMemoryMfaTokenStore, AppTokenIssuer};

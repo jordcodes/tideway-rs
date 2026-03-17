@@ -1360,7 +1360,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
 uuid = { version = "1", features = ["v4", "serde"] }
 "#,
     );
-    create_saas_resource_markers(&project_dir, true, true);
+    create_saas_resource_markers(&project_dir, true, true, true);
 
     let args = ResourceArgs {
         name: "subscription".to_string(),
@@ -1383,11 +1383,15 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     assert_file_contains(
         &project_dir.join("src/routes/subscription.rs"),
-        "async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor>",
+        "use crate::auth::RequestActor;",
     );
     assert_file_contains(
         &project_dir.join("src/routes/subscription.rs"),
-        ".create_owned(&actor.organization_id, &actor.owner_id, body.name, body.status)",
+        "RequestActor::for_current_organization(&headers, &db).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        ".create_owned(&organization_id, &owner_id, body.name, body.status)",
     );
     assert_file_not_contains(
         &project_dir.join("src/routes/subscription.rs"),
@@ -1423,7 +1427,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
 uuid = { version = "1", features = ["v4", "serde"] }
 "#,
     );
-    create_saas_resource_markers(&project_dir, false, true);
+    create_saas_resource_markers(&project_dir, false, true, true);
 
     let args = ResourceArgs {
         name: "admin_user".to_string(),
@@ -1446,15 +1450,58 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     assert_file_contains(
         &project_dir.join("src/routes/admin_user.rs"),
-        "async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> Result<()>",
+        "use crate::auth::RequestActor;",
     );
     assert_file_contains(
         &project_dir.join("src/routes/admin_user.rs"),
-        "require_admin_access(&headers, &db).await?;",
+        "RequestActor::from_headers(&headers, &db).await?;",
     );
     assert_file_contains(
         &project_dir.join("src/routes/admin_user.rs"),
         "pub email: String,",
+    );
+}
+
+#[test]
+fn test_resource_profile_owned_falls_back_to_inline_helpers_without_shared_actor_contract() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, true, true, false);
+
+    let args = ResourceArgs {
+        name: "subscription".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Owned,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "Multiple organizations found; send x-organization-id",
     );
 }
 
@@ -1881,10 +1928,20 @@ async fn main() {
     .expect("write main.rs");
 }
 
-fn create_saas_resource_markers(project_dir: &Path, with_organizations: bool, with_admin: bool) {
+fn create_saas_resource_markers(
+    project_dir: &Path,
+    with_organizations: bool,
+    with_admin: bool,
+    with_shared_actor: bool,
+) {
     fs::create_dir_all(project_dir.join("src/auth")).expect("create auth dir");
     fs::create_dir_all(project_dir.join("src/entities")).expect("create entities dir");
-    fs::write(project_dir.join("src/auth/mod.rs"), "//! auth\n").expect("write auth mod");
+    let auth_mod = if with_shared_actor {
+        "//! auth\n\npub use actor::RequestActor;\nmod actor;\n"
+    } else {
+        "//! auth\n"
+    };
+    fs::write(project_dir.join("src/auth/mod.rs"), auth_mod).expect("write auth mod");
     fs::write(project_dir.join("src/entities/user.rs"), "//! user\n").expect("write user entity");
 
     if with_organizations {
@@ -1898,6 +1955,11 @@ fn create_saas_resource_markers(project_dir: &Path, with_organizations: bool, wi
     if with_admin {
         fs::create_dir_all(project_dir.join("src/admin")).expect("create admin dir");
         fs::write(project_dir.join("src/admin/mod.rs"), "//! admin\n").expect("write admin mod");
+    }
+
+    if with_shared_actor {
+        fs::write(project_dir.join("src/auth/actor.rs"), "//! actor\n")
+            .expect("write actor module");
     }
 }
 

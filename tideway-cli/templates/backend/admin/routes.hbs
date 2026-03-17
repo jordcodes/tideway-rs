@@ -13,6 +13,7 @@ use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
 use uuid::Uuid;
 use chrono::{Duration, Utc};
 
+use crate::auth::RequestActor;
 use crate::entities::user;
 {{#if has_organizations}}
 use crate::entities::{organization, organization_member};
@@ -172,45 +173,19 @@ pub struct ImpersonationResponse {
     pub expires_at: i64,
 }
 
-// Helper to extract and verify admin user
-async fn require_admin(
-    auth_header: &str,
-    state: &AdminState,
-) -> Result<user::Model> {
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
-
-    let token_data = state.jwt_verifier.verify(token).await?;
-
-    let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
-        .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
-
-    let user = user::Entity::find_by_id(user_id)
-        .one(state.db.as_ref())
-        .await
-        .map_err(|e| TidewayError::Database(e.to_string()))?
-        .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))?;
-
-    if !user.is_platform_admin {
-        return Err(TidewayError::Forbidden("Admin access required".into()));
-    }
-
-    Ok(user)
-}
-
 // Handlers
 
 async fn get_stats(
     Extension(state): Extension<AdminState>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<PlatformStats>> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    require_admin(auth_header, &state).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    actor.require_admin()?;
 
     let total_users = user::Entity::find()
         .count(state.db.as_ref())
@@ -251,12 +226,13 @@ async fn list_users(
     headers: axum::http::HeaderMap,
     Query(query): Query<ListUsersQuery>,
 ) -> Result<Json<PaginatedUsers>> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    require_admin(auth_header, &state).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    actor.require_admin()?;
 
     let mut select = user::Entity::find();
 
@@ -312,12 +288,13 @@ async fn get_user(
     headers: axum::http::HeaderMap,
     Path(user_id): Path<String>,
 ) -> Result<Json<AdminUserResponse>> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    require_admin(auth_header, &state).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    actor.require_admin()?;
 
     let target_uuid = Uuid::parse_str(&user_id)
         .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
@@ -347,12 +324,13 @@ async fn update_user(
     Path(user_id): Path<String>,
     Json(body): Json<UpdateUserBody>,
 ) -> Result<MessageResponse> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    require_admin(auth_header, &state).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    actor.require_admin()?;
 
     let target_uuid = Uuid::parse_str(&user_id)
         .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
@@ -405,12 +383,13 @@ async fn list_organizations(
     headers: axum::http::HeaderMap,
     Query(query): Query<ListOrgsQuery>,
 ) -> Result<Json<PaginatedOrgs>> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    require_admin(auth_header, &state).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    actor.require_admin()?;
 
     let mut select = organization::Entity::find();
 
@@ -480,12 +459,13 @@ async fn get_organization(
     headers: axum::http::HeaderMap,
     Path(org_id): Path<String>,
 ) -> Result<Json<AdminOrgResponse>> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    require_admin(auth_header, &state).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    actor.require_admin()?;
 
     let org = organization::Entity::find_by_id(&org_id)
         .one(state.db.as_ref())
@@ -519,12 +499,13 @@ async fn start_impersonation(
     Path(user_id): Path<String>,
     Json(body): Json<ImpersonateRequest>,
 ) -> Result<Json<ImpersonationResponse>> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    let admin = require_admin(auth_header, &state).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    actor.require_admin()?;
 
     let target_uuid = Uuid::parse_str(&user_id)
         .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
@@ -536,8 +517,8 @@ async fn start_impersonation(
         .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
 
     tracing::info!(
-        admin_id = %admin.id,
-        admin_email = %admin.email,
+        admin_id = %actor.user.id,
+        admin_email = %actor.user.email,
         target_id = %target_user.id,
         target_email = %target_user.email,
         reason = ?body.reason,
@@ -570,19 +551,15 @@ async fn end_impersonation(
     Extension(state): Extension<AdminState>,
     headers: axum::http::HeaderMap,
 ) -> Result<MessageResponse> {
-    let auth_header = headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
-
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
-
-    let token_data = state.jwt_verifier.verify(token).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
 
     tracing::info!(
-        user_id = %token_data.claims.standard.sub,
+        user_id = %actor.user.id,
         "Impersonation session ended"
     );
 

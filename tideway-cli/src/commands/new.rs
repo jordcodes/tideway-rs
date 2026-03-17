@@ -383,6 +383,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "src/entities/user.rs".to_string(),
         "src/entities/refresh_token_family.rs".to_string(),
         "src/entities/verification_token.rs".to_string(),
+        "src/auth/actor.rs".to_string(),
         "src/auth/mod.rs".to_string(),
         "src/auth/routes.rs".to_string(),
         "src/auth/store.rs".to_string(),

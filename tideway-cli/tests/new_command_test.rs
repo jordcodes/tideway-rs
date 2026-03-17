@@ -514,6 +514,7 @@ fn test_new_command_with_preset_saas() {
     assert!(project_dir.join(".env.example").exists());
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
+    assert!(project_dir.join("src/auth/actor.rs").exists());
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert!(project_dir.join("src/billing/mod.rs").exists());
     assert!(project_dir.join("src/organizations/mod.rs").exists());
