@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(name = "tideway")]
 #[command(author = "JD")]
 #[command(version)]
-#[command(about = "Scaffold Tideway apps and generate components", long_about = None)]
+#[command(about = "Scaffold Tideway API apps and advanced helpers", long_about = None)]
 #[command(after_help = CLI_HELP_TRAILER)]
 pub struct Cli {
     /// Output machine-readable JSON lines
@@ -30,7 +30,7 @@ pub enum Commands {
     /// Primary: diagnose feature and project setup issues
     Doctor(DoctorArgs),
 
-    /// Advanced: generate frontend components (not for backend API scaffolding)
+    /// Advanced: generate Vue frontend helpers for existing Vue apps (secondary to the API path)
     Generate(GenerateArgs),
 
     /// Advanced: generate backend scaffolding for existing/nonstandard projects (not for greenfield)
@@ -45,7 +45,7 @@ pub enum Commands {
     /// Primary: generate a CRUD resource module
     Resource(ResourceArgs),
 
-    /// Advanced: set up frontend dependencies (not required for API-only workflows)
+    /// Advanced: set up Vue frontend dependencies for existing Vue apps (not required for API-only workflows)
     Setup(SetupArgs),
 
     /// Primary: run a Tideway app in dev mode (loads env, optional migrations)
@@ -165,11 +165,11 @@ pub struct DoctorArgs {
 
 #[derive(Parser, Debug)]
 pub struct SetupArgs {
-    /// Frontend framework
+    /// Frontend framework to set up (current helper path is Vue-only)
     #[arg(value_enum, default_value = "vue")]
     pub framework: Framework,
 
-    /// Styling approach
+    /// Styling approach for the Vue helper path
     #[arg(short, long, default_value = "shadcn")]
     pub style: Style,
 
@@ -399,11 +399,11 @@ pub enum BackendPreset {
 
 #[derive(Parser, Debug)]
 pub struct GenerateArgs {
-    /// Module to generate (auth, billing, organizations, or all)
+    /// Vue frontend module to generate (auth, billing, organizations, admin, or all)
     #[arg(value_enum)]
     pub module: Module,
 
-    /// Frontend framework to use
+    /// Frontend framework to use (current helpers are Vue-only)
     #[arg(short, long, default_value = "vue")]
     pub framework: Framework,
 

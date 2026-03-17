@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/tideway/badge.svg)](https://docs.rs/tideway)
 [![License](https://img.shields.io/crates/l/tideway.svg)](https://github.com/jordcodes/tideway-rs)
 
-**Tideway** is a batteries-included Rust web framework built on [Axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs/). It provides opinionated defaults for building SaaS applications quickly while maintaining the performance and flexibility you expect from Rust.
+**Tideway** is a batteries-included Rust web framework built on [Axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs/). It provides opinionated defaults for building SaaS applications quickly while maintaining the performance and flexibility you expect from Rust. The primary CLI path and tested scaffolds target backend/API workflows; frontend helpers are advanced and currently Vue-focused.
 
 ## Features
 
@@ -33,7 +33,7 @@ Feature flags are opt-in unless marked Default.
 | `feature-gate-warnings` | — | — | — | Optional warnings for missing features |
 | `macros` | `tideway-macros` / `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
 | `database` | `database` | `docs/database_traits.md` | `examples/custom_database.rs` | Default (SeaORM) |
-| `database-sqlx` | `database` | `docs/database_traits.md` | — | Placeholder (not implemented yet) |
+| `database-sqlx` | `database` | `docs/database_traits.md` | — | Experimental placeholder only; not implemented yet |
 | `openapi` | `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
 | `validation` | `validation` | `docs/validation.md` | `examples/validation_example.rs` | — |
 | `metrics` | `metrics` | `README.md#built-in-middleware` | `tests/metrics_integration_test.rs` | — |
@@ -89,6 +89,7 @@ The first interactive screen promotes `api`, `saas`, and `worker`; advanced path
 Use `--no-prompt` for the same API-first defaults in CI/non-interactive runs.
 Use `--preset minimal` only when you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
+Frontend `generate` / `setup` helpers are advanced and currently intended for existing Vue apps, not the primary onboarding path.
 
 ### Agent Quickstart
 
@@ -857,10 +858,10 @@ async fn my_handler(State(ctx): State<AppContext>) -> Json<Response> {
 
 ### Database
 
-Tideway supports multiple database backends through the `DatabasePool` trait:
+Tideway exposes a database abstraction through the `DatabasePool` trait, but the built-in production path today is SeaORM:
 
 - **SeaORM** (default): Full-featured ORM with migrations
-- **SQLx** (feature placeholder): Async SQL toolkit (not implemented yet)
+- **SQLx** (`database-sqlx`): Experimental placeholder only (not implemented yet)
 
 ```rust
 use tideway::{SeaOrmPool, DatabasePool};

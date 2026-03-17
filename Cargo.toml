@@ -121,7 +121,7 @@ feature-gate-warnings = []
 macros = ["tideway-macros", "openapi"]
 # Database support with SeaORM
 database = ["sea-orm", "sea-orm-migration", "chrono"]
-# SQLx database support (WIP - not yet implemented)
+# SQLx database support (experimental placeholder; not yet implemented)
 database-sqlx = ["database", "sqlx"]
 # OpenAPI/Swagger documentation
 openapi = ["utoipa", "utoipa-axum", "utoipa-swagger-ui"]

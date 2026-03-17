@@ -22,6 +22,11 @@ fn test_root_help_mentions_primary_path_trailer() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
+        stdout.contains("Scaffold Tideway API apps and advanced helpers"),
+        "expected narrowed root help summary, got:\n{}",
+        stdout
+    );
+    assert!(
         stdout.contains("Primary path (recommended): tideway new <app>"),
         "expected canonical path trailer in root help, got:\n{}",
         stdout
@@ -29,6 +34,42 @@ fn test_root_help_mentions_primary_path_trailer() {
     assert!(
         stdout.contains("Advanced commands are for existing projects or nonstandard workflows."),
         "expected advanced-command note in root help, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_generate_help_marks_vue_only_advanced_path() {
+    let output = run_tideway(&["generate", "--help"]);
+    assert_success(&output, "tideway generate --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Advanced: generate Vue frontend helpers for existing Vue apps"),
+        "expected Vue-only advanced generate marker, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("current helpers are Vue-only"),
+        "expected Vue-only framework note, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_setup_help_marks_vue_only_advanced_path() {
+    let output = run_tideway(&["setup", "--help"]);
+    assert_success(&output, "tideway setup --help");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Advanced: set up Vue frontend dependencies for existing Vue apps"),
+        "expected Vue-only advanced setup marker, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("current helper path is Vue-only"),
+        "expected Vue-only setup note, got:\n{}",
         stdout
     );
 }

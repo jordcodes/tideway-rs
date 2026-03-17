@@ -187,6 +187,7 @@ tideway doctor --fix
 ### `tideway backend` (advanced)
 
 Generate a full backend preset.
+For greenfield SaaS apps, prefer `tideway new my_app --preset saas`; use `backend` when you are grafting the scaffold into an existing or nonstandard project.
 
 ```bash
 tideway backend b2c --name my_app
@@ -199,7 +200,8 @@ Compatibility note:
 
 ### `tideway generate` (advanced)
 
-Generate frontend components.
+Generate Vue frontend helpers for existing Vue apps.
+This is a secondary workflow and is not part of the primary API path.
 
 ```bash
 tideway generate auth
@@ -209,7 +211,8 @@ tideway generate all --framework vue
 
 ### `tideway setup` (advanced)
 
-Install Tailwind + shadcn-vue for your frontend.
+Set up Vue frontend dependencies (Tailwind + shadcn-vue) for the advanced frontend helper path.
+This is secondary to the API-first workflow.
 
 ```bash
 tideway setup
@@ -243,3 +246,4 @@ tideway migrate up -- --num 2
 - Canonical path: `new` -> `dev` -> `resource ...` -> `migrate`.
 - `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
 - `tideway doctor` is a quick sanity check and repair tool, not a required first-run step.
+- Frontend `generate` / `setup` flows are currently Vue-focused advanced helpers, not a co-equal onboarding path with the backend/API workflow.

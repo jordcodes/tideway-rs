@@ -48,10 +48,10 @@ async fn main() -> tideway::Result<()> {
 }
 ```
 
-### SQLx (`database-sqlx` Feature)
+### SQLx (`database-sqlx` Feature, Experimental Placeholder)
 
 The `database-sqlx` feature currently exposes a placeholder API only.
-`SqlxPool` is not implemented yet.
+`SqlxPool` is not implemented yet, and this is not part of the primary Tideway path today.
 
 ## Custom Implementation
 

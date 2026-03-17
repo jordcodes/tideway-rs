@@ -1,10 +1,10 @@
-//! Tideway CLI - Generate frontend components for tideway applications.
+//! Tideway CLI - Scaffold Tideway apps and advanced helpers.
 //!
 //! Usage:
+//!   tideway new my_app
+//!   tideway dev
+//!   tideway resource user --wire --db --repo --service --paginate --search
 //!   tideway generate auth --framework vue --style shadcn
-//!   tideway generate billing --framework vue
-//!   tideway generate organizations --framework vue
-//!   tideway generate all --framework vue --output ./src/components
 
 use anyhow::Result;
 use clap::Parser;
