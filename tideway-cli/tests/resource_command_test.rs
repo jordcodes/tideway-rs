@@ -1391,7 +1391,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/routes/subscription.rs"),
-        ".create_owned(&organization_id, &owner_id, body.name, body.status)",
+        "service.create_for_actor(&actor, body.name, body.status).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "let models = service.list_for_actor(&actor, params.limit, params.offset, params.q).await?;",
     );
     assert_file_not_contains(
         &project_dir.join("src/routes/subscription.rs"),
@@ -1408,6 +1412,18 @@ uuid = { version = "1", features = ["v4", "serde"] }
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
         "pub async fn get_required_owned(",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "pub async fn list_for_actor(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>, search: Option<String>)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "let organization_id = actor.organization_id()?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "self.create_owned(organization_id, &owner_id, name, status).await",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1455,6 +1471,22 @@ uuid = { version = "1", features = ["v4", "serde"] }
     assert_file_contains(
         &project_dir.join("src/routes/admin_user.rs"),
         "RequestActor::from_headers(&headers, &db).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/admin_user.rs"),
+        "let models = service.list_for_admin(&actor, params.limit, params.offset, params.q).await?;",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/routes/admin_user.rs"),
+        "actor.require_admin()?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "pub async fn list_for_admin(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::admin_user::Model>>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "actor.require_admin()?;",
     );
     assert_file_contains(
         &project_dir.join("src/routes/admin_user.rs"),

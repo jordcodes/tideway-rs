@@ -1780,13 +1780,9 @@ async fn list_{resource_plural}(
 ) -> Result<Json<Vec<{resource_pascal}>>> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::for_current_organization(&headers, &db).await?;
-    let organization_id = actor.organization_id()?.to_string();
-    let owner_id = actor.owner_id();
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    let models = service
-        .list_owned(&organization_id, &owner_id{list_args_with_prefix})
-        .await?;
+    let models = service.list_for_actor(&actor{list_args_with_prefix}).await?;
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
@@ -1803,13 +1799,9 @@ async fn get_{resource_name}(
 ) -> Result<Json<{resource_pascal}>> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::for_current_organization(&headers, &db).await?;
-    let organization_id = actor.organization_id()?.to_string();
-    let owner_id = actor.owner_id();
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    let model = service
-        .get_required_owned(id, &organization_id, &owner_id)
-        .await?;
+    let model = service.get_required_for_actor(&actor, id).await?;
     Ok(Json({resource_pascal} {{
 {single_response_init_fields}    }}))
 }}
@@ -1822,13 +1814,9 @@ async fn create_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::for_current_organization(&headers, &db).await?;
-    let organization_id = actor.organization_id()?.to_string();
-    let owner_id = actor.owner_id();
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    service
-        .create_owned(&organization_id, &owner_id, {scoped_create_call_args})
-        .await?;
+    service.create_for_actor(&actor, {scoped_create_call_args}).await?;
     Ok(MessageResponse::success("Created"))
 }}
 
@@ -1841,12 +1829,10 @@ async fn update_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::for_current_organization(&headers, &db).await?;
-    let organization_id = actor.organization_id()?.to_string();
-    let owner_id = actor.owner_id();
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
     service
-        .update_owned(id, &organization_id, &owner_id, {scoped_update_call_args})
+        .update_for_actor(&actor, id, {scoped_update_call_args})
         .await?;
     Ok(MessageResponse::success("Updated"))
 }}
@@ -1859,11 +1845,9 @@ async fn delete_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::for_current_organization(&headers, &db).await?;
-    let organization_id = actor.organization_id()?.to_string();
-    let owner_id = actor.owner_id();
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    service.delete_owned(id, &organization_id, &owner_id).await?;
+    service.delete_for_actor(&actor, id).await?;
     Ok(MessageResponse::success("Deleted"))
 }}
 "#,
@@ -2007,10 +1991,9 @@ async fn list_{resource_plural}(
 ) -> Result<Json<Vec<{resource_pascal}>>> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::from_headers(&headers, &db).await?;
-    actor.require_admin()?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    let models = service.list({list_args}).await?;
+    let models = service.list_for_admin(&actor{list_args_with_prefix}).await?;
     let items = models
         .into_iter()
         .map(|model| {resource_pascal} {{
@@ -2027,10 +2010,9 @@ async fn get_{resource_name}(
 ) -> Result<Json<{resource_pascal}>> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::from_headers(&headers, &db).await?;
-    actor.require_admin()?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    let model = service.get_required(id).await?;
+    let model = service.get_required_for_admin(&actor, id).await?;
     Ok(Json({resource_pascal} {{
 {single_response_init_fields}    }}))
 }}
@@ -2043,10 +2025,9 @@ async fn create_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::from_headers(&headers, &db).await?;
-    actor.require_admin()?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    service.create({create_call_args}).await?;
+    service.create_for_admin(&actor, {create_call_args}).await?;
     Ok(MessageResponse::success("Created"))
 }}
 
@@ -2059,10 +2040,9 @@ async fn update_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::from_headers(&headers, &db).await?;
-    actor.require_admin()?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    service.update(id, {update_call_args}).await?;
+    service.update_for_admin(&actor, id, {update_call_args}).await?;
     Ok(MessageResponse::success("Updated"))
 }}
 
@@ -2074,10 +2054,9 @@ async fn delete_{resource_name}(
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
     let actor = RequestActor::from_headers(&headers, &db).await?;
-    actor.require_admin()?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    service.delete(id).await?;
+    service.delete_for_admin(&actor, id).await?;
     Ok(MessageResponse::success("Deleted"))
 }}
 "#,
@@ -2093,7 +2072,7 @@ async fn delete_{resource_name}(
             id_type_str = id_type_str,
             list_param_prefix = list_param_prefix,
             list_params = list_params,
-            list_args = list_args,
+            list_args_with_prefix = list_args_with_prefix,
             response_init_fields = response_init_fields,
             single_response_init_fields = single_response_init_fields,
             create_call_args = create_call_args,
@@ -3295,6 +3274,8 @@ fn render_service(
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     let schema = resource_schema(profile);
+    let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_owned_scope;
+    let uses_shared_saas_admin_actor = context.shared_saas_actor && context.saas_admin_guard;
     let route_create_fields = route_request_fields(schema, profile, context, false);
     let route_update_fields = route_request_fields(schema, profile, context, true);
     let create_signature_args = render_create_signature_args(schema, false);
@@ -3311,6 +3292,11 @@ fn render_service(
     };
     let uuid_import = if matches!(id_type, ResourceIdType::Uuid) {
         "use uuid::Uuid;\n"
+    } else {
+        ""
+    };
+    let actor_import = if uses_shared_saas_owned_actor || uses_shared_saas_admin_actor {
+        "use crate::auth::RequestActor;\n"
     } else {
         ""
     };
@@ -3435,9 +3421,175 @@ fn render_service(
     } else {
         String::new()
     };
+    let owned_actor_methods = if uses_shared_saas_owned_actor {
+        let actor_list_signature = if paginate {
+            if search {
+                format!(
+                    "pub async fn list_for_actor(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                )
+            } else {
+                format!(
+                    "pub async fn list_for_actor(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                )
+            }
+        } else {
+            format!(
+                "pub async fn list_for_actor(&self, actor: &RequestActor) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+            )
+        };
+        let actor_list_call = if paginate {
+            if search {
+                "        self.list_owned(organization_id, &owner_id, limit, offset, search).await"
+            } else {
+                "        self.list_owned(organization_id, &owner_id, limit, offset).await"
+            }
+        } else {
+            "        self.list_owned(organization_id, &owner_id).await"
+        };
+        let owned_create_signature = render_signature_args_from_fields(&route_create_fields, false);
+        let owned_update_signature = render_signature_args_from_fields(&route_update_fields, true);
+        let owned_create_args = render_param_names_from_fields(&route_create_fields);
+        let owned_update_args = render_param_names_from_fields(&route_update_fields);
+
+        format!(
+            r#"
+    {actor_list_signature}
+        let organization_id = actor.organization_id()?;
+        let owner_id = actor.owner_id();
+{actor_list_call}
+    }}
+
+    pub async fn get_required_for_actor(
+        &self,
+        actor: &RequestActor,
+        id: {id_type},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let organization_id = actor.organization_id()?;
+        let owner_id = actor.owner_id();
+        self.get_required_owned(id, organization_id, &owner_id).await
+    }}
+
+    pub async fn create_for_actor(
+        &self,
+        actor: &RequestActor,
+        {owned_create_signature},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let organization_id = actor.organization_id()?;
+        let owner_id = actor.owner_id();
+        self.create_owned(organization_id, &owner_id, {owned_create_args}).await
+    }}
+
+    pub async fn update_for_actor(
+        &self,
+        actor: &RequestActor,
+        id: {id_type},
+        {owned_update_signature},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let organization_id = actor.organization_id()?;
+        let owner_id = actor.owner_id();
+        self.update_owned(id, organization_id, &owner_id, {owned_update_args}).await
+    }}
+
+    pub async fn delete_for_actor(&self, actor: &RequestActor, id: {id_type}) -> Result<()> {{
+        let organization_id = actor.organization_id()?;
+        let owner_id = actor.owner_id();
+        self.delete_owned(id, organization_id, &owner_id).await
+    }}
+"#,
+            actor_list_signature = actor_list_signature,
+            actor_list_call = actor_list_call,
+            id_type = id_type_str,
+            resource_name = resource_name,
+            owned_create_signature = owned_create_signature,
+            owned_update_signature = owned_update_signature,
+            owned_create_args = owned_create_args,
+            owned_update_args = owned_update_args,
+        )
+    } else {
+        String::new()
+    };
+    let admin_actor_methods = if uses_shared_saas_admin_actor {
+        let admin_list_signature = if paginate {
+            if search {
+                format!(
+                    "pub async fn list_for_admin(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                )
+            } else {
+                format!(
+                    "pub async fn list_for_admin(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                )
+            }
+        } else {
+            format!(
+                "pub async fn list_for_admin(&self, actor: &RequestActor) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+            )
+        };
+        let admin_list_call = if paginate {
+            if search {
+                "        self.list(limit, offset, search).await"
+            } else {
+                "        self.list(limit, offset).await"
+            }
+        } else {
+            "        self.list().await"
+        };
+
+        format!(
+            r#"
+    {admin_list_signature}
+        actor.require_admin()?;
+{admin_list_call}
+    }}
+
+    pub async fn get_required_for_admin(
+        &self,
+        actor: &RequestActor,
+        id: {id_type},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        actor.require_admin()?;
+        self.get_required(id).await
+    }}
+
+    pub async fn create_for_admin(
+        &self,
+        actor: &RequestActor,
+        {create_signature_args},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        actor.require_admin()?;
+        self.create({create_call_args}).await
+    }}
+
+    pub async fn update_for_admin(
+        &self,
+        actor: &RequestActor,
+        id: {id_type},
+        {update_signature_args},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        actor.require_admin()?;
+        self.update(id, {update_call_args}).await
+    }}
+
+    pub async fn delete_for_admin(&self, actor: &RequestActor, id: {id_type}) -> Result<()> {{
+        actor.require_admin()?;
+        self.delete(id).await
+    }}
+"#,
+            admin_list_signature = admin_list_signature,
+            admin_list_call = admin_list_call,
+            id_type = id_type_str,
+            resource_name = resource_name,
+            create_signature_args = create_signature_args,
+            create_call_args = create_call_args,
+            update_signature_args = update_signature_args,
+            update_call_args = update_call_args,
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"use tideway::{{ensure, Result, TidewayError}};
 {uuid_import}
+{actor_import}
 
 use crate::repositories::{resource_name}::{resource_pascal}Repository;
 
@@ -3454,6 +3606,8 @@ impl {resource_pascal}Service {{
 {list_body}
     }}
 {owned_methods}
+{owned_actor_methods}
+{admin_actor_methods}
 
     pub async fn get(&self, id: {id_type}) -> Result<Option<crate::entities::{resource_name}::Model>> {{
         self.repo.get(id).await
@@ -3488,6 +3642,7 @@ impl {resource_pascal}Service {{
         resource_pascal = resource_pascal,
         id_type = id_type_str,
         uuid_import = uuid_import,
+        actor_import = actor_import,
         list_signature = list_signature,
         list_body = list_body,
         create_signature_args = create_signature_args,
@@ -3498,6 +3653,8 @@ impl {resource_pascal}Service {{
         update_normalization_lines = update_normalization_lines,
         validation_helpers = validation_helpers,
         owned_methods = owned_methods,
+        owned_actor_methods = owned_actor_methods,
+        admin_actor_methods = admin_actor_methods,
     )
 }
 
