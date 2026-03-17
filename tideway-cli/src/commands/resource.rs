@@ -3476,6 +3476,17 @@ fn render_service(
 {actor_list_call}
     }}
 
+    async fn audit_owned_write(
+        &self,
+        actor: &RequestActor,
+        action: &str,
+        model: &crate::entities::{resource_name}::Model,
+    ) -> Result<()> {{
+        // Hook audit logging, events, or other side effects here.
+        let _ = (actor, action, model);
+        Ok(())
+    }}
+
     pub async fn get_required_for_actor(
         &self,
         actor: &RequestActor,
@@ -3493,7 +3504,11 @@ fn render_service(
     ) -> Result<crate::entities::{resource_name}::Model> {{
         let organization_id = actor.organization_id()?;
         let owner_id = actor.owner_id();
-        self.create_owned(organization_id, &owner_id, {owned_create_args}).await
+        let model = self
+            .create_owned(organization_id, &owner_id, {owned_create_args})
+            .await?;
+        self.audit_owned_write(actor, "create", &model).await?;
+        Ok(model)
     }}
 
     pub async fn update_for_actor(
@@ -3504,13 +3519,19 @@ fn render_service(
     ) -> Result<crate::entities::{resource_name}::Model> {{
         let organization_id = actor.organization_id()?;
         let owner_id = actor.owner_id();
-        self.update_owned(id, organization_id, &owner_id, {owned_update_args}).await
+        let model = self
+            .update_owned(id, organization_id, &owner_id, {owned_update_args})
+            .await?;
+        self.audit_owned_write(actor, "update", &model).await?;
+        Ok(model)
     }}
 
     pub async fn delete_for_actor(&self, actor: &RequestActor, id: {id_type}) -> Result<()> {{
+        let model = self.get_required_for_actor(actor, id).await?;
         let organization_id = actor.organization_id()?;
         let owner_id = actor.owner_id();
-        self.delete_owned(id, organization_id, &owner_id).await
+        self.delete_owned(id, organization_id, &owner_id).await?;
+        self.audit_owned_write(actor, "delete", &model).await
     }}
 "#,
             actor_list_signature = actor_list_signature,
@@ -3558,6 +3579,17 @@ fn render_service(
 {admin_list_call}
     }}
 
+    async fn audit_admin_write(
+        &self,
+        actor: &RequestActor,
+        action: &str,
+        model: &crate::entities::{resource_name}::Model,
+    ) -> Result<()> {{
+        // Hook audit logging, events, or other side effects here.
+        let _ = (actor, action, model);
+        Ok(())
+    }}
+
     pub async fn get_required_for_admin(
         &self,
         actor: &RequestActor,
@@ -3573,7 +3605,9 @@ fn render_service(
         {create_signature_args},
     ) -> Result<crate::entities::{resource_name}::Model> {{
         actor.require_admin()?;
-        self.create({create_call_args}).await
+        let model = self.create({create_call_args}).await?;
+        self.audit_admin_write(actor, "create", &model).await?;
+        Ok(model)
     }}
 
     pub async fn update_for_admin(
@@ -3583,12 +3617,16 @@ fn render_service(
         {update_signature_args},
     ) -> Result<crate::entities::{resource_name}::Model> {{
         actor.require_admin()?;
-        self.update(id, {update_call_args}).await
+        let model = self.update(id, {update_call_args}).await?;
+        self.audit_admin_write(actor, "update", &model).await?;
+        Ok(model)
     }}
 
     pub async fn delete_for_admin(&self, actor: &RequestActor, id: {id_type}) -> Result<()> {{
         actor.require_admin()?;
-        self.delete(id).await
+        let model = self.get_required(id).await?;
+        self.delete(id).await?;
+        self.audit_admin_write(actor, "delete", &model).await
     }}
 "#,
             admin_list_signature = admin_list_signature,

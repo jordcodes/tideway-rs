@@ -1423,11 +1423,47 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
+        "async fn audit_owned_write(",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "Hook audit logging, events, or other side effects here.",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "let _ = (actor, action, model);",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
         "let organization_id = actor.organization_id()?;",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "self.create_owned(organization_id, &owner_id, name, status).await",
+        "self.audit_owned_write(actor, \"create\", &model).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "self.audit_owned_write(actor, \"update\", &model).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "self.audit_owned_write(actor, \"delete\", &model).await",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "let model = self",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        ".create_owned(organization_id, &owner_id, name, status)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        ".update_owned(id, organization_id, &owner_id, name, status)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "let model = self.get_required_for_actor(actor, id).await?;",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1502,7 +1538,23 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/admin_user.rs"),
+        "async fn audit_admin_write(",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
         "actor.require_admin()?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "self.audit_admin_write(actor, \"create\", &model).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "self.audit_admin_write(actor, \"update\", &model).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "self.audit_admin_write(actor, \"delete\", &model).await",
     );
     assert_file_contains(
         &project_dir.join("src/routes/admin_user.rs"),
