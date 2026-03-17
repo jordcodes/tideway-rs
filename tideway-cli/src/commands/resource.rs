@@ -3362,6 +3362,22 @@ fn render_service(
 {owned_list_call}
     }}
 
+    fn ensure_owned_access(
+        model: crate::entities::{resource_name}::Model,
+        organization_id: &str,
+        owner_id: &str,
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        ensure!(
+            model.organization_id == organization_id,
+            TidewayError::not_found("{resource_pascal} not found")
+        );
+        ensure!(
+            model.owner_id == owner_id,
+            TidewayError::forbidden("{resource_pascal} belongs to another user")
+        );
+        Ok(model)
+    }}
+
     pub async fn get_required_owned(
         &self,
         id: {id_type},
@@ -3370,10 +3386,11 @@ fn render_service(
     ) -> Result<crate::entities::{resource_name}::Model> {{
         let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;
         let owner_id = Self::normalize_required_string("owner_id", owner_id.to_string())?;
-        self.repo
-            .get_owned(id, &organization_id, &owner_id)
+        let model = self.repo
+            .get(id)
             .await?
-            .ok_or_else(|| TidewayError::not_found("{resource_pascal} not found"))
+            .ok_or_else(|| TidewayError::not_found("{resource_pascal} not found"))?;
+        Self::ensure_owned_access(model, &organization_id, &owner_id)
     }}
 
     pub async fn create_owned(

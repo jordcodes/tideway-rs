@@ -1415,6 +1415,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
+        "fn ensure_owned_access(",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
         "pub async fn list_for_actor(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>, search: Option<String>)",
     );
     assert_file_contains(
@@ -1424,6 +1428,18 @@ uuid = { version = "1", features = ["v4", "serde"] }
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
         "self.create_owned(organization_id, &owner_id, name, status).await",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "TidewayError::forbidden(\"Subscription belongs to another user\")",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "let model = self.repo",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        ".get(id)",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
