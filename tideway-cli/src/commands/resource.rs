@@ -67,6 +67,12 @@ struct ResourceSchema {
     fields: &'static [ResourceFieldSpec],
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct ResourceGenerationContext {
+    saas_owned_scope: bool,
+    saas_admin_guard: bool,
+}
+
 const NAME_FIELDS: [ResourceFieldSpec; 1] = [ResourceFieldSpec {
     name: "name",
     ty: ResourceFieldType::String,
@@ -381,6 +387,25 @@ fn update_request_fields(schema: ResourceSchema) -> Vec<ResourceFieldSpec> {
         .collect()
 }
 
+fn route_request_fields(
+    schema: ResourceSchema,
+    profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    optional: bool,
+) -> Vec<ResourceFieldSpec> {
+    let mut fields = if optional {
+        update_request_fields(schema)
+    } else {
+        create_request_fields(schema)
+    };
+
+    if context.saas_owned_scope && matches!(profile, ResourceProfile::Owned) {
+        fields.retain(|field| !matches!(field.name, "organization_id" | "owner_id"));
+    }
+
+    fields
+}
+
 fn search_field(schema: ResourceSchema) -> Option<ResourceFieldSpec> {
     schema.fields.iter().copied().find(|field| field.search)
 }
@@ -499,8 +524,7 @@ fn render_active_model_update_assignments(
     output
 }
 
-fn render_create_test_json_fields(schema: ResourceSchema) -> String {
-    let fields = create_request_fields(schema);
+fn render_create_test_json_fields_for_fields(fields: &[ResourceFieldSpec]) -> String {
     fields
         .iter()
         .map(|field| format!("\"{}\": {}", field.name, field.json_value))
@@ -508,12 +532,7 @@ fn render_create_test_json_fields(schema: ResourceSchema) -> String {
         .join(", ")
 }
 
-fn render_create_signature_args(schema: ResourceSchema, optional: bool) -> String {
-    let fields = if optional {
-        update_request_fields(schema)
-    } else {
-        create_request_fields(schema)
-    };
+fn render_signature_args_from_fields(fields: &[ResourceFieldSpec], optional: bool) -> String {
     fields
         .iter()
         .map(|field| {
@@ -528,15 +547,36 @@ fn render_create_signature_args(schema: ResourceSchema, optional: bool) -> Strin
         .join(", ")
 }
 
+fn render_create_signature_args(schema: ResourceSchema, optional: bool) -> String {
+    let fields = if optional {
+        update_request_fields(schema)
+    } else {
+        create_request_fields(schema)
+    };
+    render_signature_args_from_fields(&fields, optional)
+}
+
+fn render_call_args_from_fields(fields: &[ResourceFieldSpec], source: &str) -> String {
+    fields
+        .iter()
+        .map(|field| format!("{source}.{}", field.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn render_call_args(schema: ResourceSchema, source: &str, optional: bool) -> String {
     let fields = if optional {
         update_request_fields(schema)
     } else {
         create_request_fields(schema)
     };
+    render_call_args_from_fields(&fields, source)
+}
+
+fn render_param_names_from_fields(fields: &[ResourceFieldSpec]) -> String {
     fields
         .iter()
-        .map(|field| format!("{source}.{}", field.name))
+        .map(|field| field.name.to_string())
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -547,11 +587,7 @@ fn render_param_names(schema: ResourceSchema, optional: bool) -> String {
     } else {
         create_request_fields(schema)
     };
-    fields
-        .iter()
-        .map(|field| field.name.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    render_param_names_from_fields(&fields)
 }
 
 fn render_stub_call_args(schema: ResourceSchema, optional: bool) -> String {
@@ -854,6 +890,26 @@ fn render_repository_list_body(
     }
 }
 
+fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> ResourceGenerationContext {
+    let src_dir = project_dir.join("src");
+    let has_saas_auth =
+        src_dir.join("auth/mod.rs").exists() && src_dir.join("entities/user.rs").exists();
+    let has_saas_organizations = src_dir.join("entities/organization_member.rs").exists();
+    let has_saas_admin = src_dir.join("admin/mod.rs").exists();
+    let full_stack = args.db && args.repo && args.service;
+
+    ResourceGenerationContext {
+        saas_owned_scope: full_stack
+            && matches!(args.profile, ResourceProfile::Owned)
+            && has_saas_auth
+            && has_saas_organizations,
+        saas_admin_guard: full_stack
+            && matches!(args.profile, ResourceProfile::Admin)
+            && has_saas_auth
+            && has_saas_admin,
+    }
+}
+
 pub fn run(args: ResourceArgs) -> Result<()> {
     let mut args = args;
     apply_profile_defaults(&mut args);
@@ -874,6 +930,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
     let resource_name = normalize_name(&args.name);
     let resource_pascal = to_pascal_case(&resource_name);
     let resource_plural = pluralize(&resource_name);
+    let generation_context = detect_generation_context(&project_dir, &args);
 
     let cargo_path = project_dir.join("Cargo.toml");
     let cargo_doc = read_cargo_manifest(&cargo_path);
@@ -920,11 +977,13 @@ pub fn run(args: ResourceArgs) -> Result<()> {
         args.id_type,
         args.paginate,
         args.search,
+        generation_context,
     );
     write_file_with_force(&resource_path, &contents, false)?;
 
     if args.wire {
         wire_routes_mod(&routes_dir, &resource_name)?;
+        wire_routes_in_main(&src_dir)?;
         wire_main_rs(&src_dir, &resource_name, &resource_pascal)?;
         if has_openapi {
             wire_openapi_docs(&src_dir, &resource_name, &resource_plural)?;
@@ -961,6 +1020,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 args.paginate,
                 args.search,
                 args.profile,
+                generation_context,
             )?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
@@ -982,6 +1042,7 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                     args.paginate,
                     args.search,
                     args.profile,
+                    generation_context,
                 )?;
             }
         }
@@ -1001,6 +1062,14 @@ pub fn run(args: ResourceArgs) -> Result<()> {
                 TIDEWAY_ADD_DATABASE_WIRE_COMMAND
             ));
         }
+    }
+
+    if generation_context.saas_owned_scope {
+        print_info(
+            "Detected a SaaS scaffold; generated auth-scoped owned handlers that derive organization and owner context from the caller.",
+        );
+    } else if generation_context.saas_admin_guard {
+        print_info("Detected a SaaS scaffold; generated admin-guarded handlers for this resource.");
     }
 
     if args.with_tests && !args.db {
@@ -1227,6 +1296,102 @@ fn dependency_sections<'a>(doc: &'a toml_edit::DocumentMut) -> Vec<&'a toml_edit
     sections
 }
 
+fn render_saas_owned_route_support_code() -> &'static str {
+    r#"
+#[derive(Debug, Clone)]
+struct OwnedActor {
+    organization_id: String,
+    owner_id: String,
+}
+
+async fn authenticated_user(headers: &HeaderMap, db: &DatabaseConnection) -> Result<user::Model> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
+
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .map_err(|_| TidewayError::Unauthorized("JWT auth is not configured".into()))?;
+    let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret(jwt_secret.as_bytes());
+    let token_data = jwt_verifier.verify(token).await?;
+
+    let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
+        .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
+
+    user::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))
+}
+
+async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor> {
+    let user = authenticated_user(headers, db).await?;
+    let organization_id = user
+        .organization_id
+        .clone()
+        .ok_or_else(|| TidewayError::Forbidden("Organization context required".into()))?;
+
+    let membership = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(organization_id.clone()))
+        .filter(organization_member::Column::UserId.eq(user.id))
+        .one(db)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+    if membership.is_none() {
+        return Err(TidewayError::Forbidden(
+            "Organization membership required".into(),
+        ));
+    }
+
+    Ok(OwnedActor {
+        organization_id,
+        owner_id: user.id.to_string(),
+    })
+}
+"#
+}
+
+fn render_saas_admin_route_support_code() -> &'static str {
+    r#"
+async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> Result<()> {
+    let auth_header = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| TidewayError::Unauthorized("Missing authorization header".into()))?;
+
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
+
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .map_err(|_| TidewayError::Unauthorized("JWT auth is not configured".into()))?;
+    let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret(jwt_secret.as_bytes());
+    let token_data = jwt_verifier.verify(token).await?;
+
+    let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
+        .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
+
+    let user = user::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))?;
+
+    if !user.is_platform_admin {
+        return Err(TidewayError::Forbidden("Admin access required".into()));
+    }
+
+    Ok(())
+}
+"#
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_resource_module(
     resource_pascal: &str,
@@ -1241,15 +1406,19 @@ fn render_resource_module(
     id_type: ResourceIdType,
     paginate: bool,
     search: bool,
+    context: ResourceGenerationContext,
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
     let schema = resource_schema(profile);
+    let route_create_fields = route_request_fields(schema, profile, context, false);
+    let route_update_fields = route_request_fields(schema, profile, context, true);
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
     } else {
         "i32"
     };
-    let uuid_import = if matches!(id_type, ResourceIdType::Uuid) {
+    let uses_auth_helpers = context.saas_owned_scope || context.saas_admin_guard;
+    let uuid_import = if matches!(id_type, ResourceIdType::Uuid) || uses_auth_helpers {
         "use uuid::Uuid;\n"
     } else {
         ""
@@ -1259,13 +1428,13 @@ fn render_resource_module(
     } else {
         ""
     };
-    let create_fields = create_request_fields(schema);
-    let update_fields = update_request_fields(schema);
     let response_struct_fields = render_response_struct_fields(schema);
-    let create_request_struct_fields = render_request_struct_fields(&create_fields, false);
-    let update_request_struct_fields = render_request_struct_fields(&update_fields, true);
+    let create_request_struct_fields = render_request_struct_fields(&route_create_fields, false);
+    let update_request_struct_fields = render_request_struct_fields(&route_update_fields, true);
     let create_call_args = render_call_args(schema, "body", false);
     let update_call_args = render_call_args(schema, "body", true);
+    let scoped_create_call_args = render_call_args_from_fields(&route_create_fields, "body");
+    let scoped_update_call_args = render_call_args_from_fields(&route_update_fields, "body");
     let create_active_model_assignments =
         render_active_model_create_assignments(schema, "body", "        ");
     let update_active_model_assignments =
@@ -1274,7 +1443,7 @@ fn render_resource_module(
     let single_response_init_fields = render_response_init_fields(schema, "model", "        ");
     let stub_response_init_fields =
         render_stub_response_fields(schema, "        ", resource_pascal);
-    let create_test_json_fields = render_create_test_json_fields(schema);
+    let create_test_json_fields = render_create_test_json_fields_for_fields(&route_create_fields);
     let display_fallback = display_fallback_value(schema, resource_pascal);
     let timestamp_helper = render_timestamp_helper_if_needed(schema);
     let tests_block = if with_tests && !with_db {
@@ -1424,14 +1593,24 @@ mod tests {{
 
     let extract_import = if with_db {
         if paginate {
-            "extract::{Path, Query, State}, "
+            if uses_auth_helpers {
+                "extract::{Path, Query, State}, http::HeaderMap, "
+            } else {
+                "extract::{Path, Query, State}, "
+            }
         } else {
-            "extract::{Path, State}, "
+            if uses_auth_helpers {
+                "extract::{Path, State}, http::HeaderMap, "
+            } else {
+                "extract::{Path, State}, "
+            }
         }
     } else {
         ""
     };
-    let sea_orm_imports = if with_db {
+    let sea_orm_imports = if context.saas_owned_scope || context.saas_admin_guard {
+        "use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};\n"
+    } else if with_db {
         match (paginate, search) {
             (true, true) => {
                 "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};\n"
@@ -1445,7 +1624,11 @@ mod tests {{
     } else {
         ""
     };
-    let entities_import = if with_db {
+    let entities_import = if context.saas_owned_scope {
+        "use crate::entities::{organization_member, user};\n".to_string()
+    } else if context.saas_admin_guard {
+        "use crate::entities::user;\n".to_string()
+    } else if with_db {
         format!("use crate::entities::{resource_name};\n")
     } else {
         String::new()
@@ -1518,8 +1701,234 @@ pub struct PaginationParams {{
     } else {
         format!("    let mut query = {resource_name}::Entity::find();")
     };
+    let auth_support_code = if context.saas_owned_scope {
+        render_saas_owned_route_support_code().to_string()
+    } else if context.saas_admin_guard {
+        render_saas_admin_route_support_code().to_string()
+    } else {
+        String::new()
+    };
+    let tideway_imports = if uses_auth_helpers {
+        "use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};\n"
+    } else {
+        "use tideway::{AppContext, MessageResponse, Result, RouteModule};\n"
+    };
+    let auth_imports = if uses_auth_helpers {
+        "use tideway::auth::{AccessTokenClaims, JwtVerifier};\n"
+    } else {
+        ""
+    };
+    let list_args_with_prefix = if list_args.is_empty() {
+        String::new()
+    } else {
+        format!(", {list_args}")
+    };
 
-    let handlers = if with_db && with_repo && with_service {
+    let handlers = if context.saas_owned_scope && with_db && with_repo && with_service {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap{list_param_prefix}{list_params},
+) -> Result<Json<Vec<{resource_pascal}>>> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = resolve_owned_actor(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let models = service
+        .list_owned(&actor.organization_id, &actor.owner_id{list_args_with_prefix})
+        .await?;
+    let items = models
+        .into_iter()
+        .map(|model| {resource_pascal} {{
+{response_init_fields}        }})
+        .collect();
+    Ok(Json(items))
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<Json<{resource_pascal}>> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = resolve_owned_actor(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let model = service
+        .get_required_owned(id, &actor.organization_id, &actor.owner_id)
+        .await?;
+    Ok(Json({resource_pascal} {{
+{single_response_init_fields}    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    {body_extractor},
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = resolve_owned_actor(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service
+        .create_owned(&actor.organization_id, &actor.owner_id, {scoped_create_call_args})
+        .await?;
+    Ok(MessageResponse::success("Created"))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+    Json(body): Json<UpdateRequest>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = resolve_owned_actor(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service
+        .update_owned(id, &actor.organization_id, &actor.owner_id, {scoped_update_call_args})
+        .await?;
+    Ok(MessageResponse::success("Updated"))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    let actor = resolve_owned_actor(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service
+        .delete_owned(id, &actor.organization_id, &actor.owner_id)
+        .await?;
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+            id_type_str = id_type_str,
+            list_param_prefix = list_param_prefix,
+            list_params = list_params,
+            list_args_with_prefix = list_args_with_prefix,
+            response_init_fields = response_init_fields,
+            single_response_init_fields = single_response_init_fields,
+            scoped_create_call_args = scoped_create_call_args,
+            scoped_update_call_args = scoped_update_call_args,
+        )
+    } else if context.saas_admin_guard && with_db && with_repo && with_service {
+        format!(
+            r#"
+{openapi_attrs}
+async fn list_{resource_plural}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap{list_param_prefix}{list_params},
+) -> Result<Json<Vec<{resource_pascal}>>> {{
+    let db = ctx.sea_orm_connection()?;
+    require_admin_access(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let models = service.list({list_args}).await?;
+    let items = models
+        .into_iter()
+        .map(|model| {resource_pascal} {{
+{response_init_fields}        }})
+        .collect();
+    Ok(Json(items))
+}}
+
+{openapi_attrs_get}
+async fn get_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<Json<{resource_pascal}>> {{
+    let db = ctx.sea_orm_connection()?;
+    require_admin_access(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    let model = service.get_required(id).await?;
+    Ok(Json({resource_pascal} {{
+{single_response_init_fields}    }}))
+}}
+
+{openapi_attrs_create}
+async fn create_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    {body_extractor},
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    require_admin_access(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service.create({create_call_args}).await?;
+    Ok(MessageResponse::success("Created"))
+}}
+
+{openapi_attrs_update}
+async fn update_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+    Json(body): Json<UpdateRequest>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    require_admin_access(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service.update(id, {update_call_args}).await?;
+    Ok(MessageResponse::success("Updated"))
+}}
+
+{openapi_attrs_delete}
+async fn delete_{resource_name}(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Path(id): Path<{id_type_str}>,
+) -> Result<MessageResponse> {{
+    let db = ctx.sea_orm_connection()?;
+    require_admin_access(&headers, &db).await?;
+    let repo = {resource_pascal}Repository::new(db);
+    let service = {resource_pascal}Service::new(repo);
+    service.delete(id).await?;
+    Ok(MessageResponse::success("Deleted"))
+}}
+"#,
+            resource_pascal = resource_pascal,
+            resource_name = resource_name,
+            resource_plural = resource_plural,
+            openapi_attrs = openapi_attrs,
+            openapi_attrs_get = openapi_attrs_get,
+            openapi_attrs_create = openapi_attrs_create,
+            openapi_attrs_update = openapi_attrs_update,
+            openapi_attrs_delete = openapi_attrs_delete,
+            body_extractor = body_extractor,
+            id_type_str = id_type_str,
+            list_param_prefix = list_param_prefix,
+            list_params = list_params,
+            list_args = list_args,
+            response_init_fields = response_init_fields,
+            single_response_init_fields = single_response_init_fields,
+            create_call_args = create_call_args,
+            update_call_args = update_call_args,
+        )
+    } else if with_db && with_repo && with_service {
         format!(
             r#"
 {openapi_attrs}
@@ -1816,7 +2225,8 @@ async fn delete_{resource_name}() -> Result<MessageResponse> {{
 
 use axum::{{routing::get, {extract_import}Json, Router}};
 use serde::{{Deserialize, Serialize}};
-use tideway::{{AppContext, MessageResponse, Result, RouteModule}};
+{tideway_imports}
+{auth_imports}
 {openapi_import}
 {sea_orm_imports}
 {uuid_import}
@@ -1854,6 +2264,7 @@ pub struct UpdateRequest {{
 {update_request_struct_fields}}}
 
 {pagination_struct}
+{auth_support_code}
 {handlers}
 {tests_block}
 {openapi_paths}
@@ -1862,10 +2273,13 @@ pub struct UpdateRequest {{
         resource_name = resource_name,
         resource_plural = resource_plural,
         tests_block = tests_block,
+        tideway_imports = tideway_imports,
+        auth_imports = auth_imports,
         openapi_import = openapi_import,
         openapi_schema = openapi_schema,
         openapi_paths = openapi_paths,
         pagination_struct = pagination_struct,
+        auth_support_code = auth_support_code,
         handlers = handlers,
         extract_import = extract_import,
         sea_orm_imports = sea_orm_imports,
@@ -1960,6 +2374,10 @@ fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str)
 
 fn wire_entities_in_main(src_dir: &Path) -> Result<()> {
     wire_module_in_main(src_dir, "entities")
+}
+
+fn wire_routes_in_main(src_dir: &Path) -> Result<()> {
+    wire_module_in_main(src_dir, "routes")
 }
 
 fn wire_repositories_in_main(src_dir: &Path) -> Result<()> {
@@ -2319,8 +2737,9 @@ fn update_migration_lib(path: &Path, mod_name: &str) -> Result<()> {
 fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
     let mod_path = routes_dir.join("mod.rs");
     if !mod_path.exists() {
-        print_warning("routes/mod.rs not found; skipping auto wiring");
-        return Ok(());
+        let contents = "//! Route modules.\n";
+        write_file_with_force(&mod_path, contents, false)?;
+        print_success("Created src/routes/mod.rs");
     }
 
     let mut contents = fs::read_to_string(&mod_path)
@@ -2341,6 +2760,7 @@ fn generate_repository(
     paginate: bool,
     search: bool,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
@@ -2355,7 +2775,8 @@ fn generate_repository(
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
-    let repo_contents = render_repository(resource_name, id_type, paginate, search, profile);
+    let repo_contents =
+        render_repository(resource_name, id_type, paginate, search, profile, context);
     write_file_with_force(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
@@ -2379,6 +2800,7 @@ fn render_repository(
     paginate: bool,
     search: bool,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     let schema = resource_schema(profile);
@@ -2399,15 +2821,81 @@ fn render_repository(
     let update_signature_args = render_create_signature_args(schema, true);
     let create_assignments = render_param_create_assignments(schema, "            ");
     let update_assignments = render_param_update_assignments(schema, "active", "        ");
-    let sea_orm_imports = match (paginate, search) {
-        (true, true) => {
+    let sea_orm_imports = if context.saas_owned_scope {
+        if paginate {
             "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};"
-        }
-        (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};",
-        (false, true) => {
+        } else {
             "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
         }
-        (false, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, Set};",
+    } else {
+        match (paginate, search) {
+            (true, true) => {
+                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};"
+            }
+            (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};",
+            (false, true) => {
+                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
+            }
+            (false, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, Set};",
+        }
+    };
+    let scoped_methods = if context.saas_owned_scope {
+        let scoped_list_signature = if paginate {
+            if search {
+                format!(
+                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
+                )
+            } else {
+                format!(
+                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
+                )
+            }
+        } else {
+            format!(
+                "pub async fn list_owned(&self, organization_id: &str, owner_id: &str) -> Result<Vec<{resource_name}::Model>> {{"
+            )
+        };
+        let scoped_search_query = if search {
+            render_search_query(resource_name, schema, "search")
+        } else {
+            String::new()
+        };
+        let scoped_list_body = if paginate {
+            format!(
+                "        let mut query = {resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))\n            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()));\n        if let Some(limit) = limit {{ query = query.limit(limit); }}\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{scoped_search_query}        Ok(query.all(&self.db).await?)",
+            )
+        } else {
+            format!(
+                "        Ok({resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))\n            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()))\n            .all(&self.db)\n            .await?)"
+            )
+        };
+
+        format!(
+            r#"
+    {scoped_list_signature}
+{scoped_list_body}
+    }}
+
+    pub async fn get_owned(
+        &self,
+        id: {id_type},
+        organization_id: &str,
+        owner_id: &str,
+    ) -> Result<Option<{resource_name}::Model>> {{
+        Ok({resource_name}::Entity::find_by_id(id)
+            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))
+            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()))
+            .one(&self.db)
+            .await?)
+    }}
+"#,
+            scoped_list_signature = scoped_list_signature,
+            scoped_list_body = scoped_list_body,
+            resource_name = resource_name,
+            id_type = id_type_str,
+        )
+    } else {
+        String::new()
     };
     format!(
         r#"{sea_orm_imports}
@@ -2429,6 +2917,7 @@ impl {resource_pascal}Repository {{
     {list_signature}
 {list_params}
     }}
+{scoped_methods}
 
     pub async fn get(&self, id: {id_type}) -> Result<Option<{resource_name}::Model>> {{
         Ok({resource_name}::Entity::find_by_id(id).one(&self.db).await?)
@@ -2471,6 +2960,7 @@ impl {resource_pascal}Repository {{
         list_params = list_params,
         sea_orm_imports = sea_orm_imports,
         current_timestamp_helper = current_timestamp_helper,
+        scoped_methods = scoped_methods,
         create_signature_args = create_signature_args,
         update_signature_args = update_signature_args,
         create_assignments = create_assignments,
@@ -2485,6 +2975,7 @@ fn generate_service(
     paginate: bool,
     search: bool,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
@@ -2500,7 +2991,8 @@ fn generate_service(
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
-    let service_contents = render_service(resource_name, id_type, paginate, search, profile);
+    let service_contents =
+        render_service(resource_name, id_type, paginate, search, profile, context);
     write_file_with_force(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
@@ -2524,9 +3016,12 @@ fn render_service(
     paginate: bool,
     search: bool,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
     let schema = resource_schema(profile);
+    let route_create_fields = route_request_fields(schema, profile, context, false);
+    let route_update_fields = route_request_fields(schema, profile, context, true);
     let create_signature_args = render_create_signature_args(schema, false);
     let update_signature_args = render_create_signature_args(schema, true);
     let create_call_args = render_param_names(schema, false);
@@ -2568,6 +3063,103 @@ fn render_service(
     } else {
         "        self.repo.list().await"
     };
+    let owned_methods = if context.saas_owned_scope {
+        let owned_list_signature = if paginate {
+            if search {
+                format!(
+                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                )
+            } else {
+                format!(
+                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                )
+            }
+        } else {
+            format!(
+                "pub async fn list_owned(&self, organization_id: &str, owner_id: &str) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+            )
+        };
+        let owned_list_call = if paginate {
+            if search {
+                "        self.repo.list_owned(&organization_id, &owner_id, limit, offset, search).await"
+            } else {
+                "        self.repo.list_owned(&organization_id, &owner_id, limit, offset).await"
+            }
+        } else {
+            "        self.repo.list_owned(&organization_id, &owner_id).await"
+        };
+        let owned_create_signature = render_signature_args_from_fields(&route_create_fields, false);
+        let owned_update_signature = render_signature_args_from_fields(&route_update_fields, true);
+        let owned_create_args = render_param_names_from_fields(&route_create_fields);
+        let owned_update_args = render_param_names_from_fields(&route_update_fields);
+
+        format!(
+            r#"
+    {owned_list_signature}
+        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;
+        let owner_id = Self::normalize_required_string("owner_id", owner_id.to_string())?;
+{owned_list_call}
+    }}
+
+    pub async fn get_required_owned(
+        &self,
+        id: {id_type},
+        organization_id: &str,
+        owner_id: &str,
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;
+        let owner_id = Self::normalize_required_string("owner_id", owner_id.to_string())?;
+        self.repo
+            .get_owned(id, &organization_id, &owner_id)
+            .await?
+            .ok_or_else(|| TidewayError::not_found("{resource_pascal} not found"))
+    }}
+
+    pub async fn create_owned(
+        &self,
+        organization_id: &str,
+        owner_id: &str,
+        {owned_create_signature},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        self.create(
+            organization_id.to_string(),
+            owner_id.to_string(),
+            {owned_create_args},
+        )
+        .await
+    }}
+
+    pub async fn update_owned(
+        &self,
+        id: {id_type},
+        organization_id: &str,
+        owner_id: &str,
+        {owned_update_signature},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;
+        let owner_id = Self::normalize_required_string("owner_id", owner_id.to_string())?;
+        self.get_required_owned(id, &organization_id, &owner_id).await?;
+        self.update(id, Some(organization_id), Some(owner_id), {owned_update_args}).await
+    }}
+
+    pub async fn delete_owned(&self, id: {id_type}, organization_id: &str, owner_id: &str) -> Result<()> {{
+        self.get_required_owned(id, organization_id, owner_id).await?;
+        self.repo.delete(id).await
+    }}
+"#,
+            owned_list_signature = owned_list_signature,
+            owned_list_call = owned_list_call,
+            id_type = id_type_str,
+            resource_name = resource_name,
+            resource_pascal = resource_pascal,
+            owned_create_signature = owned_create_signature,
+            owned_update_signature = owned_update_signature,
+            owned_create_args = owned_create_args,
+            owned_update_args = owned_update_args,
+        )
+    } else {
+        String::new()
+    };
     format!(
         r#"use tideway::{{ensure, Result, TidewayError}};
 {uuid_import}
@@ -2586,6 +3178,7 @@ impl {resource_pascal}Service {{
     {list_signature}
 {list_body}
     }}
+{owned_methods}
 
     pub async fn get(&self, id: {id_type}) -> Result<Option<crate::entities::{resource_name}::Model>> {{
         self.repo.get(id).await
@@ -2629,6 +3222,7 @@ impl {resource_pascal}Service {{
         create_normalization_lines = create_normalization_lines,
         update_normalization_lines = update_normalization_lines,
         validation_helpers = validation_helpers,
+        owned_methods = owned_methods,
     )
 }
 

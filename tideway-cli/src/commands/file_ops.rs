@@ -81,7 +81,28 @@ pub fn ensure_module_decl(contents: &str, module_name: &str) -> String {
     if contents.contains("mod routes;\n") {
         contents.replace("mod routes;\n", &format!("mod routes;\n{}", module_decl))
     } else {
-        format!("{}{}", module_decl, contents)
+        let mut insert_at = 0usize;
+
+        for line in contents.split_inclusive('\n') {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//!") || trimmed.starts_with("#![") || trimmed.trim().is_empty()
+            {
+                insert_at += line.len();
+                continue;
+            }
+            break;
+        }
+
+        if insert_at == 0 {
+            format!("{}{}", module_decl, contents)
+        } else {
+            format!(
+                "{}{}{}",
+                &contents[..insert_at],
+                module_decl,
+                &contents[insert_at..]
+            )
+        }
     }
 }
 
@@ -106,6 +127,15 @@ mod tests {
         assert_eq!(
             ensure_module_decl(input, "entities"),
             "mod entities;\nmod config;\nmod handlers;\n"
+        );
+    }
+
+    #[test]
+    fn ensure_module_decl_inserts_after_inner_doc_comments() {
+        let input = "//! app docs\n\nuse tideway::App;\n";
+        assert_eq!(
+            ensure_module_decl(input, "routes"),
+            "//! app docs\n\nmod routes;\nuse tideway::App;\n"
         );
     }
 

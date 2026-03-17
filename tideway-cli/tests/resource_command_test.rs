@@ -1,7 +1,8 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use tideway_cli::cli::ResourceArgs;
+use tideway_cli::cli::{NewArgs, NewPreset, ResourceArgs};
 
 #[test]
 fn test_resource_command_generates_module_and_wires() {
@@ -1348,6 +1349,116 @@ tideway = "0.7"
 }
 
 #[test]
+fn test_resource_profile_owned_generates_saas_scoped_handlers_when_saas_scaffold_detected() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, true, true);
+
+    let args = ResourceArgs {
+        name: "subscription".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Owned,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        ".create_owned(&actor.organization_id, &actor.owner_id, body.name, body.status)",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "pub struct CreateRequest {\n    pub organization_id: String,",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "pub struct UpdateRequest {\n    pub organization_id: Option<String>,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/repositories/subscription.rs"),
+        "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>, search: Option<String>)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "pub async fn get_required_owned(",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "self.repo.list_owned(&organization_id, &owner_id, limit, offset, search).await",
+    );
+}
+
+#[test]
+fn test_resource_profile_admin_generates_saas_admin_guards_when_saas_scaffold_detected() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, false, true);
+
+    let args = ResourceArgs {
+        name: "admin_user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Admin,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert_file_contains(
+        &project_dir.join("src/routes/admin_user.rs"),
+        "async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> Result<()>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/admin_user.rs"),
+        "require_admin_access(&headers, &db).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/admin_user.rs"),
+        "pub email: String,",
+    );
+}
+
+#[test]
 fn test_resource_profile_event_generates_event_search_and_service_shape() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -1394,6 +1505,51 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
         &project_dir.join("src/services/audit_event.rs"),
         "Self::normalize_lowercase_required(\"event_type\", event_type)?",
     );
+}
+
+#[test]
+fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+    tideway_cli::commands::new::run(new_args).expect("run tideway new");
+
+    let resource_args = ResourceArgs {
+        name: "subscription".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Owned,
+    };
+    tideway_cli::commands::resource::run(resource_args).expect("run tideway resource");
+
+    assert!(project_dir.join("src/routes/mod.rs").exists());
+    assert_file_contains(&project_dir.join("src/main.rs"), "mod routes;");
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
 }
 
 #[test]
@@ -1723,4 +1879,67 @@ async fn main() {
 "#,
     )
     .expect("write main.rs");
+}
+
+fn create_saas_resource_markers(project_dir: &Path, with_organizations: bool, with_admin: bool) {
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth dir");
+    fs::create_dir_all(project_dir.join("src/entities")).expect("create entities dir");
+    fs::write(project_dir.join("src/auth/mod.rs"), "//! auth\n").expect("write auth mod");
+    fs::write(project_dir.join("src/entities/user.rs"), "//! user\n").expect("write user entity");
+
+    if with_organizations {
+        fs::write(
+            project_dir.join("src/entities/organization_member.rs"),
+            "//! membership\n",
+        )
+        .expect("write organization member entity");
+    }
+
+    if with_admin {
+        fs::create_dir_all(project_dir.join("src/admin")).expect("create admin dir");
+        fs::write(project_dir.join("src/admin/mod.rs"), "//! admin\n").expect("write admin mod");
+    }
+}
+
+fn patch_scaffold_to_workspace(project_dir: &Path) {
+    let cargo_path = project_dir.join("Cargo.toml");
+    let mut contents = fs::read_to_string(&cargo_path).expect("read Cargo.toml");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let macros_root = workspace_root.join("tideway-macros");
+
+    contents.push_str(&format!(
+        "\n[patch.crates-io]\ntideway = {{ path = \"{}\" }}\ntideway-macros = {{ path = \"{}\" }}\n",
+        escape_toml_path(workspace_root),
+        escape_toml_path(&macros_root),
+    ));
+
+    fs::write(cargo_path, contents).expect("write Cargo.toml patch section");
+}
+
+fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
+    let output = Command::new("cargo")
+        .args(args)
+        .current_dir(project_dir)
+        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
+        .output()
+        .expect("run cargo");
+
+    if !output.status.success() {
+        panic!(
+            "cargo {} failed.\nstdout:\n{}\nstderr:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn escape_toml_path(path: &Path) -> String {
+    path_to_string(path).replace('\\', "\\\\")
+}
+
+fn path_to_string(path: &Path) -> String {
+    PathBuf::from(path).to_string_lossy().into_owned()
 }

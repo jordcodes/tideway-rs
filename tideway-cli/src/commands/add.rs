@@ -322,16 +322,21 @@ pub fn wire_database_in_main(project_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
+    let has_database_block = contents.contains("DATABASE_URL")
+        || contents.contains("sea_orm::Database::connect")
+        || contents.contains("with_database");
+    let has_database_context = contents.contains(".with_database(");
+
+    if has_database_block && has_database_context {
+        return Ok(());
+    }
+
     contents = ensure_use_line(
         contents,
         "use tideway::{AppContext, SeaOrmPool};",
         "use tideway::",
     );
     contents = ensure_use_line(contents, "use std::sync::Arc;", "use tideway::");
-
-    let has_database_block = contents.contains("DATABASE_URL")
-        || contents.contains("sea_orm::Database::connect")
-        || contents.contains("with_database");
 
     if !has_database_block {
         let block = "    let database_url = std::env::var(\"DATABASE_URL\").expect(\"DATABASE_URL is not set\");\n    let db = sea_orm::Database::connect(&database_url)\n        .await\n        .expect(\"Failed to connect to database\");\n\n";
@@ -354,8 +359,23 @@ fn ensure_use_line(mut contents: String, line: &str, anchor: &str) -> String {
     }
 
     if let Some(pos) = contents.find(anchor) {
-        if let Some(line_end) = contents[pos..].find('\n') {
-            let insert_at = pos + line_end + 1;
+        let mut insert_at = pos;
+        let mut lines = contents[pos..].split_inclusive('\n');
+
+        if let Some(first_line) = lines.next() {
+            insert_at += first_line.len();
+            let mut in_group = first_line.contains('{') && !first_line.trim_end().ends_with("};");
+
+            while in_group {
+                let Some(group_line) = lines.next() else {
+                    break;
+                };
+                insert_at += group_line.len();
+                if group_line.trim_end().ends_with("};") {
+                    in_group = false;
+                }
+            }
+
             contents.insert_str(insert_at, &format!("{}\n", line));
             return contents;
         }
