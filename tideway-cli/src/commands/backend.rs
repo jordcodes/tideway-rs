@@ -139,10 +139,13 @@ pub fn run(args: BackendArgs) -> Result<()> {
         println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");
         println!("     serde = {{ version = \"1\", features = [\"derive\"] }}");
         println!("     serde_json = \"1\"");
+        println!("     anyhow = \"1\"");
+        println!("     dotenvy = \"0.15\"");
         println!("     tracing = \"0.1\"");
         println!("     async-trait = \"0.1\"");
         println!("     chrono = {{ version = \"0.4\", features = [\"serde\"] }}");
         println!("     uuid = {{ version = \"1\", features = [\"v4\", \"serde\"] }}");
+        println!("     migration = {{ path = \"migration\" }}");
         println!();
         println!("  2. Run migrations:");
         println!("     sea-orm-cli migrate up");

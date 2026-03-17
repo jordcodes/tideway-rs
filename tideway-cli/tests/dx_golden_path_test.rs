@@ -135,6 +135,46 @@ fn test_golden_path_default_api_boots_and_serves_health() {
 }
 
 #[test]
+fn test_golden_path_saas_scaffold_supports_doctor_and_dev_plan() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_output = run_tideway(&[
+        "new",
+        "my_app",
+        "--preset",
+        "saas",
+        "--no-prompt",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&new_output, "tideway new --preset saas");
+
+    let doctor_output = run_tideway(&[
+        "--json",
+        "doctor",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&doctor_output, "tideway doctor");
+
+    let dev_output = run_tideway(&[
+        "--plan",
+        "dev",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&dev_output, "tideway dev --plan");
+
+    let dev_stdout = String::from_utf8_lossy(&dev_output.stdout);
+    assert!(
+        dev_stdout.contains("Plan: would run tideway dev (cargo run) with env + migrations"),
+        "expected dev plan marker, got:\n{}",
+        dev_stdout
+    );
+}
+
+#[test]
 fn test_dev_bootstraps_env_example_and_passes_env_to_cargo() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

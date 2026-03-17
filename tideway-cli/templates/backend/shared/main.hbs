@@ -1,7 +1,6 @@
 //! {{project_name_pascal}} API server.
 
 use axum::Router;
-use sea_orm::DatabaseConnection;
 use std::sync::Arc;
 use tideway::{
     init_tracing,
@@ -109,8 +108,8 @@ async fn main() -> anyhow::Result<()> {
             .currency("usd")
             .included_seats(1)
             .features(["full_access"])
-            .done()
-        .build();
+            .done()?
+        .build()?;
 
     // Determine if we're in development mode
     let is_development = app_config.host == "localhost"

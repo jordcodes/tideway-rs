@@ -770,8 +770,10 @@ fn ensure_backend_dependencies(cargo_path: &Path) -> Result<()> {
     let deps = doc["dependencies"].or_insert(Item::Table(Table::new()));
     let deps_table = deps.as_table_mut().expect("dependencies should be a table");
 
+    ensure_dependency_value(deps_table, "anyhow", Value::from("1"));
     ensure_dependency_value(deps_table, "tracing", Value::from("0.1"));
     ensure_dependency_value(deps_table, "dotenvy", Value::from("0.15"));
+    ensure_dependency_path(deps_table, "migration", "migration");
     ensure_dependency_inline(deps_table, "uuid", "1", &["v4", "serde"]);
     ensure_dependency_inline(deps_table, "chrono", "0.4", &["serde"]);
 
@@ -784,6 +786,16 @@ fn ensure_dependency_value(deps: &mut Table, name: &str, value: Value) {
     if !deps.contains_key(name) {
         deps.insert(name, Item::Value(value));
     }
+}
+
+fn ensure_dependency_path(deps: &mut Table, name: &str, path: &str) {
+    if deps.contains_key(name) {
+        return;
+    }
+
+    let mut table = InlineTable::new();
+    table.get_or_insert("path", path);
+    deps.insert(name, Item::Value(Value::InlineTable(table)));
 }
 
 fn ensure_dependency_inline(deps: &mut Table, name: &str, version: &str, features: &[&str]) {

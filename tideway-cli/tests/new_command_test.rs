@@ -521,6 +521,32 @@ fn test_new_command_with_preset_saas() {
 }
 
 #[test]
+fn test_new_command_saas_preset_compiles_against_workspace_source() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    patch_scaffold_to_workspace(&project_dir);
+
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+}
+
+#[test]
 fn test_new_command_with_preset_worker() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
