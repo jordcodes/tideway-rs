@@ -10,6 +10,7 @@ cd my_app
 tideway dev
 ```
 `tideway new my_app` is the encouraged API-first path.
+In interactive mode, the first screen promotes `api`, `saas`, and `worker`; the lightweight `minimal` path lives under the wizard's advanced branch.
 Use `--no-prompt` for the same defaults in CI/non-interactive runs, or `--preset minimal` if you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 The default API scaffold uses SQLite locally, so this path boots without extra database setup.

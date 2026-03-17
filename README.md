@@ -84,6 +84,7 @@ then run `tideway migrate`.
 Optional sanity check: run `tideway doctor` if you want a project/setup audit before you keep building.
 
 When no flags are provided, the CLI will prompt you interactively (similar to Vite).
+The first interactive screen promotes `api`, `saas`, and `worker`; advanced paths like `minimal`, backend presets, and custom feature picking are still available, but one step deeper.
 Use `--no-prompt` for the same API-first defaults in CI/non-interactive runs.
 Use `--preset minimal` only when you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.

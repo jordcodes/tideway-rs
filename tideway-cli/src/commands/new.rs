@@ -36,6 +36,20 @@ struct ResourceWizardOptions {
     with_tests: bool,
 }
 
+const PRIMARY_PRESET_OPTIONS: [&str; 4] = [
+    "API preset (recommended: auth + database + openapi + validation)",
+    "SaaS preset (b2b backend + api defaults)",
+    "Worker preset (jobs + redis + metrics)",
+    "Advanced options (minimal, backend presets, custom)",
+];
+
+const ADVANCED_PRESET_OPTIONS: [&str; 4] = [
+    "Minimal (no extra features)",
+    "Backend preset: B2C (auth + billing + admin)",
+    "Backend preset: B2B (auth + billing + orgs + admin)",
+    "Custom (pick features)",
+];
+
 /// Run the new command
 pub fn run(mut args: NewArgs) -> Result<()> {
     if let Some(NewPreset::List) = args.preset {
@@ -385,6 +399,171 @@ mod tests {
         assert!(normalized.contains("auth"));
         assert_eq!(normalized.len(), 3);
     }
+
+    #[test]
+    fn test_primary_preset_options_focus_on_three_paths() {
+        assert_eq!(
+            PRIMARY_PRESET_OPTIONS[0],
+            "API preset (recommended: auth + database + openapi + validation)"
+        );
+        assert_eq!(
+            PRIMARY_PRESET_OPTIONS[1],
+            "SaaS preset (b2b backend + api defaults)"
+        );
+        assert_eq!(
+            PRIMARY_PRESET_OPTIONS[2],
+            "Worker preset (jobs + redis + metrics)"
+        );
+        assert_eq!(
+            PRIMARY_PRESET_OPTIONS[3],
+            "Advanced options (minimal, backend presets, custom)"
+        );
+    }
+
+    #[test]
+    fn test_apply_primary_wizard_choice_maps_to_promoted_presets() {
+        let mut args = NewArgs {
+            name: None,
+            preset: None,
+            features: Vec::new(),
+            with_config: false,
+            with_docker: false,
+            with_ci: false,
+            no_prompt: false,
+            summary: true,
+            with_env: false,
+            path: None,
+            force: false,
+        };
+        assert!(!apply_primary_wizard_choice(0, &mut args));
+        assert_eq!(args.preset, Some(NewPreset::Api));
+
+        args.preset = None;
+        assert!(!apply_primary_wizard_choice(1, &mut args));
+        assert_eq!(args.preset, Some(NewPreset::Saas));
+
+        args.preset = None;
+        assert!(!apply_primary_wizard_choice(2, &mut args));
+        assert_eq!(args.preset, Some(NewPreset::Worker));
+
+        args.preset = None;
+        assert!(apply_primary_wizard_choice(3, &mut args));
+        assert_eq!(args.preset, None);
+    }
+
+    #[test]
+    fn test_apply_advanced_wizard_choice_preserves_advanced_paths() {
+        let mut args = NewArgs {
+            name: None,
+            preset: None,
+            features: Vec::new(),
+            with_config: false,
+            with_docker: false,
+            with_ci: false,
+            no_prompt: false,
+            summary: true,
+            with_env: false,
+            path: None,
+            force: false,
+        };
+        let mut wizard = WizardOptions::default();
+
+        apply_advanced_wizard_choice(0, &mut args, &mut wizard);
+        assert_eq!(args.preset, Some(NewPreset::Minimal));
+
+        args.preset = None;
+        wizard = WizardOptions::default();
+        apply_advanced_wizard_choice(1, &mut args, &mut wizard);
+        assert_eq!(wizard.backend_preset, Some(BackendPreset::B2c));
+        assert!(args.with_config);
+        assert!(args.with_docker);
+        assert!(args.with_ci);
+        assert!(args.with_env);
+
+        args = NewArgs {
+            name: None,
+            preset: None,
+            features: Vec::new(),
+            with_config: false,
+            with_docker: false,
+            with_ci: false,
+            no_prompt: false,
+            summary: true,
+            with_env: false,
+            path: None,
+            force: false,
+        };
+        wizard = WizardOptions::default();
+        apply_advanced_wizard_choice(2, &mut args, &mut wizard);
+        assert_eq!(wizard.backend_preset, Some(BackendPreset::B2b));
+        assert!(
+            args.features
+                .iter()
+                .any(|feature| feature == "organizations")
+        );
+
+        args = NewArgs {
+            name: None,
+            preset: None,
+            features: Vec::new(),
+            with_config: false,
+            with_docker: false,
+            with_ci: false,
+            no_prompt: false,
+            summary: true,
+            with_env: false,
+            path: None,
+            force: false,
+        };
+        wizard = WizardOptions::default();
+        apply_advanced_wizard_choice(3, &mut args, &mut wizard);
+        assert_eq!(args.preset, None);
+        assert_eq!(wizard.backend_preset, None);
+    }
+}
+
+fn apply_primary_wizard_choice(
+    preset_choice: usize,
+    args: &mut NewArgs,
+) -> bool {
+    match preset_choice {
+        0 => {
+            args.preset = Some(NewPreset::Api);
+            false
+        }
+        1 => {
+            args.preset = Some(NewPreset::Saas);
+            false
+        }
+        2 => {
+            args.preset = Some(NewPreset::Worker);
+            false
+        }
+        3 => true,
+        _ => unreachable!("unexpected primary preset choice: {preset_choice}"),
+    }
+}
+
+fn apply_advanced_wizard_choice(
+    preset_choice: usize,
+    args: &mut NewArgs,
+    wizard: &mut WizardOptions,
+) {
+    match preset_choice {
+        0 => {
+            args.preset = Some(NewPreset::Minimal);
+        }
+        1 => {
+            wizard.backend_preset = Some(BackendPreset::B2c);
+            apply_backend_defaults(args, false);
+        }
+        2 => {
+            wizard.backend_preset = Some(BackendPreset::B2b);
+            apply_backend_defaults(args, true);
+        }
+        3 => {}
+        _ => unreachable!("unexpected advanced preset choice: {preset_choice}"),
+    }
 }
 
 fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
@@ -724,45 +903,26 @@ fn prompt_for_options(args: &mut NewArgs) -> Result<WizardOptions> {
     let theme = ColorfulTheme::default();
     let mut wizard = WizardOptions::default();
 
-    let preset_options = [
-        "Minimal (no extra features)",
-        "API preset (auth + database + openapi + validation)",
-        "SaaS preset (b2b backend + api defaults)",
-        "Worker preset (jobs + redis + metrics)",
-        "Backend preset: B2C (auth + billing + admin)",
-        "Backend preset: B2B (auth + billing + orgs + admin)",
-        "Custom (pick features)",
-    ];
-
     let preset_choice = Select::with_theme(&theme)
-        .with_prompt("Choose a starter preset")
-        .items(&preset_options)
-        .default(1)
+        .with_prompt("Choose a starter path")
+        .items(&PRIMARY_PRESET_OPTIONS)
+        .default(0)
         .interact()
         .map_err(|e| anyhow!("Prompt failed: {}", e))?;
 
-    match preset_choice {
-        0 => {
-            args.preset = Some(NewPreset::Minimal);
-        }
-        1 => {
-            args.preset = Some(NewPreset::Api);
-        }
-        2 => {
-            args.preset = Some(NewPreset::Saas);
-        }
-        3 => {
-            args.preset = Some(NewPreset::Worker);
-        }
-        4 => {
-            wizard.backend_preset = Some(BackendPreset::B2c);
-            apply_backend_defaults(args, false);
-        }
-        5 => {
-            wizard.backend_preset = Some(BackendPreset::B2b);
-            apply_backend_defaults(args, true);
-        }
-        _ => {
+    let use_advanced_options = apply_primary_wizard_choice(preset_choice, args);
+
+    if use_advanced_options {
+        let advanced_choice = Select::with_theme(&theme)
+            .with_prompt("Choose an advanced starter path")
+            .items(&ADVANCED_PRESET_OPTIONS)
+            .default(0)
+            .interact()
+            .map_err(|e| anyhow!("Prompt failed: {}", e))?;
+
+        apply_advanced_wizard_choice(advanced_choice, args, &mut wizard);
+
+        if advanced_choice == 3 {
             let options = [
                 "auth",
                 "database",

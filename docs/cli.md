@@ -40,6 +40,7 @@ tideway new my_app
 ```
 
 If you run it without extra flags, it will prompt for options and default to the API-first path.
+The first interactive screen promotes `api`, `saas`, and `worker`; `minimal`, backend presets, and custom feature picking stay under an advanced branch.
 In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
 For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
 
