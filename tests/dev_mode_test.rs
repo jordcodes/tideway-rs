@@ -1,9 +1,12 @@
-use axum::body::Body;
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use axum::{Router, routing::get};
 use std::fmt;
 use std::sync::{Arc, Mutex};
-use tideway::{App, AppContext, ConfigBuilder, DevConfigBuilder, RouteModule};
+use tideway::{
+    App, AppContext, ConfigBuilder, DevConfigBuilder, ErrorContext, ErrorWithContext, RouteModule,
+    TidewayError,
+};
 use tower::ServiceExt;
 use tracing::field::{Field, Visit};
 use tracing_subscriber::filter::LevelFilter;
@@ -80,6 +83,25 @@ impl RouteModule for PingModule {
     }
 }
 
+struct ErrorModule;
+
+impl RouteModule for ErrorModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/boom", get(boom))
+            .route("/boom-context", get(boom_with_context))
+    }
+}
+
+async fn boom() -> tideway::Result<&'static str> {
+    Err(TidewayError::internal("connection pool exhausted"))
+}
+
+async fn boom_with_context() -> std::result::Result<&'static str, ErrorWithContext> {
+    Err(TidewayError::internal("db-prod-01 failed")
+        .with_context(ErrorContext::new().with_detail("Failed to connect to the primary database")))
+}
+
 fn run_request_with_dev_config(dev: tideway::DevConfig) -> Vec<String> {
     let events = CapturedEvents::default();
     let subscriber = Registry::default()
@@ -116,6 +138,38 @@ fn run_request_with_dev_config(dev: tideway::DevConfig) -> Vec<String> {
     });
 
     events.contents()
+}
+
+fn run_error_request_with_dev_config(dev: tideway::DevConfig, path: &str) -> serde_json::Value {
+    build_runtime().block_on(async {
+        let config = ConfigBuilder::new()
+            .with_dev_config(dev)
+            .build()
+            .expect("build config");
+
+        let app = App::with_config(config)
+            .register_module(ErrorModule)
+            .into_router_with_middleware();
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        serde_json::from_slice::<serde_json::Value>(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read response body"),
+        )
+        .expect("parse json body")
+    })
 }
 
 #[test]
@@ -174,4 +228,60 @@ fn test_dev_request_dumper_respects_path_filter() {
         "expected no response dump for filtered path, got:\n{:?}",
         events
     );
+}
+
+#[test]
+fn test_dev_mode_includes_stack_traces_for_plain_tideway_errors() {
+    let body = run_error_request_with_dev_config(
+        DevConfigBuilder::new()
+            .enabled(true)
+            .with_stack_traces(true)
+            .build(),
+        "/boom",
+    );
+
+    assert_eq!(
+        body["error"],
+        serde_json::json!("Internal server error: connection pool exhausted")
+    );
+    assert_eq!(
+        body["stack_trace"],
+        serde_json::json!("Internal(\"connection pool exhausted\")")
+    );
+}
+
+#[test]
+fn test_dev_mode_includes_stack_traces_for_errors_with_context() {
+    let body = run_error_request_with_dev_config(
+        DevConfigBuilder::new()
+            .enabled(true)
+            .with_stack_traces(true)
+            .build(),
+        "/boom-context",
+    );
+
+    assert_eq!(
+        body["error"],
+        serde_json::json!("Internal server error: db-prod-01 failed")
+    );
+    assert_eq!(
+        body["details"],
+        serde_json::json!("Failed to connect to the primary database")
+    );
+    assert_eq!(
+        body["stack_trace"],
+        serde_json::json!("Internal(\"db-prod-01 failed\")")
+    );
+}
+
+#[test]
+fn test_dev_mode_without_stack_traces_omits_stack_trace_field() {
+    let body =
+        run_error_request_with_dev_config(DevConfigBuilder::new().enabled(true).build(), "/boom");
+
+    assert_eq!(
+        body["error"],
+        serde_json::json!("Internal server error: connection pool exhausted")
+    );
+    assert!(body.get("stack_trace").is_none());
 }

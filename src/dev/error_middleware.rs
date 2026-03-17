@@ -8,6 +8,22 @@ use axum::{body::Body, extract::Request, http::Response};
 use std::sync::Arc;
 use tower::Service;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ScopedDevResponseConfig {
+    pub enabled: bool,
+    pub include_stack_traces: bool,
+}
+
+tokio::task_local! {
+    static CURRENT_DEV_RESPONSE_CONFIG: ScopedDevResponseConfig;
+}
+
+pub(crate) fn current_dev_response_config() -> ScopedDevResponseConfig {
+    CURRENT_DEV_RESPONSE_CONFIG
+        .try_with(|config| *config)
+        .unwrap_or_default()
+}
+
 /// Build a development error layer
 ///
 /// This layer intercepts errors and enhances them with stack traces
@@ -64,19 +80,27 @@ where
         }
 
         let mut inner = self.inner.clone();
+        let response_config = ScopedDevResponseConfig {
+            enabled: self.config.enabled,
+            include_stack_traces: self.config.include_stack_traces,
+        };
 
         Box::pin(async move {
-            let response = inner.call(req).await?;
+            CURRENT_DEV_RESPONSE_CONFIG
+                .scope(response_config, async move {
+                    let response = inner.call(req).await?;
 
-            // If the response is an error, log it for debugging
-            if response.status().is_client_error() || response.status().is_server_error() {
-                tracing::debug!(
-                    status = response.status().as_u16(),
-                    "Dev mode: Error response generated"
-                );
-            }
+                    // If the response is an error, log it for debugging
+                    if response.status().is_client_error() || response.status().is_server_error() {
+                        tracing::debug!(
+                            status = response.status().as_u16(),
+                            "Dev mode: Error response generated"
+                        );
+                    }
 
-            Ok(response)
+                    Ok(response)
+                })
+                .await
         })
     }
 }

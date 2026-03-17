@@ -118,7 +118,7 @@ let app = App::with_config(config)
 ```
 
 `with_dev_mode(true)` enables the dev middleware branch.
-Use `DevConfigBuilder` when you want specific dev tooling such as request dumping.
+Use `DevConfigBuilder` when you want specific dev tooling such as request dumping or stack traces in dev error responses.
 
 If you need to manually serve with Axum, use the same make-service path as `serve()`:
 

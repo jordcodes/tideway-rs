@@ -9,4 +9,5 @@ mod request_dumper;
 
 pub use config::{DevConfig, DevConfigBuilder};
 pub use error_middleware::build_dev_error_layer;
+pub(crate) use error_middleware::current_dev_response_config;
 pub use request_dumper::build_request_dumper_layer;

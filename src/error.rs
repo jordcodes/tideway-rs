@@ -1,3 +1,4 @@
+use crate::dev::current_dev_response_config;
 use axum::{
     Json,
     http::StatusCode,
@@ -167,7 +168,7 @@ impl IntoResponse for ErrorWithContext {
     fn into_response(self) -> Response {
         let error = self.error;
         let error_info = ErrorInfo::new().with_context(self.context);
-        error.into_response_with_info(Some(error_info), false)
+        error.into_response_for_current_scope(Some(error_info))
     }
 }
 
@@ -316,6 +317,27 @@ impl TidewayError {
         (status, body).into_response()
     }
 
+    fn into_response_for_current_scope(self, info: Option<ErrorInfo>) -> Response {
+        let config = current_dev_response_config();
+        let mut info = info;
+
+        if config.enabled && config.include_stack_traces {
+            let has_stack_trace = info
+                .as_ref()
+                .and_then(|error_info| error_info.stack_trace.as_ref())
+                .is_some();
+
+            if !has_stack_trace {
+                info = Some(
+                    info.unwrap_or_default()
+                        .with_stack_trace(format!("{:?}", &self)),
+                );
+            }
+        }
+
+        self.into_response_with_info(info, config.enabled)
+    }
+
     fn status_code(&self) -> StatusCode {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
@@ -364,7 +386,7 @@ impl TidewayError {
 
 impl IntoResponse for TidewayError {
     fn into_response(self) -> Response {
-        self.into_response_with_info(None, false)
+        self.into_response_for_current_scope(None)
     }
 }
 

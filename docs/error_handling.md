@@ -9,7 +9,7 @@ Tideway's error handling system provides:
 - **Unified Error Type**: `TidewayError` for all application errors
 - **Error Context**: Additional context, details, and field errors
 - **Error Tracking**: Unique error IDs for tracking and debugging
-- **Development Mode**: Opt-in request dumping plus explicit dev-mode error responses when you build them
+- **Development Mode**: Opt-in request dumping plus richer dev error responses
 
 ## Basic Usage
 
@@ -180,7 +180,7 @@ With context and field errors (client errors only):
 
 ### Development Mode Response
 
-When you explicitly build `ErrorInfo` and convert with `into_response_with_info(..., true)`, Tideway can include full error details and stack traces:
+When dev mode is enabled, Tideway can include full error details and stack traces in error responses:
 
 ```json
 {
@@ -264,7 +264,7 @@ let config = ConfigBuilder::new()
 ```
 
 `with_request_dumper(true)` is wired into Tideway's middleware stack.
-`with_stack_traces(true)` currently configures the dev preference used when you explicitly construct enhanced error responses with `ErrorInfo` and `into_response_with_info(..., true)`; it is not yet automatically injected into every `TidewayError` response.
+`with_stack_traces(true)` adds stack traces to normal `TidewayError` responses during dev-mode requests.
 
 ### Environment Variables
 
@@ -280,7 +280,7 @@ TIDEWAY_DEV_STACK_TRACES=true
 3. **Field Errors**: Provide field-specific errors for validation
 4. **Error IDs**: Use custom error IDs for tracking
 5. **Error Messages**: Provide clear, actionable error messages
-6. **Development Mode**: Use stack traces only in development, and only on explicitly enhanced responses until automatic runtime wiring is expanded
+6. **Development Mode**: Enable stack traces only in development
 
 ## Error Handling Patterns
 
