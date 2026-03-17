@@ -76,6 +76,7 @@ If OpenAPI is enabled, visit `http://localhost:8000/swagger-ui`.
 
 The default API-first scaffold uses SQLite for local development.
 If you want local Postgres instead, add `--with-docker` and start it with `docker compose up -d`.
+It also seeds a sample `todo` resource that already follows the recommended entity -> repository -> service path, with pagination and `q` search on the list route.
 
 Canonical next step: add your first DB-backed resource with
 `tideway resource <name> --wire --db --repo --service --paginate --search`,

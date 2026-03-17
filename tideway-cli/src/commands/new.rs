@@ -37,7 +37,7 @@ struct ResourceWizardOptions {
 }
 
 const PRIMARY_PRESET_OPTIONS: [&str; 4] = [
-    "API preset (recommended: auth + database + openapi + validation)",
+    "API preset (recommended: auth + database + openapi + validation + full-stack todo sample)",
     "SaaS preset (b2b backend + api defaults)",
     "Worker preset (jobs + redis + metrics)",
     "Advanced options (minimal, backend presets, custom)",
@@ -404,7 +404,7 @@ mod tests {
     fn test_primary_preset_options_focus_on_three_paths() {
         assert_eq!(
             PRIMARY_PRESET_OPTIONS[0],
-            "API preset (recommended: auth + database + openapi + validation)"
+            "API preset (recommended: auth + database + openapi + validation + full-stack todo sample)"
         );
         assert_eq!(
             PRIMARY_PRESET_OPTIONS[1],
@@ -655,7 +655,7 @@ fn print_presets() {
     println!("Available presets:");
     println!("  - minimal: basic starter (no extra features)");
     println!(
-        "  - api: auth + database + openapi + validation, plus config, CI, env, and a sample DB-backed resource (SQLite local dev by default; add --with-docker for Postgres)"
+        "  - api: auth + database + openapi + validation, plus config, CI, env, and a sample todo resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add --with-docker for Postgres)"
     );
     println!(
         "  - saas: b2b backend modules (auth, billing, organizations, admin) + api defaults + production scaffolding"
@@ -845,6 +845,7 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
         Some(NewPreset::Api) => {
             println!("{}", "First request:".yellow().bold());
             println!("  curl http://localhost:8000/api/todos");
+            println!("  curl \"http://localhost:8000/api/todos?limit=20&offset=0&q=Example\"");
             println!("  # OpenAPI (if enabled): http://localhost:8000/swagger-ui");
             println!();
         }

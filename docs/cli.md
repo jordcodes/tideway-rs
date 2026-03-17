@@ -43,6 +43,7 @@ If you run it without extra flags, it will prompt for options and default to the
 The first interactive screen promotes `api`, `saas`, and `worker`; `minimal`, backend presets, and custom feature picking stay under an advanced branch.
 In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
 For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
+The API preset already seeds a sample `todo` resource wired through entity, repository, and service layers, with `limit`, `offset`, and `q` support on the list endpoint.
 
 Use a preset to apply common defaults:
 
@@ -90,7 +91,7 @@ tideway new my_app --with-env
 
 Available presets:
 - `minimal` - basic starter
-- `api` - auth + database + openapi + validation, plus config, CI, env, and a DB-backed sample resource (SQLite local dev by default; add `--with-docker` for Postgres)
+- `api` - auth + database + openapi + validation, plus config, CI, env, and a sample `todo` resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add `--with-docker` for Postgres)
 - `saas` - b2b backend modules (auth, billing, organizations, admin) + api defaults and production scaffolding
 - `worker` - jobs-first scaffold (database + jobs + redis + metrics) with config, docker, CI, env
 

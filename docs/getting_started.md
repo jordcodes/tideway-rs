@@ -14,6 +14,7 @@ In interactive mode, the first screen promotes `api`, `saas`, and `worker`; the 
 Use `--no-prompt` for the same defaults in CI/non-interactive runs, or `--preset minimal` if you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 The default API scaffold uses SQLite locally, so this path boots without extra database setup.
+It also includes a sample `todo` resource wired through entity, repository, and service layers, with pagination and `q` search already enabled on the list endpoint.
 If you want local Postgres instead, run `tideway new my_app --with-docker`, then `docker compose up -d` before `tideway dev`.
 
 ## 2) Run the server
