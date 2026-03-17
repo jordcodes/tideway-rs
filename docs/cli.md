@@ -163,7 +163,7 @@ Use `--repo-tests` to generate an ignored CRUD smoke test (defaults to postgres 
 Set `TIDEWAY_TEST_DB_BACKEND=postgres_container` to run against a Docker container when
 the `test-containers` feature is enabled, or `TIDEWAY_TEST_DB_BACKEND=postgres` with
 `TEST_DATABASE_URL`/`TIDEWAY_TEST_DATABASE_URL` for local PostgreSQL.
-Use `--service` to generate a thin service layer on top of the repository.
+Use `--service` to generate a validating service layer on top of the repository, with input normalization and not-found handling for the service-backed path.
 Use `--id-type` to switch ID generation (int or uuid) for DB scaffolding. Use `--add-uuid` to automatically add the `uuid` dependency.
 Use `--paginate` to add limit/offset query params to list endpoints.
 Use `--search` to add a `q` search filter to list endpoints (requires `--paginate`).

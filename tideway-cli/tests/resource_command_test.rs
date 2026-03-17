@@ -1079,6 +1079,22 @@ async fn main() {
     assert!(project_dir.join("src/services/user.rs").exists());
     assert_file_contains(&project_dir.join("src/services/mod.rs"), "pub mod user;");
     assert_file_contains(&project_dir.join("src/routes/user.rs"), "Service");
+    assert_file_contains(
+        &project_dir.join("src/routes/user.rs"),
+        "service.get_required(id).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/user.rs"),
+        "pub async fn get_required(&self, id: i32) -> Result<crate::entities::user::Model>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/user.rs"),
+        "Self::normalize_required_string(\"name\", name)?",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/user.rs"),
+        "self.get_required(id).await?;",
+    );
     let updated_main = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated_main.contains("mod services;"));
 }
@@ -1269,6 +1285,14 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
         &project_dir.join("src/repositories/organization.rs"),
         "current_timestamp()",
     );
+    assert_file_contains(
+        &project_dir.join("src/services/organization.rs"),
+        "Self::normalize_slug(slug)?",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/organization.rs"),
+        "Self::normalize_lowercase_required(\"status\", status)?",
+    );
 }
 
 #[test]
@@ -1365,6 +1389,10 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
     assert_file_contains(
         &project_dir.join("src/services/audit_event.rs"),
         "pub async fn create(&self, event_type: String, actor_id: String, subject_id: String, payload_json: String)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/audit_event.rs"),
+        "Self::normalize_lowercase_required(\"event_type\", event_type)?",
     );
 }
 

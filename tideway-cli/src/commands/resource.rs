@@ -675,6 +675,143 @@ fn render_search_stub_value(schema: ResourceSchema) -> String {
         .unwrap_or_else(|| "\"Example\".to_string()".to_string())
 }
 
+fn render_service_string_normalization_lines(schema: ResourceSchema, optional: bool) -> String {
+    let fields = if optional {
+        update_request_fields(schema)
+    } else {
+        create_request_fields(schema)
+    };
+
+    fields
+        .iter()
+        .filter(|field| field.ty == ResourceFieldType::String)
+        .map(|field| {
+            let expr = match (field.name, optional) {
+                ("slug", false) => "Self::normalize_slug(slug)?".to_string(),
+                ("slug", true) => "Self::normalize_optional_slug(slug)?".to_string(),
+                ("email", false) => "Self::normalize_email(email)?".to_string(),
+                ("email", true) => "Self::normalize_optional_email(email)?".to_string(),
+                ("status" | "role" | "event_type", false) => format!(
+                    "Self::normalize_lowercase_required(\"{name}\", {name})?",
+                    name = field.name
+                ),
+                ("status" | "role" | "event_type", true) => format!(
+                    "Self::normalize_lowercase_optional(\"{name}\", {name})?",
+                    name = field.name
+                ),
+                (_, false) => format!(
+                    "Self::normalize_required_string(\"{name}\", {name})?",
+                    name = field.name
+                ),
+                (_, true) => format!(
+                    "Self::normalize_optional_string(\"{name}\", {name})?",
+                    name = field.name
+                ),
+            };
+            format!("        let {name} = {expr};\n", name = field.name)
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn render_service_validation_helpers(schema: ResourceSchema) -> String {
+    let mut output = String::from(
+        r#"
+    fn normalize_required_string(field: &str, value: String) -> Result<String> {
+        let value = value.trim().to_string();
+        ensure!(
+            !value.is_empty(),
+            TidewayError::bad_request(format!("{field} is required"))
+        );
+        Ok(value)
+    }
+
+    fn normalize_optional_string(field: &str, value: Option<String>) -> Result<Option<String>> {
+        value
+            .map(|value| Self::normalize_required_string(field, value))
+            .transpose()
+    }
+"#,
+    );
+
+    if schema
+        .fields
+        .iter()
+        .any(|field| matches!(field.name, "status" | "role" | "event_type"))
+    {
+        output.push_str(
+            r#"
+
+    fn normalize_lowercase_required(field: &str, value: String) -> Result<String> {
+        Ok(Self::normalize_required_string(field, value)?.to_lowercase())
+    }
+
+    fn normalize_lowercase_optional(
+        field: &str,
+        value: Option<String>,
+    ) -> Result<Option<String>> {
+        value
+            .map(|value| Self::normalize_lowercase_required(field, value))
+            .transpose()
+    }
+"#,
+        );
+    }
+
+    if schema.fields.iter().any(|field| field.name == "slug") {
+        output.push_str(
+            r#"
+
+    fn normalize_slug(value: String) -> Result<String> {
+        let slug = Self::normalize_required_string("slug", value)?
+            .to_lowercase()
+            .chars()
+            .map(|ch| match ch {
+                'a'..='z' | '0'..='9' => ch,
+                _ => '-',
+            })
+            .collect::<String>()
+            .split('-')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        ensure!(
+            !slug.is_empty(),
+            TidewayError::bad_request("slug must contain letters or numbers")
+        );
+        Ok(slug)
+    }
+
+    fn normalize_optional_slug(value: Option<String>) -> Result<Option<String>> {
+        value.map(Self::normalize_slug).transpose()
+    }
+"#,
+        );
+    }
+
+    if schema.fields.iter().any(|field| field.name == "email") {
+        output.push_str(
+            r#"
+
+    fn normalize_email(value: String) -> Result<String> {
+        let email = Self::normalize_required_string("email", value)?.to_lowercase();
+        ensure!(
+            email.contains('@'),
+            TidewayError::bad_request("email must contain @")
+        );
+        Ok(email)
+    }
+
+    fn normalize_optional_email(value: Option<String>) -> Result<Option<String>> {
+        value.map(Self::normalize_email).transpose()
+    }
+"#,
+        );
+    }
+
+    output
+}
+
 fn render_repository_list_signature(
     resource_name: &str,
     schema: ResourceSchema,
@@ -1405,10 +1542,7 @@ async fn get_{resource_name}(
 ) -> Result<Json<{resource_pascal}>> {{
     let repo = {resource_pascal}Repository::new(ctx.sea_orm_connection()?);
     let service = {resource_pascal}Service::new(repo);
-    let model = service
-        .get(id)
-        .await?
-        .ok_or_else(|| tideway::TidewayError::not_found("{resource_pascal} not found"))?;
+    let model = service.get_required(id).await?;
     Ok(Json({resource_pascal} {{
 {single_response_init_fields}    }}))
 }}
@@ -2397,6 +2531,9 @@ fn render_service(
     let update_signature_args = render_create_signature_args(schema, true);
     let create_call_args = render_param_names(schema, false);
     let update_call_args = render_param_names(schema, true);
+    let create_normalization_lines = render_service_string_normalization_lines(schema, false);
+    let update_normalization_lines = render_service_string_normalization_lines(schema, true);
+    let validation_helpers = render_service_validation_helpers(schema);
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
     } else {
@@ -2432,7 +2569,7 @@ fn render_service(
         "        self.repo.list().await"
     };
     format!(
-        r#"use tideway::Result;
+        r#"use tideway::{{ensure, Result, TidewayError}};
 {uuid_import}
 
 use crate::repositories::{resource_name}::{resource_pascal}Repository;
@@ -2454,8 +2591,15 @@ impl {resource_pascal}Service {{
         self.repo.get(id).await
     }}
 
+    pub async fn get_required(&self, id: {id_type}) -> Result<crate::entities::{resource_name}::Model> {{
+        self.repo
+            .get(id)
+            .await?
+            .ok_or_else(|| TidewayError::not_found("{resource_pascal} not found"))
+    }}
+
     pub async fn create(&self, {create_signature_args}) -> Result<crate::entities::{resource_name}::Model> {{
-        self.repo.create({create_call_args}).await
+{create_normalization_lines}        self.repo.create({create_call_args}).await
     }}
 
     pub async fn update(
@@ -2463,13 +2607,14 @@ impl {resource_pascal}Service {{
         id: {id_type},
         {update_signature_args},
     ) -> Result<crate::entities::{resource_name}::Model> {{
-        self.repo.update(id, {update_call_args}).await
+{update_normalization_lines}        self.repo.update(id, {update_call_args}).await
     }}
 
     pub async fn delete(&self, id: {id_type}) -> Result<()> {{
+        self.get_required(id).await?;
         self.repo.delete(id).await
     }}
-}}
+{validation_helpers}}}
 "#,
         resource_name = resource_name,
         resource_pascal = resource_pascal,
@@ -2481,6 +2626,9 @@ impl {resource_pascal}Service {{
         update_signature_args = update_signature_args,
         create_call_args = create_call_args,
         update_call_args = update_call_args,
+        create_normalization_lines = create_normalization_lines,
+        update_normalization_lines = update_normalization_lines,
+        validation_helpers = validation_helpers,
     )
 }
 
