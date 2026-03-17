@@ -14,6 +14,7 @@ use crate::commands::messaging::{
     TIDEWAY_ADD_OPENAPI_WIRE_COMMAND, TIDEWAY_BACKEND_COMMAND, TIDEWAY_DEV_COMMAND,
     TIDEWAY_RESOURCE_WIRE_COMMAND,
 };
+use crate::database::validate_database_url as shared_validate_database_url;
 use crate::{is_json_output, print_info, print_success, print_warning, write_file};
 
 #[derive(Debug, Default)]
@@ -343,20 +344,9 @@ fn check_env_var(
 }
 
 fn validate_database_url(value: &str) -> Option<String> {
-    if !value.contains("://") {
-        return Some("DATABASE_URL format looks invalid (missing scheme)".to_string());
-    }
-
-    let lower = value.to_lowercase();
-    let valid = lower.starts_with("postgres://")
-        || lower.starts_with("postgresql://")
-        || lower.starts_with("sqlite:");
-
-    if !valid {
-        return Some(format!("DATABASE_URL scheme looks invalid: {}", value));
-    }
-
-    None
+    shared_validate_database_url(value)
+        .err()
+        .map(|error| error.to_string())
 }
 
 fn has_log_config(

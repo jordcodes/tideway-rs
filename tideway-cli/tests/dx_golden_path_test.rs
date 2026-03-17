@@ -295,6 +295,47 @@ fn test_dev_warns_when_env_missing_without_fix() {
 }
 
 #[test]
+fn test_dev_ignores_dev_only_database_dependencies() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_project(&project_dir);
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+sea-orm = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+
+    let fake_cargo_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_cargo_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("cargo-invocation.log");
+    write_fake_cargo(&fake_cargo_dir, &invocation_log);
+
+    let output = run_tideway_with_path(
+        &[
+            "dev",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ],
+        &fake_cargo_dir,
+    );
+    assert_success(&output, "tideway dev");
+
+    let invocation = fs::read_to_string(&invocation_log).expect("read invocation log");
+    assert!(
+        invocation.contains("ARG:run"),
+        "expected cargo run invocation, got:\n{}",
+        invocation
+    );
+}
+
+#[test]
 fn test_migrate_accepts_sqlite_database_url() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

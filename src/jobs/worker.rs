@@ -58,10 +58,10 @@ impl JobWorker {
                             // Job processed successfully, continue immediately
                         }
                         Ok(None) => {
-                            // No job available, wait a bit before polling again
+                            // Allow queue implementations to provide event-driven wakeups.
                             tokio::select! {
                                 _ = shutdown_rx.recv() => break,
-                                _ = sleep(Duration::from_millis(100)) => {},
+                                _ = self.queue.wait_for_job(Duration::from_secs(1)) => {},
                             }
                         }
                         Err(e) => {

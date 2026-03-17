@@ -78,6 +78,12 @@ let rate_limit = RateLimitConfig::builder()
     .build();
 ```
 
+If you manually serve Tideway with `axum::serve`, make sure connection info is attached so per-IP limiting sees the client address:
+
+```rust
+axum::serve(listener, app.into_make_service_with_connect_info()).await?;
+```
+
 ### Global Rate Limiting
 
 Limits total requests across all clients. Useful for protecting shared resources.

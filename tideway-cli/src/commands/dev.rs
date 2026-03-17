@@ -143,7 +143,7 @@ fn project_uses_database(project_dir: &Path) -> Result<bool> {
 }
 
 fn has_tideway_feature(doc: &DocumentMut, feature: &str) -> bool {
-    dependency_sections(doc)
+    runtime_dependency_sections(doc)
         .into_iter()
         .filter_map(|deps| deps.get("tideway"))
         .filter_map(|tideway| tideway.get("features"))
@@ -152,23 +152,15 @@ fn has_tideway_feature(doc: &DocumentMut, feature: &str) -> bool {
 }
 
 fn has_dependency(doc: &DocumentMut, dependency: &str) -> bool {
-    dependency_sections(doc)
+    runtime_dependency_sections(doc)
         .into_iter()
         .any(|deps| deps.get(dependency).is_some())
 }
 
-fn dependency_sections<'a>(doc: &'a DocumentMut) -> Vec<&'a toml_edit::Item> {
+fn runtime_dependency_sections<'a>(doc: &'a DocumentMut) -> Vec<&'a toml_edit::Item> {
     let mut sections = Vec::new();
 
     if let Some(item) = doc.get("dependencies") {
-        sections.push(item);
-    }
-
-    if let Some(item) = doc.get("build-dependencies") {
-        sections.push(item);
-    }
-
-    if let Some(item) = doc.get("dev-dependencies") {
         sections.push(item);
     }
 

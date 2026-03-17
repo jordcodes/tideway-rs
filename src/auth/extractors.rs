@@ -132,7 +132,6 @@ where
 
             // Reuse cached user if already loaded by middleware
             if let Some(user) = parts.extensions.get::<P::User>().cloned() {
-                provider.validate_user(&user).await?;
                 return Ok(AuthUser(user));
             }
 
@@ -213,10 +212,7 @@ where
 
             // Reuse cached user if already loaded by middleware
             if let Some(user) = parts.extensions.get::<P::User>().cloned() {
-                if provider.validate_user(&user).await.is_ok() {
-                    return Ok(OptionalAuth(Some(user)));
-                }
-                return Ok(OptionalAuth(None));
+                return Ok(OptionalAuth(Some(user)));
             }
 
             #[cfg(feature = "test-auth-bypass")]
@@ -409,7 +405,6 @@ where
 
             // Reuse cached user if already loaded by middleware
             if let Some(user) = parts.extensions.get::<P::User>().cloned() {
-                provider.validate_user(&user).await?;
                 if !user.is_admin() {
                     return Err(TidewayError::forbidden("Admin privileges required"));
                 }

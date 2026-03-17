@@ -130,7 +130,7 @@ Generate a CRUD route module for a resource.
 tideway resource user
 tideway resource user --profile stub
 tideway resource user --wire
-tideway resource invoice_item --wire --with-tests false
+tideway resource invoice_item --wire
 tideway resource user --wire --db
 tideway resource user --wire --db --repo
 tideway resource user --wire --db --repo --repo-tests

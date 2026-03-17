@@ -195,7 +195,7 @@ fn default_include_headers() -> bool {
 }
 
 fn default_body_preview_size() -> usize {
-    256 // First 256 bytes
+    0
 }
 
 const MAX_BODY_PREVIEW_SIZE: usize = 1024 * 1024; // 1MB hard cap
@@ -221,7 +221,7 @@ mod tests {
         let config = RequestLoggingConfig::default();
         assert!(config.enabled);
         assert!(!config.include_headers);
-        assert_eq!(config.body_preview_size, 256);
+        assert_eq!(config.body_preview_size, 0);
         assert_eq!(config.success_level, LogLevel::Info);
     }
 

@@ -129,7 +129,7 @@ mod tests {
     fn write_file_with_force_does_not_overwrite_without_force() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("skipped.rs");
-        fs::write(&path, "original").unwrap();
+        crate::write_file(&path, "original").unwrap();
 
         write_file_with_force(&path, "updated", false).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
@@ -141,7 +141,7 @@ mod tests {
     fn write_file_with_force_or_error_blocks_existing_without_force() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("blocked.rs");
-        fs::write(&path, "original").unwrap();
+        crate::write_file(&path, "original").unwrap();
 
         let err =
             write_file_with_force_or_error(&path, "updated", false, "must force").unwrap_err();

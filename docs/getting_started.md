@@ -116,17 +116,10 @@ let app = App::with_config(config)
     .register_module(routes::ApiModule);
 ```
 
-If you need to manually serve with Axum, use middleware-aware router:
+If you need to manually serve with Axum, use the same make-service path as `serve()`:
 
 ```rust
-use std::net::SocketAddr;
-
-let router = app.into_router_with_middleware();
-axum::serve(
-    listener,
-    router.into_make_service_with_connect_info::<SocketAddr>(),
-)
-.await?;
+axum::serve(listener, app.into_make_service_with_connect_info()).await?;
 ```
 
 If you want to add a layer that should apply after all modules are registered:

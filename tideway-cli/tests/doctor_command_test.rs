@@ -120,8 +120,42 @@ tideway = { version = "0.7", features = ["database"] }
         report
             .warnings
             .iter()
+            .any(|w| w.contains("DATABASE_URL looks invalid")),
+        "expected DATABASE_URL invalid warning, got {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn test_doctor_accepts_sqlite_database_url_format() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join(".env"),
+        "DATABASE_URL=sqlite:./my_app.db?mode=rwc\n",
+    )
+    .expect("write env");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        !report
+            .warnings
+            .iter()
             .any(|w| w.contains("DATABASE_URL format")),
-        "expected DATABASE_URL format warning, got {:?}",
+        "expected no DATABASE_URL format warning, got {:?}",
         report.warnings
     );
 }

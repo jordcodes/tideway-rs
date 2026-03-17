@@ -134,7 +134,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.16"
+tideway = "0.7.17"
 tokio = { version = "1.48", features = ["full"] }
 ```
 
@@ -162,25 +162,20 @@ If you want to serve Tideway with `axum::serve`, use the middleware-aware router
 
 ```rust
 use tideway::App;
-use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
     let app = App::new();
-    let router = app.into_router_with_middleware();
-
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
-    axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
+    axum::serve(listener, app.into_make_service_with_connect_info()).await
 }
 ```
 
 Note: `into_router()` does **not** apply the full middleware stack. Use
-`into_router_with_middleware()` whenever you serve manually.
+`into_router_with_middleware()` when you need the raw router, and
+`into_make_service_with_connect_info()` when you want manual serving to match
+`serve()` including client address wiring.
 
 Run your app:
 

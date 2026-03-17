@@ -1,13 +1,13 @@
 //! Setup command - installs frontend dependencies (Tailwind, shadcn, etc.)
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 use std::path::Path;
 use std::process::Command;
 
 use crate::cli::{Framework, SetupArgs, Style};
 use crate::{
-    is_json_output, is_plan_mode, print_error, print_info, print_success, print_warning,
+    error_contract, is_json_output, is_plan_mode, print_info, print_success, print_warning,
     remove_dir, remove_file, write_file,
 };
 
@@ -42,16 +42,12 @@ pub fn run(args: SetupArgs) -> Result<()> {
         );
     }
 
-    // Check for package.json
     if !std::path::Path::new("package.json").exists() {
-        print_error("No package.json found. Please run this from a frontend project directory.");
-        if !is_json_output() {
-            println!("\nTo create a new Vue project:");
-            println!("  npm create vue@latest my-app");
-            println!("  cd my-app");
-            println!("  tideway setup");
-        }
-        return Ok(());
+        return Err(anyhow!(error_contract(
+            "No package.json found.",
+            "Run `tideway setup` from a frontend project directory.",
+            "Create a Vue app first with `npm create vue@latest my-app`, then rerun `tideway setup`."
+        )));
     }
 
     match args.framework {
@@ -238,8 +234,7 @@ fn setup_tailwind() -> Result<()> {
         &["install", "-D", "tailwindcss", "@tailwindcss/vite"],
         "install tailwind dependencies",
     )? {
-        print_warning("Failed to install Tailwind CSS");
-        return Ok(());
+        return Err(anyhow!("Failed to install Tailwind CSS"));
     }
 
     print_success("Tailwind CSS v4 installed");
@@ -302,11 +297,11 @@ fn setup_shadcn_vue() -> Result<()> {
             &["shadcn-vue@latest", "init", "-y", "-d"],
             "initialize shadcn-vue",
         )? {
-            print_error("Failed to initialize shadcn-vue");
-            if !is_json_output() {
-                println!("You can try running manually: npx shadcn-vue@latest init");
-            }
-            return Ok(());
+            return Err(anyhow!(error_contract(
+                "Failed to initialize shadcn-vue.",
+                "Rerun `tideway setup` in a working Node/npm environment.",
+                "Try `npx shadcn-vue@latest init -y -d` manually to inspect the failure."
+            )));
         }
 
         print_success("shadcn-vue initialized");
@@ -326,14 +321,14 @@ fn setup_shadcn_vue() -> Result<()> {
     add_args.extend(SHADCN_VUE_COMPONENTS);
 
     if !run_external_command("npx", &add_args, "install shadcn components")? {
-        print_warning("Some components may have failed to install");
-        if !is_json_output() {
-            println!(
-                "You can try running manually: npx shadcn-vue@latest add {}",
+        return Err(anyhow!(error_contract(
+            "Failed to install shadcn-vue components.",
+            "Rerun `tideway setup` after fixing your Node/npm environment.",
+            &format!(
+                "Try `npx shadcn-vue@latest add {}` manually to inspect the failure.",
                 components
-            );
-        }
-        return Ok(());
+            )
+        )));
     }
 
     print_success("shadcn components installed");
@@ -439,16 +434,26 @@ fn setup_vite_path_resolution() -> Result<()> {
 
     let content = std::fs::read_to_string(vite_config_path)?;
 
-    // Check if already has path import and resolve.alias
-    if content.contains("fileURLToPath") && content.contains("resolve:") {
-        print_info("Vite path resolution already configured");
-        return Ok(());
+    match ensure_vite_path_resolution(&content)? {
+        Some(updated) => {
+            write_file(Path::new(vite_config_path), &updated)?;
+            print_success("Added path resolution to vite.config");
+        }
+        None => {
+            print_info("Vite path resolution already configured");
+        }
     }
 
-    // Add the import and resolve config
-    let mut updated = content;
+    Ok(())
+}
 
-    // Add import if not present
+fn ensure_vite_path_resolution(content: &str) -> Result<Option<String>> {
+    if has_vite_path_alias(content) {
+        return Ok(None);
+    }
+
+    let mut updated = content.to_string();
+
     if !updated.contains("fileURLToPath") {
         updated = format!(
             "import {{ fileURLToPath, URL }} from 'node:url'\n{}",
@@ -456,18 +461,32 @@ fn setup_vite_path_resolution() -> Result<()> {
         );
     }
 
-    // Add resolve.alias if not present
-    if !updated.contains("resolve:") {
-        updated = updated.replace(
-            "plugins: [",
-            "resolve: {\n    alias: {\n      '@': fileURLToPath(new URL('./src', import.meta.url))\n    }\n  },\n  plugins: ["
+    if updated.contains("resolve: {") {
+        updated = updated.replacen(
+            "resolve: {",
+            "resolve: {\n    alias: {\n      '@': fileURLToPath(new URL('./src', import.meta.url))\n    },",
+            1,
         );
+        return Ok(Some(updated));
     }
 
-    write_file(Path::new(vite_config_path), &updated)?;
-    print_success("Added path resolution to vite.config");
+    if updated.contains("plugins: [") {
+        updated = updated.replacen(
+            "plugins: [",
+            "resolve: {\n    alias: {\n      '@': fileURLToPath(new URL('./src', import.meta.url))\n    }\n  },\n  plugins: [",
+            1,
+        );
+        return Ok(Some(updated));
+    }
 
-    Ok(())
+    Err(anyhow!(
+        "Unable to add Vite path resolution automatically. Add an `alias` entry for `@` manually."
+    ))
+}
+
+fn has_vite_path_alias(content: &str) -> bool {
+    (content.contains("alias:") || content.contains("alias :"))
+        && (content.contains("'@'") || content.contains("\"@\""))
 }
 
 fn run_external_command(program: &str, args: &[&str], context: &str) -> Result<bool> {
@@ -492,5 +511,34 @@ fn format_command(program: &str, args: &[&str]) -> String {
         program.to_string()
     } else {
         format!("{} {}", program, args.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_vite_path_resolution_inserts_alias_into_existing_resolve_block() {
+        let content = "import vue from '@vitejs/plugin-vue'\nexport default defineConfig({\n  resolve: {\n    conditions: ['module']\n  },\n  plugins: [vue()]\n})\n";
+
+        let updated = ensure_vite_path_resolution(content)
+            .expect("vite config should update")
+            .expect("vite config should change");
+
+        assert!(updated.contains("alias:"));
+        assert!(updated.contains("'@': fileURLToPath"));
+        assert!(updated.contains("conditions: ['module']"));
+    }
+
+    #[test]
+    fn ensure_vite_path_resolution_detects_existing_alias() {
+        let content = "export default defineConfig({\n  resolve: {\n    alias: {\n      '@': '/src'\n    }\n  },\n  plugins: []\n})\n";
+
+        assert!(
+            ensure_vite_path_resolution(content)
+                .expect("alias detection should succeed")
+                .is_none()
+        );
     }
 }

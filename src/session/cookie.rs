@@ -12,6 +12,7 @@ use crate::traits::session::{SessionData, SessionStore};
 use async_trait::async_trait;
 use cookie::{Cookie, CookieJar, Key, SameSite};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 /// Cookie-based session store
 ///
@@ -181,15 +182,14 @@ impl CookieSessionStore {
     /// This creates a cookie ready to be set in an HTTP response.
     pub fn build_cookie(&self, data: &SessionData) -> Result<Cookie<'static>> {
         let encrypted_value = self.encrypt(data)?;
+        let ttl = self.session_ttl(data);
 
         let mut cookie_builder = Cookie::build((self.config.cookie_name.clone(), encrypted_value))
             .path(self.config.cookie_path.clone())
             .http_only(self.config.cookie_http_only)
             .secure(self.config.cookie_secure)
             .same_site(SameSite::Lax)
-            .max_age(cookie::time::Duration::seconds(
-                self.config.default_ttl().as_secs() as i64,
-            ));
+            .max_age(cookie::time::Duration::seconds(ttl.as_secs() as i64));
 
         if let Some(domain) = &self.config.cookie_domain {
             cookie_builder = cookie_builder.domain(domain.clone());
@@ -199,14 +199,20 @@ impl CookieSessionStore {
 
         Ok(cookie)
     }
+
+    fn session_ttl(&self, data: &SessionData) -> Duration {
+        data.expires_at
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO)
+    }
 }
 
 #[async_trait]
 impl SessionStore for CookieSessionStore {
     async fn load(&self, session_id: &str) -> Result<Option<SessionData>> {
         // For cookie-based sessions, the session_id is the encrypted cookie value
-        // Decrypt and return the session data, or None if decryption fails
-        self.decrypt(session_id)
+        // Decrypt and return the session data, or None if decryption fails or the session expired.
+        Ok(self.decrypt(session_id)?.filter(|data| !data.is_expired()))
     }
 
     async fn save(&self, _session_id: &str, data: SessionData) -> Result<()> {
@@ -393,6 +399,19 @@ mod tests {
         assert_eq!(cookie.secure(), Some(config.cookie_secure));
     }
 
+    #[test]
+    fn test_build_cookie_uses_session_expiry_for_max_age() {
+        let config = test_config();
+        let store = CookieSessionStore::new(&config).unwrap();
+
+        let data = SessionData::new(Duration::from_secs(120));
+        let cookie = store.build_cookie(&data).unwrap();
+        let max_age = cookie.max_age().expect("cookie max age should be set");
+
+        assert!(max_age.whole_seconds() <= 120);
+        assert!(max_age.whole_seconds() > 0);
+    }
+
     #[tokio::test]
     async fn test_session_store_trait() {
         let config = test_config();
@@ -417,6 +436,20 @@ mod tests {
 
         // Invalid session_id returns None
         let loaded = store.load("invalid").await.unwrap();
+        assert!(loaded.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_session_store_trait_filters_expired_sessions() {
+        let config = test_config();
+        let store = CookieSessionStore::new(&config).unwrap();
+
+        let data = SessionData::new(Duration::from_millis(5));
+        let encrypted = store.encrypt(&data).unwrap();
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        let loaded = store.load(&encrypted).await.unwrap();
         assert!(loaded.is_none());
     }
 }

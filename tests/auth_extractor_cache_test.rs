@@ -37,6 +37,10 @@ impl AuthProvider for TestProvider {
     async fn load_user(&self, _claims: &TestClaims) -> Result<TestUser> {
         panic!("load_user should not be called when user is cached");
     }
+
+    async fn validate_user(&self, _user: &Self::User) -> Result<()> {
+        panic!("validate_user should not be called when user is cached");
+    }
 }
 
 #[derive(Clone, Default)]

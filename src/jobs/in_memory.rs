@@ -11,7 +11,7 @@ use chrono::{DateTime, Duration, Utc};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 /// Default maximum size for completed/failed job history
@@ -50,6 +50,10 @@ pub struct InMemoryJobQueue {
     health_status: Arc<AtomicBool>,
     /// Shutdown flag for background scheduler
     shutdown: Arc<AtomicBool>,
+    /// Notifies idle workers when pending jobs become available.
+    job_available: Arc<Notify>,
+    /// Wakes the scheduler when new delayed work changes the next due time.
+    scheduler_wakeup: Arc<Notify>,
     /// Handle to scheduler task
     scheduler_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -85,6 +89,8 @@ impl InMemoryJobQueue {
             max_history_size,
             health_status: Arc::new(AtomicBool::new(true)),
             shutdown,
+            job_available: Arc::new(Notify::new()),
+            scheduler_wakeup: Arc::new(Notify::new()),
             scheduler_handle: Arc::new(Mutex::new(None)),
         };
 
@@ -99,6 +105,8 @@ impl InMemoryJobQueue {
     /// Signals the background scheduler task to stop and waits for completion.
     pub async fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
+        self.job_available.notify_waiters();
+        self.scheduler_wakeup.notify_waiters();
 
         let mut handle_guard = self.scheduler_handle.lock().await;
         if let Some(handle) = handle_guard.take() {
@@ -124,42 +132,61 @@ impl InMemoryJobQueue {
         let scheduled = self.scheduled.clone();
         let pending = self.pending.clone();
         let shutdown = self.shutdown.clone();
+        let job_available = self.job_available.clone();
+        let scheduler_wakeup = self.scheduler_wakeup.clone();
         let scheduler_handle = self.scheduler_handle.clone();
 
         let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(1));
-
             loop {
-                // Check shutdown before waiting
                 if shutdown.load(Ordering::Acquire) {
                     tracing::debug!("In-memory job queue scheduler shutting down");
                     break;
                 }
 
-                interval.tick().await;
+                let now = Utc::now();
+                let mut moved_due_jobs = false;
 
-                // Check again after waking
-                if shutdown.load(Ordering::Acquire) {
-                    break;
+                let next_wait = {
+                    let mut scheduled_guard = scheduled.lock().await;
+                    let mut pending_guard = pending.lock().await;
+
+                    // Move all jobs scheduled for now or earlier to pending.
+                    let keys_to_remove: Vec<DateTime<Utc>> = scheduled_guard
+                        .iter()
+                        .take_while(|(time, _)| **time <= now)
+                        .map(|(time, _)| *time)
+                        .collect();
+
+                    for key in keys_to_remove {
+                        if let Some(jobs) = scheduled_guard.remove(&key) {
+                            moved_due_jobs = true;
+                            for job in jobs {
+                                pending_guard.push_back(job);
+                            }
+                        }
+                    }
+
+                    scheduled_guard.iter().next().map(|(run_at, _)| {
+                        (*run_at - now)
+                            .to_std()
+                            .unwrap_or(std::time::Duration::ZERO)
+                    })
+                };
+
+                if moved_due_jobs {
+                    job_available.notify_waiters();
+                    continue;
                 }
 
-                let now = Utc::now();
-
-                let mut scheduled_guard = scheduled.lock().await;
-                let mut pending_guard = pending.lock().await;
-
-                // Move all jobs scheduled for now or earlier to pending
-                let keys_to_remove: Vec<DateTime<Utc>> = scheduled_guard
-                    .iter()
-                    .take_while(|(time, _)| **time <= now)
-                    .map(|(time, _)| *time)
-                    .collect();
-
-                for key in keys_to_remove {
-                    if let Some(jobs) = scheduled_guard.remove(&key) {
-                        for job in jobs {
-                            pending_guard.push_back(job);
+                match next_wait {
+                    Some(wait) => {
+                        tokio::select! {
+                            _ = tokio::time::sleep(wait) => {},
+                            _ = scheduler_wakeup.notified() => {},
                         }
+                    }
+                    None => {
+                        scheduler_wakeup.notified().await;
                     }
                 }
             }
@@ -190,6 +217,7 @@ impl JobQueue for InMemoryJobQueue {
 
         let mut pending = self.pending.lock().await;
         pending.push_back(job_data);
+        self.job_available.notify_one();
 
         Ok(job_id)
     }
@@ -232,6 +260,7 @@ impl JobQueue for InMemoryJobQueue {
                     .entry(retry_at)
                     .or_insert_with(Vec::new)
                     .push(job_data);
+                self.scheduler_wakeup.notify_one();
             } else {
                 // Max retries exceeded, move to failed (bounded)
                 let mut failed = self.failed.lock().await;
@@ -250,6 +279,7 @@ impl JobQueue for InMemoryJobQueue {
                 job_data.increment_retry();
                 let mut pending = self.pending.lock().await;
                 pending.push_back(job_data);
+                self.job_available.notify_one();
             } else {
                 let mut failed = self.failed.lock().await;
                 Self::push_to_bounded_history(&mut failed, job_data, self.max_history_size);
@@ -277,6 +307,7 @@ impl JobQueue for InMemoryJobQueue {
             .entry(run_at)
             .or_insert_with(Vec::new)
             .push(job_data);
+        self.scheduler_wakeup.notify_one();
 
         Ok(job_id)
     }
@@ -284,6 +315,14 @@ impl JobQueue for InMemoryJobQueue {
     fn is_healthy(&self) -> bool {
         // Return cached health status (always true for in-memory queue)
         self.health_status.load(Ordering::Acquire)
+    }
+
+    async fn wait_for_job(&self, timeout: std::time::Duration) {
+        let notified = self.job_available.notified();
+        if !self.pending.lock().await.is_empty() {
+            return;
+        }
+        let _ = tokio::time::timeout(timeout, notified).await;
     }
 }
 

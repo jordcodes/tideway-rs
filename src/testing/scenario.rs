@@ -33,7 +33,7 @@
 use crate::auth::extractors::{TEST_CLAIMS_HEADER, TEST_USER_ID_HEADER, encode_test_claims_header};
 use axum::{
     Router,
-    body::Body,
+    body::{Body, Bytes},
     http::{Method, Request, StatusCode, header},
 };
 use serde::{Deserialize, Serialize};
@@ -358,9 +358,7 @@ impl ScenarioAssert {
 
     /// Assert JSON field equals a value using JSONPath-like syntax
     pub async fn assert_json_field(self, path: &str, expected: serde_json::Value) -> Self {
-        let bytes = axum::body::to_bytes(self.response.into_body(), usize::MAX)
-            .await
-            .unwrap();
+        let (parts, bytes) = self.into_parts_and_body().await;
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         let actual = json_path_get(&json, path)
@@ -368,16 +366,12 @@ impl ScenarioAssert {
 
         assert_eq!(actual, &expected, "JSON path '{}' value mismatch", path);
 
-        Self {
-            response: axum::response::Response::new(Body::from(bytes)),
-        }
+        Self::from_parts_and_body(parts, bytes)
     }
 
     /// Assert JSON contains the expected subset
     pub async fn assert_json_contains(self, expected: serde_json::Value) -> Self {
-        let bytes = axum::body::to_bytes(self.response.into_body(), usize::MAX)
-            .await
-            .unwrap();
+        let (parts, bytes) = self.into_parts_and_body().await;
         let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
         assert!(
@@ -387,9 +381,7 @@ impl ScenarioAssert {
             json
         );
 
-        Self {
-            response: axum::response::Response::new(Body::from(bytes)),
-        }
+        Self::from_parts_and_body(parts, bytes)
     }
 
     /// Alias for assert_json_field - assert JSON path equals expected value
@@ -404,16 +396,15 @@ impl ScenarioAssert {
 
     /// Assert the response body contains the given text
     pub async fn assert_contains(self, text: &str) -> Self {
-        let body = self.body_string().await;
+        let (parts, bytes) = self.into_parts_and_body().await;
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(
             body.contains(text),
             "Response body does not contain '{}'. Body: {}",
             text,
             body
         );
-        Self {
-            response: axum::response::Response::new(Body::from(body)),
-        }
+        Self::from_parts_and_body(parts, Bytes::from(body))
     }
 
     /// Dump the request and response for debugging
@@ -425,7 +416,8 @@ impl ScenarioAssert {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<invalid>").to_string()))
             .collect();
-        let body = self.body_string().await;
+        let (parts, bytes) = self.into_parts_and_body().await;
+        let body = String::from_utf8(bytes.to_vec()).unwrap();
 
         eprintln!("=== Response Dump ===");
         eprintln!("Status: {}", status);
@@ -436,14 +428,24 @@ impl ScenarioAssert {
         eprintln!("Body: {}", body);
         eprintln!("===================");
 
-        Self {
-            response: axum::response::Response::new(Body::from(body)),
-        }
+        Self::from_parts_and_body(parts, Bytes::from(body))
     }
 
     /// Get the underlying response for custom assertions
     pub fn response(self) -> axum::response::Response {
         self.response
+    }
+
+    async fn into_parts_and_body(self) -> (axum::http::response::Parts, Bytes) {
+        let (parts, body) = self.response.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+        (parts, bytes)
+    }
+
+    fn from_parts_and_body(parts: axum::http::response::Parts, body: Bytes) -> Self {
+        Self {
+            response: axum::response::Response::from_parts(parts, Body::from(body)),
+        }
     }
 }
 
@@ -607,6 +609,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_assert_contains_preserves_headers() {
+        async fn handler() -> axum::response::Response {
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header("x-test", "1")
+                .body(Body::from("hello"))
+                .unwrap()
+        }
+
+        let app = Router::new().route("/hello", axum::routing::get(handler));
+
+        get(app, "/hello")
+            .send()
+            .await
+            .assert_contains("hello")
+            .await
+            .assert_header("x-test", "1");
+    }
+
+    #[tokio::test]
     async fn test_assert_json_contains() {
         let app = Router::new().route("/hello", axum_get(hello_handler));
 
@@ -616,6 +638,27 @@ mod tests {
             .assert_json_ok()
             .assert_json_contains(json!({"message": "Hello, World!"}))
             .await;
+    }
+
+    #[tokio::test]
+    async fn test_assert_json_field_preserves_headers() {
+        async fn handler() -> axum::response::Response {
+            axum::response::Response::builder()
+                .status(StatusCode::OK)
+                .header("x-test", "1")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"message":"hello"}"#))
+                .unwrap()
+        }
+
+        let app = Router::new().route("/hello", axum::routing::get(handler));
+
+        get(app, "/hello")
+            .send()
+            .await
+            .assert_json_field("message", json!("hello"))
+            .await
+            .assert_header("x-test", "1");
     }
 
     #[tokio::test]

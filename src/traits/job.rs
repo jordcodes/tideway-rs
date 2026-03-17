@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use std::time::Duration;
 
 /// A background job that can be executed asynchronously
 ///
@@ -138,6 +139,14 @@ pub trait JobQueue: Send + Sync {
     ///
     /// Re-enqueues the job with incremented retry count.
     async fn retry(&self, job_id: &str) -> Result<()>;
+
+    /// Wait until more work may be available.
+    ///
+    /// Implementations can override this to provide event-driven wakeups
+    /// instead of polling. The default behavior sleeps for the provided timeout.
+    async fn wait_for_job(&self, timeout: Duration) {
+        tokio::time::sleep(timeout).await;
+    }
 
     /// Schedule a job for future execution
     ///

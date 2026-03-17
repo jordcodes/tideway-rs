@@ -7,7 +7,10 @@ use crate::{
 
 #[cfg(feature = "database")]
 use crate::error::TidewayError;
-use axum::{Router, extract::DefaultBodyLimit};
+use axum::{
+    Router,
+    extract::{DefaultBodyLimit, connect_info::IntoMakeServiceWithConnectInfo},
+};
 #[cfg(feature = "database")]
 use sea_orm_migration::MigratorTrait;
 use std::time::Duration;
@@ -297,8 +300,11 @@ impl App {
 
     /// Convert the App into an axum Router with Tideway's middleware stack applied.
     ///
-    /// This matches the middleware behavior of `serve()` and is the recommended
-    /// choice when you want to manually serve the router without losing defaults.
+    /// This preserves Tideway's middleware stack when you want to serve manually.
+    /// If your middleware or handlers rely on `ConnectInfo<SocketAddr>` (for
+    /// example per-IP rate limiting), pair the returned router with
+    /// `Router::into_make_service_with_connect_info`, or use
+    /// `App::into_make_service_with_connect_info()` for the exact `serve()` path.
     pub fn into_router_with_middleware(self) -> Router {
         let app = self.with_middleware();
         apply_global_layers_with_config(
@@ -306,6 +312,19 @@ impl App {
             &app.global_layers,
             &app.config.cors,
         )
+    }
+
+    /// Convert the App into an axum make-service with Tideway's middleware stack
+    /// and `ConnectInfo<SocketAddr>` wiring applied.
+    ///
+    /// This matches the service path used by `serve()` and is the safest option
+    /// when you want to call `axum::serve` manually without losing client address
+    /// information for per-IP middleware or extractors.
+    pub fn into_make_service_with_connect_info(
+        self,
+    ) -> IntoMakeServiceWithConnectInfo<Router, std::net::SocketAddr> {
+        self.into_router_with_middleware()
+            .into_make_service_with_connect_info::<std::net::SocketAddr>()
     }
 
     /// Get the router for testing purposes
