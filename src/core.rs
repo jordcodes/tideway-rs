@@ -1,7 +1,13 @@
 use crate::{
-    app::AppContext, compression::build_compression_layer, config::Config, http::RouteModule,
-    middleware::MakeRequestUuid, ratelimit::build_rate_limit_layer,
-    request_logging::build_request_logging_layer, security::build_security_headers_layer,
+    app::AppContext,
+    compression::build_compression_layer,
+    config::Config,
+    dev::{build_dev_error_layer, build_request_dumper_layer},
+    http::RouteModule,
+    middleware::MakeRequestUuid,
+    ratelimit::build_rate_limit_layer,
+    request_logging::build_request_logging_layer,
+    security::build_security_headers_layer,
     timeout::build_timeout_layer,
 };
 
@@ -18,7 +24,6 @@ use tokio::signal;
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
 
-#[cfg(any(feature = "metrics", feature = "jobs"))]
 use std::sync::Arc;
 
 #[cfg(feature = "metrics")]
@@ -382,14 +387,23 @@ impl App {
         // 8. Trace layer - HTTP tracing
         router = router.layer(TraceLayer::new_for_http());
 
-        // 9. Request logging - log requests/responses (innermost of logging layers)
+        // 9. Dev middleware - request dumper and error logging
+        if self.config.dev.enabled {
+            let dev_config = Arc::new(self.config.dev.clone());
+            if dev_config.enable_request_dumper {
+                router = router.layer(build_request_dumper_layer(dev_config.clone()));
+            }
+            router = router.layer(build_dev_error_layer(dev_config));
+        }
+
+        // 10. Request logging - log requests/responses (innermost of logging layers)
         if let Some(logging_layer) = build_request_logging_layer(&self.config.request_logging) {
             router = router.layer(logging_layer);
         }
 
         #[cfg(feature = "auth")]
         {
-            // 10. Auth provider bridge - make AppContext auth provider available to extractors.
+            // 11. Auth provider bridge - make AppContext auth provider available to extractors.
             if let Some(auth_provider) = self.context.auth_provider_extension() {
                 router = router.layer(axum::middleware::from_fn({
                     move |mut request: axum::extract::Request, next: axum::middleware::Next| {

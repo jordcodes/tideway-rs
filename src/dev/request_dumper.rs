@@ -30,7 +30,7 @@ impl<S> tower::Layer<S> for RequestDumperLayer {
 }
 
 /// Request dumper service
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RequestDumperService<S> {
     inner: S,
     config: Arc<crate::dev::DevConfig>,

@@ -34,7 +34,7 @@ impl<S> tower::Layer<S> for DevErrorLayer {
 }
 
 /// Development error service
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DevErrorService<S> {
     inner: S,
     config: Arc<crate::dev::DevConfig>,
