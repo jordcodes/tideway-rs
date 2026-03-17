@@ -97,6 +97,40 @@ tideway = { version = "0.7", features = ["auth", "database"] }
 }
 
 #[test]
+fn test_doctor_warns_when_saas_billing_env_missing() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run tideway new");
+
+    let report = analyze_project(&project_dir, false).expect("analyze project");
+    for key in [
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_PRICE_ID",
+    ] {
+        assert!(
+            report.warnings.iter().any(|warning| warning.contains(key)),
+            "expected {key} warning, got {:?}",
+            report.warnings
+        );
+    }
+}
+
+#[test]
 fn test_doctor_invalid_database_url_format() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();
@@ -157,6 +191,62 @@ tideway = { version = "0.7", features = ["database"] }
             .any(|w| w.contains("DATABASE_URL format")),
         "expected no DATABASE_URL format warning, got {:?}",
         report.warnings
+    );
+}
+
+#[test]
+fn test_doctor_fix_updates_env_example_with_billing_keys() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src/billing")).expect("create src/billing");
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["billing"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join(".env.example"),
+        "# Server\nTIDEWAY_HOST=0.0.0.0\nTIDEWAY_PORT=8000\n",
+    )
+    .expect("write env example");
+
+    let report = analyze_project(project_dir, true).expect("analyze project");
+    let env_example =
+        fs::read_to_string(project_dir.join(".env.example")).expect("read env example");
+
+    assert!(
+        env_example.contains("APP_URL=http://localhost:8000"),
+        "expected APP_URL to be added, got:\n{}",
+        env_example
+    );
+    assert!(
+        env_example.contains("STRIPE_SECRET_KEY=sk_test_replace_me"),
+        "expected STRIPE_SECRET_KEY to be added, got:\n{}",
+        env_example
+    );
+    assert!(
+        env_example.contains("STRIPE_WEBHOOK_SECRET=whsec_replace_me"),
+        "expected STRIPE_WEBHOOK_SECRET to be added, got:\n{}",
+        env_example
+    );
+    assert!(
+        env_example.contains("STRIPE_PRICE_ID=price_replace_me"),
+        "expected STRIPE_PRICE_ID to be added, got:\n{}",
+        env_example
+    );
+    assert!(
+        report
+            .fixes
+            .iter()
+            .any(|line| line.contains("Updated .env.example with missing keys")),
+        "expected env example update fix, got {:?}",
+        report.fixes
     );
 }
 

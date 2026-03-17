@@ -130,6 +130,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
 
     let needs_database = tideway_features.contains("database") || detected.contains("database");
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
+    let needs_billing = tideway_features.contains("billing") || detected.contains("billing");
 
     if fix {
         apply_env_fixes(
@@ -139,6 +140,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             needs_database,
             database_backend,
             needs_auth,
+            needs_billing,
             &mut report,
         )?;
         env_vars = read_env_map(&env_file).unwrap_or_default();
@@ -170,6 +172,23 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             &env_example_vars,
             &mut report,
         );
+    }
+
+    if needs_billing {
+        for key in [
+            "STRIPE_SECRET_KEY",
+            "STRIPE_WEBHOOK_SECRET",
+            "STRIPE_PRICE_ID",
+        ] {
+            check_env_var(
+                key,
+                &env_file,
+                &env_example_file,
+                &env_vars,
+                &env_example_vars,
+                &mut report,
+            );
+        }
     }
 
     if !has_log_config(&env_vars, &env_example_vars) {
@@ -389,12 +408,16 @@ fn env_example_template(
     needs_database: bool,
     database_backend: &str,
     needs_auth: bool,
+    needs_billing: bool,
 ) -> Option<Vec<String>> {
     let mut lines = Vec::new();
-    if needs_database || needs_auth {
+    if needs_database || needs_auth || needs_billing {
         lines.push("# Server".to_string());
         lines.push("TIDEWAY_HOST=0.0.0.0".to_string());
         lines.push("TIDEWAY_PORT=8000".to_string());
+        if needs_billing {
+            lines.push("APP_URL=http://localhost:8000".to_string());
+        }
         lines.push(String::new());
     }
 
@@ -414,6 +437,14 @@ fn env_example_template(
     if needs_auth {
         lines.push("# Auth".to_string());
         lines.push("JWT_SECRET=your-super-secret-jwt-key-change-in-production".to_string());
+        lines.push(String::new());
+    }
+
+    if needs_billing {
+        lines.push("# Billing".to_string());
+        lines.push("STRIPE_SECRET_KEY=sk_test_replace_me".to_string());
+        lines.push("STRIPE_WEBHOOK_SECRET=whsec_replace_me".to_string());
+        lines.push("STRIPE_PRICE_ID=price_replace_me".to_string());
         lines.push(String::new());
     }
 
@@ -448,11 +479,16 @@ fn apply_env_fixes(
     needs_database: bool,
     database_backend: &str,
     needs_auth: bool,
+    needs_billing: bool,
     report: &mut DoctorReport,
 ) -> Result<()> {
-    let Some(lines) =
-        env_example_template(project_name, needs_database, database_backend, needs_auth)
-    else {
+    let Some(lines) = env_example_template(
+        project_name,
+        needs_database,
+        database_backend,
+        needs_auth,
+        needs_billing,
+    ) else {
         return Ok(());
     };
     let expected_vars = parse_env_map(&lines.join("\n"));
