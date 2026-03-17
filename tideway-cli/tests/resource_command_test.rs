@@ -1423,6 +1423,46 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
+        "pub struct SubscriptionAuditEvent {",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "pub action: &'static str,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "pub actor_id: String,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "pub organization_id: Option<String>,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "pub resource: &'static str,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "pub resource_id: String,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "fn build_owned_audit_event(",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "resource: \"subscription\",",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "organization_id: Some(actor.organization_id()?.to_string()),",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "actor_id: actor.owner_id(),",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
         "async fn audit_owned_write(",
     );
     assert_file_contains(
@@ -1431,7 +1471,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "let _ = (actor, action, model);",
+        "let _ = (event, model);",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1439,15 +1479,23 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "self.audit_owned_write(actor, \"create\", &model).await?;",
+        "let event = Self::build_owned_audit_event(actor, \"create\", &model)?;",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "self.audit_owned_write(actor, \"update\", &model).await?;",
+        "self.audit_owned_write(&event, &model).await?;",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "self.audit_owned_write(actor, \"delete\", &model).await",
+        "let event = Self::build_owned_audit_event(actor, \"update\", &model)?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "let event = Self::build_owned_audit_event(actor, \"delete\", &model)?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/subscription.rs"),
+        "self.audit_owned_write(&event, &model).await",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1538,6 +1586,26 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/admin_user.rs"),
+        "pub struct AdminUserAuditEvent {",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "fn build_admin_audit_event(",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "resource: \"admin_user\",",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "organization_id: None,",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "actor_id: actor.user.id.to_string(),",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
         "async fn audit_admin_write(",
     );
     assert_file_contains(
@@ -1546,15 +1614,23 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/admin_user.rs"),
-        "self.audit_admin_write(actor, \"create\", &model).await?;",
+        "let event = Self::build_admin_audit_event(actor, \"create\", &model)?;",
     );
     assert_file_contains(
         &project_dir.join("src/services/admin_user.rs"),
-        "self.audit_admin_write(actor, \"update\", &model).await?;",
+        "self.audit_admin_write(&event, &model).await?;",
     );
     assert_file_contains(
         &project_dir.join("src/services/admin_user.rs"),
-        "self.audit_admin_write(actor, \"delete\", &model).await",
+        "let event = Self::build_admin_audit_event(actor, \"update\", &model)?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "let event = Self::build_admin_audit_event(actor, \"delete\", &model)?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/admin_user.rs"),
+        "self.audit_admin_write(&event, &model).await",
     );
     assert_file_contains(
         &project_dir.join("src/routes/admin_user.rs"),

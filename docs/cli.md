@@ -166,7 +166,7 @@ the `test-containers` feature is enabled, or `TIDEWAY_TEST_DB_BACKEND=postgres` 
 Use `--service` to generate a validating service layer on top of the repository, with input normalization and not-found handling for the service-backed path.
 On SaaS scaffolds with the shared request actor contract, generated `owned` and `admin` resources also move tenant/admin enforcement into the service layer instead of keeping it only in the route handlers.
 Generated `owned` services keep cross-tenant lookups opaque, but return an explicit forbidden error when a record is in the caller's organization and owned by a different user.
-Those actor-aware service writes also generate a no-op audit hook seam so create/update/delete flows have one obvious place to attach activity logging, event publishing, or outbound side effects.
+Those actor-aware service writes also generate a no-op audit hook seam with a structured event payload (`action`, `actor_id`, `organization_id`, `resource`, `resource_id`) so create/update/delete flows have one obvious place to attach activity logging, event publishing, or outbound side effects.
 Use `--id-type` to switch ID generation (int or uuid) for DB scaffolding. Use `--add-uuid` to automatically add the `uuid` dependency.
 Use `--paginate` to add limit/offset query params to list endpoints.
 Use `--search` to add a `q` search filter to list endpoints (requires `--paginate`).

@@ -3300,6 +3300,22 @@ fn render_service(
     } else {
         ""
     };
+    let audit_event_struct = if uses_shared_saas_owned_actor || uses_shared_saas_admin_actor {
+        format!(
+            r#"
+#[derive(Debug, Clone)]
+pub struct {resource_pascal}AuditEvent {{
+    pub action: &'static str,
+    pub actor_id: String,
+    pub organization_id: Option<String>,
+    pub resource: &'static str,
+    pub resource_id: String,
+}}
+"#
+        )
+    } else {
+        String::new()
+    };
     let list_signature = if paginate {
         if search {
             format!(
@@ -3476,14 +3492,27 @@ fn render_service(
 {actor_list_call}
     }}
 
+    fn build_owned_audit_event(
+        actor: &RequestActor,
+        action: &'static str,
+        model: &crate::entities::{resource_name}::Model,
+    ) -> Result<{resource_pascal}AuditEvent> {{
+        Ok({resource_pascal}AuditEvent {{
+            action,
+            actor_id: actor.owner_id(),
+            organization_id: Some(actor.organization_id()?.to_string()),
+            resource: "{resource_name}",
+            resource_id: model.id.to_string(),
+        }})
+    }}
+
     async fn audit_owned_write(
         &self,
-        actor: &RequestActor,
-        action: &str,
+        event: &{resource_pascal}AuditEvent,
         model: &crate::entities::{resource_name}::Model,
     ) -> Result<()> {{
         // Hook audit logging, events, or other side effects here.
-        let _ = (actor, action, model);
+        let _ = (event, model);
         Ok(())
     }}
 
@@ -3507,7 +3536,8 @@ fn render_service(
         let model = self
             .create_owned(organization_id, &owner_id, {owned_create_args})
             .await?;
-        self.audit_owned_write(actor, "create", &model).await?;
+        let event = Self::build_owned_audit_event(actor, "create", &model)?;
+        self.audit_owned_write(&event, &model).await?;
         Ok(model)
     }}
 
@@ -3522,7 +3552,8 @@ fn render_service(
         let model = self
             .update_owned(id, organization_id, &owner_id, {owned_update_args})
             .await?;
-        self.audit_owned_write(actor, "update", &model).await?;
+        let event = Self::build_owned_audit_event(actor, "update", &model)?;
+        self.audit_owned_write(&event, &model).await?;
         Ok(model)
     }}
 
@@ -3530,8 +3561,9 @@ fn render_service(
         let model = self.get_required_for_actor(actor, id).await?;
         let organization_id = actor.organization_id()?;
         let owner_id = actor.owner_id();
+        let event = Self::build_owned_audit_event(actor, "delete", &model)?;
         self.delete_owned(id, organization_id, &owner_id).await?;
-        self.audit_owned_write(actor, "delete", &model).await
+        self.audit_owned_write(&event, &model).await
     }}
 "#,
             actor_list_signature = actor_list_signature,
@@ -3579,14 +3611,27 @@ fn render_service(
 {admin_list_call}
     }}
 
+    fn build_admin_audit_event(
+        actor: &RequestActor,
+        action: &'static str,
+        model: &crate::entities::{resource_name}::Model,
+    ) -> Result<{resource_pascal}AuditEvent> {{
+        Ok({resource_pascal}AuditEvent {{
+            action,
+            actor_id: actor.user.id.to_string(),
+            organization_id: None,
+            resource: "{resource_name}",
+            resource_id: model.id.to_string(),
+        }})
+    }}
+
     async fn audit_admin_write(
         &self,
-        actor: &RequestActor,
-        action: &str,
+        event: &{resource_pascal}AuditEvent,
         model: &crate::entities::{resource_name}::Model,
     ) -> Result<()> {{
         // Hook audit logging, events, or other side effects here.
-        let _ = (actor, action, model);
+        let _ = (event, model);
         Ok(())
     }}
 
@@ -3606,7 +3651,8 @@ fn render_service(
     ) -> Result<crate::entities::{resource_name}::Model> {{
         actor.require_admin()?;
         let model = self.create({create_call_args}).await?;
-        self.audit_admin_write(actor, "create", &model).await?;
+        let event = Self::build_admin_audit_event(actor, "create", &model)?;
+        self.audit_admin_write(&event, &model).await?;
         Ok(model)
     }}
 
@@ -3618,15 +3664,17 @@ fn render_service(
     ) -> Result<crate::entities::{resource_name}::Model> {{
         actor.require_admin()?;
         let model = self.update(id, {update_call_args}).await?;
-        self.audit_admin_write(actor, "update", &model).await?;
+        let event = Self::build_admin_audit_event(actor, "update", &model)?;
+        self.audit_admin_write(&event, &model).await?;
         Ok(model)
     }}
 
     pub async fn delete_for_admin(&self, actor: &RequestActor, id: {id_type}) -> Result<()> {{
         actor.require_admin()?;
         let model = self.get_required(id).await?;
+        let event = Self::build_admin_audit_event(actor, "delete", &model)?;
         self.delete(id).await?;
-        self.audit_admin_write(actor, "delete", &model).await
+        self.audit_admin_write(&event, &model).await
     }}
 "#,
             admin_list_signature = admin_list_signature,
@@ -3647,6 +3695,7 @@ fn render_service(
 {actor_import}
 
 use crate::repositories::{resource_name}::{resource_pascal}Repository;
+{audit_event_struct}
 
 pub struct {resource_pascal}Service {{
     repo: {resource_pascal}Repository,
@@ -3698,6 +3747,7 @@ impl {resource_pascal}Service {{
         id_type = id_type_str,
         uuid_import = uuid_import,
         actor_import = actor_import,
+        audit_event_struct = audit_event_struct,
         list_signature = list_signature,
         list_body = list_body,
         create_signature_args = create_signature_args,
