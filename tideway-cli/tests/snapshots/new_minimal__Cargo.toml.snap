@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tideway = { version = "0.7.17" }
+tideway = { version = "0.7.17", default-features = false }
 tokio = { version = "1.48", features = ["full"] }
 axum = "0.8"

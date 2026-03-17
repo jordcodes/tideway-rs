@@ -25,6 +25,7 @@ fn test_new_command_generates_starter_files() {
     tideway_cli::commands::new::run(args).expect("run new command");
 
     assert_file_contains(&project_dir.join("Cargo.toml"), "name = \"my_app\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "default-features = false");
     assert_file_contains(&project_dir.join("src/main.rs"), "App::new()");
     assert_file_contains(&project_dir.join("src/routes/mod.rs"), "Tideway is running");
     assert!(project_dir.join(".gitignore").exists());
@@ -54,6 +55,7 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
 
     assert_file_contains(&project_dir.join("Cargo.toml"), "\"auth\"");
     assert_file_contains(&project_dir.join("Cargo.toml"), "\"database\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "default-features = false");
     assert!(project_dir.join("src/config.rs").exists());
     assert!(!project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
@@ -95,6 +97,7 @@ fn test_new_command_includes_features_and_env() {
         &project_dir.join("Cargo.toml"),
         "features = [\"auth\", \"database\"]",
     );
+    assert_file_contains(&project_dir.join("Cargo.toml"), "default-features = false");
     assert_file_contains(&project_dir.join("Cargo.toml"), "sea-orm");
     assert_file_contains(&project_dir.join(".env.example"), "DATABASE_URL=");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_SECRET=");
@@ -167,6 +170,32 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
 
     run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
     run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+}
+
+#[test]
+fn test_new_command_minimal_compiles_against_workspace_source() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Minimal),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    patch_scaffold_to_workspace(&project_dir);
+
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
 }
 
 #[test]
