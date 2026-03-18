@@ -25,6 +25,8 @@ Advanced (existing projects, nonstandard workflows, or legacy compatibility):
 - `setup`
 - `templates`
 
+See `docs/deprecation_policy.md` for how Tideway classifies primary, advanced, legacy, and deprecated command paths.
+
 ## Commands
 
 Global options:

@@ -95,6 +95,20 @@ Fix:
 - keep onboarding docs focused on one recommended start per task
 - in `README.md` and `docs/getting_started.md`, avoid alternative "Or ..." starts in first-run sections
 - mark any `tideway init` / `tideway backend` / `tideway add` usage as advanced when referenced in onboarding docs
+- if command-surface positioning changed, update `docs/deprecation_policy.md` and `.github/RELEASE_TEMPLATE.md`
+
+---
+
+### Command Surface / Deprecation Policy Drift
+
+Symptoms:
+- a PR adds or relabels a command path without saying whether it is primary, advanced, legacy, or deprecated
+- overlapping command paths changed, but release notes or migration guidance were not updated
+
+Fix:
+- apply `docs/deprecation_policy.md`
+- update `docs/cli.md`, `README.md`, and `docs/getting_started.md` if the user-facing recommendation changed
+- update `.github/RELEASE_TEMPLATE.md` so the release owner records rationale and migration notes
 
 ---
 
@@ -205,4 +219,5 @@ Fix:
 1. Run `bash scripts/verify.sh`
 2. Fix first failing check
 3. Re-run `bash scripts/verify.sh`
-4. Commit once all checks pass
+4. If command surface changed, apply `docs/deprecation_policy.md` and update release notes/templates
+5. Commit once all checks pass

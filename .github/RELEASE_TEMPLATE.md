@@ -36,10 +36,14 @@ Briefly describe the release scope and user impact.
 ## Migration Notes
 
 - Breaking changes:
+- Deprecated or legacy paths touched:
+- Command surface rationale / roadmap issue:
 - Upgrade steps:
+- Policy reference: `docs/deprecation_policy.md`
 
 ## Links
 
 - Changelog entry:
+- Roadmap issue:
 - Related issues:
 - Related PRs:
