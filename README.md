@@ -213,40 +213,15 @@ src/
 When using Tideway as a dependency, import from the `tideway` crate:
 
 ```rust
-use tideway::{App, ConfigBuilder, RouteModule, Result, TidewayError};
+use tideway::{App, ConfigBuilder, Result, TidewayError};
 ```
+For onboarding, prefer one composition style:
+- define modules with `module!`
+- register them with `App::register_module(...)`
+- let the scaffold own `main.rs` wiring unless you intentionally need an advanced/manual setup
 
-Preferred module style for onboarding: use `module!` + `register_module`.
-
-```rust
-tideway::module!(
-    UsersModule,
-    prefix = "/api",
-    routes = [
-        (get, "/users", list_users),
-        (post, "/users", create_user),
-    ]
-);
-```
-
-Preferred registration style:
-```rust
-let app = App::new().register_module(UsersModule);
-```
-
-**OpenAPI per module (optional advanced):**
-```rust
-#[cfg(feature = "openapi")]
-mod openapi_docs {
-    tideway::openapi_doc!(pub(crate) UsersDoc, paths(crate::routes::users::list_users));
-}
-
-#[cfg(feature = "openapi")]
-let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc);
-```
-
-For advanced composition variants (`register_modules!`, `register_optional_modules!`, grouped route syntax),
-see `docs/advanced_composition.md`.
+For advanced composition variants, manual OpenAPI composition, or trait-based module contracts,
+see `docs/advanced_composition.md`, `docs/module_contracts.md`, and `docs/openapi.md`.
 
 **Quick guards with `ensure!`:**
 ```rust
@@ -296,58 +271,24 @@ let config = ConfigBuilder::new()
 
 ### 3. Route Modules
 
-Create modular, reusable route groups with the `RouteModule` trait:
+Canonical module style:
 
 ```rust
-use axum::{routing::get, Router};
-use tideway::RouteModule;
-
-struct UsersModule;
-
-impl RouteModule for UsersModule {
-    fn routes(&self) -> Router {
-        Router::new()
-            .route("/", get(list_users))
-            .route("/:id", get(get_user))
-    }
-
-    fn prefix(&self) -> Option<&str> {
-        Some("/api/users")
-    }
-}
-
-// Register module
-let app = App::new()
-    .register_module(UsersModule);
-```
-
-Register multiple modules (and optional ones) more concisely:
-
-```rust
-let app = tideway::register_modules!(
-    App::new(),
+tideway::module!(
     UsersModule,
-    AdminModule,
+    prefix = "/api",
+    routes = [
+        (get, "/users", list_users),
+        (post, "/users", create_user),
+    ]
 );
 
-let app = tideway::register_modules!(
-    app,
-    BillingModule;
-    optional: optional_module
-);
+let app = App::new().register_module(UsersModule);
 ```
 
-If you already have a homogeneous list of modules (same type), you can also use
-`App::register_modules(modules)` with any iterator.
-
-For optional-only modules, you can use the helper macro:
-
-```rust
-let app = tideway::register_optional_modules!(
-    App::new(),
-    optional_module,
-);
-```
+Use this style for onboarding and examples.
+For trait-based `RouteModule` implementations, grouped route syntax, mixed module lists, optional modules,
+or iterator registration, see `docs/module_contracts.md` and `docs/advanced_composition.md`.
 
 ### 4. Error Handling
 

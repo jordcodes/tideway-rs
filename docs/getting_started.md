@@ -41,68 +41,12 @@ If you followed the API-first scaffold, OpenAPI is already wired when enabled. V
 - `http://localhost:8000/swagger-ui`
 - `http://localhost:8000/api-docs/openapi.json`
 
-If you prefer manual route modules and composition contracts, see:
+If you need manual OpenAPI composition instead of the scaffolded path, see `docs/openapi.md`.
+If you need trait-based module contracts or alternative registration styles, see:
 - `docs/module_contracts.md`
 - `docs/advanced_composition.md`
-- `README.md` Core Concepts section
 
-If you enable the `openapi` feature manually, you can define small docs per module and merge them:
-
-```rust
-#[cfg(feature = "openapi")]
-mod openapi_docs {
-    tideway::openapi_doc!(pub(crate) UsersDoc, paths(crate::routes::users::list_users));
-    tideway::openapi_components!(
-        pub(crate) ComponentsDoc,
-        schemas(crate::routes::users::UserResponse)
-    );
-}
-```
-
-Then wire them when OpenAPI is enabled:
-
-```rust
-#[cfg(feature = "openapi")]
-if config.openapi.enabled {
-    let openapi = tideway::openapi_merge_module!(openapi_docs, UsersDoc, ComponentsDoc);
-    let openapi_router = tideway::openapi::create_openapi_router(openapi, &config.openapi);
-    app = app.merge_router(openapi_router);
-}
-```
-
-## 5) Add database access (optional advanced)
-
-If you enabled `database`, wire a SeaORM pool into the app context:
-
-```rust
-use std::sync::Arc;
-use tideway::{AppContext, SeaOrmPool};
-
-let db = sea_orm::Database::connect(&std::env::var("DATABASE_URL")?).await?;
-let context = AppContext::builder()
-    .with_database(Arc::new(SeaOrmPool::new(db, std::env::var("DATABASE_URL")?)))
-    .build();
-
-let app = App::new()
-    .with_context(context)
-    .register_module(routes::ApiModule);
-```
-
-## 6) Add auth (optional advanced)
-
-If you enabled `auth`, you can create a JWT issuer and wire your auth module:
-
-```rust
-use std::sync::Arc;
-use tideway::auth::{JwtIssuer, JwtIssuerConfig};
-
-let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(
-    &std::env::var("JWT_SECRET")?,
-    "my_app",
-))?);
-```
-
-## 7) Configure middleware
+## 5) Configure the app
 
 Tideway applies sensible defaults when you use `serve()`, but you can customize config:
 
@@ -120,22 +64,9 @@ let app = App::with_config(config)
 
 `with_dev_mode(true)` enables the dev middleware branch.
 Use `DevConfigBuilder` when you want specific dev tooling such as request dumping or stack traces in dev error responses.
+For manual serving, global layers, or non-canonical composition, see `docs/advanced_composition.md` and `README.md`.
 
-If you need to manually serve with Axum, use the same make-service path as `serve()`:
-
-```rust
-axum::serve(listener, app.into_make_service_with_connect_info()).await?;
-```
-
-If you want to add a layer that should apply after all modules are registered:
-
-```rust
-let app = App::new()
-    .register_module(routes::ApiModule)
-    .with_global_layer(my_layer);
-```
-
-## 8) Return structured errors
+## 6) Return structured errors
 
 ```rust
 use tideway::{Result, TidewayError};
@@ -145,7 +76,7 @@ async fn get_user() -> Result<String> {
 }
 ```
 
-## 9) Test endpoints
+## 7) Test endpoints
 
 ```rust
 use tideway::testing::get as test_get;
@@ -161,13 +92,21 @@ async fn test_health() {
 }
 ```
 
-## 10) Next steps
+## 8) Advanced follow-ups
 
-### Useful commands
+- Manual database wiring: `docs/database_traits.md`
+- Manual auth wiring: `docs/auth.md`
+- Manual OpenAPI composition: `docs/openapi.md`
+- Trait-based or mixed module composition: `docs/module_contracts.md` and `docs/advanced_composition.md`
+- Existing-project workflows: `docs/cli.md` (`tideway init`, `tideway backend`, `tideway add`)
+
+## 9) Next steps
+
+### Useful command
 
 ```bash
 tideway doctor
 ```
 
 - See `docs/auth.md`, `docs/database_traits.md`, `docs/validation.md`
-- For advanced existing-project wiring, see `docs/cli.md` (`tideway init`, `tideway backend`, `tideway add`)
+- For advanced existing-project wiring, see `docs/cli.md`
