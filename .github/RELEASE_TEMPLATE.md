@@ -27,11 +27,13 @@ Briefly describe the release scope and user impact.
 
 ### Metrics Snapshot
 
+- Metrics snapshot file: `docs/dx_metrics_snapshot.md`
 - Time to `GET /health` from clean machine (p50/p95):
 - Time to scaffold DB resource and run tests (p50/p95):
 - Idempotency pass rate for mutating CLI commands:
 - Number of onboarding docs that show non-canonical flows:
 - Number of user-reported "which command should I use" issues:
+- DX gate summary copied into changelog entry:
 
 ## Migration Notes
 

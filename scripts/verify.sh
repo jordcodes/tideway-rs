@@ -22,6 +22,9 @@ bash scripts/check_onboarding_single_path.sh
 echo "[verify] release template dx metrics"
 bash scripts/check_release_template_dx_metrics.sh
 
+echo "[verify] dx metrics snapshot"
+bash scripts/check_dx_metrics_snapshot.sh
+
 echo "[verify] dx issue template"
 bash scripts/check_issue_template_dx_ambiguity.sh
 

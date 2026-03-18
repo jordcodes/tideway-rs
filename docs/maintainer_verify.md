@@ -16,16 +16,17 @@ bash scripts/verify.sh
 4. `bash scripts/check_command_references.sh`
 5. `bash scripts/check_onboarding_single_path.sh`
 6. `bash scripts/check_release_template_dx_metrics.sh`
-7. `bash scripts/check_issue_template_dx_ambiguity.sh`
-8. `bash scripts/check_cli_fs_writes.sh`
-9. `bash scripts/check_public_api_surface.sh`
-10. `cargo test -p tideway-cli --test messaging_contract_test`
-11. `cargo test -p tideway-cli`
-12. `cargo test --lib`
-13. `cargo check --features billing`
-14. `cargo check --all-features`
-15. `cargo test --test prelude_smoke_test`
-16. `cargo test --test feature_gate_contract_test`
+7. `bash scripts/check_dx_metrics_snapshot.sh`
+8. `bash scripts/check_issue_template_dx_ambiguity.sh`
+9. `bash scripts/check_cli_fs_writes.sh`
+10. `bash scripts/check_public_api_surface.sh`
+11. `cargo test -p tideway-cli --test messaging_contract_test`
+12. `cargo test -p tideway-cli`
+13. `cargo test --lib`
+14. `cargo check --features billing`
+15. `cargo check --all-features`
+16. `cargo test --test prelude_smoke_test`
+17. `cargo test --test feature_gate_contract_test`
 
 ## Common Failures and Fixes
 
@@ -126,6 +127,24 @@ Fix:
 
 ```bash
 bash scripts/check_release_template_dx_metrics.sh
+```
+
+---
+
+### DX Metrics Snapshot Failure
+
+Symptoms:
+- missing `docs/dx_metrics_snapshot.md`
+- DX metrics snapshot is missing required gate or reporting fields
+
+Fix:
+- restore/update `docs/dx_metrics_snapshot.md`
+- keep the gate summary and metrics fields aligned with `.github/RELEASE_TEMPLATE.md`
+- if release scope materially changed onboarding or scaffold performance, refresh the snapshot before release
+- re-run:
+
+```bash
+bash scripts/check_dx_metrics_snapshot.sh
 ```
 
 ---
