@@ -8,10 +8,19 @@ use std::path::Path;
 use crate::cli::{GenerateArgs, Module, Style};
 use crate::commands::file_ops::{FORCE_OVERWRITE_MESSAGE, write_file_with_force_with_message};
 use crate::templates::{TemplateContext, TemplateEngine};
-use crate::{ensure_dir, is_json_output, print_info, print_success, print_warning, write_file};
+use crate::{
+    CommandRuntime, ensure_dir, is_json_output, print_info, print_success, print_warning,
+    write_file,
+};
 
 /// Run the generate command
 pub fn run(args: GenerateArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: GenerateArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
     if !is_json_output() {
         println!(
             "\n{} Generating {} components with {} style\n",

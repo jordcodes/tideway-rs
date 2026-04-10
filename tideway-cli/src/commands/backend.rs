@@ -10,7 +10,9 @@ use crate::commands::file_ops::{
 };
 use crate::commands::messaging::NEW_APP_COMMAND;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{TIDEWAY_VERSION, ensure_dir, is_json_output, is_plan_mode, print_info, print_success};
+use crate::{
+    CommandRuntime, TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success,
+};
 
 #[derive(Copy, Clone)]
 pub(crate) enum BackendScaffoldMode {
@@ -34,18 +36,24 @@ impl BackendScaffoldMode {
 
 /// Run the backend command
 pub fn run(args: BackendArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: BackendArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
     scaffold(&args, BackendScaffoldMode::Cli)
 }
 
 pub(crate) fn scaffold(args: &BackendArgs, mode: BackendScaffoldMode) -> Result<()> {
-    let plan_mode = is_plan_mode();
+    let runtime = CommandRuntime::from_process_state();
+    let plan_mode = runtime.plan_mode();
     let has_organizations = args.preset == BackendPreset::B2b;
     let preset_name = match args.preset {
         BackendPreset::B2c => "B2C (Auth + Billing + Admin)",
         BackendPreset::B2b => "B2B (Auth + Billing + Organizations + Admin)",
     };
 
-    if mode.emit_header() && !is_json_output() {
+    if mode.emit_header() && !runtime.json_output() {
         if plan_mode {
             println!(
                 "\n{} Planning {} backend scaffolding\n",

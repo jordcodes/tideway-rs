@@ -15,7 +15,7 @@ use crate::commands::messaging::{
     TIDEWAY_RESOURCE_WIRE_COMMAND,
 };
 use crate::database::validate_database_url as shared_validate_database_url;
-use crate::{is_json_output, print_info, print_success, print_warning, write_file};
+use crate::{CommandRuntime, print_info, print_success, print_warning, write_file};
 
 #[derive(Debug, Default)]
 pub struct DoctorReport {
@@ -25,10 +25,16 @@ pub struct DoctorReport {
 }
 
 pub fn run(args: DoctorArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: DoctorArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
     let project_dir = PathBuf::from(args.path);
     let report = analyze_project(&project_dir, args.fix)?;
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!(
             "\n{} {}\n",
             "tideway".cyan().bold(),
@@ -51,7 +57,7 @@ pub fn run(args: DoctorArgs) -> Result<()> {
     }
 
     if !report.warnings.is_empty() {
-        if !is_json_output() {
+        if !runtime.json_output() {
             println!();
         }
         for warning in &report.warnings {

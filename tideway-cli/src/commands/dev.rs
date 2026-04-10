@@ -20,11 +20,16 @@ use crate::database::{
     DatabaseUrlKind, redact_database_url, resolve_database_url, validate_database_url,
 };
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
-use crate::is_plan_mode;
-use crate::{error_contract, print_info, print_success, print_warning};
+use crate::{CommandRuntime, error_contract, print_info, print_success, print_warning};
 
 pub fn run(args: DevArgs) -> Result<()> {
-    if is_plan_mode() {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
+    if runtime.plan_mode() {
         print_info("Plan: would run tideway dev (cargo run) with env + migrations");
         print_info("Primary run command for local development.");
         return Ok(());

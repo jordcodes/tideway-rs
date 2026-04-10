@@ -15,11 +15,17 @@ use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_w
 use crate::commands::messaging::GREENFIELD_NEW_APP_FIRST;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success, print_warning,
-    write_file,
+    CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success,
+    print_warning, write_file,
 };
 
 pub fn run(args: AddArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
     let project_dir = PathBuf::from(&args.path);
     let cargo_path = project_dir.join("Cargo.toml");
 

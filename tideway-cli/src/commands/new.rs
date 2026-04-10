@@ -15,8 +15,8 @@ use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error_d
 use crate::commands::messaging::PRIMARY_PATH;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info, print_success,
-    print_warning, write_file,
+    CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info,
+    print_success, print_warning, write_file,
 };
 
 #[derive(Default)]
@@ -51,7 +51,13 @@ const ADVANCED_PRESET_OPTIONS: [&str; 4] = [
 ];
 
 /// Run the new command
-pub fn run(mut args: NewArgs) -> Result<()> {
+pub fn run(args: NewArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
     if let Some(NewPreset::List) = args.preset {
         print_presets();
         return Ok(());
@@ -136,14 +142,14 @@ pub fn run(mut args: NewArgs) -> Result<()> {
         backend_preset.is_some(),
     )?;
     if matches!(args.preset, Some(NewPreset::Api)) {
-        scaffold_api_preset(&target_dir)?;
+        scaffold_api_preset(&target_dir, runtime)?;
     }
     if let Some(backend_preset) = backend_preset.clone() {
         scaffold_backend_preset(&target_dir, &project_name, backend_preset)?;
         ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
     }
     if let Some(resource) = wizard.resource {
-        scaffold_wizard_resource(&target_dir, resource)?;
+        scaffold_wizard_resource(&target_dir, resource, runtime)?;
     }
     let created = expected_files_for(&args, backend_preset.as_ref());
 
@@ -729,7 +735,7 @@ fn preset_backend_preset(preset: NewPreset) -> Option<BackendPreset> {
     }
 }
 
-fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
+fn scaffold_api_preset(target_dir: &Path, runtime: CommandRuntime) -> Result<()> {
     let args = ResourceArgs {
         name: "todo".to_string(),
         path: target_dir.to_string_lossy().to_string(),
@@ -747,7 +753,7 @@ fn scaffold_api_preset(target_dir: &Path) -> Result<()> {
         profile: ResourceProfile::Api,
     };
 
-    crate::commands::resource::run(args)?;
+    crate::commands::resource::run_with_runtime(args, runtime)?;
     Ok(())
 }
 
@@ -812,7 +818,11 @@ fn backend_template_engine(
     BackendTemplateEngine::new(context)
 }
 
-fn scaffold_wizard_resource(target_dir: &Path, resource: ResourceWizardOptions) -> Result<()> {
+fn scaffold_wizard_resource(
+    target_dir: &Path,
+    resource: ResourceWizardOptions,
+    runtime: CommandRuntime,
+) -> Result<()> {
     let args = ResourceArgs {
         name: resource.name,
         path: target_dir.to_string_lossy().to_string(),
@@ -830,7 +840,7 @@ fn scaffold_wizard_resource(target_dir: &Path, resource: ResourceWizardOptions) 
         profile: ResourceProfile::Stub,
     };
 
-    crate::commands::resource::run(args)?;
+    crate::commands::resource::run_with_runtime(args, runtime)?;
     Ok(())
 }
 

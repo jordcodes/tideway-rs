@@ -7,7 +7,7 @@ use std::process::Command;
 
 use crate::cli::{Framework, SetupArgs, Style};
 use crate::{
-    error_contract, is_json_output, is_plan_mode, print_info, print_success, print_warning,
+    CommandRuntime, error_contract, is_json_output, print_info, print_success, print_warning,
     remove_dir, remove_file, write_file,
 };
 
@@ -35,6 +35,12 @@ const SHADCN_VUE_COMPONENTS: &[&str] = &[
 
 /// Run the setup command
 pub fn run(args: SetupArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: SetupArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
     if !is_json_output() {
         println!(
             "\n{} Setting up frontend dependencies...\n",
@@ -490,7 +496,7 @@ fn has_vite_path_alias(content: &str) -> bool {
 }
 
 fn run_external_command(program: &str, args: &[&str], context: &str) -> Result<bool> {
-    if is_plan_mode() {
+    if CommandRuntime::from_process_state().plan_mode() {
         print_info(&format!(
             "Plan: run command `{}`",
             format_command(program, args)

@@ -11,7 +11,8 @@ use crate::commands::file_ops::{
 };
 use crate::commands::messaging::{GREENFIELD_PRIMARY_PATH, NEW_APP_COMMAND};
 use crate::{
-    TIDEWAY_VERSION, is_json_output, print_info, print_success, print_warning, write_file,
+    CommandRuntime, TIDEWAY_VERSION, is_json_output, print_info, print_success, print_warning,
+    write_file,
 };
 
 /// Detected modules in the project
@@ -31,6 +32,12 @@ impl DetectedModules {
 
 /// Run the init command
 pub fn run(args: InitArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
     let src_path = Path::new(&args.src);
     let project_root = src_path.parent().unwrap_or(Path::new("."));
 

@@ -14,7 +14,10 @@ use crate::commands::messaging::{
     DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
     TIDEWAY_ADD_DATABASE_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
 };
-use crate::{ensure_dir, error_contract, print_info, print_success, print_warning, write_file};
+use crate::{
+    CommandRuntime, ensure_dir, error_contract, print_info, print_success, print_warning,
+    write_file,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResourceFieldType {
@@ -914,6 +917,12 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
 }
 
 pub fn run(args: ResourceArgs) -> Result<()> {
+    run_with_runtime(args, CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
     let mut args = args;
     apply_profile_defaults(&mut args);
 

@@ -3,10 +3,16 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use crate::is_json_output;
+use crate::CommandRuntime;
 
 pub fn run() -> Result<()> {
-    if is_json_output() {
+    run_with_runtime(CommandRuntime::from_process_state())
+}
+
+pub fn run_with_runtime(runtime: CommandRuntime) -> Result<()> {
+    runtime.install();
+
+    if runtime.json_output() {
         return Ok(());
     }
     println!("\n{}\n", "Available Templates".cyan().bold());

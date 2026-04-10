@@ -17,6 +17,38 @@ pub const TIDEWAY_VERSION: &str = env!("TIDEWAY_VERSION");
 static JSON_OUTPUT: AtomicBool = AtomicBool::new(false);
 static PLAN_MODE: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CommandRuntime {
+    json_output: bool,
+    plan_mode: bool,
+}
+
+impl CommandRuntime {
+    pub const fn new(json_output: bool, plan_mode: bool) -> Self {
+        Self {
+            json_output,
+            plan_mode,
+        }
+    }
+
+    pub fn from_process_state() -> Self {
+        Self::new(is_json_output(), is_plan_mode())
+    }
+
+    pub const fn json_output(self) -> bool {
+        self.json_output
+    }
+
+    pub const fn plan_mode(self) -> bool {
+        self.plan_mode
+    }
+
+    pub fn install(self) {
+        set_json_output(self.json_output);
+        set_plan_mode(self.plan_mode);
+    }
+}
+
 pub fn set_json_output(enabled: bool) {
     JSON_OUTPUT.store(enabled, Ordering::Relaxed);
 }
