@@ -2,8 +2,9 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use std::collections::BTreeSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::cli::InitArgs;
 use crate::commands::file_ops::{
@@ -11,7 +12,8 @@ use crate::commands::file_ops::{
 };
 use crate::commands::messaging::{GREENFIELD_PRIMARY_PATH, NEW_APP_COMMAND};
 use crate::{
-    CommandRuntime, TIDEWAY_VERSION, print_info, print_success, print_warning, write_file,
+    CommandRuntime, ExecutionPlan, PlanStep, TIDEWAY_VERSION, print_info, print_success,
+    print_warning, write_file,
 };
 
 /// Detected modules in the project
@@ -41,6 +43,9 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
     let project_root = src_path.parent().unwrap_or(Path::new("."));
 
     if args.minimal {
+        if runtime.plan_mode() {
+            return run_minimal_plan(src_path, &args, runtime);
+        }
         return run_minimal(src_path, &args, runtime);
     }
 
@@ -67,6 +72,10 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
         );
         print_info(GREENFIELD_PRIMARY_PATH);
         return Ok(());
+    }
+
+    if runtime.plan_mode() {
+        return emit_init_plan(src_path, project_root, &args, &modules, runtime);
     }
 
     // Print detected modules
@@ -154,6 +163,44 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
     Ok(())
 }
 
+fn emit_init_plan(
+    src_path: &Path,
+    project_root: &Path,
+    args: &InitArgs,
+    modules: &DetectedModules,
+    runtime: CommandRuntime,
+) -> Result<()> {
+    let mut created_dirs = BTreeSet::new();
+    let mut steps = Vec::new();
+
+    collect_write_steps(&src_path.join("main.rs"), &mut created_dirs, &mut steps);
+
+    let config_path = src_path.join("config.rs");
+    if !config_path.exists() || args.force {
+        collect_write_steps(&config_path, &mut created_dirs, &mut steps);
+    } else {
+        steps.push(PlanStep::info(
+            "Plan: keep existing config.rs (use --force to overwrite)",
+        ));
+    }
+
+    if args.env_example {
+        collect_write_steps(
+            &project_root.join(".env.example"),
+            &mut created_dirs,
+            &mut steps,
+        );
+    }
+
+    let mut plan = ExecutionPlan::new(plan_summary(src_path, modules));
+    for step in steps {
+        plan = plan.step(step);
+    }
+    plan.emit(runtime);
+    print_info("Plan complete: no files were written");
+    Ok(())
+}
+
 fn run_minimal(src_path: &Path, args: &InitArgs, runtime: CommandRuntime) -> Result<()> {
     if !runtime.json_output() {
         println!("\n{} Generating minimal app...\n", "tideway".cyan().bold());
@@ -199,6 +246,92 @@ fn run_minimal(src_path: &Path, args: &InitArgs, runtime: CommandRuntime) -> Res
     }
 
     Ok(())
+}
+
+fn run_minimal_plan(src_path: &Path, args: &InitArgs, runtime: CommandRuntime) -> Result<()> {
+    if !runtime.json_output() {
+        println!("\n{} Planning minimal app...\n", "tideway".cyan().bold());
+    }
+
+    let project_root = src_path.parent().unwrap_or(Path::new("."));
+    let project_name = detect_project_name(args, project_root)?;
+
+    print_info(&format!("Project name: {}", project_name.green()));
+
+    let mut created_dirs = BTreeSet::new();
+    let mut steps = Vec::new();
+    collect_write_steps(&src_path.join("main.rs"), &mut created_dirs, &mut steps);
+    collect_write_steps(
+        &src_path.join("routes").join("mod.rs"),
+        &mut created_dirs,
+        &mut steps,
+    );
+
+    let mut plan = ExecutionPlan::new(format!(
+        "would generate minimal app in {}",
+        src_path.display()
+    ));
+    for step in steps {
+        plan = plan.step(step);
+    }
+    plan.emit(runtime);
+    print_info("Plan complete: no files were written");
+    Ok(())
+}
+
+fn plan_summary(src_path: &Path, modules: &DetectedModules) -> String {
+    let mut detected = Vec::new();
+    if modules.auth {
+        detected.push("auth");
+    }
+    if modules.billing {
+        detected.push("billing");
+    }
+    if modules.organizations {
+        detected.push("organizations");
+    }
+    if modules.admin {
+        detected.push("admin");
+    }
+
+    if detected.is_empty() {
+        format!(
+            "would initialize Tideway app wiring in {}",
+            src_path.display()
+        )
+    } else {
+        format!(
+            "would initialize Tideway app wiring in {} ({})",
+            src_path.display(),
+            detected.join(", ")
+        )
+    }
+}
+
+fn collect_write_steps(
+    path: &Path,
+    created_dirs: &mut BTreeSet<PathBuf>,
+    steps: &mut Vec<PlanStep>,
+) {
+    let mut missing_dirs = Vec::new();
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if dir.exists() {
+            break;
+        }
+        let dir_path = dir.to_path_buf();
+        if created_dirs.insert(dir_path.clone()) {
+            missing_dirs.push(dir_path);
+        }
+        current = dir.parent();
+    }
+
+    missing_dirs.reverse();
+    for dir in missing_dirs {
+        steps.push(PlanStep::create_directory(dir.display().to_string()));
+    }
+
+    steps.push(PlanStep::write_file(path.display().to_string()));
 }
 
 /// Detect project name from Cargo.toml or directory name

@@ -153,6 +153,51 @@ fn test_backend_plan_mode_is_non_mutating() {
     );
 }
 
+#[test]
+fn test_init_minimal_plan_mode_is_non_mutating() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let src_dir = temp_dir.path().join("src");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--plan")
+        .arg("init")
+        .arg("--minimal")
+        .arg("--name")
+        .arg("my_app")
+        .arg("--src")
+        .arg(&src_dir)
+        .output()
+        .expect("run tideway init --plan");
+
+    assert!(
+        output.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !src_dir.exists(),
+        "expected init --plan not to create the source directory"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Plan: write file"),
+        "expected plan output with file writes, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Plan complete: no files were written"),
+        "expected explicit plan completion marker, got:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("Generated main.rs"),
+        "expected init --plan not to claim files were generated, got:\n{}",
+        stdout
+    );
+}
+
 fn create_minimal_fixture(project_dir: &Path) {
     fs::create_dir_all(project_dir.join("src")).expect("create src");
     fs::write(
