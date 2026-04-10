@@ -8,10 +8,7 @@ use std::path::Path;
 use crate::cli::{GenerateArgs, Module, Style};
 use crate::commands::file_ops::{FORCE_OVERWRITE_MESSAGE, write_file_with_force_with_message};
 use crate::templates::{TemplateContext, TemplateEngine};
-use crate::{
-    CommandRuntime, ensure_dir, is_json_output, print_info, print_success, print_warning,
-    write_file,
-};
+use crate::{CommandRuntime, ensure_dir, print_info, print_success, print_warning, write_file};
 
 /// Run the generate command
 pub fn run(args: GenerateArgs) -> Result<()> {
@@ -21,7 +18,7 @@ pub fn run(args: GenerateArgs) -> Result<()> {
 pub fn run_with_runtime(args: GenerateArgs, runtime: CommandRuntime) -> Result<()> {
     runtime.install();
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!(
             "\n{} Generating {} components with {} style\n",
             "tideway".cyan().bold(),
@@ -110,7 +107,7 @@ pub fn run_with_runtime(args: GenerateArgs, runtime: CommandRuntime) -> Result<(
         }
 
         // Update router with all routes
-        update_router_all()?;
+        update_router_all(runtime)?;
 
         // Update App.vue with Toaster
         update_app_vue()?;
@@ -129,7 +126,7 @@ pub fn run_with_runtime(args: GenerateArgs, runtime: CommandRuntime) -> Result<(
             .copied()
             .collect();
 
-        if !is_json_output() {
+        if !runtime.json_output() {
             if missing.is_empty() {
                 println!(
                     "\n{} All required shadcn-vue components are installed",
@@ -142,7 +139,7 @@ pub fn run_with_runtime(args: GenerateArgs, runtime: CommandRuntime) -> Result<(
         }
     }
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!(
             "\n{} Components generated in {}\n",
             "✓".green().bold(),
@@ -560,7 +557,7 @@ fn generate_org_views(
     Ok(())
 }
 
-fn update_router_all() -> Result<()> {
+fn update_router_all(runtime: CommandRuntime) -> Result<()> {
     let router_path = Path::new("./src/router/index.ts");
 
     if !router_path.exists() {
@@ -615,7 +612,7 @@ fn update_router_all() -> Result<()> {
         )
     } else {
         print_warning("Could not find routes array in router file");
-        if !is_json_output() {
+        if !runtime.json_output() {
             println!("\n{}", "Add to your router manually:".yellow().bold());
             println!("{}", all_routes);
         }

@@ -15,8 +15,8 @@ use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error_d
 use crate::commands::messaging::PRIMARY_PATH;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, is_json_output, print_info,
-    print_success, print_warning, write_file,
+    CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success,
+    print_warning, write_file,
 };
 
 #[derive(Default)]
@@ -59,7 +59,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     runtime.install();
 
     if let Some(NewPreset::List) = args.preset {
-        print_presets();
+        print_presets(runtime);
         return Ok(());
     }
 
@@ -153,7 +153,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     }
     let created = expected_files_for(&args, backend_preset.as_ref());
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!(
             "\n{} {}\n",
             "tideway".cyan().bold(),
@@ -181,7 +181,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         ));
     }
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         if args.summary {
             println!("\n{}", "Generated files:".yellow().bold());
             for path in &created {
@@ -711,8 +711,8 @@ fn preset_label(preset: NewPreset) -> &'static str {
     }
 }
 
-fn print_presets() {
-    if is_json_output() {
+fn print_presets(runtime: CommandRuntime) {
+    if runtime.json_output() {
         return;
     }
     println!("Available presets:");

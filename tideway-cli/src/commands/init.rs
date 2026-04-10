@@ -11,8 +11,7 @@ use crate::commands::file_ops::{
 };
 use crate::commands::messaging::{GREENFIELD_PRIMARY_PATH, NEW_APP_COMMAND};
 use crate::{
-    CommandRuntime, TIDEWAY_VERSION, is_json_output, print_info, print_success, print_warning,
-    write_file,
+    CommandRuntime, TIDEWAY_VERSION, print_info, print_success, print_warning, write_file,
 };
 
 /// Detected modules in the project
@@ -42,10 +41,10 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
     let project_root = src_path.parent().unwrap_or(Path::new("."));
 
     if args.minimal {
-        return run_minimal(src_path, &args);
+        return run_minimal(src_path, &args, runtime);
     }
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!(
             "\n{} Scanning {} for modules...\n",
             "tideway".cyan().bold(),
@@ -71,7 +70,7 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
     }
 
     // Print detected modules
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!("\n{}", "Detected modules:".yellow().bold());
         if modules.auth {
             println!("  {} auth", "✓".green());
@@ -123,7 +122,7 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
         print_success("Generated .env.example");
     }
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!("\n{} Initialization complete!\n", "✓".green().bold());
         print_info(&format!(
             "Note: `tideway init` is an advanced command for existing projects. For new projects, prefer {}.",
@@ -155,8 +154,8 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
     Ok(())
 }
 
-fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
-    if !is_json_output() {
+fn run_minimal(src_path: &Path, args: &InitArgs, runtime: CommandRuntime) -> Result<()> {
+    if !runtime.json_output() {
         println!("\n{} Generating minimal app...\n", "tideway".cyan().bold());
     }
 
@@ -187,7 +186,7 @@ fn run_minimal(src_path: &Path, args: &InitArgs) -> Result<()> {
     )?;
     print_success("Generated routes/mod.rs");
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!("\n{} Initialization complete!\n", "✓".green().bold());
         print_info(&format!(
             "Note: `tideway init` is advanced. For a new app, prefer {}.",
