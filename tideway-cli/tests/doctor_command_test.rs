@@ -25,9 +25,9 @@ tideway = "0.7"
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
-        report.warnings.iter().any(|w| w.contains("auth")),
+        report.warnings().iter().any(|w| w.contains("auth")),
         "expected auth warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -53,9 +53,9 @@ tideway = { version = "0.7", features = ["auth"] }
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
-        report.warnings.is_empty(),
+        report.warnings().is_empty(),
         "expected no warnings, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -85,14 +85,14 @@ tideway = { version = "0.7", features = ["auth", "database"] }
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
-        report.warnings.iter().any(|w| w.contains("JWT_SECRET")),
+        report.warnings().iter().any(|w| w.contains("JWT_SECRET")),
         "expected JWT_SECRET warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
     assert!(
-        report.warnings.iter().any(|w| w.contains("DATABASE_URL")),
+        report.warnings().iter().any(|w| w.contains("DATABASE_URL")),
         "expected DATABASE_URL warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -123,9 +123,12 @@ fn test_doctor_warns_when_saas_billing_env_missing() {
         "STRIPE_PRICE_ID",
     ] {
         assert!(
-            report.warnings.iter().any(|warning| warning.contains(key)),
+            report
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains(key)),
             "expected {key} warning, got {:?}",
-            report.warnings
+            report.warnings()
         );
     }
 }
@@ -152,11 +155,11 @@ tideway = { version = "0.7", features = ["database"] }
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .warnings
+            .warnings()
             .iter()
             .any(|w| w.contains("DATABASE_URL looks invalid")),
         "expected DATABASE_URL invalid warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -186,11 +189,11 @@ tideway = { version = "0.7", features = ["database"] }
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         !report
-            .warnings
+            .warnings()
             .iter()
             .any(|w| w.contains("DATABASE_URL format")),
         "expected no DATABASE_URL format warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -242,11 +245,11 @@ tideway = { version = "0.7", features = ["billing"] }
     );
     assert!(
         report
-            .fixes
+            .fixes()
             .iter()
             .any(|line| line.contains("Updated .env.example with missing keys")),
         "expected env example update fix, got {:?}",
-        report.fixes
+        report.fixes()
     );
 }
 
@@ -270,11 +273,11 @@ tideway = "0.7"
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .info
+            .info()
             .iter()
             .any(|line| line.contains("TIDEWAY_LOG_LEVEL")),
         "expected log level info, got {:?}",
-        report.info
+        report.info()
     );
 }
 
@@ -298,11 +301,11 @@ tideway = "0.7"
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .info
+            .info()
             .iter()
             .any(|line| line.contains("Package metadata missing")),
         "expected metadata info, got {:?}",
-        report.info
+        report.info()
     );
 }
 
@@ -325,9 +328,12 @@ tideway = "0.7"
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
-        report.info.iter().any(|line| line.contains("TIDEWAY_PORT")),
+        report
+            .info()
+            .iter()
+            .any(|line| line.contains("TIDEWAY_PORT")),
         "expected port info, got {:?}",
-        report.info
+        report.info()
     );
 }
 
@@ -355,11 +361,11 @@ tideway = { version = "0.7", features = ["database"] }
     );
     assert!(
         report
-            .fixes
+            .fixes()
             .iter()
             .any(|line| line.contains("Created .env.example")),
         "expected creation fix, got {:?}",
-        report.fixes
+        report.fixes()
     );
 }
 
@@ -392,19 +398,19 @@ tideway = { version = "0.7", features = ["database"] }
     );
     assert!(
         report
-            .fixes
+            .fixes()
             .iter()
             .any(|line| line.contains("Created .env from .env.example")),
         "expected env copy fix, got {:?}",
-        report.fixes
+        report.fixes()
     );
     assert!(
         !report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("DATABASE_URL missing in .env")),
         "expected no stale DATABASE_URL warning after fix, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -435,11 +441,11 @@ fn test_doctor_no_openapi_warning_for_api_preset_scaffold() {
     let report = analyze_project(&project_dir, false).expect("analyze project");
     assert!(
         !report
-            .warnings
+            .warnings()
             .iter()
             .any(|warning| warning.contains("OpenAPI")),
         "expected no OpenAPI warnings, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -470,11 +476,11 @@ fn test_doctor_no_openapi_warning_for_saas_preset_scaffold() {
     let report = analyze_project(&project_dir, false).expect("analyze project");
     assert!(
         !report
-            .warnings
+            .warnings()
             .iter()
             .any(|warning| warning.contains("OpenAPI")),
         "expected no OpenAPI warnings, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -512,11 +518,11 @@ fn test_doctor_fix_recreates_sqlite_env_for_api_preset_scaffold() {
     );
     assert!(
         report
-            .fixes
+            .fixes()
             .iter()
             .any(|line| line.contains("Created .env.example")),
         "expected env example creation fix, got {:?}",
-        report.fixes
+        report.fixes()
     );
 }
 
@@ -557,20 +563,20 @@ tideway = { version = "0.7", features = ["database", "auth"] }
     );
     assert!(
         report
-            .fixes
+            .fixes()
             .iter()
             .any(|line| line.contains("Updated .env.example with missing keys")),
         "expected env example update fix, got {:?}",
-        report.fixes
+        report.fixes()
     );
     assert!(
         !report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("DATABASE_URL missing in .env")
                 || line.contains("JWT_SECRET missing in .env")),
         "expected no stale env warnings after fix, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -647,11 +653,11 @@ async fn main() {
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("openapi_docs.rs")),
         "expected openapi_docs warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -680,11 +686,11 @@ tideway = { version = "0.7", features = ["database"] }
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("migration/src/lib.rs")),
         "expected migration lib warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -739,11 +745,11 @@ async fn main() {
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("AppContext is not wired")),
         "expected wiring warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -786,11 +792,11 @@ async fn main() {
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .info
+            .info()
             .iter()
             .any(|line| line.contains("Migrations detected")),
         "expected migration hint, got {:?}",
-        report.info
+        report.info()
     );
 }
 
@@ -836,11 +842,11 @@ async fn list_todos() {}
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("OpenAPI docs missing routes")),
         "expected openapi coverage warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -881,11 +887,11 @@ fn build(db: sea_orm::DatabaseConnection) -> DatabaseIdempotencyStore {
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("webhook_processed_events")),
         "expected webhook idempotency migration warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -931,11 +937,11 @@ fn build(db: sea_orm::DatabaseConnection) -> DatabaseIdempotencyStore {
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
         !report
-            .warnings
+            .warnings()
             .iter()
             .any(|line| line.contains("webhook_processed_events")),
         "did not expect webhook idempotency warning, got {:?}",
-        report.warnings
+        report.warnings()
     );
 }
 
@@ -1021,10 +1027,10 @@ tideway = { version = "0.7", features = ["database"] }
     let report = analyze_project(project_dir, true).expect("analyze project");
     assert!(
         report
-            .fixes
+            .fixes()
             .iter()
             .any(|line| line.contains("Webhook idempotency migration TODO")),
         "expected webhook idempotency TODO fix, got {:?}",
-        report.fixes
+        report.fixes()
     );
 }

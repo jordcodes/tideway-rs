@@ -17,11 +17,67 @@ use crate::commands::messaging::{
 use crate::database::validate_database_url as shared_validate_database_url;
 use crate::{CommandRuntime, print_info, print_success, print_warning, write_file};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DoctorFindingLevel {
+    Info,
+    Fix,
+    Warning,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DoctorFinding {
+    pub level: DoctorFindingLevel,
+    pub message: String,
+}
+
 #[derive(Debug, Default)]
 pub struct DoctorReport {
-    pub warnings: Vec<String>,
-    pub info: Vec<String>,
-    pub fixes: Vec<String>,
+    findings: Vec<DoctorFinding>,
+}
+
+impl DoctorReport {
+    pub fn findings(&self) -> &[DoctorFinding] {
+        &self.findings
+    }
+
+    pub fn info(&self) -> Vec<&str> {
+        self.messages(DoctorFindingLevel::Info)
+    }
+
+    pub fn fixes(&self) -> Vec<&str> {
+        self.messages(DoctorFindingLevel::Fix)
+    }
+
+    pub fn warnings(&self) -> Vec<&str> {
+        self.messages(DoctorFindingLevel::Warning)
+    }
+
+    pub fn push_info(&mut self, message: impl Into<String>) {
+        self.push(DoctorFindingLevel::Info, message);
+    }
+
+    pub fn push_fix(&mut self, message: impl Into<String>) {
+        self.push(DoctorFindingLevel::Fix, message);
+    }
+
+    pub fn push_warning(&mut self, message: impl Into<String>) {
+        self.push(DoctorFindingLevel::Warning, message);
+    }
+
+    fn messages(&self, level: DoctorFindingLevel) -> Vec<&str> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.level == level)
+            .map(|finding| finding.message.as_str())
+            .collect()
+    }
+
+    fn push(&mut self, level: DoctorFindingLevel, message: impl Into<String>) {
+        self.findings.push(DoctorFinding {
+            level,
+            message: message.into(),
+        });
+    }
 }
 
 pub fn run(args: DoctorArgs) -> Result<()> {
@@ -33,6 +89,9 @@ pub fn run_with_runtime(args: DoctorArgs, runtime: CommandRuntime) -> Result<()>
 
     let project_dir = PathBuf::from(args.path);
     let report = analyze_project(&project_dir, args.fix)?;
+    let info = report.info();
+    let fixes = report.fixes();
+    let warnings = report.warnings();
 
     if !runtime.json_output() {
         println!(
@@ -42,34 +101,34 @@ pub fn run_with_runtime(args: DoctorArgs, runtime: CommandRuntime) -> Result<()>
         );
     }
 
-    if report.info.is_empty() && report.warnings.is_empty() {
+    if info.is_empty() && warnings.is_empty() {
         print_success("No issues found");
         print_info(PRIMARY_PATH_REMINDER_CHAIN);
         return Ok(());
     }
 
-    for line in &report.info {
+    for line in &info {
         print_info(line);
     }
 
-    for line in &report.fixes {
+    for line in &fixes {
         print_success(line);
     }
 
-    if !report.warnings.is_empty() {
+    if !warnings.is_empty() {
         if !runtime.json_output() {
             println!();
         }
-        for warning in &report.warnings {
+        for warning in &warnings {
             print_warning(warning);
         }
     }
 
     let summary = format!(
         "Doctor summary: {} info, {} fixes, {} warnings",
-        report.info.len(),
-        report.fixes.len(),
-        report.warnings.len()
+        info.len(),
+        fixes.len(),
+        warnings.len()
     );
     print_info(&summary);
     print_info(&format!(
@@ -91,15 +150,13 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     let detected = detect_modules(&src_dir);
 
     if detected.is_empty() {
-        report
-            .info
-            .push("No Tideway modules detected in src/".to_string());
+        report.push_info("No Tideway modules detected in src/".to_string());
     }
 
     for module in &detected {
         let feature = module_to_feature(module);
         if !tideway_features.contains(feature) {
-            report.warnings.push(format!(
+            report.push_warning(format!(
                 "Detected {} module but Tideway feature '{}' is not enabled in Cargo.toml",
                 module, feature
             ));
@@ -107,17 +164,15 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     }
 
     if !tideway_dependency_present(&cargo_toml) {
-        report
-            .warnings
-            .push("Cargo.toml is missing a tideway dependency".to_string());
+        report.push_warning("Cargo.toml is missing a tideway dependency".to_string());
     }
 
     if let Some(message) = validate_package_metadata(&cargo_toml) {
-        report.info.push(message);
+        report.push_info(message);
     }
 
     if !tideway_features.is_empty() && cargo_toml_path.exists() {
-        report.info.push(format!(
+        report.push_info(format!(
             "Tideway features enabled: {}",
             tideway_features
                 .iter()
@@ -164,7 +219,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
         );
         if let Some(value) = db_value {
             if let Some(message) = validate_database_url(&value) {
-                report.warnings.push(message);
+                report.push_warning(message);
             }
         }
     }
@@ -198,14 +253,14 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     }
 
     if !has_log_config(&env_vars, &env_example_vars) {
-        report.info.push(
+        report.push_info(
             "No log level configured (set TIDEWAY_LOG_LEVEL or RUST_LOG for more output)"
                 .to_string(),
         );
     }
 
     if !has_port_config(&env_vars, &env_example_vars) {
-        report.info.push(
+        report.push_info(
             "No port configured (set TIDEWAY_PORT or PORT for deploy environments)".to_string(),
         );
     }
@@ -345,7 +400,7 @@ fn check_env_var(
     }
 
     if env_example_vars.contains_key(key) {
-        report.warnings.push(format!(
+        report.push_warning(format!(
             "{} missing in .env (found in .env.example) - copy .env.example and fill values (or use the primary flow: {})",
             key,
             DEV_FIX_ENV_COMMAND
@@ -354,13 +409,11 @@ fn check_env_var(
     }
 
     if env_path.exists() || env_example_path.exists() {
-        report
-            .warnings
-            .push(format!("{} missing in .env and .env.example", key));
+        report.push_warning(format!("{} missing in .env and .env.example", key));
         return None;
     }
 
-    report.warnings.push(format!(
+    report.push_warning(format!(
         "{} missing - create .env.example (and .env) for local setup (for greenfield apps, prefer {})",
         key,
         NEW_APP_COMMAND
@@ -501,7 +554,7 @@ fn apply_env_fixes(
 
     if !env_example_file.exists() {
         write_env_example(env_example_file, &lines)?;
-        report.fixes.push("Created .env.example".to_string());
+        report.push_fix("Created .env.example".to_string());
     } else {
         let existing = fs::read_to_string(env_example_file).with_context(|| {
             format!(
@@ -531,7 +584,7 @@ fn apply_env_fixes(
                     env_example_file.display()
                 )
             })?;
-            report.fixes.push(format!(
+            report.push_fix(format!(
                 "Updated .env.example with missing keys: {}",
                 missing_keys.join(", ")
             ));
@@ -547,9 +600,7 @@ fn apply_env_fixes(
         })?;
         write_file(env_file, &source)
             .with_context(|| format!("Failed to write {}", env_file.display()))?;
-        report
-            .fixes
-            .push("Created .env from .env.example".to_string());
+        report.push_fix("Created .env from .env.example".to_string());
     }
 
     Ok(())
@@ -578,7 +629,7 @@ fn dependency_has_feature(cargo_toml: &toml::Value, dependency: &str, feature: &
 fn check_openapi_setup(src_dir: &Path, main_contents: Option<&str>, report: &mut DoctorReport) {
     let openapi_docs = src_dir.join("openapi_docs.rs");
     if !openapi_docs.exists() {
-        report.warnings.push(format!(
+        report.push_warning(format!(
             "OpenAPI is enabled but src/openapi_docs.rs is missing (advanced fix: run {}; greenfield path: {})",
             TIDEWAY_ADD_OPENAPI_COMMAND,
             GREENFIELD_NEW_APP_PRESET_API
@@ -591,16 +642,14 @@ fn check_openapi_setup(src_dir: &Path, main_contents: Option<&str>, report: &mut
         let has_router =
             contents.contains("openapi_merge_module") || contents.contains("create_openapi_router");
         if !has_module || !has_router {
-            report.warnings.push(format!(
+            report.push_warning(format!(
                 "OpenAPI is enabled but main.rs is not wired (advanced fix: run {}; greenfield path: {})",
                 TIDEWAY_ADD_OPENAPI_WIRE_COMMAND,
                 GREENFIELD_NEW_APP_PRESET_API
             ));
         }
     } else if main_rs.exists() {
-        report
-            .warnings
-            .push("Failed to read src/main.rs for OpenAPI wiring check".to_string());
+        report.push_warning("Failed to read src/main.rs for OpenAPI wiring check".to_string());
     }
 }
 
@@ -611,15 +660,13 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
     }
 
     let Ok(docs_contents) = fs::read_to_string(&openapi_docs) else {
-        report
-            .warnings
-            .push("Failed to read src/openapi_docs.rs".to_string());
+        report.push_warning("Failed to read src/openapi_docs.rs".to_string());
         return;
     };
 
     let paths_block = extract_openapi_paths(&docs_contents);
     if paths_block.is_empty() {
-        report.warnings.push(
+        report.push_warning(
             format!(
                 "OpenAPI docs file has no paths() entries (add routes or run {}; primary path reminder: {})",
                 TIDEWAY_RESOURCE_WIRE_COMMAND,
@@ -662,7 +709,7 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
     }
 
     if !missing.is_empty() {
-        report.warnings.push(format!(
+        report.push_warning(format!(
             "OpenAPI docs missing routes for: {} (run {} to add; this is part of the primary flow)",
             TIDEWAY_RESOURCE_WIRE_COMMAND,
             missing.join(", ")
@@ -695,7 +742,7 @@ fn extract_openapi_paths(contents: &str) -> Vec<String> {
 fn check_migration_setup(project_dir: &Path, report: &mut DoctorReport) {
     let migration_lib = project_dir.join("migration").join("src").join("lib.rs");
     if !migration_lib.exists() {
-        report.warnings.push(format!(
+        report.push_warning(format!(
             "Missing migration/src/lib.rs (advanced fix: run {} or {}; greenfield path: {})",
             SEA_ORM_MIGRATE_INIT_COMMAND, TIDEWAY_BACKEND_COMMAND, GREENFIELD_NEW_APP_PRESET_API
         ));
@@ -733,7 +780,7 @@ fn check_database_wiring(src_dir: &Path, main_contents: Option<&str>, report: &m
 
     if let Some(contents) = main_contents {
         if !contents.contains("with_database(") {
-            report.warnings.push(
+            report.push_warning(
                 format!(
                     "DB-backed routes detected but AppContext is not wired (advanced fix: run {}; primary path for new resources: {})",
                     TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
@@ -742,9 +789,7 @@ fn check_database_wiring(src_dir: &Path, main_contents: Option<&str>, report: &m
             );
         }
     } else if src_dir.join("main.rs").exists() {
-        report
-            .warnings
-            .push("Failed to read src/main.rs for database wiring check".to_string());
+        report.push_warning("Failed to read src/main.rs for database wiring check".to_string());
     }
 }
 
@@ -769,7 +814,7 @@ fn check_migration_execution_hint(
         .unwrap_or(false);
 
     if !has_auto_migrate && !has_migration_call {
-        report.info.push(
+        report.push_info(
             format!(
                 "Migrations detected but not auto-run (set DATABASE_AUTO_MIGRATE=true, call run_migrations, or use {}; primary local run command is {})",
                 TIDEWAY_DEV_COMMAND,
@@ -790,19 +835,19 @@ fn check_webhook_idempotency_setup(
     }
 
     if has_webhook_idempotency_migration(project_dir) {
-        report.info.push(
+        report.push_info(
             "Webhook DB idempotency detected and migration marker found (webhook_processed_events)"
                 .to_string(),
         );
         return;
     }
 
-    report.warnings.push(
+    report.push_warning(
         "DatabaseIdempotencyStore detected, but webhook_processed_events migration marker is missing (add migration e.g. m009_create_webhook_processed_events.rs and register it in migration/src/lib.rs)".to_string(),
     );
 
     if fix {
-        report.fixes.push(
+        report.push_fix(
             "Webhook idempotency migration TODO: create migration/src/m009_create_webhook_processed_events.rs (or equivalent) that creates `webhook_processed_events(event_id PRIMARY KEY, processed_at TIMESTAMPTZ NOT NULL)` and register it in migration/src/lib.rs".to_string(),
         );
     }
