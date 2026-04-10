@@ -9,8 +9,39 @@ fn test_dev_plan_mentions_primary_command() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
+        stdout.contains("Plan: run command `cargo run` (cwd: /tmp/nonexistent)"),
+        "expected explicit cargo run plan, got:\n{}",
+        stdout
+    );
+    assert!(
         stdout.contains("Primary run command for local development."),
         "expected primary dev marker, got:\n{}",
+        stdout
+    );
+}
+
+#[test]
+fn test_migrate_plan_mentions_backend_command() {
+    let output = run_tideway(&[
+        "--plan",
+        "migrate",
+        "status",
+        "--backend",
+        "sea-orm",
+        "--path",
+        "/tmp/nonexistent",
+    ]);
+    assert_success(&output, "tideway migrate --plan");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Plan: would run migrations (status)"),
+        "expected migrate plan summary, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Plan: run command `sea-orm-cli migrate status` (cwd: /tmp/nonexistent)"),
+        "expected explicit sea-orm-cli plan, got:\n{}",
         stdout
     );
 }

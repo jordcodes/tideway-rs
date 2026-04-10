@@ -20,7 +20,10 @@ use crate::database::{
     DatabaseUrlKind, redact_database_url, resolve_database_url, validate_database_url,
 };
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
-use crate::{CommandRuntime, error_contract, print_info, print_success, print_warning};
+use crate::{
+    CommandRuntime, ExecutionPlan, PlannedCommand, error_contract, print_info, print_success,
+    print_warning,
+};
 
 pub fn run(args: DevArgs) -> Result<()> {
     run_with_runtime(args, CommandRuntime::from_process_state())
@@ -30,8 +33,7 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
     runtime.install();
 
     if runtime.plan_mode() {
-        print_info("Plan: would run tideway dev (cargo run) with env + migrations");
-        print_info("Primary run command for local development.");
+        build_dev_plan(&args).emit(runtime);
         return Ok(());
     }
     let project_dir = PathBuf::from(&args.path);
@@ -88,6 +90,37 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
         Ok(())
     } else {
         Err(anyhow::anyhow!("cargo exited with status {}", status))
+    }
+}
+
+fn build_dev_plan(args: &DevArgs) -> ExecutionPlan {
+    let summary = if args.no_migrate {
+        "would run tideway dev (cargo run) without auto-migrations".to_string()
+    } else {
+        "would run tideway dev (cargo run) with env + migrations".to_string()
+    };
+
+    let mut command = PlannedCommand::new("cargo")
+        .arg("run")
+        .cwd(args.path.clone());
+    if !args.args.is_empty() {
+        command = command.args(args.args.clone());
+    }
+
+    let mut plan = ExecutionPlan::new(summary)
+        .command(command)
+        .info("Primary run command for local development.");
+
+    if args.no_env {
+        plan = plan.info("Skipping `.env` loading (--no-env).");
+    } else if args.fix_env {
+        plan = plan.info("Would bootstrap `.env` from `.env.example` when missing.");
+    }
+
+    if args.no_migrate {
+        plan.info("Skipping automatic migrations (--no-migrate).")
+    } else {
+        plan.info("Would set `DATABASE_AUTO_MIGRATE=true` when not already defined.")
     }
 }
 

@@ -10,7 +10,10 @@ use crate::commands::messaging::DEV_FIX_ENV_COMMAND;
 use crate::commands::messaging::GREENFIELD_NEW_APP_PRESET_API;
 use crate::database::{resolve_database_url, validate_database_url};
 use crate::env::{ensure_env, ensure_project_dir, read_env_map};
-use crate::{CommandRuntime, error_contract, print_info, print_success, print_warning};
+use crate::{
+    CommandRuntime, ExecutionPlan, PlannedCommand, error_contract, print_info, print_success,
+    print_warning,
+};
 
 pub fn run(args: MigrateArgs) -> Result<()> {
     run_with_runtime(args, CommandRuntime::from_process_state())
@@ -20,7 +23,7 @@ pub fn run_with_runtime(args: MigrateArgs, runtime: CommandRuntime) -> Result<()
     runtime.install();
 
     if runtime.plan_mode() {
-        print_info(&format!("Plan: would run migrations ({})", args.action));
+        build_migrate_plan(&args).emit(runtime);
         return Ok(());
     }
     let project_dir = PathBuf::from(&args.path);
@@ -50,6 +53,36 @@ pub fn run_with_runtime(args: MigrateArgs, runtime: CommandRuntime) -> Result<()
             "Pass `--backend sea-orm`.",
             "Add SeaORM dependencies and Tideway `database` feature, then rerun."
         ))),
+    }
+}
+
+fn build_migrate_plan(args: &MigrateArgs) -> ExecutionPlan {
+    let mut command = PlannedCommand::new("sea-orm-cli")
+        .arg("migrate")
+        .arg(args.action.clone())
+        .cwd(args.path.clone());
+
+    if !args.args.is_empty() {
+        command = command.args(args.args.clone());
+    }
+
+    let mut plan =
+        ExecutionPlan::new(format!("would run migrations ({})", args.action)).command(command);
+
+    if args.backend == MigrateBackend::Auto {
+        plan = plan.info("Migration backend will be auto-detected at execution time.");
+    }
+
+    if args.no_env {
+        plan = plan.info("Skipping `.env` loading (--no-env).");
+    } else if args.fix_env {
+        plan = plan.info("Would bootstrap `.env` from `.env.example` when missing.");
+    }
+
+    if matches!(args.action.as_str(), "status" | "up" | "down" | "reset") {
+        plan.info("DATABASE_URL will be validated at execution time.")
+    } else {
+        plan
     }
 }
 
