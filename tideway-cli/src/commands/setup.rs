@@ -7,8 +7,8 @@ use std::process::Command;
 
 use crate::cli::{Framework, SetupArgs, Style};
 use crate::{
-    CommandRuntime, error_contract, is_json_output, print_info, print_success, print_warning,
-    remove_dir, remove_file, write_file,
+    CommandRuntime, PlanStep, PlannedCommand, error_contract, print_info, print_success,
+    print_warning, remove_dir, remove_file, write_file,
 };
 
 /// Components required for tideway frontend
@@ -41,7 +41,7 @@ pub fn run(args: SetupArgs) -> Result<()> {
 pub fn run_with_runtime(args: SetupArgs, runtime: CommandRuntime) -> Result<()> {
     runtime.install();
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!(
             "\n{} Setting up frontend dependencies...\n",
             "tideway".cyan().bold()
@@ -57,10 +57,10 @@ pub fn run_with_runtime(args: SetupArgs, runtime: CommandRuntime) -> Result<()> 
     }
 
     match args.framework {
-        Framework::Vue => setup_vue(&args)?,
+        Framework::Vue => setup_vue(&args, runtime)?,
     }
 
-    if !is_json_output() {
+    if !runtime.json_output() {
         println!("\n{} Frontend setup complete!\n", "✓".green().bold());
 
         println!("{}", "Next steps:".yellow().bold());
@@ -74,18 +74,18 @@ pub fn run_with_runtime(args: SetupArgs, runtime: CommandRuntime) -> Result<()> 
     Ok(())
 }
 
-fn setup_vue(args: &SetupArgs) -> Result<()> {
+fn setup_vue(args: &SetupArgs, runtime: CommandRuntime) -> Result<()> {
     // Step 1: Clean up default Vue starter files
     cleanup_vue_starter()?;
 
     // Step 2: Install Tailwind if needed
     if !args.no_tailwind && args.style != Style::Unstyled {
-        setup_tailwind()?;
+        setup_tailwind(runtime)?;
     }
 
     // Step 3: Install shadcn-vue if using shadcn style
     if args.style == Style::Shadcn && !args.no_components {
-        setup_shadcn_vue()?;
+        setup_shadcn_vue(runtime)?;
     }
 
     Ok(())
@@ -220,7 +220,7 @@ export default router
     Ok(())
 }
 
-fn setup_tailwind() -> Result<()> {
+fn setup_tailwind(runtime: CommandRuntime) -> Result<()> {
     print_info("Setting up Tailwind CSS v4...");
 
     // Check if vite.config exists
@@ -236,6 +236,7 @@ fn setup_tailwind() -> Result<()> {
     // Install Tailwind v4 with Vite plugin
     print_info("Installing @tailwindcss/vite...");
     if !run_external_command(
+        runtime,
         "npm",
         &["install", "-D", "tailwindcss", "@tailwindcss/vite"],
         "install tailwind dependencies",
@@ -286,11 +287,11 @@ fn setup_tailwind() -> Result<()> {
     Ok(())
 }
 
-fn setup_shadcn_vue() -> Result<()> {
+fn setup_shadcn_vue(runtime: CommandRuntime) -> Result<()> {
     print_info("Setting up shadcn-vue...");
 
     // First, ensure tsconfig has the @ alias
-    setup_tsconfig_alias()?;
+    setup_tsconfig_alias(runtime)?;
 
     // Check if shadcn is already initialized (components.json exists)
     let has_shadcn = Path::new("components.json").exists();
@@ -299,6 +300,7 @@ fn setup_shadcn_vue() -> Result<()> {
         print_info("Initializing shadcn-vue...");
 
         if !run_external_command(
+            runtime,
             "npx",
             &["shadcn-vue@latest", "init", "-y", "-d"],
             "initialize shadcn-vue",
@@ -326,7 +328,7 @@ fn setup_shadcn_vue() -> Result<()> {
     let mut add_args = vec!["shadcn-vue@latest", "add", "-y"];
     add_args.extend(SHADCN_VUE_COMPONENTS);
 
-    if !run_external_command("npx", &add_args, "install shadcn components")? {
+    if !run_external_command(runtime, "npx", &add_args, "install shadcn components")? {
         return Err(anyhow!(error_contract(
             "Failed to install shadcn-vue components.",
             "Rerun `tideway setup` after fixing your Node/npm environment.",
@@ -342,6 +344,7 @@ fn setup_shadcn_vue() -> Result<()> {
     // Install tw-animate-css (required by shadcn-vue animations)
     print_info("Installing tw-animate-css...");
     if run_external_command(
+        runtime,
         "npm",
         &["install", "tw-animate-css"],
         "install tw-animate-css",
@@ -352,7 +355,7 @@ fn setup_shadcn_vue() -> Result<()> {
     Ok(())
 }
 
-fn setup_tsconfig_alias() -> Result<()> {
+fn setup_tsconfig_alias(runtime: CommandRuntime) -> Result<()> {
     // Need to update BOTH tsconfig.json and tsconfig.app.json for shadcn-vue
     let configs = ["tsconfig.json", "tsconfig.app.json"];
 
@@ -393,7 +396,7 @@ fn setup_tsconfig_alias() -> Result<()> {
     }
 
     // Also update vite.config for path resolution
-    setup_vite_path_resolution()?;
+    setup_vite_path_resolution(runtime)?;
 
     // Create tailwind.config.ts stub for shadcn-vue compatibility
     setup_tailwind_config_stub()?;
@@ -420,10 +423,11 @@ fn setup_tailwind_config_stub() -> Result<()> {
     Ok(())
 }
 
-fn setup_vite_path_resolution() -> Result<()> {
+fn setup_vite_path_resolution(runtime: CommandRuntime) -> Result<()> {
     // Install @types/node if needed
     print_info("Installing @types/node for path resolution...");
     let _ = run_external_command(
+        runtime,
         "npm",
         &["install", "-D", "@types/node"],
         "install @types/node",
@@ -495,12 +499,14 @@ fn has_vite_path_alias(content: &str) -> bool {
         && (content.contains("'@'") || content.contains("\"@\""))
 }
 
-fn run_external_command(program: &str, args: &[&str], context: &str) -> Result<bool> {
-    if CommandRuntime::from_process_state().plan_mode() {
-        print_info(&format!(
-            "Plan: run command `{}`",
-            format_command(program, args)
-        ));
+fn run_external_command(
+    runtime: CommandRuntime,
+    program: &str,
+    args: &[&str],
+    context: &str,
+) -> Result<bool> {
+    if runtime.plan_mode() {
+        PlanStep::run_command(PlannedCommand::new(program).args(args.iter().copied())).emit();
         return Ok(true);
     }
 
@@ -510,14 +516,6 @@ fn run_external_command(program: &str, args: &[&str], context: &str) -> Result<b
         .with_context(|| format!("Failed to {}", context))?;
 
     Ok(status.success())
-}
-
-fn format_command(program: &str, args: &[&str]) -> String {
-    if args.is_empty() {
-        program.to_string()
-    } else {
-        format!("{} {}", program, args.join(" "))
-    }
 }
 
 #[cfg(test)]

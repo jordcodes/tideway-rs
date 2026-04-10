@@ -145,7 +145,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         scaffold_api_preset(&target_dir, runtime)?;
     }
     if let Some(backend_preset) = backend_preset.clone() {
-        scaffold_backend_preset(&target_dir, &project_name, backend_preset)?;
+        scaffold_backend_preset(&target_dir, &project_name, backend_preset, runtime)?;
         ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
     }
     if let Some(resource) = wizard.resource {
@@ -761,6 +761,7 @@ fn scaffold_backend_preset(
     target_dir: &Path,
     project_name: &str,
     preset: BackendPreset,
+    runtime: CommandRuntime,
 ) -> Result<()> {
     let has_organizations = matches!(preset, BackendPreset::B2b);
     let backend_args = crate::cli::BackendArgs {
@@ -778,6 +779,7 @@ fn scaffold_backend_preset(
     crate::commands::backend::scaffold(
         &backend_args,
         crate::commands::backend::BackendScaffoldMode::EmbeddedInNew,
+        runtime,
     )?;
 
     let engine = backend_template_engine(project_name, has_organizations)?;

@@ -10,9 +10,7 @@ use crate::commands::file_ops::{
 };
 use crate::commands::messaging::NEW_APP_COMMAND;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
-use crate::{
-    CommandRuntime, TIDEWAY_VERSION, ensure_dir, is_json_output, print_info, print_success,
-};
+use crate::{CommandRuntime, TIDEWAY_VERSION, ensure_dir, print_info, print_success};
 
 #[derive(Copy, Clone)]
 pub(crate) enum BackendScaffoldMode {
@@ -40,12 +38,15 @@ pub fn run(args: BackendArgs) -> Result<()> {
 }
 
 pub fn run_with_runtime(args: BackendArgs, runtime: CommandRuntime) -> Result<()> {
-    runtime.install();
-    scaffold(&args, BackendScaffoldMode::Cli)
+    scaffold(&args, BackendScaffoldMode::Cli, runtime)
 }
 
-pub(crate) fn scaffold(args: &BackendArgs, mode: BackendScaffoldMode) -> Result<()> {
-    let runtime = CommandRuntime::from_process_state();
+pub(crate) fn scaffold(
+    args: &BackendArgs,
+    mode: BackendScaffoldMode,
+    runtime: CommandRuntime,
+) -> Result<()> {
+    runtime.install();
     let plan_mode = runtime.plan_mode();
     let has_organizations = args.preset == BackendPreset::B2b;
     let preset_name = match args.preset {
@@ -153,7 +154,7 @@ pub(crate) fn scaffold(args: &BackendArgs, mode: BackendScaffoldMode) -> Result<
         return Ok(());
     }
 
-    if mode.emit_summary() && !is_json_output() {
+    if mode.emit_summary() && !runtime.json_output() {
         println!(
             "\n{} Backend scaffolding generated successfully!\n",
             "✓".green().bold()

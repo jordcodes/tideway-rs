@@ -152,10 +152,9 @@ impl PlannedCommand {
 }
 
 fn shell_escape(part: &str) -> String {
-    if part
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':' | '='))
-    {
+    if part.chars().all(|ch| {
+        ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':' | '=' | '@')
+    }) {
         part.to_string()
     } else {
         format!("'{}'", part.replace('\'', "'\"'\"'"))
