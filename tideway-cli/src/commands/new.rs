@@ -15,8 +15,8 @@ use crate::commands::file_ops::{to_pascal_case, write_file_with_force_or_error_d
 use crate::commands::messaging::PRIMARY_PATH;
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
-    CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success,
-    print_warning, write_file,
+    CommandRuntime, ExecutionPlan, PlanStep, TIDEWAY_VERSION, ensure_dir, error_contract,
+    print_info, print_success, print_warning, write_file,
 };
 
 #[derive(Default)]
@@ -111,6 +111,19 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         ));
     }
 
+    let created = planned_files_for(&args, backend_preset.as_ref(), wizard.resource.as_ref());
+    if runtime.plan_mode() {
+        return emit_new_plan(
+            &target_dir,
+            &project_name,
+            args.preset,
+            &features,
+            args.summary,
+            &created,
+            runtime,
+        );
+    }
+
     ensure_dir(&target_dir)
         .with_context(|| format!("Failed to create {}", target_dir.display()))?;
 
@@ -151,7 +164,6 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     if let Some(resource) = wizard.resource {
         scaffold_wizard_resource(&target_dir, resource, runtime)?;
     }
-    let created = expected_files_for(&args, backend_preset.as_ref());
 
     if !runtime.json_output() {
         println!(
@@ -325,6 +337,20 @@ pub fn expected_files(args: &NewArgs) -> Vec<String> {
     expected_files_for(args, None)
 }
 
+fn planned_files_for(
+    args: &NewArgs,
+    backend_preset: Option<&BackendPreset>,
+    wizard_resource: Option<&ResourceWizardOptions>,
+) -> Vec<String> {
+    let mut files = expected_files_for(args, backend_preset);
+    if let Some(resource) = wizard_resource {
+        for file in wizard_resource_expected_files(args, &files, resource) {
+            append_unique_file(&mut files, file);
+        }
+    }
+    files
+}
+
 fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) -> Vec<String> {
     let needs_env = needs_env_from_args(args);
     let has_auth_feature = normalize_features(&args.features).contains("auth");
@@ -376,6 +402,176 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
     }
 
     files
+}
+
+fn wizard_resource_expected_files(
+    args: &NewArgs,
+    planned_files: &[String],
+    resource: &ResourceWizardOptions,
+) -> Vec<String> {
+    let resource_name = normalize_resource_name(&resource.name);
+    let resource_plural = pluralize_resource_name(&resource_name);
+    let mut files = vec![format!("src/routes/{resource_name}.rs")];
+
+    if resource.db {
+        files.push("src/entities/mod.rs".to_string());
+        files.push(format!("src/entities/{resource_name}.rs"));
+        if !planned_files
+            .iter()
+            .any(|file| file == "migration/src/lib.rs")
+        {
+            files.push("migration/src/lib.rs".to_string());
+        }
+        files.push(next_planned_migration_file(planned_files, &resource_plural));
+
+        if resource.repo {
+            files.push("src/repositories/mod.rs".to_string());
+            files.push(format!("src/repositories/{resource_name}.rs"));
+            if resource.repo_tests {
+                files.push(format!("tests/repository_{resource_name}.rs"));
+            }
+            if resource.service {
+                files.push("src/services/mod.rs".to_string());
+                files.push(format!("src/services/{resource_name}.rs"));
+            }
+        }
+    }
+
+    if normalize_features(&args.features).contains("openapi") {
+        append_unique_file(&mut files, "src/openapi_docs.rs".to_string());
+    }
+
+    append_unique_file(&mut files, "src/main.rs".to_string());
+    append_unique_file(&mut files, "src/routes/mod.rs".to_string());
+    files
+}
+
+fn append_unique_file(files: &mut Vec<String>, path: String) {
+    if !files.iter().any(|existing| existing == &path) {
+        files.push(path);
+    }
+}
+
+fn next_planned_migration_file(planned_files: &[String], resource_plural: &str) -> String {
+    let next_index = planned_files
+        .iter()
+        .filter_map(|path| path.strip_prefix("migration/src/m"))
+        .filter_map(|rest| {
+            let digits = rest
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>();
+            digits.parse::<u32>().ok()
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+
+    format!(
+        "migration/src/m{next_index:03}_create_{resource_plural}.rs",
+        next_index = next_index,
+        resource_plural = resource_plural,
+    )
+}
+
+fn normalize_resource_name(name: &str) -> String {
+    name.trim().to_lowercase().replace('-', "_")
+}
+
+fn pluralize_resource_name(name: &str) -> String {
+    if name.ends_with('s') {
+        format!("{name}es")
+    } else {
+        format!("{name}s")
+    }
+}
+
+fn emit_new_plan(
+    target_dir: &Path,
+    project_name: &str,
+    preset: Option<NewPreset>,
+    features: &BTreeSet<String>,
+    summary: bool,
+    files: &[String],
+    runtime: CommandRuntime,
+) -> Result<()> {
+    if !runtime.json_output() {
+        println!(
+            "\n{} {}\n",
+            "tideway".cyan().bold(),
+            "planning starter app".yellow().bold()
+        );
+    }
+
+    print_info(&format!("Project name: {}", project_name.green()));
+    print_info(&format!(
+        "Location: {}",
+        target_dir.display().to_string().yellow()
+    ));
+    if let Some(preset) = preset {
+        print_info(&format!("Preset: {}", preset_label(preset).green()));
+    }
+    if !features.is_empty() {
+        print_info(&format!(
+            "Tideway features: {}",
+            features
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+                .green()
+        ));
+    }
+
+    let mut created_dirs = BTreeSet::new();
+    let mut plan = ExecutionPlan::new(format!(
+        "would scaffold Tideway starter app in {}",
+        target_dir.display()
+    ));
+    for file in files {
+        let path = target_dir.join(file);
+        append_plan_write_steps(&path, &mut created_dirs, &mut plan);
+    }
+    plan.emit(runtime);
+
+    if summary && !runtime.json_output() {
+        println!("\n{}", "Planned files:".yellow().bold());
+        for path in files {
+            println!("  - {}", path);
+        }
+    }
+
+    print_info("Plan complete: no files were written");
+    Ok(())
+}
+
+fn append_plan_write_steps(
+    path: &Path,
+    created_dirs: &mut BTreeSet<PathBuf>,
+    plan: &mut ExecutionPlan,
+) {
+    let mut missing_dirs = Vec::new();
+    let mut current = path.parent();
+    while let Some(dir) = current {
+        if dir.exists() {
+            break;
+        }
+        let dir_path = dir.to_path_buf();
+        if created_dirs.insert(dir_path.clone()) {
+            missing_dirs.push(dir_path);
+        }
+        current = dir.parent();
+    }
+
+    missing_dirs.reverse();
+    for dir in missing_dirs {
+        *plan = plan
+            .clone()
+            .step(PlanStep::create_directory(dir.display().to_string()));
+    }
+    *plan = plan
+        .clone()
+        .step(PlanStep::write_file(path.display().to_string()));
 }
 
 fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {

@@ -198,6 +198,70 @@ fn test_init_minimal_plan_mode_is_non_mutating() {
     );
 }
 
+#[test]
+fn test_new_api_plan_mode_is_non_mutating() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--plan")
+        .arg("new")
+        .arg("my_app")
+        .arg("--preset")
+        .arg("api")
+        .arg("--no-prompt")
+        .arg("--path")
+        .arg(&project_dir)
+        .output()
+        .expect("run tideway new --plan");
+
+    assert!(
+        output.status.success(),
+        "command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !project_dir.exists(),
+        "expected new --plan not to create the project directory"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Plan: write file"),
+        "expected plan output with file writes, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("src/routes/todo.rs"),
+        "expected API preset resource route in plan output, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("migration/src/m001_create_todos.rs"),
+        "expected API preset migration in plan output, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Plan complete: no files were written"),
+        "expected explicit plan completion marker, got:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("starter app created"),
+        "expected new --plan not to claim the starter app was created, got:\n{}",
+        stdout
+    );
+
+    let root_dir_line = format!("→ Plan: create directory {}", project_dir.display());
+    let root_dir_count = stdout.lines().filter(|line| *line == root_dir_line).count();
+    assert_eq!(
+        root_dir_count, 1,
+        "expected root directory to be planned once, got:\n{}",
+        stdout
+    );
+}
+
 fn create_minimal_fixture(project_dir: &Path) {
     fs::create_dir_all(project_dir.join("src")).expect("create src");
     fs::write(
