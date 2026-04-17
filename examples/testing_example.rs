@@ -1,5 +1,6 @@
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, Router, extract::Path, routing::get};
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 /// Testing example demonstrating Tideway's testing utilities
 ///
 /// This example shows:
@@ -9,7 +10,8 @@ use serde::{Deserialize, Serialize};
 /// - Testing error cases
 ///
 /// Run tests with: cargo test --example testing_example
-use tideway::{App, AppContext, Result, RouteModule};
+use tideway::{ApiResponse, App, AppContext, CreatedResponse, Result, RouteModule, TidewayError};
+use tokio::sync::Mutex;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Todo {
@@ -50,8 +52,8 @@ impl TodoStore {
         todo
     }
 
-    fn find(&self, id: u64) -> Option<&Todo> {
-        self.todos.iter().find(|t| t.id == id)
+    fn find(&self, id: u64) -> Option<Todo> {
+        self.todos.iter().find(|t| t.id == id).cloned()
     }
 
     fn list(&self) -> Vec<Todo> {
@@ -59,37 +61,32 @@ impl TodoStore {
     }
 }
 
-// Simplified handlers for example (without state for simplicity)
-async fn create_todo(Json(req): Json<CreateTodoRequest>) -> Result<Json<Todo>> {
-    // In real app, this would use state/database
-    let todo = Todo {
-        id: 1,
-        title: req.title,
-        completed: false,
-    };
+static TODO_STORE: LazyLock<Mutex<TodoStore>> = LazyLock::new(|| Mutex::new(TodoStore::new()));
+
+async fn reset_store() {
+    *TODO_STORE.lock().await = TodoStore::new();
+}
+
+async fn create_todo(Json(req): Json<CreateTodoRequest>) -> Result<CreatedResponse<Todo>> {
+    let mut store = TODO_STORE.lock().await;
+    let todo = store.create(req.title);
+    Ok(ApiResponse::created(
+        todo.clone(),
+        format!("/api/todos/{}", todo.id),
+    ))
+}
+
+async fn get_todo(Path(id): Path<u64>) -> Result<Json<Todo>> {
+    let store = TODO_STORE.lock().await;
+    let todo = store
+        .find(id)
+        .ok_or_else(|| TidewayError::not_found("Todo not found"))?;
     Ok(Json(todo))
 }
 
-async fn get_todo(axum::extract::Path(id): axum::extract::Path<u64>) -> Result<Json<Todo>> {
-    // In real app, this would query database
-    if id == 1 {
-        Ok(Json(Todo {
-            id: 1,
-            title: "Test todo".to_string(),
-            completed: false,
-        }))
-    } else {
-        Err(tideway::TidewayError::not_found("Todo not found"))
-    }
-}
-
-async fn list_todos(State(_ctx): State<AppContext>) -> Result<Json<Vec<Todo>>> {
-    // In real app, this would query database
-    Ok(Json(vec![Todo {
-        id: 1,
-        title: "Todo 1".to_string(),
-        completed: false,
-    }]))
+async fn list_todos() -> Result<Json<Vec<Todo>>> {
+    let store = TODO_STORE.lock().await;
+    Ok(Json(store.list()))
 }
 
 struct TodosModule;
@@ -98,7 +95,7 @@ impl RouteModule for TodosModule {
     fn routes(&self) -> Router<AppContext> {
         Router::new()
             .route("/todos", get(list_todos).post(create_todo))
-            .route("/todos/:id", get(get_todo))
+            .route("/todos/{id}", get(get_todo))
     }
 
     fn prefix(&self) -> Option<&str> {
@@ -108,11 +105,9 @@ impl RouteModule for TodosModule {
 
 #[cfg(test)]
 fn create_app() -> Router {
-    // Simplified example - create router directly
-    // In real app, you'd use App with proper state management
     Router::new()
         .route("/api/todos", get(list_todos).post(create_todo))
-        .route("/api/todos/:id", get(get_todo))
+        .route("/api/todos/{id}", get(get_todo))
 }
 
 #[cfg(test)]
@@ -121,8 +116,12 @@ mod tests {
     use serde_json::json;
     use tideway::testing::{get, post};
 
+    static TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
     #[tokio::test]
     async fn test_create_todo() {
+        let _guard = TEST_GUARD.lock().await;
+        reset_store().await;
         let app = create_app();
 
         let todo_data = json!({
@@ -143,6 +142,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_todo() {
+        let _guard = TEST_GUARD.lock().await;
+        reset_store().await;
         let app = create_app();
 
         // First create a todo
@@ -167,6 +168,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_todo_not_found() {
+        let _guard = TEST_GUARD.lock().await;
+        reset_store().await;
         let app = create_app();
 
         get(app, "/api/todos/99999")
@@ -177,6 +180,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_todos() {
+        let _guard = TEST_GUARD.lock().await;
+        reset_store().await;
         let app = create_app();
 
         // Create a few todos

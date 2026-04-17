@@ -70,6 +70,7 @@ pub struct TestDbConfig {
 /// script or CI/CD step to remove orphaned test databases.
 pub struct TestDb {
     pub connection: DatabaseConnection,
+    backend: TestDbBackend,
     #[cfg(feature = "test-containers")]
     #[allow(dead_code)]
     container: Option<Arc<postgres_container::PostgresContainer>>,
@@ -141,6 +142,7 @@ impl TestDb {
         M::up(&connection, None).await?;
         Ok(Self {
             connection,
+            backend: TestDbBackend::SqliteMemory,
             #[cfg(feature = "test-containers")]
             container: None,
         })
@@ -176,6 +178,7 @@ impl TestDb {
 
         Ok(Self {
             connection,
+            backend: TestDbBackend::SqliteMemory,
             #[cfg(feature = "test-containers")]
             container: None,
         })
@@ -243,7 +246,7 @@ impl TestDb {
     /// Create a new PostgreSQL test database in a container with an ephemeral database.
     ///
     /// Requires:
-    /// - `docker` CLI available
+    /// - Docker available to `testcontainers`
     /// - `test-containers` feature enabled
     #[cfg(feature = "test-containers")]
     pub async fn new_postgres_container() -> Result<Self, DbErr> {
@@ -251,6 +254,7 @@ impl TestDb {
         let connection = Database::connect(&container.connection_url).await?;
         Ok(Self {
             connection,
+            backend: TestDbBackend::PostgresContainer,
             container: Some(Arc::new(container)),
         })
     }
@@ -309,6 +313,7 @@ impl TestDb {
 
         Ok(Self {
             connection,
+            backend: TestDbBackend::Postgres,
             #[cfg(feature = "test-containers")]
             container: None,
         })
@@ -351,29 +356,13 @@ impl TestDb {
     ///
     /// **Warning**: This will delete all data in the database.
     /// Useful for cleaning up between tests or test isolation.
-    ///
-    /// For SQLite, this clears all tables. For PostgreSQL, you may want to
-    /// recreate the database instead.
     pub async fn reset(&self) -> Result<(), DbErr> {
-        // For SQLite, drop all tables
-        let drop_tables_stmt = Statement::from_string(
-            sea_orm::DatabaseBackend::Sqlite,
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                .to_string(),
-        );
-
-        let result = self.connection.query_all(drop_tables_stmt).await;
-
-        if let Ok(rows) = result {
-            for row in rows {
-                if let Ok(table_name) = row.try_get::<String>("", "name") {
-                    let drop_stmt = format!("DROP TABLE IF EXISTS \"{}\"", table_name);
-                    self.connection.execute_unprepared(&drop_stmt).await?;
-                }
-            }
+        match self.backend {
+            TestDbBackend::SqliteMemory => self.reset_sqlite().await,
+            TestDbBackend::Postgres => self.reset_postgres().await,
+            #[cfg(feature = "test-containers")]
+            TestDbBackend::PostgresContainer => self.reset_postgres().await,
         }
-
-        Ok(())
     }
 
     /// Run a test within a transaction that will be rolled back
@@ -418,6 +407,64 @@ impl TestDb {
         txn.rollback().await?;
 
         result
+    }
+
+    async fn reset_sqlite(&self) -> Result<(), DbErr> {
+        let drop_tables_stmt = Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                .to_string(),
+        );
+        let rows = self.connection.query_all(drop_tables_stmt).await?;
+
+        for row in rows {
+            let table_name = row.try_get::<String>("", "name")?;
+            let drop_stmt = format!(
+                "DROP TABLE IF EXISTS \"{}\"",
+                escape_identifier(&table_name)
+            );
+            self.connection.execute_unprepared(&drop_stmt).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn reset_postgres(&self) -> Result<(), DbErr> {
+        let list_tables_stmt = Statement::from_string(
+            sea_orm::DatabaseBackend::Postgres,
+            "SELECT schemaname, tablename FROM pg_tables WHERE schemaname = 'public'".to_string(),
+        );
+        let rows = self.connection.query_all(list_tables_stmt).await?;
+
+        let tables = rows
+            .into_iter()
+            .map(|row| {
+                let schema = row.try_get::<String>("", "schemaname")?;
+                let table = row.try_get::<String>("", "tablename")?;
+                Ok(format!(
+                    "\"{}\".\"{}\"",
+                    escape_identifier(&schema),
+                    escape_identifier(&table)
+                ))
+            })
+            .collect::<Result<Vec<_>, DbErr>>()?;
+
+        if tables.is_empty() {
+            return Ok(());
+        }
+
+        let truncate_stmt = format!(
+            "TRUNCATE TABLE {} RESTART IDENTITY CASCADE",
+            tables.join(", ")
+        );
+        self.connection
+            .execute(Statement::from_string(
+                sea_orm::DatabaseBackend::Postgres,
+                truncate_stmt,
+            ))
+            .await?;
+
+        Ok(())
     }
 }
 

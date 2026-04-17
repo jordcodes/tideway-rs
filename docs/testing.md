@@ -302,7 +302,7 @@ let phone = fake::phone();           // "+1234567890"
 Tideway supports two integration profiles:
 
 - Default SQLite in-memory with `TestDb::new()` (fast, zero infra).
-- PostgreSQL-backed tests via `TestDb::new_postgres()` (local Postgres required) or `TIDEWAY_TEST_DB_BACKEND=postgres_container` with the `test-containers` feature (starts a temporary Docker container).
+- PostgreSQL-backed tests via `TestDb::new_postgres()` (local Postgres required) or `TestDb::new_postgres_container()` with the `test-containers` feature (starts a temporary Docker-managed container).
 
 Test database operations in isolation:
 
@@ -314,12 +314,12 @@ async fn test_user_creation() {
     let db = TestDb::new().await.unwrap();
 
     // Seed database
-    db.seed("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)")
+    db.seed(&["CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)"])
         .await
         .unwrap();
 
-    // Run migrations if needed
-    db.run_migrations(&migrator).await.unwrap();
+    // Or create the database with migrations already applied:
+    // let db = TestDb::new_with_migrator::<MyMigrator>().await.unwrap();
 
     // Test in transaction (always rolled back)
     db.with_transaction_rollback(|tx| async move {

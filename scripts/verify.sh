@@ -43,6 +43,13 @@ cargo test -p tideway-cli
 echo "[verify] tideway lib tests"
 cargo test --lib
 
+echo "[verify] tideway testing surfaces"
+cargo test --example testing_example
+cargo test --test testing_app_test
+cargo test --test test_host_test
+cargo test --test test_host_builder_test
+cargo test --test test_host_bootstrap_test
+
 echo "[verify] billing feature compile check"
 cargo check --features billing
 
