@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Release owners: for releases after 0.7.17, copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
+Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
+
+## [0.7.18] - 2026-04-27
+
+### Added
+
+- API-first scaffold refinements, including a seeded todo resource following the entity -> repository -> service path.
+- Agent- and CI-friendly plan output plumbing across mutating CLI commands.
+- SaaS resource generation improvements for auth-scoped resources, ownership checks, audit hooks, and service-owned validation.
+- Testcontainers-backed Postgres helper support behind `test-containers`.
+
+### Changed
+
+- `tideway-cli` now scaffolds Tideway `0.7.18`.
+- CLI onboarding now promotes the tested API path first, with advanced frontend/backend presets one step deeper.
+- Dev-mode diagnostics, request dumping, doctor findings, and generated service errors are more explicit.
+
+### Notes
+
+- This release includes `tideway-cli` `0.1.30`.
 
 ## [0.7.17] - 2026-03-17
 
