@@ -1,6 +1,6 @@
 [package]
 name = "tideway-cli"
-version = "0.1.30"
+version = "0.1.31"
 edition = "2024"
 build = "build.rs"
 authors = ["JD"]
@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.85"
 
 [package.metadata]
-tideway_version = "0.7.18"
+tideway_version = "0.7.19"
 
 [[bin]]
 name = "tideway"

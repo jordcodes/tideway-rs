@@ -40,11 +40,11 @@ for line in "${required_advanced_docs[@]}"; do
 done
 
 required_advanced_help=(
-  "/// Advanced: generate frontend components (not for backend API scaffolding)"
+  "/// Advanced: generate Vue frontend helpers for existing Vue apps (secondary to the API path)"
   "/// Advanced: generate backend scaffolding for existing/nonstandard projects (not for greenfield)"
   "/// Advanced: add features/scaffolding to an existing project (not the default new-app path)"
   "/// Advanced: initialize main.rs by scanning modules in existing projects (not for greenfield)"
-  "/// Advanced: set up frontend dependencies (not required for API-only workflows)"
+  "/// Advanced: set up Vue frontend dependencies for existing Vue apps (not required for API-only workflows)"
 )
 for line in "${required_advanced_help[@]}"; do
   if ! grep -Fq -- "$line" tideway-cli/src/cli.rs; then

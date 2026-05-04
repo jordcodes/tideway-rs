@@ -7,7 +7,7 @@ This guide takes you from `tideway new` to a working API using the canonical Tid
 ```bash
 tideway new my_app
 cd my_app
-tideway dev
+tideway dev --fix-env
 ```
 `tideway new my_app` is the encouraged API-first path.
 In interactive mode, the first screen promotes `api`, `saas`, and `worker`; the lightweight `minimal` path lives under the wizard's advanced branch.
@@ -98,7 +98,7 @@ async fn test_health() {
 - Manual auth wiring: `docs/auth.md`
 - Manual OpenAPI composition: `docs/openapi.md`
 - Trait-based or mixed module composition: `docs/module_contracts.md` and `docs/advanced_composition.md`
-- Existing-project workflows: `docs/cli.md` (`tideway init`, `tideway backend`, `tideway add`)
+- Advanced existing-project workflows: `docs/cli.md` (`tideway init`, `tideway backend`, `tideway add`)
 
 ## 9) Next steps
 

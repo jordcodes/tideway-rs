@@ -68,7 +68,7 @@ Use the CLI to scaffold the recommended API-first Tideway app:
 cargo install tideway-cli
 tideway new my_app
 cd my_app
-tideway dev
+tideway dev --fix-env
 ```
 
 Then visit `http://localhost:8000/health`.
@@ -97,7 +97,7 @@ If you're using coding agents (Codex, Claude Code, OpenCode), start here:
 
 - Use `tideway new my_app` and follow the wizard (fastest path).
 - Add resources with `tideway resource <name> --wire --db --repo --service --paginate --search`.
-- Run `tideway dev` to boot with env + migrations.
+- Run `tideway dev --fix-env` to boot with env + migrations.
 
 Agent-friendly flags:
 - `--json` emits machine-readable JSON lines.
@@ -137,7 +137,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.18"
+tideway = "0.7.19"
 tokio = { version = "1.48", features = ["full"] }
 ```
 

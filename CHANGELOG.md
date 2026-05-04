@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [0.7.19] - 2026-05-04
+
+### Changed
+
+- README and getting-started quickstarts now use `tideway dev --fix-env`, matching the enforced onboarding guardrails.
+- Docs taxonomy checks now match the current Vue-focused advanced CLI helper wording.
+- `tideway-cli` now scaffolds Tideway `0.7.19`.
+
+### Notes
+
+- This release includes `tideway-cli` `0.1.31`.
+- No semver-breaking public API changes were introduced.
+
 ## [0.7.18] - 2026-04-27
 
 ### Added
