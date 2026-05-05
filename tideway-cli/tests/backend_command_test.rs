@@ -47,6 +47,42 @@ fn test_backend_migration_lib_matches_generated_files_for_b2c_and_b2b() {
     assert_migration_lib_matches_generated_files("b2b");
 }
 
+#[test]
+fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("src");
+    let migrations_dir = temp_dir.path().join("migration/src");
+
+    let output = run_tideway(&[
+        "backend",
+        "b2b",
+        "--name",
+        "my_app",
+        "--output",
+        output_dir.to_str().expect("output dir utf8"),
+        "--migrations-output",
+        migrations_dir.to_str().expect("migrations dir utf8"),
+    ]);
+    assert_success(&output, "tideway backend b2b");
+
+    let main_rs = fs::read_to_string(output_dir.join("main.rs")).expect("read main.rs");
+    assert!(main_rs.contains(".nest(\"/billing/public\", public_billing_routes())"));
+    assert!(main_rs.contains(".nest(\"/billing\", authenticated_billing_routes())"));
+    assert!(main_rs.contains(".nest(\"/billing/webhook\", billing_webhook_routes())"));
+    assert!(main_rs.contains(".nest(\"/admin/billing\", admin_billing_routes())"));
+    assert!(!main_rs.contains(".nest(\"/billing\", billing_routes())"));
+
+    let billing_routes =
+        fs::read_to_string(output_dir.join("billing/routes.rs")).expect("read billing routes");
+    assert!(billing_routes.contains("pub fn public_billing_routes()"));
+    assert!(billing_routes.contains("pub fn authenticated_billing_routes()"));
+    assert!(billing_routes.contains("pub fn billing_webhook_routes()"));
+    assert!(billing_routes.contains("pub fn admin_billing_routes()"));
+    assert!(billing_routes.contains("authorize_billing_owner"));
+    assert!(billing_routes.contains("authorize_billing_member"));
+    assert!(billing_routes.contains("require_platform_admin"));
+}
+
 fn run_tideway(args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
     for arg in args {

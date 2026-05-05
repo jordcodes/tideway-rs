@@ -85,7 +85,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      const endpoint = includeInactive ? '/admin/plans/all' : '/billing/plans'
+      const endpoint = includeInactive ? '/admin/billing/plans' : '/billing/public/plans'
       const response = await api.get<{ plans: Plan[] }>(endpoint)
       plans.value = response.plans
       return response.plans
@@ -102,7 +102,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      const response = await api.get<Plan>(`/admin/plans/${encodeURIComponent(planId)}`)
+      const response = await api.get<Plan>(`/admin/billing/plans/${encodeURIComponent(planId)}`)
       currentPlan.value = response
       return response
     } catch (e) {
@@ -118,7 +118,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      const response = await api.post<Plan>('/admin/plans', request)
+      const response = await api.post<Plan>('/admin/billing/plans', request)
       // Refresh plans list
       await fetchPlans(true)
       return response
@@ -135,7 +135,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      const response = await api.put<Plan>(`/admin/plans/${encodeURIComponent(planId)}`, request)
+      const response = await api.put<Plan>(`/admin/billing/plans/${encodeURIComponent(planId)}`, request)
       currentPlan.value = response
       // Refresh plans list
       await fetchPlans(true)
@@ -153,7 +153,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      await api.delete(`/admin/plans/${encodeURIComponent(planId)}`)
+      await api.delete(`/admin/billing/plans/${encodeURIComponent(planId)}`)
       // Refresh plans list
       await fetchPlans(true)
     } catch (e) {
@@ -169,7 +169,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      await api.post(`/admin/plans/${encodeURIComponent(planId)}/active`, { is_active: isActive })
+      await api.post(`/admin/billing/plans/${encodeURIComponent(planId)}/active`, { is_active: isActive })
       // Refresh plans list
       await fetchPlans(true)
     } catch (e) {
@@ -185,7 +185,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      const response = await api.get<PlanExport>('/admin/plans/export')
+      const response = await api.get<PlanExport>('/admin/billing/plans/export')
       return response
     } catch (e) {
       error.value = e instanceof Error ? e.message : 'Failed to export plans'
@@ -200,7 +200,7 @@ export function usePlans() {
     error.value = null
 
     try {
-      const response = await api.post<ImportResult>('/admin/plans/import', request)
+      const response = await api.post<ImportResult>('/admin/billing/plans/import', request)
       // Refresh plans list after import
       await fetchPlans(true)
       return response

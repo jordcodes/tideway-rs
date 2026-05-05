@@ -25,6 +25,7 @@ tideway = "0.7"
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: false,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -58,6 +59,7 @@ tideway = "0.7"
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: false,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -65,6 +67,404 @@ tideway = "0.7"
     assert_file_contains(&project_dir.join("Cargo.toml"), "\"database\"");
     assert_file_contains(&project_dir.join("Cargo.toml"), "sea-orm");
     assert_file_contains(&project_dir.join(".env.example"), "DATABASE_URL=");
+}
+
+#[test]
+fn test_add_organizations_scaffolds_without_billing_or_admin() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, STANDARD_MIGRATION_LIB);
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"organizations\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"organizations-seaorm\"");
+    assert!(project_dir.join("src/organizations/mod.rs").exists());
+    assert!(project_dir.join("src/organizations/routes.rs").exists());
+    assert!(project_dir.join("src/entities/organization.rs").exists());
+    assert!(
+        project_dir
+            .join("src/entities/organization_member.rs")
+            .exists()
+    );
+    assert!(
+        project_dir
+            .join("migration/src/m005_create_organizations.rs")
+            .exists()
+    );
+    assert!(
+        project_dir
+            .join("migration/src/m006_create_organization_members.rs")
+            .exists()
+    );
+    assert!(!project_dir.join("src/billing/mod.rs").exists());
+    assert!(!project_dir.join("src/admin/mod.rs").exists());
+    assert_file_not_contains(
+        &project_dir.join("src/entities/organization.rs"),
+        "BillableEntity",
+    );
+}
+
+#[test]
+fn test_add_organizations_requires_db_backed_auth_contract() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    let err = tideway_cli::commands::add::run(args).expect_err("expected missing contract error");
+    let message = err.to_string();
+    assert!(message.contains("DB-backed auth contract"));
+    assert!(!project_dir.join("src/organizations/mod.rs").exists());
+}
+
+#[test]
+fn test_add_organizations_rejects_non_org_aware_auth_contract() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth");
+    fs::create_dir_all(project_dir.join("src/entities")).expect("create entities");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    fs::write(
+        project_dir.join("src/auth/actor.rs"),
+        "pub struct RequestActor;\nimpl RequestActor { pub async fn from_headers() {} }\n",
+    )
+    .expect("write actor");
+    fs::write(
+        project_dir.join("src/entities/user.rs"),
+        "pub struct Model { pub id: String }\n",
+    )
+    .expect("write user");
+    fs::write(
+        project_dir.join("migration/src/m001_create_users.rs"),
+        "// users migration\n",
+    )
+    .expect("write users migration");
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    let err =
+        tideway_cli::commands::add::run(args).expect_err("expected non org-aware contract error");
+    assert!(
+        err.to_string()
+            .contains("org-aware DB-backed auth contract")
+    );
+    assert!(!project_dir.join("src/organizations/mod.rs").exists());
+}
+
+#[test]
+fn test_add_organizations_rejects_missing_migration_lib_registration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth");
+    fs::create_dir_all(project_dir.join("src/entities")).expect("create entities");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_org_aware_contract_files(&project_dir);
+    fs::write(
+        project_dir.join("migration/src/m001_create_users.rs"),
+        "// users migration\n",
+    )
+    .expect("write users migration");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    let err =
+        tideway_cli::commands::add::run(args).expect_err("expected missing migration lib error");
+    assert!(err.to_string().contains("migration/src/lib.rs"));
+    assert!(!project_dir.join("src/organizations/mod.rs").exists());
+}
+
+#[test]
+fn test_add_organizations_rejects_missing_user_organization_id_migration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, MIGRATION_LIB_WITHOUT_USER_ORG_COLUMN);
+    fs::write(
+        project_dir.join("migration/src/m007_add_admin_flag.rs"),
+        r#"
+enum Users {
+    IsPlatformAdmin,
+}
+"#,
+    )
+    .expect("write migration without org column");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    let err = tideway_cli::commands::add::run(args)
+        .expect_err("expected missing user organization_id migration error");
+    assert!(err.to_string().contains("users.organization_id migration"));
+    assert!(!project_dir.join("src/organizations/mod.rs").exists());
+}
+
+#[test]
+fn test_add_organizations_rejects_commented_user_organization_id_migration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, STANDARD_MIGRATION_LIB);
+    fs::write(
+        project_dir.join("migration/src/m007_add_admin_flag.rs"),
+        r#"
+impl MigrationTrait for Migration {
+    async fn up(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Table::alter().table(Users::Table).add_column(ColumnDef::new(Users::OrganizationId));
+        Ok(())
+    }
+}
+"#,
+    )
+    .expect("write commented migration");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    let err = tideway_cli::commands::add::run(args)
+        .expect_err("expected missing user organization_id migration error");
+    assert!(err.to_string().contains("users.organization_id migration"));
+    assert!(!project_dir.join("src/organizations/mod.rs").exists());
+}
+
+#[test]
+fn test_add_rejects_db_flag_for_non_organization_features() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = "0.7"
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let args = AddArgs {
+        feature: AddFeature::Auth,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    let err = tideway_cli::commands::add::run(args).expect_err("expected unsupported flag error");
+    assert!(err.to_string().contains("--db is only supported"));
+    assert!(!project_dir.join("src/auth/mod.rs").exists());
+}
+
+#[test]
+fn test_add_organizations_wires_custom_database_variable() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, STANDARD_MIGRATION_LIB);
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");
+    let conn = sea_orm::Database::connect(&database_url)
+        .await
+        .expect("Failed to connect to database");
+
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = app;
+    let _ = conn;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated.contains("Arc::new(conn.clone())"));
+    assert!(!updated.contains("Arc::new(db.clone())"));
+    assert!(updated.contains("register_module(organization_module)"));
+}
+
+#[test]
+fn test_add_organizations_wires_backend_fluent_app_builder() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, STANDARD_MIGRATION_LIB);
+
+    let main_rs = r#"
+use std::sync::Arc;
+use tideway::{App, AppContext, ConfigBuilder};
+
+mod auth;
+mod routes;
+
+use crate::auth::AuthModule;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config = ConfigBuilder::new().build()?;
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");
+    let db = sea_orm::Database::connect(&database_url).await?;
+    let auth_module = AuthModule::new();
+    let context = AppContext::builder().build();
+
+    App::with_config(config)
+        .with_context(context)
+        .register_module(auth_module)
+        .serve()
+        .await?;
+
+    Ok(())
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated.contains("let organization_module = OrganizationModule::new("));
+    assert!(updated.contains("Arc::new(db.clone())"));
+    assert!(updated.contains(".register_module(organization_module)"));
+    assert!(updated.contains(".serve()"));
+}
+
+#[test]
+fn test_add_organizations_skips_main_when_database_variable_is_unknown() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, STANDARD_MIGRATION_LIB);
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() {
+    let app = App::new()
+        .register_module(routes::ApiModule);
+
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(!updated.contains("OrganizationModule::new"));
+    assert!(!updated.contains("register_module(organization_module)"));
+    assert!(!updated.contains("mod organizations;"));
+}
+
+#[test]
+fn test_add_organizations_registers_migrations_with_brackets_in_comments() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, MIGRATION_LIB_WITH_BRACKET_COMMENT);
+
+    let args = AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: true,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    assert!(updated.contains("// comment with ] should not receive inserted migrations"));
+    assert!(updated.contains("Box::new(m005_create_organizations::Migration),"));
+    assert!(updated.contains("Box::new(m006_create_organization_members::Migration),"));
+    assert!(updated.contains(
+        "// comment with ] should not receive inserted migrations\n            Box::new(m001_create_users::Migration),"
+    ));
 }
 
 #[test]
@@ -103,6 +503,7 @@ fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -153,6 +554,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -204,6 +606,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
     tideway_cli::commands::add::run(args).expect("first run add command");
     let args = AddArgs {
@@ -211,6 +614,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
     tideway_cli::commands::add::run(args).expect("second run add command");
 
@@ -268,6 +672,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -275,6 +680,46 @@ async fn main() {
     let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
     assert!(updated.contains("register_module(auth_module)"));
     assert!(updated.contains(".with_global_layer(Extension(auth_provider))"));
+}
+
+#[test]
+fn test_add_auth_skips_fluent_main_without_partial_wiring() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    write_basic_cargo(&project_dir);
+
+    let main_rs = r#"
+use tideway::App;
+
+mod routes;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    App::new()
+        .register_module(routes::ApiModule)
+        .serve()
+        .await?;
+
+    Ok(())
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Auth,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: false,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(!updated.contains("mod auth;"));
+    assert!(!updated.contains("auth_module"));
+    assert!(!updated.contains("auth_provider"));
 }
 
 #[test]
@@ -314,6 +759,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -363,6 +809,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
     tideway_cli::commands::add::run(args).expect("first run add command");
     let args = AddArgs {
@@ -370,6 +817,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
     tideway_cli::commands::add::run(args).expect("second run add command");
 
@@ -429,6 +877,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
     tideway_cli::commands::add::run(args).expect("run add command");
 
@@ -436,6 +885,48 @@ async fn main() {
     assert!(updated.contains("let database_url = std::env::var(\"DATABASE_URL\")"));
     assert!(updated.contains("server = App::new()") || updated.contains("let server = App::new()"));
     assert!(updated.contains(".with_database(Arc::new(SeaOrmPool::new(db, database_url)))"));
+}
+
+#[test]
+fn test_add_database_skips_fluent_main_without_partial_wiring() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    write_basic_cargo(&project_dir);
+
+    let main_rs = r#"
+use tideway::{App, ConfigBuilder};
+
+mod routes;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config = ConfigBuilder::new().build()?;
+
+    App::with_config(config)
+        .register_module(routes::ApiModule)
+        .serve()
+        .await?;
+
+    Ok(())
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let args = AddArgs {
+        feature: AddFeature::Database,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: false,
+    };
+
+    tideway_cli::commands::add::run(args).expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(!updated.contains("DATABASE_URL"));
+    assert!(!updated.contains("SeaOrmPool"));
+    assert!(!updated.contains("with_database"));
 }
 
 #[test]
@@ -482,6 +973,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -542,6 +1034,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -599,6 +1092,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
     tideway_cli::commands::add::run(args).expect("first run add command");
     let args = AddArgs {
@@ -606,6 +1100,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
     tideway_cli::commands::add::run(args).expect("second run add command");
 
@@ -666,6 +1161,7 @@ async fn main() {
         path: project_dir.to_string_lossy().to_string(),
         force: false,
         wire: true,
+        db: false,
     };
 
     tideway_cli::commands::add::run(args).expect("run add command");
@@ -695,4 +1191,140 @@ fn assert_file_not_contains(path: &Path, needle: &str) {
         needle,
         contents
     );
+}
+
+const STANDARD_MIGRATION_LIB: &str = r#"//! Database migrations.
+
+pub use sea_orm_migration::prelude::*;
+
+mod m001_create_users;
+mod m007_add_admin_flag;
+
+pub struct Migrator;
+
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        vec![
+            Box::new(m001_create_users::Migration),
+            Box::new(m007_add_admin_flag::Migration),
+        ]
+    }
+}
+"#;
+
+const MIGRATION_LIB_WITH_BRACKET_COMMENT: &str = r#"//! Database migrations.
+
+pub use sea_orm_migration::prelude::*;
+
+mod m001_create_users;
+mod m007_add_admin_flag;
+
+pub struct Migrator;
+
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        // vec![ignored] should not be treated as the migration list
+        vec![
+            // comment with ] should not receive inserted migrations
+            Box::new(m001_create_users::Migration),
+            Box::new(m007_add_admin_flag::Migration),
+        ]
+    }
+}
+"#;
+
+const MIGRATION_LIB_WITHOUT_USER_ORG_COLUMN: &str = r#"//! Database migrations.
+
+pub use sea_orm_migration::prelude::*;
+
+mod m001_create_users;
+mod m007_add_admin_flag;
+
+pub struct Migrator;
+
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        vec![
+            Box::new(m001_create_users::Migration),
+            Box::new(m007_add_admin_flag::Migration),
+        ]
+    }
+}
+"#;
+
+fn write_organization_prerequisites(project_dir: &Path, migration_lib: &str) {
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth");
+    fs::create_dir_all(project_dir.join("src/entities")).expect("create entities");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+
+    write_basic_cargo(project_dir);
+    write_org_aware_contract_files(project_dir);
+    fs::write(project_dir.join("src/entities/mod.rs"), "pub mod user;\n").expect("write mod");
+    fs::write(
+        project_dir.join("migration/src/m001_create_users.rs"),
+        "// users migration\n",
+    )
+    .expect("write users migration");
+    fs::write(
+        project_dir.join("migration/src/m007_add_admin_flag.rs"),
+        r#"
+enum Users {
+    OrganizationId,
+}
+
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Users::Table)
+                    .add_column(ColumnDef::new(Users::OrganizationId).uuid().null())
+                    .to_owned(),
+            )
+            .await
+    }
+}
+"#,
+    )
+    .expect("write user org migration");
+    fs::write(project_dir.join("migration/src/lib.rs"), migration_lib)
+        .expect("write migration lib");
+}
+
+fn write_basic_cargo(project_dir: &Path) {
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["auth", "database"] }
+"#;
+    fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+}
+
+fn write_org_aware_contract_files(project_dir: &Path) {
+    fs::write(
+        project_dir.join("src/auth/actor.rs"),
+        r#"
+pub struct RequestActor {
+    pub membership: Option<String>,
+}
+
+impl RequestActor {
+    pub async fn for_organization_with_verifier() {}
+    pub fn require_org_role(&self, _allowed_roles: &[&str]) {}
+}
+"#,
+    )
+    .expect("write actor");
+    fs::write(
+        project_dir.join("src/entities/user.rs"),
+        "pub struct Model { pub id: String, pub organization_id: Option<String> }\n",
+    )
+    .expect("write user");
 }

@@ -121,7 +121,7 @@ pub enum NewPreset {
 
 #[derive(Parser, Debug)]
 pub struct AddArgs {
-    /// Feature to add (auth, database, openapi, validation, cache, sessions, jobs, websocket, metrics, email)
+    /// Feature to add (auth, database, openapi, validation, cache, sessions, jobs, websocket, metrics, email, organizations)
     #[arg(value_enum)]
     pub feature: AddFeature,
 
@@ -136,6 +136,10 @@ pub struct AddArgs {
     /// Attempt to wire the new feature into src/main.rs
     #[arg(long, default_value = "false")]
     pub wire: bool,
+
+    /// Generate database-backed organizations scaffolding
+    #[arg(long, default_value = "false")]
+    pub db: bool,
 }
 
 #[derive(ValueEnum, Debug, Copy, Clone, Eq, PartialEq)]
@@ -150,6 +154,7 @@ pub enum AddFeature {
     Websocket,
     Metrics,
     Email,
+    Organizations,
 }
 
 #[derive(Parser, Debug)]
@@ -519,6 +524,7 @@ impl std::fmt::Display for AddFeature {
             AddFeature::Websocket => "websocket",
             AddFeature::Metrics => "metrics",
             AddFeature::Email => "email",
+            AddFeature::Organizations => "organizations",
         };
         write!(f, "{}", name)
     }

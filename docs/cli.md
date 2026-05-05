@@ -46,7 +46,7 @@ The first interactive screen promotes `api`, `saas`, and `worker`; `minimal`, ba
 In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
 For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
 The API preset already seeds a sample `todo` resource wired through entity, repository, and service layers, with `limit`, `offset`, and `q` support on the list endpoint.
-The SaaS preset generates the B2B auth/billing/organizations/admin backend scaffold with Postgres Docker, CI, env defaults, and a public `GET /billing/plans` smoke endpoint.
+The SaaS preset generates the B2B auth/billing/organizations/admin backend scaffold with Postgres Docker, CI, env defaults, and a public `GET /billing/public/plans` smoke endpoint.
 
 Use a preset to apply common defaults:
 
@@ -121,11 +121,14 @@ tideway add auth
 tideway add auth --wire
 tideway add database
 tideway add database --wire
+tideway add organizations --wire --db
 tideway add openapi
 tideway add openapi --wire
 ```
 
 When adding OpenAPI, the CLI creates `src/openapi_docs.rs` if it does not exist.
+`tideway add organizations --wire --db` is a focused backend add path: it generates organization routes, entities, and migrations without billing/admin scaffolding.
+It currently expects an existing org-aware DB-backed auth/user contract (`RequestActor` organization helpers, `user.organization_id`, and registered user migrations). If you only need an organization-shaped CRUD resource, use `tideway resource organization --profile tenant`.
 
 ### `tideway resource`
 
@@ -210,9 +213,12 @@ This is a secondary workflow and is not part of the primary API path.
 
 ```bash
 tideway generate auth
+tideway generate organizations --with-views
 tideway generate billing --with-views
 tideway generate all --framework vue
 ```
+
+`tideway generate organizations` is frontend-only. It does not generate backend organization routes, membership storage, or migrations.
 
 ### `tideway setup` (advanced)
 

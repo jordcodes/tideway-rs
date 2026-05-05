@@ -17,22 +17,43 @@ use tideway::billing::{
     PlanStore, PortalManager, StoredPlan, WebhookHandler, WebhookOutcome,
     validate_plan, validate_plan_with_stripe,
 };
-use tideway::Result;
+use tideway::{Result, TidewayError};
 
 {{#if has_organizations}}
 use crate::entities::organization;
 {{/if}}
+use crate::auth::RequestActor;
 use crate::error::BillingState;
 
-/// Billing routes
-pub fn billing_routes() -> Router<Arc<BillingState>> {
+/// Public billing routes for pricing-safe data.
+pub fn public_billing_routes() -> Router<Arc<BillingState>> {
     Router::new()
         .route("/plans", get(list_plans))
+}
+
+/// Authenticated billing routes for customer billing actions.
+pub fn authenticated_billing_routes() -> Router<Arc<BillingState>> {
+    Router::new()
         .route("/checkout", post(create_checkout))
         .route("/subscription", get(get_subscription))
         .route("/invoices", get(list_invoices))
         .route("/portal", post(create_portal))
-        .route("/webhook", post(handle_webhook))
+}
+
+/// Stripe webhook routes. These are public network paths but signature-verified.
+pub fn billing_webhook_routes() -> Router<Arc<BillingState>> {
+    Router::new().route("/stripe", post(handle_webhook))
+}
+
+/// Legacy combined billing router.
+///
+/// New scaffolds mount `public_billing_routes`, `authenticated_billing_routes`, and
+/// `billing_webhook_routes` separately so the access boundary is visible in main.rs.
+pub fn billing_routes() -> Router<Arc<BillingState>> {
+    Router::new()
+        .merge(public_billing_routes())
+        .merge(authenticated_billing_routes())
+        .nest("/webhook", billing_webhook_routes())
 }
 
 // Request/Response types
@@ -162,9 +183,12 @@ async fn list_plans(
 
 async fn create_checkout(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     Json(body): Json<CheckoutRequest>,
 ) -> Result<Json<CheckoutResponse>> {
     {{#if has_organizations}}
+    authorize_billing_owner(&headers, &state, &body.organization_id).await?;
+
     let org = organization::Entity::find_by_id(&body.organization_id)
         .one(state.db.as_ref())
         .await
@@ -186,6 +210,8 @@ async fn create_checkout(
 
     let session = checkout_manager.create_checkout_session(&org, request).await?;
     {{else}}
+    authorize_billing_owner(&headers, &state, &body.user_id).await?;
+
     // For B2C, create a simple billable entity
     let billable = SimpleBillable {
         id: body.user_id.clone(),
@@ -216,6 +242,7 @@ async fn create_checkout(
 
 async fn get_subscription(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<SubscriptionRequest>,
 ) -> Result<Json<SubscriptionResponse>> {
     {{#if has_organizations}}
@@ -223,6 +250,7 @@ async fn get_subscription(
     {{else}}
     let billable_id = &params.user_id;
     {{/if}}
+    authorize_billing_member(&headers, &state, billable_id).await?;
 
     let subscription = state.billing_store
         .get_subscription(billable_id)
@@ -252,6 +280,7 @@ async fn get_subscription(
 
 async fn list_invoices(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<InvoicesRequest>,
 ) -> Result<Json<InvoicesListResponse>> {
     {{#if has_organizations}}
@@ -259,6 +288,7 @@ async fn list_invoices(
     {{else}}
     let billable_id = &params.user_id;
     {{/if}}
+    authorize_billing_member(&headers, &state, billable_id).await?;
 
     let invoice_manager = InvoiceManager::new(
         state.billing_store.clone(),
@@ -289,9 +319,12 @@ async fn list_invoices(
 
 async fn create_portal(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     Json(body): Json<PortalRequest>,
 ) -> Result<Json<PortalResponse>> {
     {{#if has_organizations}}
+    authorize_billing_owner(&headers, &state, &body.organization_id).await?;
+
     let _org = organization::Entity::find_by_id(&body.organization_id)
         .one(state.db.as_ref())
         .await
@@ -300,6 +333,8 @@ async fn create_portal(
 
     let billable_id = &body.organization_id;
     {{else}}
+    authorize_billing_owner(&headers, &state, &body.user_id).await?;
+
     let billable_id = &body.user_id;
     {{/if}}
 
@@ -314,6 +349,39 @@ async fn create_portal(
     Ok(Json(PortalResponse {
         portal_url: session.url,
     }))
+}
+
+async fn authorize_billing_member(
+    headers: &HeaderMap,
+    state: &Arc<BillingState>,
+    billable_id: &str,
+) -> Result<()> {
+    {{#if has_organizations}}
+    let _actor = RequestActor::for_organization(headers, state.db.as_ref(), billable_id).await?;
+    {{else}}
+    let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
+    if actor.user.id.to_string() != billable_id {
+        return Err(TidewayError::Forbidden("Billing resource access denied".into()));
+    }
+    {{/if}}
+    Ok(())
+}
+
+async fn authorize_billing_owner(
+    headers: &HeaderMap,
+    state: &Arc<BillingState>,
+    billable_id: &str,
+) -> Result<()> {
+    {{#if has_organizations}}
+    let actor = RequestActor::for_organization(headers, state.db.as_ref(), billable_id).await?;
+    actor.require_org_role(&["owner", "admin"])?;
+    {{else}}
+    let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
+    if actor.user.id.to_string() != billable_id {
+        return Err(TidewayError::Forbidden("Billing resource access denied".into()));
+    }
+    {{/if}}
+    Ok(())
 }
 
 async fn handle_webhook(
@@ -480,7 +548,7 @@ use axum::routing::{delete, put};
 use tideway::billing::PlanInterval;
 
 /// Admin plan management routes (requires admin authentication).
-pub fn admin_plan_routes() -> Router<Arc<BillingState>> {
+pub fn admin_billing_routes() -> Router<Arc<BillingState>> {
     Router::new()
         .route("/plans", get(admin_list_plans))
         .route("/plans", post(admin_create_plan))
@@ -490,6 +558,11 @@ pub fn admin_plan_routes() -> Router<Arc<BillingState>> {
         .route("/plans/{plan_id}", put(admin_update_plan))
         .route("/plans/{plan_id}", delete(admin_delete_plan))
         .route("/plans/{plan_id}/active", post(admin_set_plan_active))
+}
+
+/// Legacy name for admin billing routes.
+pub fn admin_plan_routes() -> Router<Arc<BillingState>> {
+    admin_billing_routes()
 }
 
 // Admin Plan Request/Response Types
@@ -681,10 +754,17 @@ pub struct ImportError {
 
 // Admin Plan Handlers
 
+async fn require_platform_admin(headers: &HeaderMap, state: &Arc<BillingState>) -> Result<()> {
+    let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
+    actor.require_admin()
+}
+
 /// List all plans (including inactive) for admin.
 async fn admin_list_plans(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
 ) -> Result<Json<AdminPlansListResponse>> {
+    require_platform_admin(&headers, &state).await?;
     let plans = state.billing_store.list_all_plans().await?;
     let plans = plans.into_iter().map(AdminPlanResponse::from).collect();
     Ok(Json(AdminPlansListResponse { plans }))
@@ -693,8 +773,10 @@ async fn admin_list_plans(
 /// Get a single plan by ID.
 async fn admin_get_plan(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
 ) -> Result<Json<AdminPlanResponse>> {
+    require_platform_admin(&headers, &state).await?;
     let plan = state.billing_store
         .get_plan(&plan_id)
         .await?
@@ -712,8 +794,10 @@ async fn admin_get_plan(
 /// but has different configuration, returns 409 Conflict.
 async fn admin_create_plan(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     Json(body): Json<CreatePlanRequest>,
 ) -> Result<Json<AdminPlanResponse>> {
+    require_platform_admin(&headers, &state).await?;
     // Idempotency check: if plan already exists with same ID
     if let Some(existing) = state.billing_store.get_plan(&body.id).await? {
         // If stripe_price_id matches, this is likely a retry - return existing
@@ -768,9 +852,11 @@ async fn admin_create_plan(
 /// Update an existing plan.
 async fn admin_update_plan(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
     Json(body): Json<UpdatePlanRequest>,
 ) -> Result<Json<AdminPlanResponse>> {
+    require_platform_admin(&headers, &state).await?;
     let mut plan = state.billing_store
         .get_plan(&plan_id)
         .await?
@@ -850,8 +936,10 @@ async fn admin_update_plan(
 /// Consider using `set_plan_active(false)` to deactivate instead.
 async fn admin_delete_plan(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
 ) -> Result<Json<tideway::MessageResponse>> {
+    require_platform_admin(&headers, &state).await?;
     // Check plan exists
     let _ = state.billing_store
         .get_plan(&plan_id)
@@ -879,9 +967,11 @@ async fn admin_delete_plan(
 /// Set plan active/inactive status.
 async fn admin_set_plan_active(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     axum::extract::Path(plan_id): axum::extract::Path<String>,
     Json(body): Json<SetPlanActiveRequest>,
 ) -> Result<Json<AdminPlanResponse>> {
+    require_platform_admin(&headers, &state).await?;
     // Check plan exists
     let _ = state.billing_store
         .get_plan(&plan_id)
@@ -902,7 +992,9 @@ async fn admin_set_plan_active(
 /// Returns plans in a format suitable for importing into another environment.
 async fn admin_export_plans(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
 ) -> Result<Json<PlanExport>> {
+    require_platform_admin(&headers, &state).await?;
     let plans = state.billing_store.list_all_plans().await?;
     let exported: Vec<ExportedPlan> = plans.into_iter().map(ExportedPlan::from).collect();
 
@@ -928,8 +1020,10 @@ async fn admin_export_plans(
 /// - "update": Update existing plans with imported data
 async fn admin_import_plans(
     State(state): State<Arc<BillingState>>,
+    headers: HeaderMap,
     Json(body): Json<ImportPlansRequest>,
 ) -> Result<Json<ImportPlansResponse>> {
+    require_platform_admin(&headers, &state).await?;
     let mut created = 0u32;
     let mut updated = 0u32;
     let mut skipped = 0u32;

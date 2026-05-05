@@ -116,6 +116,7 @@ pub(crate) fn scaffold(
         has_tideway_features: false,
         has_auth_feature: false,
         has_database_feature: false,
+        has_billing_feature: true,
         has_openapi_feature: false,
         needs_arc: false,
         has_config: false,

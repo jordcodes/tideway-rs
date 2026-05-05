@@ -2,7 +2,9 @@
 
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
+{{#if has_billing_feature}}
 use tideway::billing::BillableEntity;
+{{/if}}
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize)]
 #[sea_orm(table_name = "organizations")]
@@ -32,6 +34,7 @@ impl Related<super::organization_member::Entity> for Entity {
 
 impl ActiveModelBehavior for ActiveModel {}
 
+{{#if has_billing_feature}}
 /// Implement BillableEntity for organizations to enable Stripe billing.
 impl BillableEntity for Model {
     fn billable_id(&self) -> &str {
@@ -50,3 +53,4 @@ impl BillableEntity for Model {
         Some(&self.name)
     }
 }
+{{/if}}

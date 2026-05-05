@@ -23,7 +23,7 @@ mod organizations;
 mod admin;
 
 use crate::auth::AuthModule;
-use crate::billing::billing_routes;
+use crate::billing::{admin_billing_routes, authenticated_billing_routes, billing_webhook_routes, public_billing_routes};
 {{#if has_organizations}}
 use crate::organizations::OrganizationModule;
 {{/if}}
@@ -137,9 +137,22 @@ async fn main() -> anyhow::Result<()> {
         webhook_secret: app_config.stripe_webhook_secret.clone(),
     });
 
-    // Build billing router
-    let billing_router: Router<()> = Router::new()
-        .nest("/billing", billing_routes())
+    // Build billing routers with explicit access boundaries:
+    // - /billing/public/* is pricing-safe public data
+    // - /billing/* requires authenticated customer/org access in handlers
+    // - /billing/webhook/* is public network ingress but Stripe signature-verified
+    // - /admin/billing/* requires platform admin access in handlers
+    let public_billing_router: Router<()> = Router::new()
+        .nest("/billing/public", public_billing_routes())
+        .with_state(billing_state.clone());
+    let authenticated_billing_router: Router<()> = Router::new()
+        .nest("/billing", authenticated_billing_routes())
+        .with_state(billing_state.clone());
+    let billing_webhook_router: Router<()> = Router::new()
+        .nest("/billing/webhook", billing_webhook_routes())
+        .with_state(billing_state.clone());
+    let admin_billing_router: Router<()> = Router::new()
+        .nest("/admin/billing", admin_billing_routes())
         .with_state(billing_state);
 
     // Build tideway config
@@ -163,7 +176,10 @@ async fn main() -> anyhow::Result<()> {
         .register_module(organization_module)
         {{/if}}
         .register_module(admin_module)
-        .merge_router(billing_router)
+        .merge_router(public_billing_router)
+        .merge_router(authenticated_billing_router)
+        .merge_router(billing_webhook_router)
+        .merge_router(admin_billing_router)
         .serve()
         .await?;
 

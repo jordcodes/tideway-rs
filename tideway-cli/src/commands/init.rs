@@ -522,7 +522,7 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     // Billing note
     if modules.billing {
         body.push_str("    // TODO: Set up billing routes\n");
-        body.push_str("    // let billing_router = billing::billing_routes();\n\n");
+        body.push_str("    // let billing_router = billing::authenticated_billing_routes();\n\n");
     }
 
     // Server binding

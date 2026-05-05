@@ -145,6 +145,8 @@ pub struct BackendTemplateContext {
     pub has_auth_feature: bool,
     /// Whether database is requested (starter templates)
     pub has_database_feature: bool,
+    /// Whether billing is requested (backend templates)
+    pub has_billing_feature: bool,
     /// Whether openapi is requested (starter templates)
     pub has_openapi_feature: bool,
     /// Whether starter templates need Arc

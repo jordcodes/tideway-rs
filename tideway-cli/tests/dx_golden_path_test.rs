@@ -161,7 +161,7 @@ fn test_golden_path_saas_scaffold_supports_doctor_and_dev_plan() {
         new_stdout
     );
     assert!(
-        new_stdout.contains("curl http://localhost:8000/billing/plans"),
+        new_stdout.contains("curl http://localhost:8000/billing/public/plans"),
         "expected saas smoke check in output, got:\n{}",
         new_stdout
     );

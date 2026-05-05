@@ -357,27 +357,37 @@ impl MigrationTrait for Migration {
 
 The `tideway backend` command creates these routes:
 
-#### Public Routes (for pricing pages)
+#### Public Routes
 
 ```
-GET /billing/plans    → List active plans
+GET /billing/public/plans    → List active plans for pricing pages
+POST /billing/webhook/stripe → Stripe webhook ingress (signature-verified)
+```
+
+#### Authenticated Routes
+
+```
+POST /billing/checkout       → Create checkout session (authenticated)
+GET /billing/subscription    → Get subscription state (authenticated)
+GET /billing/invoices        → List invoices (authenticated)
+POST /billing/portal         → Create billing portal session (authenticated)
 ```
 
 #### Admin Routes (protected)
 
 ```
-GET    /admin/plans           → List all plans (including inactive)
-POST   /admin/plans           → Create a new plan
-GET    /admin/plans/:id       → Get a single plan
-PUT    /admin/plans/:id       → Update a plan
-DELETE /admin/plans/:id       → Delete a plan
-POST   /admin/plans/:id/active → Toggle active status
+GET    /admin/billing/plans            → List all plans (including inactive)
+POST   /admin/billing/plans            → Create a new plan
+GET    /admin/billing/plans/:id        → Get a single plan
+PUT    /admin/billing/plans/:id        → Update a plan
+DELETE /admin/billing/plans/:id        → Delete a plan
+POST   /admin/billing/plans/:id/active → Toggle active status
 ```
 
 #### Example: Create Plan Request
 
 ```json
-POST /admin/plans
+POST /admin/billing/plans
 {
   "id": "starter",
   "name": "Starter Plan",
@@ -695,7 +705,7 @@ validate_plan_with_stripe(&plan, &validator).await?;
 The admin create plan endpoint supports optional Stripe validation:
 
 ```json
-POST /admin/plans
+POST /admin/billing/plans
 {
   "id": "starter",
   "name": "Starter Plan",

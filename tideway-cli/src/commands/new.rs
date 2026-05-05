@@ -140,6 +140,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         has_tideway_features,
         has_auth_feature,
         has_database_feature,
+        has_billing_feature: features.contains("billing"),
         has_openapi_feature,
         needs_arc,
         has_config: args.with_config,
@@ -1008,6 +1009,7 @@ fn backend_template_engine(
         has_tideway_features: false,
         has_auth_feature: false,
         has_database_feature: false,
+        has_billing_feature: true,
         has_openapi_feature: false,
         needs_arc: false,
         has_config: false,
@@ -1144,7 +1146,7 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
         Some(NewPreset::Saas) => {
             println!("{}", "SaaS smoke checks:".yellow().bold());
             println!("  curl http://localhost:8000/health");
-            println!("  curl http://localhost:8000/billing/plans");
+            println!("  curl http://localhost:8000/billing/public/plans");
             println!();
         }
         Some(NewPreset::Worker) => {
