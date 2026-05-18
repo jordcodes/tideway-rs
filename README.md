@@ -137,7 +137,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.19"
+tideway = "0.7.20"
 tokio = { version = "1.48", features = ["full"] }
 ```
 

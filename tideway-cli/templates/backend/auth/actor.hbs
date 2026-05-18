@@ -145,7 +145,7 @@ async fn authenticated_user(
     verifier: &JwtVerifier<AccessTokenClaims>,
 ) -> Result<user::Model> {
     let token = bearer_token(headers)?;
-    let token_data = verifier.verify(token).await?;
+    let token_data = verifier.verify_access_token(token).await?;
 
     let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
         .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;

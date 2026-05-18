@@ -1,3 +1,4 @@
+use crate::auth::jwt_issuer::{AccessTokenClaims, TokenType};
 use crate::error::{Result, TidewayError};
 use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, decode_header};
 use reqwest::Client;
@@ -242,9 +243,31 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     }
 }
 
+impl<T> JwtVerifier<AccessTokenClaims<T>>
+where
+    T: DeserializeOwned + Clone + Serialize,
+{
+    /// Verify and decode an access token.
+    ///
+    /// This rejects refresh tokens even when they are signed by the same issuer.
+    pub async fn verify_access_token(
+        &self,
+        token: &str,
+    ) -> Result<TokenData<AccessTokenClaims<T>>> {
+        let token_data = self.verify(token).await?;
+
+        if token_data.claims.token_type != TokenType::Access {
+            return Err(TidewayError::unauthorized("Expected access token"));
+        }
+
+        Ok(token_data)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::jwt_issuer::{JwtIssuer, JwtIssuerConfig, TokenSubject};
     use jsonwebtoken::{EncodingKey, Header, encode};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -331,6 +354,23 @@ mod tests {
         assert!(
             result.is_err(),
             "Token with 'none' algorithm should be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_verify_access_token_rejects_refresh_token() {
+        let secret = "test_secret_for_access_token_purpose_checks";
+        let issuer = JwtIssuer::new(JwtIssuerConfig::with_secret(secret, "test-app")).unwrap();
+        let tokens = issuer.issue(TokenSubject::new("user-123"), true).unwrap();
+        let verifier = JwtVerifier::<AccessTokenClaims>::from_secret(secret.as_bytes());
+
+        let access_result = verifier.verify_access_token(&tokens.access_token).await;
+        assert!(access_result.is_ok(), "access tokens should be accepted");
+
+        let refresh_result = verifier.verify_access_token(&tokens.refresh_token).await;
+        assert!(
+            refresh_result.is_err(),
+            "refresh tokens must not authenticate access-token paths"
         );
     }
 }

@@ -107,29 +107,39 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
     ///
     /// This method handles idempotency and routes to the appropriate handler.
     pub async fn handle_event(&self, event: WebhookEvent) -> Result<WebhookOutcome> {
-        // Check idempotency
-        if self.store.is_event_processed(&event.id).await? {
+        if !is_supported_event_type(&event.event_type) {
+            return Ok(WebhookOutcome::Ignored);
+        }
+
+        // Atomically claim idempotency before any handler side effects.
+        if !self.store.claim_event(&event.id).await? {
             return Ok(WebhookOutcome::AlreadyProcessed);
         }
 
-        // Route to handler
         let outcome = match event.event_type.as_str() {
-            "checkout.session.completed" => self.handle_checkout_completed(&event).await?,
+            "checkout.session.completed" => self.handle_checkout_completed(&event).await,
             "customer.subscription.created" | "customer.subscription.updated" => {
-                self.handle_subscription_updated(&event).await?
+                self.handle_subscription_updated(&event).await
             }
-            "customer.subscription.deleted" => self.handle_subscription_deleted(&event).await?,
-            "invoice.paid" => self.handle_invoice_paid(&event).await?,
-            "invoice.payment_failed" => self.handle_payment_failed(&event).await?,
-            _ => WebhookOutcome::Ignored,
+            "customer.subscription.deleted" => self.handle_subscription_deleted(&event).await,
+            "invoice.paid" => self.handle_invoice_paid(&event).await,
+            "invoice.payment_failed" => self.handle_payment_failed(&event).await,
+            _ => unreachable!("unsupported event types return before claiming idempotency"),
         };
 
-        // Mark as processed (only for non-ignored events)
-        if !matches!(outcome, WebhookOutcome::Ignored) {
-            self.store.mark_event_processed(&event.id).await?;
+        match outcome {
+            Ok(outcome) => Ok(outcome),
+            Err(error) => {
+                if let Err(release_error) = self.store.release_event_claim(&event.id).await {
+                    tracing::warn!(
+                        event_id = %event.id,
+                        error = %release_error,
+                        "Failed to release billing webhook event claim after handler error"
+                    );
+                }
+                Err(error)
+            }
         }
-
-        Ok(outcome)
     }
 
     /// Handle checkout.session.completed event.
@@ -411,6 +421,18 @@ struct SignatureParts {
     signature: String,
 }
 
+fn is_supported_event_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "checkout.session.completed"
+            | "customer.subscription.created"
+            | "customer.subscription.updated"
+            | "customer.subscription.deleted"
+            | "invoice.paid"
+            | "invoice.payment_failed"
+    )
+}
+
 /// Parse the Stripe-Signature header.
 fn parse_signature_header(header: &str) -> Result<SignatureParts> {
     let mut timestamp = None;
@@ -626,6 +648,29 @@ mod tests {
         // Second call returns already processed
         let result = handler.handle_event(event).await.unwrap();
         assert_eq!(result, WebhookOutcome::AlreadyProcessed);
+    }
+
+    #[tokio::test]
+    async fn test_handle_event_releases_claim_on_error() {
+        let store = InMemoryBillingStore::new();
+        let plans = create_test_plans();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", plans);
+
+        let event = WebhookEvent {
+            id: "evt_sub_invalid".to_string(),
+            event_type: "customer.subscription.updated".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({}),
+            },
+            created: 1234567890,
+        };
+
+        let result = handler.handle_event(event).await;
+        assert!(result.is_err());
+        assert!(
+            store.get_processed_events().is_empty(),
+            "failed events should release their idempotency claim for retry"
+        );
     }
 
     #[tokio::test]

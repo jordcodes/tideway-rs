@@ -616,6 +616,33 @@ impl BillingStore for SeaOrmBillingStore {
         Ok(event.is_some())
     }
 
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        tracing::debug!(event_id = %event_id, "claiming event for processing");
+
+        let now = chrono::Utc::now().fixed_offset();
+
+        let event = billing_processed_event::ActiveModel {
+            event_id: Set(event_id.to_string()),
+            processed_at: Set(now),
+        };
+
+        let result = billing_processed_event::Entity::insert(event)
+            .on_conflict(
+                OnConflict::column(billing_processed_event::Column::EventId)
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .do_nothing()
+            .exec(&self.db)
+            .await;
+
+        match result {
+            Ok(_) => Ok(true),
+            Err(sea_orm::DbErr::RecordNotInserted) => Ok(false),
+            Err(e) => Err(TidewayError::Database(e.to_string())),
+        }
+    }
+
     async fn mark_event_processed(&self, event_id: &str) -> Result<()> {
         tracing::debug!(event_id = %event_id, "marking event as processed");
 
@@ -635,6 +662,17 @@ impl BillingStore for SeaOrmBillingStore {
                     .to_owned(),
             )
             .do_nothing()
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn release_event_claim(&self, event_id: &str) -> Result<()> {
+        tracing::debug!(event_id = %event_id, "releasing event processing claim");
+
+        billing_processed_event::Entity::delete_by_id(event_id.to_string())
             .exec(&self.db)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;

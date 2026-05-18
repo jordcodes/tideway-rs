@@ -110,8 +110,30 @@ pub trait BillingStore: Send + Sync {
     /// Check if a webhook event has already been processed.
     async fn is_event_processed(&self, event_id: &str) -> Result<bool>;
 
+    /// Atomically claim a webhook event before processing side effects.
+    ///
+    /// Returns `Ok(true)` when this caller claimed the event and should process it.
+    /// Returns `Ok(false)` when the event was already claimed or processed.
+    ///
+    /// Production stores should override this with an atomic insert-or-ignore operation.
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        if self.is_event_processed(event_id).await? {
+            return Ok(false);
+        }
+        self.mark_event_processed(event_id).await?;
+        Ok(true)
+    }
+
     /// Mark a webhook event as processed.
     async fn mark_event_processed(&self, event_id: &str) -> Result<()>;
+
+    /// Release a previously claimed webhook event after a processing failure.
+    ///
+    /// Stores that keep claims and processed events in the same table should remove the claim
+    /// so Stripe can retry the event.
+    async fn release_event_claim(&self, _event_id: &str) -> Result<()> {
+        Ok(())
+    }
 
     // Optional: cleanup old events
 
@@ -704,6 +726,21 @@ pub mod test {
                 .contains_key(event_id))
         }
 
+        async fn claim_event(&self, event_id: &str) -> Result<bool> {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            Ok(self
+                .inner
+                .processed_events
+                .write()
+                .unwrap()
+                .insert(event_id.to_string(), now)
+                .is_none())
+        }
+
         async fn mark_event_processed(&self, event_id: &str) -> Result<()> {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -715,6 +752,15 @@ pub mod test {
                 .write()
                 .unwrap()
                 .insert(event_id.to_string(), now);
+            Ok(())
+        }
+
+        async fn release_event_claim(&self, event_id: &str) -> Result<()> {
+            self.inner
+                .processed_events
+                .write()
+                .unwrap()
+                .remove(event_id);
             Ok(())
         }
 
