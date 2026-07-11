@@ -63,6 +63,7 @@ impl TodoStore {
 
 static TODO_STORE: LazyLock<Mutex<TodoStore>> = LazyLock::new(|| Mutex::new(TodoStore::new()));
 
+#[cfg(test)]
 async fn reset_store() {
     *TODO_STORE.lock().await = TodoStore::new();
 }

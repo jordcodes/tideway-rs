@@ -642,6 +642,7 @@ fn normalize_features(features: &[String]) -> BTreeSet<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 

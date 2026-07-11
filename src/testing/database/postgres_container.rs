@@ -72,7 +72,6 @@ impl Drop for PostgresContainer {
             if let Some(container) = self.container.take() {
                 mem::forget(container);
             }
-            return;
         }
     }
 }

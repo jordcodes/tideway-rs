@@ -531,6 +531,7 @@ fn write_env_example(path: &Path, lines: &[String]) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_env_fixes(
     env_file: &Path,
     env_example_file: &Path,

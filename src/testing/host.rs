@@ -501,6 +501,12 @@ impl TestHostBootstrap {
     }
 }
 
+impl Default for TestHostBootstrap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TestHostBuilder {
     pub fn new(app: App) -> Self {
         Self {

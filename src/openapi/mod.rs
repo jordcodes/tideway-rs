@@ -130,10 +130,12 @@ mod tests {
 
     #[test]
     fn test_create_openapi_router_with_swagger_and_spec_enabled() {
-        let mut config = OpenApiConfig::default();
-        config.enabled = true;
-        config.swagger_ui = true;
-        config.serve_spec = true;
+        let config = OpenApiConfig {
+            enabled: true,
+            swagger_ui: true,
+            serve_spec: true,
+            ..Default::default()
+        };
 
         let router = create_openapi_router(ADoc::openapi(), &config);
         let _ = router;

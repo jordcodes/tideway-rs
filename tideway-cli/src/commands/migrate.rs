@@ -130,7 +130,7 @@ fn has_dependency(doc: &toml_edit::DocumentMut, dependency: &str) -> bool {
         .any(|deps| deps.get(dependency).is_some())
 }
 
-fn dependency_sections<'a>(doc: &'a toml_edit::DocumentMut) -> Vec<&'a toml_edit::Item> {
+fn dependency_sections(doc: &toml_edit::DocumentMut) -> Vec<&toml_edit::Item> {
     let mut sections = Vec::new();
 
     if let Some(item) = doc.get("dependencies") {
