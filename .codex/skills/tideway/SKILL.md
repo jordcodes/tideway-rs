@@ -31,10 +31,10 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
   - Framework crate: `Cargo.toml`
   - CLI crate and scaffold framework pin: `tideway-cli/Cargo.toml`
 - Update app dependencies to the latest released framework version. Example only:
-  - `tideway = "0.7.20"`
+  - `tideway = "0.7.21"`
   - Then run `cargo update -p tideway` and the app test suite.
 - Update the CLI when scaffolding or refreshing generated code. Example only:
-  - `cargo install tideway-cli --version 0.1.33`
+  - `cargo install tideway-cli --version 0.1.34`
 - For apps using auth, search for protected-route JWT access checks:
   - `rg "verify\\(token\\)|JwtVerifier<AccessTokenClaims"`
 - Access-token authentication paths should call:

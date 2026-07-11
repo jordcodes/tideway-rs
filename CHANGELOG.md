@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [0.7.21] - 2026-07-11
+
+### Security
+
+- Access-token verification now rejects refresh tokens and enforces issuer/audience checks in generated auth paths.
+- HS256 issuer and verifier setup now provides checked constructors that reject short and known-placeholder secrets; unchecked constructors are deprecated.
+- Credentialed CORS configurations now reject wildcard origins and headers.
+- Request logging redacts sensitive headers, query parameters, and structured body fields, and bounds body preview work.
+- Generated billing webhooks claim events atomically before side effects and release retryable claims safely.
+- Organization invitations are claimed atomically and cannot be consumed more than once.
+
+### Fixed
+
+- Per-IP rate limiting no longer trusts forwarded headers by default and uses a shared fallback bucket when client IP data is unavailable.
+- In-memory job dequeue/retry coordination and WebSocket broadcasts avoid lock contention and stale membership cleanup races.
+- Generated billing redirects are validated and billing route access boundaries are explicit.
+- CLI dependency editing returns actionable errors for malformed `Cargo.toml` tables and feature arrays instead of panicking.
+
+### Added
+
+- Hot-path Criterion benchmarks and a manual-only end-to-end HTTP/WebSocket load-test workflow with artifact upload.
+- Dependency auditing, formatting, all-feature Clippy, and MSRV checks in CI.
+- Immutable SHA pinning and least-privilege permissions for GitHub Actions workflows.
+
+### Changed
+
+- Minimum supported Rust version is now 1.88 so the dependency graph includes the security-fixed `time` release.
+- `tideway-cli` 0.1.34 scaffolds Tideway 0.7.21 with safer auth and billing defaults.
+
+### Performance
+
+- Reduced allocation and lock hold time in request logging, rate limiting, jobs, and WebSocket hot paths.
+- Added reproducible microbenchmarks and integration load-test baselines for future regression tracking.
+
+### DX Gate
+
+- Quickstart parity, documentation drift, scaffold idempotency, golden-path integration, CLI filesystem policy, and public API checks pass.
+- Generated API and SaaS presets compile and test against the workspace source.
+
+### Migration Notes
+
+- Install Rust 1.88 or newer before upgrading.
+- Replace `JwtIssuerConfig::with_secret` with `with_secure_secret` and `JwtVerifier::from_secret` with `from_secret_checked`.
+- Credentialed CORS must list explicit origins and headers rather than using `*`.
+- No public API removals are included; deprecated JWT constructors remain available for compatibility.
+
 ## [0.7.19] - 2026-05-04
 
 ### Changed
