@@ -1,0 +1,51 @@
+name: Integration load tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: HTTP workload duration
+        default: 30s
+        required: false
+      concurrency:
+        description: Concurrent HTTP workers
+        default: "50"
+        required: false
+      websocket_clients:
+        description: WebSocket clients
+        default: "1000"
+        required: false
+  schedule:
+    - cron: "43 4 * * 1"
+
+jobs:
+  integration-load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install oha
+        run: cargo install oha --version 1.14.0 --locked
+
+      - name: Run integration workloads
+        env:
+          DURATION: ${{ inputs.duration || '30s' }}
+          CONCURRENCY: ${{ inputs.concurrency || '50' }}
+          WS_CLIENTS: ${{ inputs.websocket_clients || '1000' }}
+          RESULTS_DIR: load-tests/results/ci
+        run: ./scripts/load-test.sh
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tideway-load-results
+          path: load-tests/results/ci

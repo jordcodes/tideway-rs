@@ -1,5 +1,6 @@
 [workspace]
 members = [".", "tideway-macros", "tideway-cli"]
+exclude = ["load-tests/app"]
 
 [package]
 name = "tideway"
