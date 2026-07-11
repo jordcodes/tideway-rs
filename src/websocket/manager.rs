@@ -219,7 +219,7 @@ impl ConnectionManager {
                 conn_guard.sender_clone()
             };
 
-            if sender.send(msg.clone()).await.is_err() {
+            if sender.try_send(msg.clone()).is_err() {
                 errors.push(TidewayError::internal(
                     "Failed to send message: channel full or connection closed",
                 ));
@@ -285,7 +285,7 @@ impl ConnectionManager {
                 conn_guard.sender_clone()
             };
 
-            if sender.send(msg.clone()).await.is_err() {
+            if sender.try_send(msg.clone()).is_err() {
                 errors.push(TidewayError::internal(
                     "Failed to send message: channel full or connection closed",
                 ));
@@ -353,7 +353,7 @@ impl ConnectionManager {
                 conn_guard.sender_clone()
             };
 
-            if sender.send(msg.clone()).await.is_err() {
+            if sender.try_send(msg.clone()).is_err() {
                 errors.push(TidewayError::internal(
                     "Failed to send message: channel full or connection closed",
                 ));

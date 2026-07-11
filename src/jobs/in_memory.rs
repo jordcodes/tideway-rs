@@ -16,6 +16,14 @@ use uuid::Uuid;
 
 /// Default maximum size for completed/failed job history
 const DEFAULT_MAX_HISTORY_SIZE: usize = 10_000;
+const MAX_RETRY_BACKOFF_SECONDS: u64 = 24 * 60 * 60;
+
+fn retry_backoff_seconds(base_seconds: u64, retry_count: u32) -> u64 {
+    let multiplier = 1_u64.checked_shl(retry_count).unwrap_or(u64::MAX);
+    base_seconds
+        .saturating_mul(multiplier)
+        .min(MAX_RETRY_BACKOFF_SECONDS)
+}
 
 /// In-memory job queue implementation
 ///
@@ -146,9 +154,8 @@ impl InMemoryJobQueue {
                 let now = Utc::now();
                 let mut moved_due_jobs = false;
 
-                let next_wait = {
+                let (due_jobs, next_wait) = {
                     let mut scheduled_guard = scheduled.lock().await;
-                    let mut pending_guard = pending.lock().await;
 
                     // Move all jobs scheduled for now or earlier to pending.
                     let keys_to_remove: Vec<DateTime<Utc>> = scheduled_guard
@@ -157,23 +164,26 @@ impl InMemoryJobQueue {
                         .map(|(time, _)| *time)
                         .collect();
 
+                    let mut due_jobs = Vec::new();
                     for key in keys_to_remove {
                         if let Some(jobs) = scheduled_guard.remove(&key) {
                             moved_due_jobs = true;
-                            for job in jobs {
-                                pending_guard.push_back(job);
-                            }
+                            due_jobs.extend(jobs);
                         }
                     }
 
-                    scheduled_guard.iter().next().map(|(run_at, _)| {
+                    let next_wait = scheduled_guard.iter().next().map(|(run_at, _)| {
                         (*run_at - now)
                             .to_std()
                             .unwrap_or(std::time::Duration::ZERO)
-                    })
+                    });
+                    (due_jobs, next_wait)
                 };
 
                 if moved_due_jobs {
+                    let mut pending_guard = pending.lock().await;
+                    pending_guard.extend(due_jobs);
+                    drop(pending_guard);
                     job_available.notify_waiters();
                     continue;
                 }
@@ -223,9 +233,8 @@ impl JobQueue for InMemoryJobQueue {
     }
 
     async fn dequeue(&self) -> Result<Option<JobData>> {
-        let mut pending = self.pending.lock().await;
-
-        if let Some(job_data) = pending.pop_front() {
+        let job_data = self.pending.lock().await.pop_front();
+        if let Some(job_data) = job_data {
             let mut processing = self.processing.lock().await;
             processing.insert(job_data.job_id.clone(), job_data.clone());
             Ok(Some(job_data))
@@ -235,8 +244,8 @@ impl JobQueue for InMemoryJobQueue {
     }
 
     async fn complete(&self, job_id: &str) -> Result<()> {
-        let mut processing = self.processing.lock().await;
-        if let Some(job_data) = processing.remove(job_id) {
+        let job_data = self.processing.lock().await.remove(job_id);
+        if let Some(job_data) = job_data {
             let mut completed = self.completed.lock().await;
             Self::push_to_bounded_history(&mut completed, job_data, self.max_history_size);
         }
@@ -244,13 +253,12 @@ impl JobQueue for InMemoryJobQueue {
     }
 
     async fn fail(&self, job_id: &str, _error: String) -> Result<()> {
-        let mut processing = self.processing.lock().await;
-
-        if let Some(mut job_data) = processing.remove(job_id) {
+        let job_data = self.processing.lock().await.remove(job_id);
+        if let Some(mut job_data) = job_data {
             if job_data.should_retry() {
                 // Schedule retry with exponential backoff
                 let backoff_seconds =
-                    self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
+                    retry_backoff_seconds(self.retry_backoff_seconds, job_data.retry_count);
                 let retry_at = Utc::now() + Duration::seconds(backoff_seconds as i64);
 
                 job_data.increment_retry();
@@ -272,9 +280,8 @@ impl JobQueue for InMemoryJobQueue {
     }
 
     async fn retry(&self, job_id: &str) -> Result<()> {
-        let mut processing = self.processing.lock().await;
-
-        if let Some(mut job_data) = processing.remove(job_id) {
+        let job_data = self.processing.lock().await.remove(job_id);
+        if let Some(mut job_data) = job_data {
             if job_data.should_retry() {
                 job_data.increment_retry();
                 let mut pending = self.pending.lock().await;
@@ -329,5 +336,54 @@ impl JobQueue for InMemoryJobQueue {
 impl Default for InMemoryJobQueue {
     fn default() -> Self {
         Self::new(3, 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retry_backoff_saturates_without_overflow() {
+        assert_eq!(retry_backoff_seconds(60, 0), 60);
+        assert_eq!(retry_backoff_seconds(60, 1), 120);
+        assert_eq!(
+            retry_backoff_seconds(u64::MAX, u32::MAX),
+            MAX_RETRY_BACKOFF_SECONDS
+        );
+    }
+
+    #[tokio::test]
+    async fn queue_transfers_do_not_deadlock_under_contention() {
+        let queue = InMemoryJobQueue::new(100, 1);
+        for index in 0..200 {
+            queue.pending.lock().await.push_back(JobData::new(
+                format!("job-{index}"),
+                "test".to_string(),
+                serde_json::Value::Null,
+                100,
+            ));
+        }
+
+        let dequeue_queue = queue.clone();
+        let retry_queue = queue.clone();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async move {
+            let dequeue = tokio::spawn(async move {
+                for _ in 0..200 {
+                    let _ = dequeue_queue.dequeue().await.unwrap();
+                }
+            });
+            let retry = tokio::spawn(async move {
+                for index in 0..200 {
+                    let _ = retry_queue.retry(&format!("job-{index}")).await;
+                    tokio::task::yield_now().await;
+                }
+            });
+            dequeue.await.unwrap();
+            retry.await.unwrap();
+        })
+        .await
+        .expect("queue operations should not deadlock");
+        queue.shutdown().await;
     }
 }

@@ -77,7 +77,7 @@ impl Connection {
 
     /// Send a message to this connection
     ///
-    /// Returns an error if the channel is full (backpressure) or the connection is closed.
+    /// Waits for bounded channel capacity and returns an error if the connection is closed.
     pub async fn send(&self, msg: Message) -> Result<()> {
         self.sender.send(msg).await.map_err(|_| {
             TidewayError::internal("Failed to send message: channel full or connection closed")

@@ -140,6 +140,36 @@ mod websocket_tests {
     }
 
     #[tokio::test]
+    async fn test_broadcast_does_not_block_on_full_connection_channel() {
+        use tokio::time::{Duration, timeout};
+
+        let manager = Arc::new(ConnectionManager::new());
+        let (slow_tx, _slow_rx) = mpsc::channel::<Message>(1);
+        slow_tx
+            .send(Message::Text("already full".into()))
+            .await
+            .unwrap();
+        let slow = Arc::new(tokio::sync::RwLock::new(Connection::new(
+            "slow".to_string(),
+            slow_tx,
+        )));
+        let (fast_tx, mut fast_rx) = mpsc::channel::<Message>(1);
+        let fast = Arc::new(tokio::sync::RwLock::new(Connection::new(
+            "fast".to_string(),
+            fast_tx,
+        )));
+        manager.register(slow).await.unwrap();
+        manager.register(fast).await.unwrap();
+
+        let result = timeout(Duration::from_millis(100), manager.broadcast_text("hello"))
+            .await
+            .expect("broadcast must not wait for slow consumers");
+        assert!(result.is_err());
+        assert!(matches!(fast_rx.recv().await, Some(Message::Text(text)) if text == "hello"));
+        assert!(manager.get("slow").is_none());
+    }
+
+    #[tokio::test]
     async fn test_unregister_cleans_stale_room_membership_after_lock_contention() {
         let manager = Arc::new(ConnectionManager::new());
 
