@@ -27,6 +27,15 @@ pub struct Connection {
 }
 
 impl Connection {
+    /// Create a connection backed by a bounded outbound message channel.
+    ///
+    /// This is useful for custom WebSocket transports, integration tests, and
+    /// performance harnesses that need to consume outbound messages directly.
+    pub fn channel(id: impl Into<String>, capacity: usize) -> (Self, mpsc::Receiver<Message>) {
+        let (sender, receiver) = mpsc::channel(capacity.max(1));
+        (Self::new(id.into(), sender), receiver)
+    }
+
     /// Create a new connection
     pub(crate) fn new(id: String, sender: mpsc::Sender<Message>) -> Self {
         Self {
