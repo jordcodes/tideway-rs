@@ -2,6 +2,11 @@
 
 use crate::error::Result;
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
+
+pub(crate) fn hash_invitation_token(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
 
 /// Trait for invitation storage operations.
 ///
@@ -49,10 +54,28 @@ pub trait InvitationStore: Send + Sync {
     // === Required storage methods ===
 
     /// Create a new invitation.
+    ///
+    /// Persistent stores should hash the bearer token before writing it. The
+    /// SeaORM store uses SHA-256 and never persists the raw token.
     async fn create(&self, invitation: &Self::Invitation) -> Result<()>;
 
-    /// Find an invitation by its token.
+    /// Find an invitation by its raw token. Persistent stores should hash the
+    /// provided value before lookup.
     async fn find_by_token(&self, token: &str) -> Result<Option<Self::Invitation>>;
+
+    /// Atomically claim a pending invitation for redemption.
+    ///
+    /// Production stores should override this with a conditional update from
+    /// `pending` to `processing`. The default preserves compatibility but cannot
+    /// guarantee single-use behavior under concurrency.
+    async fn claim_pending_by_token(&self, token: &str) -> Result<Option<Self::Invitation>> {
+        let invitation = self.find_by_token(token).await?;
+        if let Some(ref invitation) = invitation {
+            self.mark_processing(&self.invitation_id(invitation))
+                .await?;
+        }
+        Ok(invitation)
+    }
 
     /// Find an invitation by its ID.
     async fn find_by_id(&self, id: &str) -> Result<Option<Self::Invitation>>;
@@ -62,6 +85,16 @@ pub trait InvitationStore: Send + Sync {
 
     /// Mark an invitation as accepted.
     async fn mark_accepted(&self, id: &str) -> Result<()>;
+
+    /// Mark an invitation claim as in progress.
+    async fn mark_processing(&self, _id: &str) -> Result<()> {
+        Ok(())
+    }
+
+    /// Release a failed invitation claim so it may be retried.
+    async fn release_claim(&self, _id: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Mark an invitation as revoked.
     async fn mark_revoked(&self, id: &str) -> Result<()>;

@@ -264,8 +264,9 @@ where
             joined_at: now,
         });
 
-        // Persist organization and membership atomically
-        // Uses rollback (delete org) if membership creation fails
+        // Persist organization and membership with compensating rollback.
+        // Stores that need strict database atomicity should override
+        // OrganizationStore::create_with_rollback.
         let membership_store = &self.membership_store;
         self.org_store
             .create_with_rollback(&org, || async {
@@ -442,6 +443,78 @@ where
             .is_member(org_id, user_id)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[cfg(feature = "organizations-seaorm")]
+impl<S, A>
+    OrganizationManager<
+        super::sea_orm_store::SeaOrmOrgStore,
+        super::sea_orm_store::SeaOrmOrgStore,
+        S,
+        A,
+    >
+where
+    S: SeatChecker,
+    A: OptionalAuditStore,
+{
+    /// Create an organization and owner membership in one SeaORM transaction.
+    ///
+    /// Prefer this over [`OrganizationManager::create`] when using the built-in
+    /// SeaORM store and strict atomicity is required.
+    pub async fn create_atomic(
+        &self,
+        user_id: &str,
+        name: &str,
+        slug: Option<&str>,
+        contact_email: &str,
+    ) -> Result<super::sea_orm_store::SeaOrmOrganization> {
+        use super::sea_orm_store::{SeaOrmMembership, SeaOrmOrganization};
+        use super::types::DefaultOrgRole;
+
+        if !self.config.allow_user_creation {
+            return Err(OrganizationError::InsufficientPermission {
+                required: "organization_creation".to_string(),
+            });
+        }
+        if let Some(max) = self.config.max_orgs_per_user {
+            if self.org_store.count_owned_by_user(user_id).await? >= max {
+                return Err(OrganizationError::max_orgs_reached(max));
+            }
+        }
+
+        let slug = slug.map(str::to_string).unwrap_or_else(|| slugify(name));
+        if !self.org_store.is_slug_available(&slug).await? {
+            return Err(OrganizationError::slug_taken(&slug));
+        }
+
+        let now = current_timestamp();
+        let org = SeaOrmOrganization {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            slug: slug.clone(),
+            owner_id: user_id.to_string(),
+            contact_email: contact_email.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        let membership = SeaOrmMembership {
+            org_id: org.id.clone(),
+            user_id: user_id.to_string(),
+            role: DefaultOrgRole::Owner,
+            joined_at: now,
+        };
+
+        self.org_store
+            .create_org_and_member_atomic(&org, &membership)
+            .await?;
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::OrgCreated, &org.id, user_id)
+                    .with_details(format!("name={name}, slug={slug}")),
+            )
+            .await;
+        Ok(org)
     }
 }
 

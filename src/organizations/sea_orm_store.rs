@@ -56,7 +56,7 @@
 //!     email VARCHAR(255) NOT NULL,
 //!     role VARCHAR(20) NOT NULL,
 //!     invited_by VARCHAR(36) NOT NULL,
-//!     token VARCHAR(64) UNIQUE NOT NULL,
+//!     token VARCHAR(64) UNIQUE NOT NULL, -- SHA-256 digest, not the raw bearer token
 //!     status VARCHAR(20) NOT NULL,
 //!     expires_at BIGINT NOT NULL,
 //!     created_at BIGINT NOT NULL,
@@ -165,6 +165,7 @@ mod entity {
     }
 }
 
+use super::storage::hash_invitation_token;
 use entity::{invitation, membership, organization};
 
 // =============================================================================
@@ -223,9 +224,9 @@ pub struct SeaOrmInvitation {
     pub role: DefaultOrgRole,
     /// User who sent the invitation.
     pub invited_by: String,
-    /// Secret token for accepting.
+    /// SHA-256 digest of the secret acceptance token when loaded from storage.
     pub token: String,
-    /// Status: "pending", "accepted", "revoked".
+    /// Status: "pending", transient "processing", "accepted", or "revoked".
     pub status: InvitationStatus,
     /// Expiration timestamp (Unix seconds).
     pub expires_at: u64,
@@ -861,7 +862,7 @@ impl InvitationStore for SeaOrmOrgStore {
             email: Set(inv.email.clone()),
             role: Set(inv.role.as_str().to_string()),
             invited_by: Set(inv.invited_by.clone()),
-            token: Set(inv.token.clone()),
+            token: Set(hash_invitation_token(&inv.token)),
             status: Set(inv.status.as_str().to_string()),
             expires_at: Set(u64_to_i64(inv.expires_at)),
             created_at: Set(u64_to_i64(inv.created_at)),
@@ -879,7 +880,7 @@ impl InvitationStore for SeaOrmOrgStore {
         tracing::debug!("finding invitation by token");
 
         let inv = invitation::Entity::find()
-            .filter(invitation::Column::Token.eq(token))
+            .filter(invitation::Column::Token.eq(hash_invitation_token(token)))
             .one(&self.db)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
@@ -896,6 +897,33 @@ impl InvitationStore for SeaOrmOrgStore {
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
         Ok(inv.map(model_to_invitation))
+    }
+
+    async fn claim_pending_by_token(&self, token: &str) -> Result<Option<Self::Invitation>> {
+        let token_hash = hash_invitation_token(token);
+        let invitation = invitation::Entity::find()
+            .filter(invitation::Column::Token.eq(&token_hash))
+            .filter(invitation::Column::Status.eq("pending"))
+            .one(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        let Some(invitation) = invitation else {
+            return Ok(None);
+        };
+        let result = invitation::Entity::update_many()
+            .col_expr(invitation::Column::Status, Expr::value("processing"))
+            .filter(invitation::Column::Id.eq(&invitation.id))
+            .filter(invitation::Column::Status.eq("pending"))
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        if result.rows_affected == 1 {
+            Ok(Some(model_to_invitation(invitation)))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn list_pending(&self, org_id: &str) -> Result<Vec<Self::Invitation>> {
@@ -917,27 +945,48 @@ impl InvitationStore for SeaOrmOrgStore {
     async fn mark_accepted(&self, id: &str) -> Result<()> {
         tracing::debug!(invitation_id = %id, "marking invitation as accepted");
 
-        invitation::Entity::update_many()
+        let result = invitation::Entity::update_many()
             .col_expr(invitation::Column::Status, Expr::value("accepted"))
             .filter(invitation::Column::Id.eq(id))
+            .filter(invitation::Column::Status.eq("processing"))
             .exec(&self.db)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
+        if result.rows_affected == 1 {
+            Ok(())
+        } else {
+            Err(TidewayError::conflict(
+                "Invitation claim is no longer active",
+            ))
+        }
+    }
 
+    async fn release_claim(&self, id: &str) -> Result<()> {
+        invitation::Entity::update_many()
+            .col_expr(invitation::Column::Status, Expr::value("pending"))
+            .filter(invitation::Column::Id.eq(id))
+            .filter(invitation::Column::Status.eq("processing"))
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
         Ok(())
     }
 
     async fn mark_revoked(&self, id: &str) -> Result<()> {
         tracing::debug!(invitation_id = %id, "marking invitation as revoked");
 
-        invitation::Entity::update_many()
+        let result = invitation::Entity::update_many()
             .col_expr(invitation::Column::Status, Expr::value("revoked"))
             .filter(invitation::Column::Id.eq(id))
+            .filter(invitation::Column::Status.eq("pending"))
             .exec(&self.db)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
-
-        Ok(())
+        if result.rows_affected == 1 {
+            Ok(())
+        } else {
+            Err(TidewayError::conflict("Invitation is no longer pending"))
+        }
     }
 
     async fn delete_expired(&self) -> Result<usize> {

@@ -369,29 +369,38 @@ where
     where
         F: FnOnce(&I::Invitation, MembershipCreateParams) -> M::Membership,
     {
-        // Find invitation by token
+        // Atomically claim the invitation so the token is single-use under concurrency.
         let invitation = self
             .invitation_store
-            .find_by_token(token)
+            .claim_pending_by_token(token)
             .await?
             .ok_or(OrganizationError::InvalidToken)?;
+        let org_id = self.invitation_store.invitation_org_id(&invitation);
+        let invitation_id = self.invitation_store.invitation_id(&invitation);
 
         // Check not expired
         if self.invitation_store.is_expired(&invitation) {
+            let _ = self.invitation_store.release_claim(&invitation_id).await;
             return Err(OrganizationError::InvitationExpired);
         }
 
         // Check not revoked
         if self.invitation_store.is_revoked(&invitation) {
+            let _ = self.invitation_store.release_claim(&invitation_id).await;
             return Err(OrganizationError::InvalidToken);
         }
 
-        let org_id = self.invitation_store.invitation_org_id(&invitation);
-        let invitation_id = self.invitation_store.invitation_id(&invitation);
-
         // Check user not already a member
-        if self.membership_store.is_member(&org_id, user_id).await? {
-            return Err(OrganizationError::AlreadyMember);
+        match self.membership_store.is_member(&org_id, user_id).await {
+            Ok(true) => {
+                let _ = self.invitation_store.release_claim(&invitation_id).await;
+                return Err(OrganizationError::AlreadyMember);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                let _ = self.invitation_store.release_claim(&invitation_id).await;
+                return Err(error.into());
+            }
         }
 
         let now = current_timestamp();
@@ -408,8 +417,15 @@ where
         );
 
         // Add member and mark invitation as accepted
-        self.membership_store.add_member(&membership).await?;
-        self.invitation_store.mark_accepted(&invitation_id).await?;
+        if let Err(error) = self.membership_store.add_member(&membership).await {
+            let _ = self.invitation_store.release_claim(&invitation_id).await;
+            return Err(error.into());
+        }
+        if let Err(error) = self.invitation_store.mark_accepted(&invitation_id).await {
+            let _ = self.membership_store.remove_member(&org_id, user_id).await;
+            let _ = self.invitation_store.release_claim(&invitation_id).await;
+            return Err(error.into());
+        }
 
         info!(org_id, user_id, invitation_id, "Invitation accepted");
 

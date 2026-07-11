@@ -10,5 +10,6 @@ mod organization;
 
 pub use audit::{OptionalAuditStore, OrgAuditStore, WithAuditStore};
 pub use invitation::InvitationStore;
+pub(crate) use invitation::hash_invitation_token;
 pub use membership::MembershipStore;
 pub use organization::OrganizationStore;

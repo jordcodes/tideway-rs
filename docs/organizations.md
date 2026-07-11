@@ -1,5 +1,19 @@
 # Organizations
 
+> **Invitation-token upgrade:** SeaORM organization stores now persist SHA-256 invitation-token
+> digests and atomically claim pending invitations before redemption. Existing plaintext pending
+> invitations cannot be redeemed after upgrading; revoke or delete them and issue replacements.
+> The database column may retain its existing name and width because the digest is a 64-character
+> hexadecimal string.
+
+`OrganizationManager::create` uses a compensating delete if owner-membership creation fails.
+Custom database stores requiring strict isolation should override
+`OrganizationStore::create_with_rollback` with transaction-aware persistence; the default contract
+surfaces cleanup failures but cannot make two independent store implementations transactional.
+When both stores are Tideway's built-in `SeaOrmOrgStore`, use
+`OrganizationManager::create_atomic` to create the organization and initial owner membership in one
+database transaction.
+
 The `organizations` module provides multi-tenant B2B primitives:
 
 - organization lifecycle (create, update, archive)

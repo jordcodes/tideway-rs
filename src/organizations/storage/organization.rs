@@ -144,6 +144,10 @@ pub trait OrganizationStore: Send + Sync {
     /// 2. Runs the setup callback
     /// 3. If setup fails, deletes the organization and returns the error
     ///
+    /// This is a compensating write, not a database transaction. Implementations
+    /// that need strict atomicity should override this method with a transaction-aware
+    /// design. Cleanup failures are surfaced rather than silently ignored.
+    ///
     /// # Example Override (SeaORM)
     ///
     /// ```rust,ignore
@@ -166,9 +170,11 @@ pub trait OrganizationStore: Send + Sync {
     {
         self.create(org).await?;
         if let Err(e) = setup().await {
-            // Compensating transaction: delete the organization
-            // Ignore delete errors - the original error is more important
-            let _ = self.delete(&self.org_id(org)).await;
+            if let Err(cleanup_error) = self.delete(&self.org_id(org)).await {
+                return Err(crate::error::TidewayError::internal(format!(
+                    "Organization setup failed ({e}); compensating delete also failed ({cleanup_error})"
+                )));
+            }
             return Err(e);
         }
         Ok(())

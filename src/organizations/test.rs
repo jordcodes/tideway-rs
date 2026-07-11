@@ -2,11 +2,11 @@
 //!
 //! Provides ready-to-use test types and stores for testing organization functionality.
 
-use super::storage::{InvitationStore, MembershipStore, OrganizationStore};
+use super::storage::{InvitationStore, MembershipStore, OrganizationStore, hash_invitation_token};
 use super::types::DefaultOrgRole;
 use crate::error::Result;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -74,6 +74,7 @@ struct InMemoryOrgStoreInner {
     memberships: RwLock<HashMap<(String, String), TestMembership>>, // (org_id, user_id) -> membership
     invitations: RwLock<HashMap<String, TestInvitation>>,
     invitations_by_token: RwLock<HashMap<String, String>>, // token -> id
+    claimed_invitations: RwLock<HashSet<String>>,
 }
 
 /// In-memory store implementing all organization storage traits.
@@ -102,6 +103,7 @@ impl InMemoryOrgStore {
                 memberships: RwLock::new(HashMap::new()),
                 invitations: RwLock::new(HashMap::new()),
                 invitations_by_token: RwLock::new(HashMap::new()),
+                claimed_invitations: RwLock::new(HashSet::new()),
             }),
         }
     }
@@ -127,7 +129,7 @@ impl InMemoryOrgStore {
     /// Helper to insert an invitation directly (for test setup).
     pub fn insert_invitation(&self, invitation: TestInvitation) {
         let id = invitation.id.clone();
-        let token = invitation.token.clone();
+        let token = hash_invitation_token(&invitation.token);
         self.inner
             .invitations
             .write()
@@ -356,12 +358,26 @@ impl InvitationStore for InMemoryOrgStore {
             .invitations_by_token
             .read()
             .unwrap()
-            .get(token)
+            .get(&hash_invitation_token(token))
             .cloned();
         match id {
             Some(id) => Ok(self.inner.invitations.read().unwrap().get(&id).cloned()),
             None => Ok(None),
         }
+    }
+
+    async fn claim_pending_by_token(&self, token: &str) -> Result<Option<Self::Invitation>> {
+        let Some(invitation) = self.find_by_token(token).await? else {
+            return Ok(None);
+        };
+        if invitation.accepted || invitation.revoked {
+            return Ok(None);
+        }
+        let mut claimed = self.inner.claimed_invitations.write().unwrap();
+        if !claimed.insert(invitation.id.clone()) {
+            return Ok(None);
+        }
+        Ok(Some(invitation))
     }
 
     async fn find_by_id(&self, id: &str) -> Result<Option<Self::Invitation>> {
@@ -380,13 +396,29 @@ impl InvitationStore for InMemoryOrgStore {
     }
 
     async fn mark_accepted(&self, id: &str) -> Result<()> {
+        if !self.inner.claimed_invitations.read().unwrap().contains(id) {
+            return Err(crate::error::TidewayError::conflict(
+                "Invitation claim is no longer active",
+            ));
+        }
         if let Some(inv) = self.inner.invitations.write().unwrap().get_mut(id) {
             inv.accepted = true;
         }
+        self.inner.claimed_invitations.write().unwrap().remove(id);
+        Ok(())
+    }
+
+    async fn release_claim(&self, id: &str) -> Result<()> {
+        self.inner.claimed_invitations.write().unwrap().remove(id);
         Ok(())
     }
 
     async fn mark_revoked(&self, id: &str) -> Result<()> {
+        if self.inner.claimed_invitations.read().unwrap().contains(id) {
+            return Err(crate::error::TidewayError::conflict(
+                "Invitation is no longer pending",
+            ));
+        }
         if let Some(inv) = self.inner.invitations.write().unwrap().get_mut(id) {
             inv.revoked = true;
         }
@@ -401,7 +433,7 @@ impl InvitationStore for InMemoryOrgStore {
         let expired: Vec<_> = invitations
             .iter()
             .filter(|(_, i)| i.expires_at <= now && !i.accepted && !i.revoked)
-            .map(|(id, i)| (id.clone(), i.token.clone()))
+            .map(|(id, i)| (id.clone(), hash_invitation_token(&i.token)))
             .collect();
 
         let count = expired.len();
@@ -1737,5 +1769,47 @@ mod tests {
 
         assert_eq!(membership.role, DefaultOrgRole::Member);
         assert!(mem_manager.is_member(&org.id, "invitee").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_invitation_token_can_only_be_claimed_once_concurrently() {
+        let store = InMemoryOrgStore::new();
+        let invitation = TestInvitation {
+            id: "inv-concurrent".to_string(),
+            org_id: "org-1".to_string(),
+            email: "invitee@example.com".to_string(),
+            role: DefaultOrgRole::Member,
+            invited_by: "owner".to_string(),
+            token: "raw-secret-token".to_string(),
+            expires_at: InMemoryOrgStore::now() + 3600,
+            created_at: InMemoryOrgStore::now(),
+            accepted: false,
+            revoked: false,
+        };
+        store.insert_invitation(invitation);
+
+        let (first, second) = tokio::join!(
+            store.claim_pending_by_token("raw-secret-token"),
+            store.claim_pending_by_token("raw-secret-token")
+        );
+        let claimed = [first.unwrap(), second.unwrap()]
+            .into_iter()
+            .filter(Option::is_some)
+            .count();
+        assert_eq!(claimed, 1);
+        assert!(
+            store
+                .find_by_token("raw-secret-token")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .find_by_token("not-the-token")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
