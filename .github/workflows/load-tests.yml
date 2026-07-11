@@ -15,8 +15,6 @@ on:
         description: WebSocket clients
         default: "1000"
         required: false
-  schedule:
-    - cron: "43 4 * * 1"
 
 jobs:
   integration-load:
