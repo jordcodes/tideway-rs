@@ -9,7 +9,7 @@
 //! use tideway::auth::{JwtIssuer, JwtIssuerConfig, TokenSubject};
 //!
 //! let issuer = JwtIssuer::new(
-//!     JwtIssuerConfig::with_secret("your-secret-key", "my-app")
+//!     JwtIssuerConfig::with_secure_secret("a-random-secret-of-at-least-32-bytes", "my-app")?
 //! )?;
 //!
 //! let subject = TokenSubject::new("user-123")
@@ -70,11 +70,19 @@ impl JwtIssuerConfig {
                 "HS256 JWT secret is a known placeholder; generate a random secret",
             ));
         }
-        Ok(Self::with_secret(secret, issuer))
+        Ok(Self::with_secret_unchecked(secret, issuer))
     }
 
     /// Create config with HS256 symmetric key.
+    #[deprecated(
+        since = "0.7.21",
+        note = "use JwtIssuerConfig::with_secure_secret to enforce a safe minimum secret"
+    )]
     pub fn with_secret(secret: impl Into<String>, issuer: impl Into<String>) -> Self {
+        Self::with_secret_unchecked(secret, issuer)
+    }
+
+    fn with_secret_unchecked(secret: impl Into<String>, issuer: impl Into<String>) -> Self {
         Self {
             secret: SecretKey::Symmetric(secret.into().into_bytes()),
             issuer: issuer.into(),
@@ -485,6 +493,7 @@ fn generate_token_family() -> String {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 

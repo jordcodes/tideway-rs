@@ -22,7 +22,7 @@
 //! let hash = hasher.hash("my-password")?;
 //!
 //! // Issue tokens
-//! let issuer = JwtIssuer::new(JwtIssuerConfig::with_secret("secret", "my-app"))?;
+//! let issuer = JwtIssuer::new(JwtIssuerConfig::with_secure_secret(secret, "my-app")?)?;
 //! let tokens = issuer.issue(TokenSubject::new("user-123"), false)?;
 //! ```
 

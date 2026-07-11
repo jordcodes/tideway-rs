@@ -34,7 +34,7 @@ use tideway::auth::{
 };
 
 // Configure JWT issuer
-let jwt_config = JwtIssuerConfig::with_secret(&jwt_secret, "my-app");
+let jwt_config = JwtIssuerConfig::with_secure_secret(&jwt_secret, "my-app")?;
 let jwt_issuer = JwtIssuer::new(jwt_config)?;
 
 // Create login flow

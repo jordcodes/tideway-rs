@@ -77,7 +77,7 @@ pub trait UserLoader: Send + Sync {
 /// use tideway::auth::{TokenRefreshFlow, JwtIssuer, JwtIssuerConfig};
 ///
 /// let flow = TokenRefreshFlow::new(
-///     JwtIssuer::new(JwtIssuerConfig::with_secret("secret", "my-app"))?,
+///     JwtIssuer::new(JwtIssuerConfig::with_secure_secret(secret, "my-app")?)?,
 ///     my_token_store,
 ///     my_user_loader,
 ///     b"secret",
@@ -328,6 +328,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::auth::jwt_issuer::JwtIssuerConfig;

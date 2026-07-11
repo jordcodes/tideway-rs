@@ -374,7 +374,8 @@ struct TestTokenIssuer {
 
 impl TestTokenIssuer {
     fn new(secret: &str) -> Self {
-        let config = JwtIssuerConfig::with_secret(secret, "test-app")
+        let config = JwtIssuerConfig::with_secure_secret(secret, "test-app")
+            .unwrap()
             .access_token_ttl(Duration::from_secs(900))
             .refresh_token_ttl(Duration::from_secs(86400));
         Self {

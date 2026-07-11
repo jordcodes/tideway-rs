@@ -381,6 +381,8 @@ impl ConfigBuilder {
             ));
         }
 
+        self.config.cors.validate()?;
+
         Ok(self.config)
     }
 }
@@ -809,5 +811,15 @@ mod tests {
             std::env::remove_var("TIDEWAY_HOST");
             std::env::remove_var("TIDEWAY_LOG_LEVEL");
         }
+    }
+
+    #[test]
+    fn test_config_builder_rejects_credentialed_cors_wildcards() {
+        let cors = CorsConfig::builder()
+            .enabled(true)
+            .allow_any_origin()
+            .allow_credentials(true)
+            .build();
+        assert!(ConfigBuilder::new().with_cors(cors).build().is_err());
     }
 }

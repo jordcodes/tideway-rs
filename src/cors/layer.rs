@@ -8,6 +8,10 @@ pub fn build_cors_layer(config: &CorsConfig) -> Option<CorsLayer> {
     if !config.enabled {
         return None;
     }
+    if let Err(error) = config.validate() {
+        tracing::error!(%error, "refusing invalid CORS configuration");
+        return None;
+    }
 
     let mut layer = CorsLayer::new();
 
@@ -121,5 +125,15 @@ mod tests {
         let config = CorsConfig::builder().enabled(true).build();
         let layer = build_cors_layer(&config);
         assert!(layer.is_some());
+    }
+
+    #[test]
+    fn test_invalid_credentialed_wildcard_is_refused() {
+        let config = CorsConfig::builder()
+            .enabled(true)
+            .allow_any_origin()
+            .allow_credentials(true)
+            .build();
+        assert!(build_cors_layer(&config).is_none());
     }
 }

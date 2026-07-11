@@ -58,6 +58,23 @@ impl CorsConfig {
         CorsConfigBuilder::new()
     }
 
+    /// Validate combinations that browsers and `tower-http` cannot safely represent.
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.enabled && self.allow_credentials {
+            if self.allowed_origins.iter().any(|origin| origin == "*") {
+                return Err(crate::TidewayError::bad_request(
+                    "CORS wildcard origins cannot be combined with credentials",
+                ));
+            }
+            if self.allowed_headers.iter().any(|header| header == "*") {
+                return Err(crate::TidewayError::bad_request(
+                    "CORS wildcard headers cannot be combined with credentials",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Create a permissive CORS configuration for development
     /// WARNING: Do not use in production!
     pub fn permissive() -> Self {
@@ -329,5 +346,23 @@ mod tests {
 
         assert!(config.enabled);
         assert_eq!(config.allowed_origins, vec!["https://example.com"]);
+    }
+
+    #[test]
+    fn test_credentials_reject_wildcard_origins_and_headers() {
+        let wildcard_origin = CorsConfig::builder()
+            .enabled(true)
+            .allow_any_origin()
+            .allow_credentials(true)
+            .build();
+        assert!(wildcard_origin.validate().is_err());
+
+        let wildcard_headers = CorsConfig::builder()
+            .enabled(true)
+            .allow_origin("https://example.com")
+            .allow_any_header()
+            .allow_credentials(true)
+            .build();
+        assert!(wildcard_headers.validate().is_err());
     }
 }

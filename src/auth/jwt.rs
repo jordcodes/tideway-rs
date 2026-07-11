@@ -193,7 +193,15 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     ///
     /// After creating a verifier, you should configure issuer and audience
     /// validation using [`set_issuer`] and [`set_audience`] before use in production.
+    #[deprecated(
+        since = "0.7.21",
+        note = "use JwtVerifier::from_secret_checked to enforce a safe minimum secret"
+    )]
     pub fn from_secret(secret: &[u8]) -> Self {
+        Self::from_secret_unchecked(secret)
+    }
+
+    fn from_secret_unchecked(secret: &[u8]) -> Self {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
 
@@ -219,7 +227,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
                 "HS256 JWT secret must be at least 32 bytes",
             ));
         }
-        Ok(Self::from_secret(secret))
+        Ok(Self::from_secret_unchecked(secret))
     }
 
     /// Create a verifier using a static RSA public key (PEM format)
@@ -391,6 +399,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::auth::jwt_issuer::{JwtIssuer, JwtIssuerConfig, TokenSubject};
