@@ -689,7 +689,7 @@ fn generate_env_example(project_name: &str, modules: &DetectedModules, args: &In
 
     if modules.auth || modules.admin {
         lines.push("# Authentication".to_string());
-        lines.push("JWT_SECRET=your-super-secret-jwt-key-change-in-production".to_string());
+        lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
         lines.push("".to_string());
     }
 

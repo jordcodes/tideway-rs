@@ -1084,10 +1084,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let db = sea_orm::Database::connect(&database_url).await?;
 
     // JWT configuration
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "your-super-secret-jwt-key-change-in-production".to_string());
+    let jwt_secret =
+        std::env::var("JWT_SECRET").expect("JWT_SECRET must be set to at least 32 random bytes");
 
-    let jwt_config = tideway::auth::JwtIssuerConfig::with_secret(&jwt_secret, "my-app");
+    let jwt_config = tideway::auth::JwtIssuerConfig::with_secure_secret(&jwt_secret, "my-app")?;
     let jwt_issuer = tideway::auth::JwtIssuer::new(jwt_config)?;
 
     // Create auth state

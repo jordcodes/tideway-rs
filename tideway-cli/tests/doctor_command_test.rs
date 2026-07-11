@@ -49,7 +49,11 @@ tideway = { version = "0.7", features = ["auth"] }
 "#;
 
     fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
-    fs::write(project_dir.join(".env"), "JWT_SECRET=dev-secret\n").expect("write env");
+    fs::write(
+        project_dir.join(".env"),
+        "JWT_SECRET=0123456789abcdef0123456789abcdef\n",
+    )
+    .expect("write env");
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(
@@ -57,6 +61,42 @@ tideway = { version = "0.7", features = ["auth"] }
         "expected no warnings, got {:?}",
         report.warnings()
     );
+}
+
+#[test]
+fn test_doctor_warns_for_placeholder_and_short_jwt_secrets() {
+    for secret in [
+        "replace-with-at-least-32-random-bytes",
+        "short-development-secret",
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path();
+        fs::create_dir_all(project_dir.join("src/auth")).expect("create auth module");
+        fs::write(
+            project_dir.join("Cargo.toml"),
+            r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["auth"] }
+"#,
+        )
+        .expect("write Cargo.toml");
+        fs::write(project_dir.join(".env"), format!("JWT_SECRET={secret}\n")).expect("write env");
+
+        let report = analyze_project(project_dir, false).expect("analyze project");
+        assert!(
+            report
+                .warnings()
+                .iter()
+                .any(|warning| warning.contains("JWT_SECRET")),
+            "expected weak JWT warning for {secret}, got {:?}",
+            report.warnings()
+        );
+    }
 }
 
 #[test]

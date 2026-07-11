@@ -261,14 +261,14 @@ fn update_env_example(project_dir: &Path, feature: AddFeature, project_name: &st
         AddFeature::Auth => {
             if !existing.contains("JWT_SECRET") {
                 lines.push("# Auth".to_string());
-                lines.push("JWT_SECRET=your-super-secret-jwt-key-change-in-production".to_string());
+                lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
                 lines.push(String::new());
             }
         }
         AddFeature::Organizations => {
             if !existing.contains("JWT_SECRET") {
                 lines.push("# Auth".to_string());
-                lines.push("JWT_SECRET=your-super-secret-jwt-key-change-in-production".to_string());
+                lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
                 lines.push(String::new());
             }
             if !existing.contains("DATABASE_URL") {

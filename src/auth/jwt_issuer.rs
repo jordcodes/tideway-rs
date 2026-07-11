@@ -65,6 +65,11 @@ impl JwtIssuerConfig {
                 "HS256 JWT secret must be at least 32 bytes",
             ));
         }
+        if is_known_insecure_secret(&secret) {
+            return Err(TidewayError::internal(
+                "HS256 JWT secret is a known placeholder; generate a random secret",
+            ));
+        }
         Ok(Self::with_secret(secret, issuer))
     }
 
@@ -133,6 +138,13 @@ impl JwtIssuerConfig {
         self.remember_me_ttl = ttl;
         self
     }
+}
+
+fn is_known_insecure_secret(secret: &str) -> bool {
+    matches!(
+        secret.trim(),
+        "your-super-secret-jwt-key-change-in-production" | "replace-with-at-least-32-random-bytes"
+    )
 }
 
 /// Standard JWT claims.
@@ -480,6 +492,24 @@ mod tests {
     fn test_secure_config_rejects_short_hs256_secret() {
         assert!(JwtIssuerConfig::with_secure_secret("too-short", "test-app").is_err());
         assert!(JwtIssuerConfig::with_secure_secret("x".repeat(32), "test-app").is_ok());
+    }
+
+    #[test]
+    fn test_secure_config_rejects_known_placeholder_secret() {
+        assert!(
+            JwtIssuerConfig::with_secure_secret(
+                "your-super-secret-jwt-key-change-in-production",
+                "test-app"
+            )
+            .is_err()
+        );
+        assert!(
+            JwtIssuerConfig::with_secure_secret(
+                "replace-with-at-least-32-random-bytes",
+                "test-app"
+            )
+            .is_err()
+        );
     }
     use jsonwebtoken::{DecodingKey, Validation, decode};
 

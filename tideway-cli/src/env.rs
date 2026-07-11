@@ -1,11 +1,17 @@
 //! Shared environment helpers for CLI commands.
 
 use anyhow::{Context, Result};
+use rand::RngCore;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::{error_contract, print_success, print_warning};
+use crate::{error_contract, print_success, print_warning, write_file};
+
+const JWT_SECRET_PLACEHOLDERS: [&str; 2] = [
+    "your-super-secret-jwt-key-change-in-production",
+    "replace-with-at-least-32-random-bytes",
+];
 
 pub fn ensure_project_dir(project_dir: &Path) -> Result<()> {
     let cargo_toml = project_dir.join("Cargo.toml");
@@ -27,9 +33,12 @@ pub fn ensure_project_dir(project_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn ensure_env(project_dir: &Path, _fix_env: bool) -> Result<()> {
+pub fn ensure_env(project_dir: &Path, fix_env: bool) -> Result<()> {
     let env_path = project_dir.join(".env");
     if env_path.exists() {
+        if fix_env {
+            replace_jwt_placeholder(&env_path)?;
+        }
         return Ok(());
     }
 
@@ -39,10 +48,62 @@ pub fn ensure_env(project_dir: &Path, _fix_env: bool) -> Result<()> {
         return Ok(());
     }
 
-    fs::copy(&env_example_path, &env_path)
-        .with_context(|| format!("Failed to copy {}", env_example_path.display()))?;
+    let contents = fs::read_to_string(&env_example_path)
+        .with_context(|| format!("Failed to read {}", env_example_path.display()))?;
+    write_file(&env_path, &replace_jwt_placeholder_in_contents(&contents))
+        .with_context(|| format!("Failed to create {}", env_path.display()))?;
     print_success("Created .env from .env.example");
     Ok(())
+}
+
+fn replace_jwt_placeholder(path: &Path) -> Result<()> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let updated = replace_jwt_placeholder_in_contents(&contents);
+    if updated != contents {
+        write_file(path, &updated)
+            .with_context(|| format!("Failed to update {}", path.display()))?;
+        print_success("Replaced placeholder JWT_SECRET with a random local secret");
+    }
+    Ok(())
+}
+
+fn replace_jwt_placeholder_in_contents(contents: &str) -> String {
+    let uses_placeholder = contents.lines().any(|line| {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            return false;
+        };
+        key.trim() == "JWT_SECRET"
+            && JWT_SECRET_PLACEHOLDERS.contains(&value.trim().trim_matches(['\"', '\'']))
+    });
+    if !uses_placeholder {
+        return contents.to_string();
+    }
+
+    let secret = generate_jwt_secret();
+    contents
+        .lines()
+        .map(|line| {
+            let Some((key, value)) = line.trim().split_once('=') else {
+                return line.to_string();
+            };
+            if key.trim() == "JWT_SECRET"
+                && JWT_SECRET_PLACEHOLDERS.contains(&value.trim().trim_matches(['\"', '\'']))
+            {
+                format!("JWT_SECRET={secret}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + if contents.ends_with('\n') { "\n" } else { "" }
+}
+
+fn generate_jwt_secret() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 pub fn read_env_map(path: &Path) -> Option<BTreeMap<String, String>> {

@@ -225,7 +225,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     }
 
     if needs_auth {
-        check_env_var(
+        let jwt_secret = check_env_var(
             "JWT_SECRET",
             &env_file,
             &env_example_file,
@@ -233,6 +233,11 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             &env_example_vars,
             &mut report,
         );
+        if env_vars.contains_key("JWT_SECRET") {
+            if let Some(message) = jwt_secret.as_deref().and_then(validate_jwt_secret) {
+                report.push_warning(message);
+            }
+        }
     }
 
     if needs_billing {
@@ -427,6 +432,23 @@ fn validate_database_url(value: &str) -> Option<String> {
         .map(|error| error.to_string())
 }
 
+fn validate_jwt_secret(value: &str) -> Option<String> {
+    let value = value.trim();
+    if matches!(
+        value,
+        "your-super-secret-jwt-key-change-in-production" | "replace-with-at-least-32-random-bytes"
+    ) {
+        return Some(
+            "JWT_SECRET uses a public placeholder; replace it with at least 32 random bytes"
+                .to_string(),
+        );
+    }
+    if value.len() < 32 {
+        return Some("JWT_SECRET must contain at least 32 bytes of random data".to_string());
+    }
+    None
+}
+
 fn has_log_config(
     env_vars: &BTreeMap<String, String>,
     env_example_vars: &BTreeMap<String, String>,
@@ -495,7 +517,7 @@ fn env_example_template(
 
     if needs_auth {
         lines.push("# Auth".to_string());
-        lines.push("JWT_SECRET=your-super-secret-jwt-key-change-in-production".to_string());
+        lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
         lines.push(String::new());
     }
 
