@@ -159,14 +159,14 @@ mod tests {
         families: &'a [MetricFamily],
         name: &str,
     ) -> Option<&'a MetricFamily> {
-        families.iter().find(|family| family.get_name() == name)
+        families.iter().find(|family| family.name() == name)
     }
 
     fn find_label_value(metric: &prometheus::proto::Metric, name: &str) -> Option<String> {
         metric
             .get_label()
             .iter()
-            .find(|label| label.get_name() == name)
-            .map(|label| label.get_value().to_string())
+            .find(|label| label.name() == name)
+            .map(|label| label.value().to_string())
     }
 }

@@ -1,0 +1,11 @@
+[advisories]
+# `rsa` is locked through SQLx's optional MySQL support. Tideway enables only
+# PostgreSQL and SQLite, so the vulnerable RSA code is not in the built graph.
+ignore = [
+    "RUSTSEC-2023-0071",
+    # `tokio-tar` is used only by the opt-in test-containers feature. The
+    # advisory has no fixed release; Tideway's Postgres test container does not
+    # extract caller-supplied archives. Remove this exception when upstream
+    # testcontainers replaces or fixes tokio-tar.
+    "RUSTSEC-2025-0111",
+]
