@@ -115,11 +115,11 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
     let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
 
     let deps = doc["dependencies"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let deps_table = deps.as_table_mut().ok_or_else(|| {
+        anyhow::anyhow!("Invalid Cargo.toml: [dependencies] must be a TOML table")
+    })?;
 
-    let tideway_item = deps
-        .as_table_mut()
-        .expect("dependencies should be a table")
-        .entry("tideway");
+    let tideway_item = deps_table.entry("tideway");
 
     let feature_names = tideway_features_for_add(feature);
 
@@ -146,7 +146,11 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
                         toml_edit::Array::new(),
                     )))
                     .as_array_mut()
-                    .expect("features should be an array");
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Invalid Cargo.toml: dependencies.tideway.features must be an array"
+                        )
+                    })?;
 
                 for feature_name in &feature_names {
                     if !features.iter().any(|v| v.as_str() == Some(feature_name)) {
@@ -158,7 +162,6 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
     }
 
     if feature == AddFeature::Database || feature == AddFeature::Organizations {
-        let deps_table = deps.as_table_mut().expect("dependencies should be a table");
         deps_table
             .entry("sea-orm")
             .or_insert(toml_edit::Item::Value(toml_edit::Value::InlineTable({
@@ -173,7 +176,6 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
     }
 
     if feature == AddFeature::Auth || feature == AddFeature::Organizations {
-        let deps_table = deps.as_table_mut().expect("dependencies should be a table");
         deps_table
             .entry("async-trait")
             .or_insert(toml_edit::value("0.1"));
@@ -1371,4 +1373,45 @@ pub fn array_value(values: &[&str]) -> toml_edit::Value {
         array.push(*value);
     }
     toml_edit::Value::Array(array)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_cargo_toml_rejects_non_table_dependencies() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("Cargo.toml");
+        let error = update_cargo_toml(
+            &path,
+            "dependencies = \"invalid\"\n\n[package]\nname = \"example\"\nversion = \"0.1.0\"\n",
+            AddFeature::Auth,
+        )
+        .expect_err("invalid dependencies should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("[dependencies] must be a TOML table")
+        );
+    }
+
+    #[test]
+    fn update_cargo_toml_rejects_non_array_tideway_features() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("Cargo.toml");
+        let error = update_cargo_toml(
+            &path,
+            "[package]\nname = \"example\"\nversion = \"0.1.0\"\n\n[dependencies]\ntideway = { version = \"0.7\", features = \"auth\" }\n",
+            AddFeature::Auth,
+        )
+        .expect_err("invalid Tideway features should be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("dependencies.tideway.features must be an array")
+        );
+    }
 }

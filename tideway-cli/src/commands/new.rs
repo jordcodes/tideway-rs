@@ -663,6 +663,25 @@ mod tests {
     }
 
     #[test]
+    fn ensure_backend_dependencies_rejects_non_table_dependencies() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("Cargo.toml");
+        write_file(
+            &path,
+            "dependencies = \"invalid\"\n\n[package]\nname = \"example\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("write manifest");
+
+        let error = ensure_backend_dependencies(&path)
+            .expect_err("invalid dependencies should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("[dependencies] must be a TOML table")
+        );
+    }
+
+    #[test]
     fn test_primary_preset_options_focus_on_three_paths() {
         assert_eq!(
             PRIMARY_PRESET_OPTIONS[0],
@@ -1051,7 +1070,9 @@ fn ensure_backend_dependencies(cargo_path: &Path) -> Result<()> {
     let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
 
     let deps = doc["dependencies"].or_insert(Item::Table(Table::new()));
-    let deps_table = deps.as_table_mut().expect("dependencies should be a table");
+    let deps_table = deps
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Invalid Cargo.toml: [dependencies] must be a TOML table"))?;
 
     ensure_dependency_value(deps_table, "anyhow", Value::from("1"));
     ensure_dependency_value(deps_table, "tracing", Value::from("0.1"));

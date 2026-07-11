@@ -1,4 +1,12 @@
 [advisories]
+# Reviewed 2026-07-11: `http-types` (RUSTSEC-2026-0174) and `rand` 0.7
+# (RUSTSEC-2026-0097) are pulled in only by async-stripe 0.41, which remains
+# the latest stable async-stripe release. Keep these warnings visible and
+# reassess when async-stripe 1.0 reaches a stable release.
+#
+# The unmaintained `rustls-pemfile` warning is confined to the opt-in
+# testcontainers dependency graph. The remaining unmaintained warnings are
+# transitive proc-macro/build dependencies and are kept visible by cargo-audit.
 # `rsa` is locked through SQLx's optional MySQL support. Tideway enables only
 # PostgreSQL and SQLite, so the vulnerable RSA code is not in the built graph.
 ignore = [

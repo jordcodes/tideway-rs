@@ -14,7 +14,7 @@ readme = "README.md"
 documentation = "https://docs.rs/tideway"
 keywords = ["web", "framework", "axum", "api", "async"]
 categories = ["web-programming::http-server"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [dependencies]
 # Macros (optional)

@@ -10,7 +10,7 @@ repository = "https://github.com/jordcodes/tideway-rs"
 readme = "README.md"
 keywords = ["cli", "saas", "scaffold", "backend", "axum"]
 categories = ["command-line-utilities", "development-tools"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [package.metadata]
 tideway_version = "0.7.20"
