@@ -417,7 +417,28 @@ async fn handle_webhook(
 
     // Handle price events for plan sync
     if event.event_type.starts_with("price.") {
-        return handle_price_webhook(&state, &event).await;
+        match state.billing_store.claim_event(&event.id).await {
+            Ok(false) => return Ok(StatusCode::OK),
+            Ok(true) => {}
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to claim price webhook");
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, "Processing failed".to_string()));
+            }
+        }
+
+        if let Err(e) = handle_price_webhook(&state, &event).await {
+            if let Err(release_error) = state.billing_store.release_event_claim(&event.id).await {
+                tracing::error!(
+                    error = %release_error,
+                    event_id = %event.id,
+                    "Failed to release price webhook claim"
+                );
+            }
+            tracing::error!(error = %e, "Failed to process price webhook");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Processing failed".to_string()));
+        }
+
+        return Ok(StatusCode::OK);
     }
 
     match webhook_handler.handle_event(event).await {
@@ -448,7 +469,7 @@ async fn handle_webhook(
 async fn handle_price_webhook(
     state: &Arc<BillingState>,
     event: &tideway::billing::WebhookEvent,
-) -> std::result::Result<StatusCode, (StatusCode, String)> {
+) -> Result<()> {
     let price_id = event.data.object.get("id")
         .and_then(|v| v.as_str())
         .unwrap_or("");
@@ -464,7 +485,7 @@ async fn handle_price_webhook(
                 price_id = %price_id,
                 "Stripe price was archived, checking for affected plans"
             );
-            deactivate_plans_with_price(state, price_id).await;
+            deactivate_plans_with_price(state, price_id).await?;
         }
         "price.deleted" => {
             // Price was deleted - deactivate plans using it
@@ -472,46 +493,33 @@ async fn handle_price_webhook(
                 price_id = %price_id,
                 "Stripe price was deleted, checking for affected plans"
             );
-            deactivate_plans_with_price(state, price_id).await;
+            deactivate_plans_with_price(state, price_id).await?;
         }
         _ => {
             tracing::debug!(event_type = %event.event_type, "Price event ignored");
         }
     }
 
-    Ok(StatusCode::OK)
+    Ok(())
 }
 
 /// Deactivate plans that use a specific Stripe price.
-async fn deactivate_plans_with_price(state: &Arc<BillingState>, price_id: &str) {
-    // Find plans using this price
-    match state.billing_store.list_all_plans().await {
-        Ok(plans) => {
-            for plan in plans {
-                let uses_price = plan.stripe_price_id == price_id
-                    || plan.stripe_seat_price_id.as_deref() == Some(price_id);
+async fn deactivate_plans_with_price(state: &Arc<BillingState>, price_id: &str) -> Result<()> {
+    let plans = state.billing_store.list_all_plans().await?;
+    for plan in plans {
+        let uses_price = plan.stripe_price_id == price_id
+            || plan.stripe_seat_price_id.as_deref() == Some(price_id);
 
-                if uses_price && plan.is_active {
-                    tracing::warn!(
-                        plan_id = %plan.id,
-                        price_id = %price_id,
-                        "Deactivating plan due to archived/deleted Stripe price"
-                    );
-
-                    if let Err(e) = state.billing_store.set_plan_active(&plan.id, false).await {
-                        tracing::error!(
-                            plan_id = %plan.id,
-                            error = %e,
-                            "Failed to deactivate plan"
-                        );
-                    }
-                }
-            }
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to list plans for price sync");
+        if uses_price && plan.is_active {
+            tracing::warn!(
+                plan_id = %plan.id,
+                price_id = %price_id,
+                "Deactivating plan due to archived/deleted Stripe price"
+            );
+            state.billing_store.set_plan_active(&plan.id, false).await?;
         }
     }
+    Ok(())
 }
 
 {{#unless has_organizations}}

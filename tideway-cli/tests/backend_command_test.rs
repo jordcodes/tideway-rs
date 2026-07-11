@@ -81,6 +81,9 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert!(billing_routes.contains("authorize_billing_owner"));
     assert!(billing_routes.contains("authorize_billing_member"));
     assert!(billing_routes.contains("require_platform_admin"));
+    assert!(billing_routes.contains("billing_store.claim_event(&event.id)"));
+    assert!(billing_routes.contains("billing_store.release_event_claim(&event.id)"));
+    assert!(billing_routes.contains("deactivate_plans_with_price(state, price_id).await?"));
 }
 
 fn run_tideway(args: &[&str]) -> std::process::Output {

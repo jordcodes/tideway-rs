@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub stripe_webhook_secret: String,
     pub stripe_price_id: String,
     pub app_url: String,
+    pub environment: String,
 }
 
 impl AppConfig {
@@ -30,6 +31,7 @@ impl AppConfig {
             stripe_webhook_secret: std::env::var("STRIPE_WEBHOOK_SECRET").expect("STRIPE_WEBHOOK_SECRET must be set"),
             stripe_price_id: std::env::var("STRIPE_PRICE_ID").expect("STRIPE_PRICE_ID must be set"),
             app_url: std::env::var("APP_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+            environment: std::env::var("TIDEWAY_ENV").unwrap_or_else(|_| "production".into()),
         }
     }
 }

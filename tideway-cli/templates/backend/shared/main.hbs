@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tideway::{
     init_tracing,
     App, AppContext,
-    ConfigBuilder, CorsConfig,
+    ConfigBuilder,
 };
 use tideway::auth::{JwtIssuer, JwtIssuerConfig};
 use tideway::billing::{
@@ -111,19 +111,30 @@ async fn main() -> anyhow::Result<()> {
             .done()?
         .build()?;
 
-    // Determine if we're in development mode
-    let is_development = app_config.host == "localhost"
-        || app_config.host == "127.0.0.1"
-        || app_config.host == "0.0.0.0";
+    let app_uri: axum::http::Uri = app_config.app_url.parse()?;
+    let app_host = app_uri
+        .host()
+        .ok_or_else(|| anyhow::anyhow!("APP_URL must include a host"))?;
+    let is_development = matches!(
+        app_config.environment.to_ascii_lowercase().as_str(),
+        "development" | "dev" | "local" | "test"
+    );
 
     // Create billing configs
     let (checkout_config, portal_config) = if is_development {
         (
-            CheckoutConfig::default().allow_localhost_http(true),
-            PortalConfig::default().allow_localhost_http(true),
+            CheckoutConfig::default()
+                .allowed_redirect_domains([app_host])
+                .allow_localhost_http(true),
+            PortalConfig::default()
+                .allowed_return_domains([app_host])
+                .allow_localhost_http(true),
         )
     } else {
-        (CheckoutConfig::default(), PortalConfig::default())
+        (
+            CheckoutConfig::default().allowed_redirect_domains([app_host]),
+            PortalConfig::default().allowed_return_domains([app_host]),
+        )
     };
 
     // Create billing state
@@ -160,7 +171,6 @@ async fn main() -> anyhow::Result<()> {
         .with_host(&app_config.host)
         .with_port(app_config.port)
         .from_env()
-        .with_cors(CorsConfig::permissive())
         .build()?;
 
     // Build AppContext with database

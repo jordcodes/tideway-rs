@@ -538,6 +538,16 @@ fn test_new_command_with_preset_saas() {
         &project_dir.join(".env.example"),
         "APP_URL=http://localhost:8000",
     );
+    assert_file_contains(&project_dir.join(".env.example"), "TIDEWAY_ENV=development");
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "TIDEWAY_CORS_ALLOWED_ORIGINS=http://localhost:5173",
+    );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        "allowed_redirect_domains([app_host])",
+    );
+    assert_file_not_contains(&project_dir.join("src/main.rs"), "CorsConfig::permissive()");
     assert_file_not_contains(&project_dir.join(".env.example"), "OPENAPI_ENABLED");
 }
 
