@@ -18,7 +18,9 @@ pub struct SimpleAuthProvider {
 impl SimpleAuthProvider {
     pub fn from_secret(secret: &str) -> Self {
         Self {
-            verifier: JwtVerifier::from_secret(secret.as_bytes()),
+            verifier: JwtVerifier::from_secret(secret.as_bytes())
+                .with_issuer(env!("CARGO_PKG_NAME"))
+                .with_audience(env!("CARGO_PKG_NAME")),
         }
     }
 }

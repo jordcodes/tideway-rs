@@ -60,10 +60,10 @@ async fn main() -> anyhow::Result<()> {
     info!("Migrations completed");
 
     // Create JWT issuer
-    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(
+    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secure_secret(
         &app_config.jwt_secret,
         &app_config.app_name,
-    ))?);
+    )?.audience(env!("CARGO_PKG_NAME")))?);
 
     // Create auth module
     let auth_module = AuthModule::new(

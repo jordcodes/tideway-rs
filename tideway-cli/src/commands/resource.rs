@@ -964,11 +964,13 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         None
     };
 
-    if args.db && matches!(args.id_type, ResourceIdType::Uuid) {
-        if args.add_uuid && !has_uuid_dependency {
-            add_uuid_dependency(&cargo_path)?;
-            print_success("Added uuid dependency to Cargo.toml");
-        }
+    if args.db
+        && matches!(args.id_type, ResourceIdType::Uuid)
+        && args.add_uuid
+        && !has_uuid_dependency
+    {
+        add_uuid_dependency(&cargo_path)?;
+        print_success("Added uuid dependency to Cargo.toml");
     }
 
     let routes_dir = src_dir.join("routes");
@@ -1234,8 +1236,8 @@ fn detect_db_backend(cargo_doc: Option<&toml_edit::DocumentMut>) -> Result<DbBac
             "Could not detect database backend from Cargo.toml"
         ));
     };
-    let has_sea_orm = has_dependency(&doc, "sea-orm");
-    let has_tideway_db = has_tideway_feature(&doc, "database");
+    let has_sea_orm = has_dependency(doc, "sea-orm");
+    let has_tideway_db = has_tideway_feature(doc, "database");
 
     if has_sea_orm || has_tideway_db {
         Ok(DbBackend::SeaOrm)
@@ -1282,7 +1284,7 @@ fn has_dependency(doc: &toml_edit::DocumentMut, dependency: &str) -> bool {
         .any(|deps| deps.get(dependency).is_some())
 }
 
-fn dependency_sections<'a>(doc: &'a toml_edit::DocumentMut) -> Vec<&'a toml_edit::Item> {
+fn dependency_sections(doc: &toml_edit::DocumentMut) -> Vec<&toml_edit::Item> {
     let mut sections = Vec::new();
 
     if let Some(item) = doc.get("dependencies") {
@@ -1316,6 +1318,25 @@ struct OwnedActor {
     owner_id: String,
 }
 
+fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
+    static VERIFIER: std::sync::OnceLock<std::result::Result<JwtVerifier<AccessTokenClaims>, String>> =
+        std::sync::OnceLock::new();
+    VERIFIER
+        .get_or_init(|| {
+            let secret = std::env::var("JWT_SECRET")
+                .map_err(|_| "JWT auth is not configured".to_string())?;
+            JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+                .map(|verifier| {
+                    verifier
+                        .with_issuer(env!("CARGO_PKG_NAME"))
+                        .with_audience(env!("CARGO_PKG_NAME"))
+                })
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| TidewayError::Unauthorized(error.clone()))
+}
+
 async fn authenticated_user(headers: &HeaderMap, db: &DatabaseConnection) -> Result<user::Model> {
     let auth_header = headers
         .get("authorization")
@@ -1326,10 +1347,7 @@ async fn authenticated_user(headers: &HeaderMap, db: &DatabaseConnection) -> Res
         .strip_prefix("Bearer ")
         .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
 
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .map_err(|_| TidewayError::Unauthorized("JWT auth is not configured".into()))?;
-    let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret(jwt_secret.as_bytes());
-    let token_data = jwt_verifier.verify(token).await?;
+    let token_data = jwt_verifier()?.verify_access_token(token).await?;
 
     let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
         .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
@@ -1404,6 +1422,25 @@ async fn resolve_current_membership(
 
 fn render_saas_admin_route_support_code() -> &'static str {
     r#"
+fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
+    static VERIFIER: std::sync::OnceLock<std::result::Result<JwtVerifier<AccessTokenClaims>, String>> =
+        std::sync::OnceLock::new();
+    VERIFIER
+        .get_or_init(|| {
+            let secret = std::env::var("JWT_SECRET")
+                .map_err(|_| "JWT auth is not configured".to_string())?;
+            JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+                .map(|verifier| {
+                    verifier
+                        .with_issuer(env!("CARGO_PKG_NAME"))
+                        .with_audience(env!("CARGO_PKG_NAME"))
+                })
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| TidewayError::Unauthorized(error.clone()))
+}
+
 async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> Result<()> {
     let auth_header = headers
         .get("authorization")
@@ -1414,10 +1451,7 @@ async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> R
         .strip_prefix("Bearer ")
         .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
 
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .map_err(|_| TidewayError::Unauthorized("JWT auth is not configured".into()))?;
-    let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret(jwt_secret.as_bytes());
-    let token_data = jwt_verifier.verify(token).await?;
+    let token_data = jwt_verifier()?.verify_access_token(token).await?;
 
     let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
         .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
@@ -3821,7 +3855,7 @@ fn render_repository_tests(
     } else {
         "repo.list().await?".to_string()
     };
-    let test_template = r#"use tideway::testing::{TestDb, TestDbBackend, TestDbConfig};
+    r#"use tideway::testing::{TestDb, TestDbBackend, TestDbConfig};
 use tideway::Result;
 
 use {project_name}::repositories::{resource_name}::{resource_pascal}Repository;
@@ -3882,8 +3916,7 @@ async fn repository_crud_smoke() -> Result<()> {
     .replace("{resource_name}", resource_name)
     .replace("{resource_pascal}", &resource_pascal)
     .replace("{create_call_args}", &create_call_args)
-    .replace("{list_call}", &list_call);
-    test_template
+    .replace("{list_call}", &list_call)
 }
 
 fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> Result<()> {

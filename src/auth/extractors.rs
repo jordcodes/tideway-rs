@@ -59,6 +59,13 @@ pub(crate) async fn resolve_test_claims<P: AuthProvider>(
     parts: &Parts,
     provider: &P,
 ) -> Result<Option<P::Claims>, TidewayError> {
+    // Never honor caller-controlled test identity headers in optimized builds.
+    // This keeps an accidentally enabled test feature from becoming a production
+    // authentication bypass.
+    if !cfg!(debug_assertions) {
+        return Ok(None);
+    }
+
     if let Some(claims) = decode_test_claims_header::<P>(parts)? {
         return Ok(Some(claims));
     }

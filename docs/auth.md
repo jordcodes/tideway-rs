@@ -518,10 +518,11 @@ async fn register(req: RegisterRequest) -> Result<()> {
 ## JWT Configuration
 
 ```rust
-use tideway::auth::{JwtIssuer, JwtIssuerConfig};
+use tideway::auth::{AccessTokenClaims, JwtIssuer, JwtIssuerConfig, JwtVerifier};
 
 // HMAC-SHA256 (symmetric)
-let config = JwtIssuerConfig::with_secret("your-secret-key", "my-app")
+let config = JwtIssuerConfig::with_secure_secret("a-random-secret-of-at-least-32-bytes", "my-app")?
+    .audience("my-app")
     .access_token_ttl(Duration::from_secs(900))      // 15 minutes
     .refresh_token_ttl(Duration::from_secs(604800))  // 7 days
     .remember_me_ttl(Duration::from_secs(2592000)); // 30 days
@@ -536,6 +537,19 @@ let subject = TokenSubject::new("user-123")
 
 let tokens = issuer.issue(subject, false)?; // false = don't remember me
 ```
+
+Configure verifiers with the same issuer and audience. Audience validation prevents a token
+issued for one service from being accepted by another service that shares signing infrastructure:
+
+```rust
+let verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())?
+    .with_issuer("my-app")
+    .with_audience("my-app");
+```
+
+New CLI scaffolds set both claims to the Cargo package name. Existing applications that add an
+audience will invalidate previously issued audience-less tokens, so deploy issuance and
+verification together and expect users to authenticate again.
 
 ## Auth Extractors
 

@@ -54,6 +54,20 @@ enum SecretKey {
 }
 
 impl JwtIssuerConfig {
+    /// Create an HS256 configuration while enforcing a 256-bit minimum secret.
+    pub fn with_secure_secret(
+        secret: impl Into<String>,
+        issuer: impl Into<String>,
+    ) -> Result<Self> {
+        let secret = secret.into();
+        if secret.len() < 32 {
+            return Err(TidewayError::internal(
+                "HS256 JWT secret must be at least 32 bytes",
+            ));
+        }
+        Ok(Self::with_secret(secret, issuer))
+    }
+
     /// Create config with HS256 symmetric key.
     pub fn with_secret(secret: impl Into<String>, issuer: impl Into<String>) -> Self {
         Self {
@@ -461,6 +475,12 @@ fn generate_token_family() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_secure_config_rejects_short_hs256_secret() {
+        assert!(JwtIssuerConfig::with_secure_secret("too-short", "test-app").is_err());
+        assert!(JwtIssuerConfig::with_secure_secret("x".repeat(32), "test-app").is_ok());
+    }
     use jsonwebtoken::{DecodingKey, Validation, decode};
 
     fn test_issuer() -> JwtIssuer {

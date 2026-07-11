@@ -468,7 +468,7 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     // JWT issuer
     if modules.auth || modules.admin {
         body.push_str("    // Create JWT issuer\n");
-        body.push_str("    let jwt_config = JwtIssuerConfig::with_secret(&config.jwt_secret, &config.app_name);\n");
+        body.push_str("    let jwt_config = JwtIssuerConfig::with_secure_secret(&config.jwt_secret, &config.app_name)?.audience(env!(\"CARGO_PKG_NAME\"));\n");
         body.push_str("    let jwt_issuer = Arc::new(JwtIssuer::new(jwt_config)?);\n\n");
     }
 

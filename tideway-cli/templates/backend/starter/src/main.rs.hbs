@@ -71,10 +71,11 @@ async fn main() -> Result<(), std::io::Error> {
     {{else}}
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is not set");
     {{/if}}
-    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(
+    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secure_secret(
         &jwt_secret,
         "{{project_name}}",
-    )).expect("Failed to create JWT issuer"));
+    ).expect("JWT_SECRET must be at least 32 bytes").audience(env!("CARGO_PKG_NAME")))
+        .expect("Failed to create JWT issuer"));
     let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);
     let auth_module = AuthModule::new(jwt_issuer.clone());
 {{/if}}

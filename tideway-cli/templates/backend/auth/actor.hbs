@@ -2,6 +2,7 @@
 
 use axum::http::HeaderMap;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use std::sync::OnceLock;
 use tideway::auth::{AccessTokenClaims, JwtVerifier};
 use tideway::{Result, TidewayError};
 use uuid::Uuid;
@@ -22,7 +23,7 @@ pub struct RequestActor {
 impl RequestActor {
     pub async fn from_headers(headers: &HeaderMap, db: &DatabaseConnection) -> Result<Self> {
         let verifier = jwt_verifier_from_env()?;
-        Self::from_headers_with_verifier(headers, db, &verifier).await
+        Self::from_headers_with_verifier(headers, db, verifier).await
     }
 
     pub async fn from_headers_with_verifier(
@@ -53,7 +54,7 @@ impl RequestActor {
         db: &DatabaseConnection,
     ) -> Result<Self> {
         let verifier = jwt_verifier_from_env()?;
-        Self::for_current_organization_with_verifier(headers, db, &verifier).await
+        Self::for_current_organization_with_verifier(headers, db, verifier).await
     }
 
     pub async fn for_current_organization_with_verifier(
@@ -75,7 +76,7 @@ impl RequestActor {
         organization_id: &str,
     ) -> Result<Self> {
         let verifier = jwt_verifier_from_env()?;
-        Self::for_organization_with_verifier(headers, db, &verifier, organization_id).await
+        Self::for_organization_with_verifier(headers, db, verifier, organization_id).await
     }
 
     pub async fn for_organization_with_verifier(
@@ -120,12 +121,23 @@ impl RequestActor {
     {{/if}}
 }
 
-fn jwt_verifier_from_env() -> Result<JwtVerifier<AccessTokenClaims>> {
-    let jwt_secret = std::env::var("JWT_SECRET")
-        .map_err(|_| TidewayError::Unauthorized("JWT auth is not configured".into()))?;
-    Ok(JwtVerifier::<AccessTokenClaims>::from_secret(
-        jwt_secret.as_bytes(),
-    ))
+fn jwt_verifier_from_env() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
+    static VERIFIER: OnceLock<std::result::Result<JwtVerifier<AccessTokenClaims>, String>> =
+        OnceLock::new();
+    VERIFIER
+        .get_or_init(|| {
+            let jwt_secret = std::env::var("JWT_SECRET")
+                .map_err(|_| "JWT auth is not configured".to_string())?;
+            JwtVerifier::<AccessTokenClaims>::from_secret_checked(jwt_secret.as_bytes())
+                .map(|verifier| {
+                    verifier
+                        .with_issuer(env!("CARGO_PKG_NAME"))
+                        .with_audience(env!("CARGO_PKG_NAME"))
+                })
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(|error| TidewayError::Unauthorized(error.clone()))
 }
 
 fn bearer_token<'a>(headers: &'a HeaderMap) -> Result<&'a str> {

@@ -38,7 +38,10 @@ impl AdminModule {
         jwt_secret: String,
         jwt_issuer: Arc<JwtIssuer>,
     ) -> Self {
-        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret(jwt_secret.as_bytes());
+        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(jwt_secret.as_bytes())
+            .expect("JWT_SECRET must be at least 32 bytes")
+            .with_issuer(env!("CARGO_PKG_NAME"))
+            .with_audience(env!("CARGO_PKG_NAME"));
         Self {
             state: AdminState {
                 db,

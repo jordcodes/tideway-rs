@@ -699,10 +699,12 @@ fn find_token_outside_comments_and_strings(
     let mut escape = false;
 
     while i < bytes.len() {
-        if !in_single_quote && !in_double_quote && i + token.len() <= bytes.len() {
-            if &bytes[i..i + token.len()] == token {
-                return Some(i);
-            }
+        if !in_single_quote
+            && !in_double_quote
+            && i + token.len() <= bytes.len()
+            && &bytes[i..i + token.len()] == token
+        {
+            return Some(i);
         }
 
         let b = bytes[i];
@@ -1033,7 +1035,7 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
         }
     } else {
         let block = format!(
-            "    let jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secret(\n        &jwt_secret,\n        \"{}\",\n    )).expect(\"Failed to create JWT issuer\"));\n    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n\n",
+            "    let jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secure_secret(\n        &jwt_secret,\n        \"{}\",\n    ).expect(\"JWT_SECRET must be at least 32 bytes\").audience(env!(\"CARGO_PKG_NAME\"))).expect(\"Failed to create JWT issuer\"));\n    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n\n",
             project_name
         );
         if let Some(updated) = insert_before_app_builder(contents, &block)? {

@@ -1,10 +1,87 @@
 use crate::auth::jwt_issuer::{AccessTokenClaims, TokenType};
 use crate::error::{Result, TidewayError};
+use futures::StreamExt;
 use jsonwebtoken::{Algorithm, DecodingKey, TokenData, Validation, decode, decode_header};
 use reqwest::Client;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::sync::{Arc, OnceLock};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+
+/// Reusable HTTP client and safety policy for JWKS retrieval.
+#[derive(Clone)]
+pub struct JwksClient {
+    http: Client,
+    max_response_bytes: usize,
+}
+
+impl JwksClient {
+    pub const DEFAULT_MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+
+    pub fn new() -> Result<Self> {
+        let http = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| TidewayError::internal(format!("Failed to build JWKS client: {e}")))?;
+        Ok(Self {
+            http,
+            max_response_bytes: Self::DEFAULT_MAX_RESPONSE_BYTES,
+        })
+    }
+
+    pub fn with_http_client(http: Client) -> Self {
+        Self {
+            http,
+            max_response_bytes: Self::DEFAULT_MAX_RESPONSE_BYTES,
+        }
+    }
+
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes.max(1);
+        self
+    }
+
+    pub async fn fetch(&self, url: &str) -> Result<JwkSet> {
+        let response = self
+            .http
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| TidewayError::internal(format!("Failed to fetch JWKS: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(TidewayError::internal(format!(
+                "JWKS endpoint returned status: {}",
+                response.status()
+            )));
+        }
+
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.max_response_bytes as u64)
+        {
+            return Err(TidewayError::internal(
+                "JWKS response exceeds configured limit",
+            ));
+        }
+
+        let mut body = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk =
+                chunk.map_err(|e| TidewayError::internal(format!("Failed to read JWKS: {e}")))?;
+            if body.len().saturating_add(chunk.len()) > self.max_response_bytes {
+                return Err(TidewayError::internal(
+                    "JWKS response exceeds configured limit",
+                ));
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        serde_json::from_slice(&body)
+            .map_err(|e| TidewayError::internal(format!("Failed to parse JWKS: {e}")))
+    }
+}
 
 /// JSON Web Key (JWK) as returned by auth providers
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,24 +104,7 @@ pub struct JwkSet {
 impl JwkSet {
     /// Fetch JWK Set from a URL
     pub async fn fetch(url: &str) -> Result<Self> {
-        let client = Client::new();
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to fetch JWKS: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(TidewayError::internal(format!(
-                "JWKS endpoint returned status: {}",
-                response.status()
-            )));
-        }
-
-        response
-            .json()
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to parse JWKS: {}", e)))
+        JwksClient::new()?.fetch(url).await
     }
 
     /// Find a JWK by key ID
@@ -71,6 +131,9 @@ impl JwkSet {
 pub struct JwtVerifier<C> {
     jwks: Arc<RwLock<JwkSet>>,
     jwks_url: Option<String>,
+    jwks_client: Option<JwksClient>,
+    last_unknown_kid_refresh: Arc<Mutex<Option<std::time::Instant>>>,
+    unknown_kid_refresh_cooldown: std::time::Duration,
     decoding_key: Option<DecodingKey>,
     validation: Validation,
     /// Track whether issuer validation is configured
@@ -84,6 +147,9 @@ pub struct JwtVerifier<C> {
 }
 
 impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
+    /// Minimum recommended key size for HS256 (256 bits).
+    pub const MIN_HS256_SECRET_BYTES: usize = 32;
+
     /// Create a verifier using JWKS (fetches keys from URL)
     ///
     /// # Security Warning
@@ -91,8 +157,17 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     /// After creating a verifier, you should configure issuer and audience
     /// validation using [`set_issuer`] and [`set_audience`] before use in production.
     pub async fn from_jwks_url(url: impl Into<String>, algorithm: Algorithm) -> Result<Self> {
+        Self::from_jwks_url_with_client(url, algorithm, JwksClient::new()?).await
+    }
+
+    /// Create a verifier using a caller-provided reusable JWKS client.
+    pub async fn from_jwks_url_with_client(
+        url: impl Into<String>,
+        algorithm: Algorithm,
+        client: JwksClient,
+    ) -> Result<Self> {
         let url = url.into();
-        let jwks = JwkSet::fetch(&url).await?;
+        let jwks = client.fetch(&url).await?;
 
         let mut validation = Validation::new(algorithm);
         validation.validate_exp = true;
@@ -100,6 +175,9 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
         Ok(Self {
             jwks: Arc::new(RwLock::new(jwks)),
             jwks_url: Some(url),
+            jwks_client: Some(client),
+            last_unknown_kid_refresh: Arc::new(Mutex::new(None)),
+            unknown_kid_refresh_cooldown: std::time::Duration::from_secs(30),
             decoding_key: None,
             validation,
             issuer_configured: false,
@@ -122,6 +200,9 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
         Self {
             jwks: Arc::new(RwLock::new(JwkSet { keys: vec![] })),
             jwks_url: None,
+            jwks_client: None,
+            last_unknown_kid_refresh: Arc::new(Mutex::new(None)),
+            unknown_kid_refresh_cooldown: std::time::Duration::from_secs(30),
             decoding_key: Some(DecodingKey::from_secret(secret)),
             validation,
             issuer_configured: false,
@@ -129,6 +210,16 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             warning_logged: Arc::new(OnceLock::new()),
             _claims: std::marker::PhantomData,
         }
+    }
+
+    /// Create an HS256 verifier while enforcing a 256-bit minimum secret.
+    pub fn from_secret_checked(secret: &[u8]) -> Result<Self> {
+        if secret.len() < Self::MIN_HS256_SECRET_BYTES {
+            return Err(TidewayError::internal(
+                "HS256 JWT secret must be at least 32 bytes",
+            ));
+        }
+        Ok(Self::from_secret(secret))
     }
 
     /// Create a verifier using a static RSA public key (PEM format)
@@ -147,6 +238,9 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
         Ok(Self {
             jwks: Arc::new(RwLock::new(JwkSet { keys: vec![] })),
             jwks_url: None,
+            jwks_client: None,
+            last_unknown_kid_refresh: Arc::new(Mutex::new(None)),
+            unknown_kid_refresh_cooldown: std::time::Duration::from_secs(30),
             decoding_key: Some(decoding_key),
             validation,
             issuer_configured: false,
@@ -165,6 +259,12 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
         self.issuer_configured = true;
     }
 
+    /// Configure the expected issuer using builder syntax.
+    pub fn with_issuer(mut self, issuer: impl Into<String>) -> Self {
+        self.set_issuer(issuer);
+        self
+    }
+
     /// Set the expected audience claim
     ///
     /// **Strongly recommended for production use.** Without audience validation,
@@ -174,10 +274,22 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
         self.audience_configured = true;
     }
 
+    /// Configure the expected audience using builder syntax.
+    pub fn with_audience(mut self, audience: impl Into<String>) -> Self {
+        self.set_audience(audience);
+        self
+    }
+
+    /// Set the minimum interval between automatic refreshes caused by unknown key IDs.
+    pub fn with_unknown_kid_refresh_cooldown(mut self, cooldown: std::time::Duration) -> Self {
+        self.unknown_kid_refresh_cooldown = cooldown;
+        self
+    }
+
     /// Refresh the JWKS (useful for key rotation)
     pub async fn refresh_jwks(&self) -> Result<()> {
-        if let Some(url) = &self.jwks_url {
-            let new_jwks = JwkSet::fetch(url).await?;
+        if let (Some(url), Some(client)) = (&self.jwks_url, &self.jwks_client) {
+            let new_jwks = client.fetch(url).await?;
             let mut jwks = self.jwks.write().await;
             *jwks = new_jwks;
         }
@@ -230,8 +342,22 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
             .as_ref()
             .ok_or_else(|| TidewayError::unauthorized("Token missing 'kid' header"))?;
 
-        let jwks = self.jwks.read().await;
-        let jwk = jwks.find_by_kid(kid).ok_or_else(|| {
+        let mut jwk = self.jwks.read().await.find_by_kid(kid).cloned();
+        if jwk.is_none() && self.jwks_url.is_some() {
+            let mut last_refresh = self.last_unknown_kid_refresh.lock().await;
+            jwk = self.jwks.read().await.find_by_kid(kid).cloned();
+            let refresh_allowed =
+                last_refresh.is_none_or(|last| last.elapsed() >= self.unknown_kid_refresh_cooldown);
+            if jwk.is_none() && refresh_allowed {
+                *last_refresh = Some(std::time::Instant::now());
+                self.refresh_jwks().await.map_err(|error| {
+                    tracing::warn!(error = %error, "JWKS refresh failed for unknown key ID");
+                    TidewayError::unauthorized("Token key is not available")
+                })?;
+                jwk = self.jwks.read().await.find_by_kid(kid).cloned();
+            }
+        }
+        let jwk = jwk.ok_or_else(|| {
             TidewayError::unauthorized(format!("Key '{}' not found in JWKS", kid))
         })?;
 
@@ -281,6 +407,12 @@ mod tests {
     fn test_create_verifier_from_secret() {
         let verifier = JwtVerifier::<TestClaims>::from_secret(b"my_secret");
         assert!(verifier.decoding_key.is_some());
+    }
+
+    #[test]
+    fn test_checked_verifier_rejects_short_hs256_secret() {
+        assert!(JwtVerifier::<TestClaims>::from_secret_checked(b"too-short").is_err());
+        assert!(JwtVerifier::<TestClaims>::from_secret_checked(&[b'x'; 32]).is_ok());
     }
 
     #[tokio::test]
@@ -372,5 +504,54 @@ mod tests {
             refresh_result.is_err(),
             "refresh tokens must not authenticate access-token paths"
         );
+    }
+
+    #[tokio::test]
+    async fn test_verify_access_token_rejects_wrong_audience() {
+        let secret = "test_secret_for_audience_validation_123";
+        let issuer = JwtIssuer::new(
+            JwtIssuerConfig::with_secure_secret(secret, "test-app")
+                .unwrap()
+                .audience("api-a"),
+        )
+        .unwrap();
+        let tokens = issuer.issue(TokenSubject::new("user-123"), false).unwrap();
+
+        let valid = JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+            .unwrap()
+            .with_issuer("test-app")
+            .with_audience("api-a");
+        assert!(
+            valid
+                .verify_access_token(&tokens.access_token)
+                .await
+                .is_ok()
+        );
+
+        let wrong_audience =
+            JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+                .unwrap()
+                .with_issuer("test-app")
+                .with_audience("api-b");
+        assert!(
+            wrong_audience
+                .verify_access_token(&tokens.access_token)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_unknown_kid_refresh_cooldown_skips_repeated_network_fetch() {
+        let mut verifier = JwtVerifier::<TestClaims>::from_secret(b"unused");
+        verifier.decoding_key = None;
+        verifier.jwks_url = Some("http://127.0.0.1:1/should-not-be-called".to_string());
+        verifier.jwks_client = Some(JwksClient::new().unwrap());
+        verifier.validation = Validation::new(Algorithm::RS256);
+        *verifier.last_unknown_kid_refresh.lock().await = Some(std::time::Instant::now());
+
+        let token = "eyJhbGciOiJSUzI1NiIsImtpZCI6InJhbmRvbSJ9.e30.signature";
+        let error = verifier.verify(token).await.unwrap_err();
+        assert!(error.to_string().contains("not found in JWKS"));
     }
 }

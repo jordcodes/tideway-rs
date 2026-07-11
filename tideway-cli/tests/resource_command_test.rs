@@ -1679,6 +1679,52 @@ uuid = { version = "1", features = ["v4", "serde"] }
         &project_dir.join("src/routes/subscription.rs"),
         "Multiple organizations found; send x-organization-id",
     );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "jwt_verifier()?.verify_access_token(token).await?;",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "jwt_verifier.verify(token).await?;",
+    );
+}
+
+#[test]
+fn test_resource_profile_admin_inline_guard_rejects_refresh_tokens() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, false, true, false);
+
+    let args = ResourceArgs {
+        name: "admin_user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Admin,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let route = project_dir.join("src/routes/admin_user.rs");
+    assert_file_contains(&route, "jwt_verifier()?.verify_access_token(token).await?;");
+    assert_file_not_contains(&route, "jwt_verifier.verify(token).await?;");
 }
 
 #[test]
