@@ -30,8 +30,11 @@ use tower::{Layer, Service};
 /// Shrink the keyed state store every N requests to prevent unbounded memory growth.
 /// This is a balance between memory efficiency and performance overhead.
 const SHRINK_INTERVAL: u64 = 1000;
-/// Shared bucket used when client IP cannot be determined.
-const UNKNOWN_CLIENT_BUCKET: &str = "__tideway_unknown_client__";
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ClientKey {
+    Ip(std::net::IpAddr),
+    Unknown,
+}
 
 /// Custom error response for rate limit exceeded
 #[derive(serde::Serialize)]
@@ -57,8 +60,8 @@ type GlobalLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMidd
 
 /// Type alias for a per-IP (keyed) rate limiter
 type KeyedLimiter = RateLimiter<
-    String,
-    governor::state::keyed::DashMapStateStore<String>,
+    ClientKey,
+    governor::state::keyed::DashMapStateStore<ClientKey>,
     DefaultClock,
     NoOpMiddleware,
 >;
@@ -102,7 +105,7 @@ impl RateLimitState {
         }
     }
 
-    fn check_rate_limit(&self, key: Option<&str>) -> Result<(), u64> {
+    fn check_rate_limit(&self, ip: Option<std::net::IpAddr>) -> Result<(), u64> {
         match &self.limiter {
             LimiterState::PerIp(limiter) => {
                 // Periodically shrink the state store to remove stale entries
@@ -112,8 +115,8 @@ impl RateLimitState {
                     limiter.retain_recent();
                 }
 
-                let bucket = key.unwrap_or(UNKNOWN_CLIENT_BUCKET);
-                match limiter.check_key(&bucket.to_string()) {
+                let key = ip.map(ClientKey::Ip).unwrap_or(ClientKey::Unknown);
+                match limiter.check_key(&key) {
                     Ok(_) => Ok(()),
                     Err(not_until) => {
                         let wait = not_until
@@ -201,37 +204,35 @@ where
         // SECURITY: Only trust proxy headers if explicitly configured.
         // Trusting X-Forwarded-For without proper proxy configuration allows
         // attackers to spoof their IP and bypass per-IP rate limiting.
-        let ip: Option<String> = if self.state.config.trust_proxy {
+        let ip: Option<std::net::IpAddr> = if self.state.config.trust_proxy {
             // Trust mode: Check proxy headers first, fall back to connection IP
             req.headers()
                 .get("x-forwarded-for")
                 .and_then(|v| v.to_str().ok())
                 // X-Forwarded-For may contain multiple IPs: "client, proxy1, proxy2"
                 // The leftmost is the original client (if proxy is trusted to set it)
-                .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+                .and_then(|s| s.split(',').next().unwrap_or(s).trim().parse().ok())
                 .or_else(|| {
                     req.headers()
                         .get("x-real-ip")
                         .and_then(|v| v.to_str().ok())
-                        .map(|s| s.to_string())
+                        .and_then(|s| s.trim().parse().ok())
                 })
                 .or_else(|| {
                     req.extensions()
                         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                        .map(|addr| addr.ip().to_string())
+                        .map(|addr| addr.ip())
                 })
         } else {
             // Safe mode (default): Only use direct connection IP
             // This prevents IP spoofing but requires trust_proxy=true behind a proxy
             req.extensions()
                 .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                .map(|addr| addr.ip().to_string())
+                .map(|addr| addr.ip())
         };
 
-        let key = ip.as_deref();
-
         // Check rate limit
-        match self.state.check_rate_limit(key) {
+        match self.state.check_rate_limit(ip) {
             Ok(()) => {
                 let mut svc = self.inner.clone();
                 Box::pin(async move {
@@ -281,6 +282,10 @@ mod tests {
         }
     }
 
+    fn ip(value: &str) -> std::net::IpAddr {
+        value.parse().expect("valid test IP")
+    }
+
     #[test]
     fn test_rate_limit_allows_requests_under_limit() {
         let config = test_config();
@@ -288,7 +293,7 @@ mod tests {
 
         // Should allow 5 requests (burst size)
         for i in 0..5 {
-            let result = state.check_rate_limit(Some("192.168.1.1"));
+            let result = state.check_rate_limit(Some(ip("192.168.1.1")));
             assert!(result.is_ok(), "Request {} should be allowed", i + 1);
         }
     }
@@ -300,11 +305,11 @@ mod tests {
 
         // Use up the quota (burst)
         for _ in 0..5 {
-            state.check_rate_limit(Some("192.168.1.1")).unwrap();
+            state.check_rate_limit(Some(ip("192.168.1.1"))).unwrap();
         }
 
         // 6th request should be blocked
-        let result = state.check_rate_limit(Some("192.168.1.1"));
+        let result = state.check_rate_limit(Some(ip("192.168.1.1")));
         assert!(result.is_err(), "6th request should be blocked");
     }
 
@@ -315,11 +320,11 @@ mod tests {
 
         // Fill quota for IP 1
         for _ in 0..5 {
-            state.check_rate_limit(Some("192.168.1.1")).unwrap();
+            state.check_rate_limit(Some(ip("192.168.1.1"))).unwrap();
         }
 
         // IP 2 should still be allowed
-        let result = state.check_rate_limit(Some("192.168.1.2"));
+        let result = state.check_rate_limit(Some(ip("192.168.1.2")));
         assert!(result.is_ok(), "Different IP should have separate quota");
     }
 
@@ -331,11 +336,11 @@ mod tests {
 
         // All requests share the same quota regardless of IP
         for _ in 0..5 {
-            state.check_rate_limit(Some("192.168.1.1")).unwrap();
+            state.check_rate_limit(Some(ip("192.168.1.1"))).unwrap();
         }
 
         // Even a different IP should be blocked
-        let result = state.check_rate_limit(Some("192.168.1.2"));
+        let result = state.check_rate_limit(Some(ip("192.168.1.2")));
         assert!(result.is_err(), "Global limit should block all IPs");
     }
 
@@ -351,10 +356,10 @@ mod tests {
         let state = RateLimitState::new(config);
 
         // Use up the single allowed request
-        state.check_rate_limit(Some("192.168.1.1")).unwrap();
+        state.check_rate_limit(Some(ip("192.168.1.1"))).unwrap();
 
         // Second request should be blocked with retry_after
-        let result = state.check_rate_limit(Some("192.168.1.1"));
+        let result = state.check_rate_limit(Some(ip("192.168.1.1")));
         assert!(result.is_err());
         if let Err(retry_after) = result {
             assert!(retry_after > 0, "Should return positive retry_after");
@@ -396,8 +401,8 @@ mod tests {
             let state = state.clone();
             handles.push(thread::spawn(move || {
                 for j in 0..50 {
-                    let ip = format!("192.168.{}.{}", i, j % 256);
-                    let _ = state.check_rate_limit(Some(&ip));
+                    let address = format!("192.168.{}.{}", i, j % 256);
+                    let _ = state.check_rate_limit(Some(ip(&address)));
                 }
             }));
         }
@@ -408,7 +413,7 @@ mod tests {
         }
 
         // Rate limiter should still be functional
-        let result = state.check_rate_limit(Some("10.0.0.1"));
+        let result = state.check_rate_limit(Some(ip("10.0.0.1")));
         assert!(result.is_ok(), "Should still work after concurrent access");
     }
 }

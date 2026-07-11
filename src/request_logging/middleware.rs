@@ -2,8 +2,11 @@ use super::config::{LogLevel, RequestLoggingConfig};
 use axum::body::Body;
 use axum::{
     extract::{MatchedPath, Request},
-    http::{HeaderMap, StatusCode, header::CONTENT_LENGTH},
-    response::Response,
+    http::{
+        HeaderMap, StatusCode,
+        header::{CONTENT_LENGTH, CONTENT_TYPE},
+    },
+    response::{IntoResponse, Response},
 };
 use futures::future::BoxFuture;
 use std::time::Instant;
@@ -71,6 +74,11 @@ where
             .map(|p| p.as_str().to_string());
         let path = matched_path.unwrap_or_else(|| uri.path().to_string());
         let query = sanitize_query(uri.query());
+        let content_type = req
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
 
         // Extract request ID if present
         let request_id = req
@@ -87,19 +95,25 @@ where
 
         // Extract headers if configured
         let headers = if config.include_headers && any_logging_enabled {
-            Some(req.headers().clone())
+            Some(redact_headers(req.headers()))
         } else {
             None
         };
 
         Box::pin(async move {
             let mut inner = inner.clone();
-            let (req, request_body_preview) = if config.body_preview_size > 0 && any_logging_enabled
-            {
-                extract_request_body_preview(req, config.body_preview_size).await
-            } else {
-                (req, None)
-            };
+            let preview_allowed = !is_path_excluded(&path, &config.excluded_paths);
+            let (req, request_body_preview) =
+                if config.body_preview_size > 0 && any_logging_enabled && preview_allowed {
+                    match extract_request_body_preview(req, config.body_preview_size).await {
+                        Ok(preview) => preview,
+                        Err(response) => return Ok(response),
+                    }
+                } else {
+                    (req, None)
+                };
+            let request_body_preview = request_body_preview
+                .and_then(|body| sanitize_body_preview(&body, content_type.as_deref(), &config));
 
             let response = inner.call(req).await?;
             let status = response.status();
@@ -117,7 +131,7 @@ where
             }
 
             let response_headers = if config.include_response_headers {
-                Some(response.headers().clone())
+                Some(redact_headers(response.headers()))
             } else {
                 None
             };
@@ -287,9 +301,9 @@ fn is_log_level_enabled(level: LogLevel) -> bool {
 async fn extract_request_body_preview(
     request: Request,
     max_bytes: usize,
-) -> (Request, Option<String>) {
+) -> Result<(Request, Option<String>), Response> {
     if max_bytes == 0 {
-        return (request, None);
+        return Ok((request, None));
     }
 
     let Some(content_length) = request.headers().get(CONTENT_LENGTH).and_then(|value| {
@@ -298,21 +312,116 @@ async fn extract_request_body_preview(
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
     }) else {
-        return (request, None);
+        return Ok((request, None));
     };
 
     if content_length == 0 || content_length > max_bytes {
-        return (request, None);
+        return Ok((request, None));
     }
 
     let (parts, body) = request.into_parts();
-    let Ok(bytes) = axum::body::to_bytes(body, max_bytes).await else {
-        return (Request::from_parts(parts, Body::empty()), None);
-    };
+    let bytes = axum::body::to_bytes(body, max_bytes).await.map_err(|_| {
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body exceeded the configured logging preview limit",
+        )
+            .into_response()
+    })?;
 
     let request = Request::from_parts(parts, Body::from(bytes.clone()));
     let preview = String::from_utf8_lossy(&bytes).to_string();
-    (request, Some(preview))
+    Ok((request, Some(preview)))
+}
+
+const REDACTED_HEADER_VALUE: &str = "[REDACTED]";
+
+fn redact_headers(headers: &HeaderMap) -> HeaderMap {
+    let mut redacted = headers.clone();
+    for name in [
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "proxy-authorization",
+        "x-api-key",
+        "x-auth-token",
+    ] {
+        if redacted.contains_key(name) {
+            redacted.insert(
+                name,
+                REDACTED_HEADER_VALUE.parse().expect("static header value"),
+            );
+        }
+    }
+    redacted
+}
+
+fn is_path_excluded(path: &str, excluded_paths: &[String]) -> bool {
+    excluded_paths
+        .iter()
+        .any(|excluded| path == excluded || path.starts_with(&format!("{excluded}/")))
+}
+
+fn sanitize_body_preview(
+    body: &str,
+    content_type: Option<&str>,
+    config: &RequestLoggingConfig,
+) -> Option<String> {
+    let content_type = content_type?.split(';').next()?.trim();
+    if !config.body_preview_redaction {
+        return matches!(
+            content_type,
+            "application/json" | "application/x-www-form-urlencoded" | "text/plain"
+        )
+        .then(|| body.to_string());
+    }
+
+    match content_type {
+        "application/json" => {
+            let mut value: serde_json::Value = serde_json::from_str(body).ok()?;
+            redact_json_value(&mut value, &config.sensitive_body_fields);
+            serde_json::to_string(&value).ok()
+        }
+        "application/x-www-form-urlencoded" => {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            for (key, value) in url::form_urlencoded::parse(body.as_bytes()) {
+                let value = if is_sensitive_body_field(&key, &config.sensitive_body_fields) {
+                    REDACTED_QUERY_VALUE
+                } else {
+                    value.as_ref()
+                };
+                serializer.append_pair(&key, value);
+            }
+            Some(serializer.finish())
+        }
+        _ => None,
+    }
+}
+
+fn redact_json_value(value: &mut serde_json::Value, sensitive_fields: &[String]) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if is_sensitive_body_field(key, sensitive_fields) {
+                    *value = serde_json::Value::String(REDACTED_QUERY_VALUE.to_string());
+                } else {
+                    redact_json_value(value, sensitive_fields);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_json_value(value, sensitive_fields);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_sensitive_body_field(field: &str, sensitive_fields: &[String]) -> bool {
+    sensitive_fields
+        .iter()
+        .any(|sensitive| field.eq_ignore_ascii_case(sensitive))
+        || is_sensitive_query_key(field)
 }
 
 const REDACTED_QUERY_VALUE: &str = "[REDACTED]";
@@ -488,7 +597,9 @@ mod tests {
             .body(Body::from("hello-world"))
             .expect("failed to build request");
 
-        let (request, preview) = extract_request_body_preview(request, 20).await;
+        let (request, preview) = extract_request_body_preview(request, 20)
+            .await
+            .expect("preview should succeed");
         assert_eq!(preview.as_deref(), Some("hello-world"));
 
         let body = to_bytes(request.into_body(), 20)
@@ -506,7 +617,9 @@ mod tests {
             .body(Body::from("hello-world!!"))
             .expect("failed to build request");
 
-        let (request, preview) = extract_request_body_preview(request, 5).await;
+        let (request, preview) = extract_request_body_preview(request, 5)
+            .await
+            .expect("large declared bodies should be skipped");
         assert!(preview.is_none());
 
         let body = to_bytes(request.into_body(), 20)
@@ -523,7 +636,9 @@ mod tests {
             .body(Body::from("hello-world"))
             .expect("failed to build request");
 
-        let (request, preview) = extract_request_body_preview(request, 5).await;
+        let (request, preview) = extract_request_body_preview(request, 5)
+            .await
+            .expect("missing content length should be skipped");
         assert!(preview.is_none());
 
         let body = to_bytes(request.into_body(), 20)
@@ -561,5 +676,76 @@ mod tests {
             .await
             .expect("failed to read response body");
         assert_eq!(body.as_ref(), b"hello-world");
+    }
+
+    #[test]
+    fn test_redact_headers_removes_credentials() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer secret".parse().unwrap());
+        headers.insert("cookie", "session=secret".parse().unwrap());
+        headers.insert("x-api-key", "key".parse().unwrap());
+        headers.insert("x-request-id", "request-1".parse().unwrap());
+
+        let redacted = redact_headers(&headers);
+        assert_eq!(redacted["authorization"], REDACTED_HEADER_VALUE);
+        assert_eq!(redacted["cookie"], REDACTED_HEADER_VALUE);
+        assert_eq!(redacted["x-api-key"], REDACTED_HEADER_VALUE);
+        assert_eq!(redacted["x-request-id"], "request-1");
+    }
+
+    #[test]
+    fn test_json_body_preview_redacts_nested_sensitive_fields() {
+        let config = RequestLoggingConfig::default();
+        let preview = sanitize_body_preview(
+            r#"{"email":"user@example.com","password":"secret","nested":{"access_token":"token"}}"#,
+            Some("application/json; charset=utf-8"),
+            &config,
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&preview).unwrap();
+        assert_eq!(value["email"], "user@example.com");
+        assert_eq!(value["password"], REDACTED_QUERY_VALUE);
+        assert_eq!(value["nested"]["access_token"], REDACTED_QUERY_VALUE);
+    }
+
+    #[test]
+    fn test_form_body_preview_redacts_sensitive_fields() {
+        let config = RequestLoggingConfig::default();
+        let preview = sanitize_body_preview(
+            "email=user%40example.com&password=secret",
+            Some("application/x-www-form-urlencoded"),
+            &config,
+        )
+        .unwrap();
+        assert!(preview.contains("email=user%40example.com"));
+        assert!(preview.contains("password=%5BREDACTED%5D"));
+        assert!(!preview.contains("secret"));
+    }
+
+    #[test]
+    fn test_body_preview_skips_unknown_content_type_and_excluded_paths() {
+        let config = RequestLoggingConfig::default();
+        assert!(
+            sanitize_body_preview("secret", Some("application/octet-stream"), &config).is_none()
+        );
+        assert!(is_path_excluded(
+            "/auth/login/mfa",
+            &["/auth/login".to_string()]
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_body_preview_rejects_body_larger_than_preview_limit() {
+        let request = Request::builder()
+            .uri("/echo")
+            .method("POST")
+            .header(CONTENT_LENGTH, "4")
+            .body(Body::from("body larger than declared"))
+            .unwrap();
+
+        let response = extract_request_body_preview(request, 16)
+            .await
+            .expect_err("oversized streamed body should be rejected");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 }

@@ -21,6 +21,18 @@ pub struct RequestLoggingConfig {
     #[serde(default = "default_body_preview_size")]
     pub body_preview_size: usize,
 
+    /// Redact sensitive fields in JSON and form body previews.
+    #[serde(default = "default_body_preview_redaction")]
+    pub body_preview_redaction: bool,
+
+    /// Field names to redact from structured body previews.
+    #[serde(default = "default_sensitive_body_fields")]
+    pub sensitive_body_fields: Vec<String>,
+
+    /// Path prefixes for which body previews are always disabled.
+    #[serde(default)]
+    pub excluded_paths: Vec<String>,
+
     /// Log level for successful requests (2xx)
     #[serde(default = "default_success_level")]
     pub success_level: LogLevel,
@@ -57,6 +69,9 @@ impl Default for RequestLoggingConfig {
             include_headers: default_include_headers(),
             include_response_headers: false,
             body_preview_size: default_body_preview_size(),
+            body_preview_redaction: default_body_preview_redaction(),
+            sensitive_body_fields: default_sensitive_body_fields(),
+            excluded_paths: Vec::new(),
             success_level: LogLevel::Info,
             client_error_level: LogLevel::Warn,
             server_error_level: LogLevel::Error,
@@ -96,6 +111,27 @@ impl RequestLoggingConfig {
             }
         }
 
+        if let Some(redaction) = get_env_with_prefix("REQUEST_LOGGING_BODY_PREVIEW_REDACTION") {
+            config.body_preview_redaction =
+                parse_bool_with_default(&redaction, config.body_preview_redaction);
+        }
+
+        if let Some(fields) = get_env_with_prefix("REQUEST_LOGGING_SENSITIVE_BODY_FIELDS") {
+            for field in split_csv(&fields) {
+                if !config
+                    .sensitive_body_fields
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&field))
+                {
+                    config.sensitive_body_fields.push(field);
+                }
+            }
+        }
+
+        if let Some(paths) = get_env_with_prefix("REQUEST_LOGGING_EXCLUDED_PATHS") {
+            config.excluded_paths = split_csv(&paths);
+        }
+
         if let Some(level) = get_env_with_prefix("REQUEST_LOGGING_SUCCESS_LEVEL") {
             config.success_level = parse_log_level(&level);
         }
@@ -114,6 +150,15 @@ impl RequestLoggingConfig {
 
 fn parse_bool_with_default(value: &str, default: bool) -> bool {
     value.parse().unwrap_or(default)
+}
+
+fn split_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn parse_log_level(s: &str) -> LogLevel {
@@ -160,6 +205,21 @@ impl RequestLoggingConfigBuilder {
         self
     }
 
+    pub fn body_preview_redaction(mut self, enabled: bool) -> Self {
+        self.config.body_preview_redaction = enabled;
+        self
+    }
+
+    pub fn sensitive_body_fields(mut self, fields: Vec<String>) -> Self {
+        self.config.sensitive_body_fields = fields;
+        self
+    }
+
+    pub fn exclude_path(mut self, path: impl Into<String>) -> Self {
+        self.config.excluded_paths.push(path.into());
+        self
+    }
+
     pub fn success_level(mut self, level: LogLevel) -> Self {
         self.config.success_level = level;
         self
@@ -196,6 +256,34 @@ fn default_include_headers() -> bool {
 
 fn default_body_preview_size() -> usize {
     0
+}
+
+fn default_body_preview_redaction() -> bool {
+    true
+}
+
+fn default_sensitive_body_fields() -> Vec<String> {
+    [
+        "password",
+        "current_password",
+        "new_password",
+        "password_confirmation",
+        "token",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "secret",
+        "api_key",
+        "authorization",
+        "code",
+        "mfa_code",
+        "totp_code",
+        "card_number",
+        "cvc",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 const MAX_BODY_PREVIEW_SIZE: usize = 1024 * 1024; // 1MB hard cap
