@@ -305,19 +305,19 @@ impl UsageCheckResult {
 /// Check usage against a threshold.
 #[must_use]
 pub fn check_usage(current: u64, threshold: &UsageThreshold) -> UsageCheckResult {
-    if let Some(limit) = threshold.hard_limit {
-        if current >= limit {
-            return UsageCheckResult::Exceeded { current, limit };
-        }
+    if let Some(limit) = threshold.hard_limit
+        && current >= limit
+    {
+        return UsageCheckResult::Exceeded { current, limit };
     }
 
-    if let Some(warning) = threshold.warning_threshold {
-        if current >= warning {
-            return UsageCheckResult::Warning {
-                current,
-                threshold: warning,
-            };
-        }
+    if let Some(warning) = threshold.warning_threshold
+        && current >= warning
+    {
+        return UsageCheckResult::Warning {
+            current,
+            threshold: warning,
+        };
     }
 
     UsageCheckResult::Ok

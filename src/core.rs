@@ -424,20 +424,20 @@ impl App {
     /// Start background job workers if jobs are enabled
     #[cfg(feature = "jobs")]
     pub fn start_workers(mut self, registry: Arc<JobRegistry>) -> Self {
-        if let Some(ref queue) = self.context.jobs {
-            if self.config.jobs.enabled {
-                let pool = WorkerPool::new(
-                    queue.clone(),
-                    registry,
-                    Arc::new(self.context.clone()),
-                    self.config.jobs.worker_count,
-                );
-                self.worker_pool = Some(pool);
-                tracing::info!(
-                    worker_count = self.config.jobs.worker_count,
-                    "Background job workers started"
-                );
-            }
+        if let Some(ref queue) = self.context.jobs
+            && self.config.jobs.enabled
+        {
+            let pool = WorkerPool::new(
+                queue.clone(),
+                registry,
+                Arc::new(self.context.clone()),
+                self.config.jobs.worker_count,
+            );
+            self.worker_pool = Some(pool);
+            tracing::info!(
+                worker_count = self.config.jobs.worker_count,
+                "Background job workers started"
+            );
         }
         self
     }

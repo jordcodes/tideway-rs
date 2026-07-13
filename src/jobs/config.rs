@@ -77,22 +77,22 @@ impl JobsConfig {
             config.redis_url = Some(url);
         }
 
-        if let Some(count) = get_env_with_prefix("JOBS_WORKER_COUNT") {
-            if let Ok(c) = count.parse() {
-                config.worker_count = c;
-            }
+        if let Some(count) = get_env_with_prefix("JOBS_WORKER_COUNT")
+            && let Ok(c) = count.parse()
+        {
+            config.worker_count = c;
         }
 
-        if let Some(retries) = get_env_with_prefix("JOBS_MAX_RETRIES") {
-            if let Ok(r) = retries.parse() {
-                config.max_retries = r;
-            }
+        if let Some(retries) = get_env_with_prefix("JOBS_MAX_RETRIES")
+            && let Ok(r) = retries.parse()
+        {
+            config.max_retries = r;
         }
 
-        if let Some(backoff) = get_env_with_prefix("JOBS_RETRY_BACKOFF_SECONDS") {
-            if let Ok(b) = backoff.parse() {
-                config.retry_backoff_seconds = b;
-            }
+        if let Some(backoff) = get_env_with_prefix("JOBS_RETRY_BACKOFF_SECONDS")
+            && let Ok(b) = backoff.parse()
+        {
+            config.retry_backoff_seconds = b;
         }
 
         config

@@ -608,11 +608,11 @@ impl<S: SessionStore> SessionManager<S> {
     /// Revoke a specific session.
     pub async fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<bool> {
         // First verify the session belongs to this user
-        if let Some(session) = self.store.get_session(session_id).await? {
-            if session.user_id != user_id {
-                // Session doesn't belong to this user - don't reveal it exists
-                return Ok(false);
-            }
+        if let Some(session) = self.store.get_session(session_id).await?
+            && session.user_id != user_id
+        {
+            // Session doesn't belong to this user - don't reveal it exists
+            return Ok(false);
         }
 
         let revoked = self.store.revoke_session(session_id).await?;
@@ -793,10 +793,10 @@ pub mod test {
             let mut result = Vec::new();
             if let Some(session_ids) = state.user_sessions.get(user_id) {
                 for id in session_ids {
-                    if !state.revoked.contains(id) {
-                        if let Some(session) = state.sessions.get(id) {
-                            result.push(session.clone());
-                        }
+                    if !state.revoked.contains(id)
+                        && let Some(session) = state.sessions.get(id)
+                    {
+                        result.push(session.clone());
                     }
                 }
             }

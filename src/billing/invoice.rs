@@ -865,12 +865,12 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         // Check cache unless force_refresh is set
         if !params.force_refresh {
             let cache = self.cache.read().await;
-            if let Some(entry) = cache.lists.get(&cache_key) {
-                if entry.expires_at > std::time::Instant::now() {
-                    tracing::debug!(billable_id = %billable_id, "invoice list cache hit");
-                    // Clone the Arc, not the underlying data
-                    return Ok((*entry.data).clone());
-                }
+            if let Some(entry) = cache.lists.get(&cache_key)
+                && entry.expires_at > std::time::Instant::now()
+            {
+                tracing::debug!(billable_id = %billable_id, "invoice list cache hit");
+                // Clone the Arc, not the underlying data
+                return Ok((*entry.data).clone());
             }
         } else {
             tracing::debug!(billable_id = %billable_id, "force refresh requested");
@@ -912,11 +912,11 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         // Check cache
         {
             let cache = self.cache.read().await;
-            if let Some(entry) = cache.upcoming.get(billable_id) {
-                if entry.expires_at > std::time::Instant::now() {
-                    tracing::debug!(billable_id = %billable_id, "upcoming invoice cache hit");
-                    return Ok(entry.data.clone());
-                }
+            if let Some(entry) = cache.upcoming.get(billable_id)
+                && entry.expires_at > std::time::Instant::now()
+            {
+                tracing::debug!(billable_id = %billable_id, "upcoming invoice cache hit");
+                return Ok(entry.data.clone());
             }
         }
 
@@ -957,7 +957,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         let count = self
             .operation_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count % CLEANUP_INTERVAL == 0 {
+        if count.is_multiple_of(CLEANUP_INTERVAL) {
             self.enforce_max_entries().await;
         }
     }
@@ -1122,10 +1122,10 @@ pub mod test {
                 .collect();
 
             // Handle pagination
-            if let Some(after) = starting_after {
-                if let Some(pos) = filtered.iter().position(|inv| inv.id == after) {
-                    filtered = filtered.into_iter().skip(pos + 1).collect();
-                }
+            if let Some(after) = starting_after
+                && let Some(pos) = filtered.iter().position(|inv| inv.id == after)
+            {
+                filtered = filtered.into_iter().skip(pos + 1).collect();
             }
 
             let limit = limit as usize;

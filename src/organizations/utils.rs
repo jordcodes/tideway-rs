@@ -49,10 +49,10 @@ pub(crate) fn is_valid_email(email: &str) -> bool {
     }
 
     // Must have something after the last dot (TLD)
-    if let Some(tld) = domain.rsplit('.').next() {
-        if tld.is_empty() {
-            return false;
-        }
+    if let Some(tld) = domain.rsplit('.').next()
+        && tld.is_empty()
+    {
+        return false;
     }
 
     true

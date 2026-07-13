@@ -68,10 +68,10 @@ impl PostgresContainer {
 
 impl Drop for PostgresContainer {
     fn drop(&mut self) {
-        if self.keep_running {
-            if let Some(container) = self.container.take() {
-                mem::forget(container);
-            }
+        if self.keep_running
+            && let Some(container) = self.container.take()
+        {
+            mem::forget(container);
         }
     }
 }

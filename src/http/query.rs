@@ -98,14 +98,12 @@ impl QueryParams {
         let pairs: Vec<&str> = query_string.split('&').collect();
         for pair in pairs {
             let parts: Vec<&str> = pair.splitn(2, '=').collect();
-            if parts.len() == 2 && parts[0] == key {
-                if let Ok(decoded) = urlencoding::decode(parts[1]) {
-                    if let Ok(value) =
-                        serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
-                    {
-                        return Some(value);
-                    }
-                }
+            if parts.len() == 2
+                && parts[0] == key
+                && let Ok(decoded) = urlencoding::decode(parts[1])
+                && let Ok(value) = serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
+            {
+                return Some(value);
             }
         }
         None
@@ -127,14 +125,12 @@ impl QueryParams {
         let pairs: Vec<&str> = query_string.split('&').collect();
         for pair in pairs {
             let parts: Vec<&str> = pair.splitn(2, '=').collect();
-            if parts.len() == 2 && parts[0] == key {
-                if let Ok(decoded) = urlencoding::decode(parts[1]) {
-                    if let Ok(value) =
-                        serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
-                    {
-                        values.push(value);
-                    }
-                }
+            if parts.len() == 2
+                && parts[0] == key
+                && let Ok(decoded) = urlencoding::decode(parts[1])
+                && let Ok(value) = serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
+            {
+                values.push(value);
             }
         }
         values

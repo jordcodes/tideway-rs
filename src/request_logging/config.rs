@@ -105,10 +105,10 @@ impl RequestLoggingConfig {
                 parse_bool_with_default(&include_response, config.include_response_headers);
         }
 
-        if let Some(preview_size) = get_env_with_prefix("REQUEST_LOGGING_BODY_PREVIEW_SIZE") {
-            if let Ok(size) = preview_size.parse::<usize>() {
-                config.body_preview_size = size.min(MAX_BODY_PREVIEW_SIZE);
-            }
+        if let Some(preview_size) = get_env_with_prefix("REQUEST_LOGGING_BODY_PREVIEW_SIZE")
+            && let Ok(size) = preview_size.parse::<usize>()
+        {
+            config.body_preview_size = size.min(MAX_BODY_PREVIEW_SIZE);
         }
 
         if let Some(redaction) = get_env_with_prefix("REQUEST_LOGGING_BODY_PREVIEW_REDACTION") {

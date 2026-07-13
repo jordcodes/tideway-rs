@@ -344,14 +344,13 @@ fn detect_project_name(args: &InitArgs, project_root: &Path) -> Result<String> {
     let cargo_toml = project_root.join("Cargo.toml");
     if cargo_toml.exists() {
         let content = fs::read_to_string(cargo_toml)?;
-        if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
-            if let Some(name) = doc
+        if let Ok(doc) = content.parse::<toml_edit::DocumentMut>()
+            && let Some(name) = doc
                 .get("package")
                 .and_then(|pkg| pkg.get("name"))
                 .and_then(|value| value.as_str())
-            {
-                return Ok(name.replace('-', "_"));
-            }
+        {
+            return Ok(name.replace('-', "_"));
         }
     }
 

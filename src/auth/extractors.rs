@@ -12,10 +12,10 @@ fn resolve_provider<P: AuthProvider>(parts: &Parts) -> Result<P, TidewayError> {
         return Ok(provider.clone());
     }
 
-    if let Some(provider) = parts.extensions.get::<AuthProviderExtension>() {
-        if let Some(typed) = provider.0.downcast_ref::<P>() {
-            return Ok(typed.clone());
-        }
+    if let Some(provider) = parts.extensions.get::<AuthProviderExtension>()
+        && let Some(typed) = provider.0.downcast_ref::<P>()
+    {
+        return Ok(typed.clone());
     }
 
     Err(TidewayError::internal(

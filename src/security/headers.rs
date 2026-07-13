@@ -111,10 +111,10 @@ fn add_security_headers<B>(response: &mut Response<B>, config: &SecurityConfig) 
     }
 
     // Content-Security-Policy
-    if let Some(ref csp) = config.content_security_policy {
-        if let Ok(header) = HeaderValue::from_str(csp) {
-            headers.insert("content-security-policy", header);
-        }
+    if let Some(ref csp) = config.content_security_policy
+        && let Ok(header) = HeaderValue::from_str(csp)
+    {
+        headers.insert("content-security-policy", header);
     }
 
     // Referrer-Policy
@@ -130,10 +130,10 @@ fn add_security_headers<B>(response: &mut Response<B>, config: &SecurityConfig) 
     }
 
     // Permissions-Policy
-    if let Some(ref permissions) = config.permissions_policy {
-        if let Ok(header) = HeaderValue::from_str(permissions) {
-            headers.insert("permissions-policy", header);
-        }
+    if let Some(ref permissions) = config.permissions_policy
+        && let Ok(header) = HeaderValue::from_str(permissions)
+    {
+        headers.insert("permissions-policy", header);
     }
 }
 

@@ -346,17 +346,15 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
             let mut confirmation_sent = false;
 
             // Send confirmation email
-            if self.config.send_confirmation_email {
-                if let Ok(Some(email)) = self.store.get_user_email(&req.user_id).await {
-                    if self
-                        .store
-                        .send_confirmation_email(&req.user_id, &email, scheduled_for)
-                        .await
-                        .is_ok()
-                    {
-                        confirmation_sent = true;
-                    }
-                }
+            if self.config.send_confirmation_email
+                && let Ok(Some(email)) = self.store.get_user_email(&req.user_id).await
+                && self
+                    .store
+                    .send_confirmation_email(&req.user_id, &email, scheduled_for)
+                    .await
+                    .is_ok()
+            {
+                confirmation_sent = true;
             }
 
             let scheduled_timestamp = scheduled_for
@@ -472,12 +470,11 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
         let mut notification_sent = false;
 
         // Send deletion notification
-        if self.config.send_deletion_email {
-            if let Some(email) = &email {
-                if self.store.send_deletion_notification(email).await.is_ok() {
-                    notification_sent = true;
-                }
-            }
+        if self.config.send_deletion_email
+            && let Some(email) = &email
+            && self.store.send_deletion_notification(email).await.is_ok()
+        {
+            notification_sent = true;
         }
 
         tracing::warn!(

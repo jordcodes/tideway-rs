@@ -48,10 +48,10 @@ pub fn find_unmarked_app_builder_statement_range(contents: &str) -> Option<(usiz
             .rfind('\n')
             .map(|idx| idx + 1)
             .unwrap_or(0);
-        if is_app_builder_start_line(&contents[line_start..]) {
-            if let Some(end) = find_statement_terminator(contents, line_start) {
-                return Some((line_start, end));
-            }
+        if is_app_builder_start_line(&contents[line_start..])
+            && let Some(end) = find_statement_terminator(contents, line_start)
+        {
+            return Some((line_start, end));
         }
         search_from = abs_pos + 1;
     }
@@ -59,17 +59,17 @@ pub fn find_unmarked_app_builder_statement_range(contents: &str) -> Option<(usiz
 }
 
 pub fn find_app_builder_end_insert_at(contents: &str, start_pos: usize) -> Option<usize> {
-    if let Some(marker_pos) = contents.find(APP_BUILDER_END_MARKER) {
-        if marker_pos >= start_pos {
-            let marker_line_start = contents[..marker_pos]
-                .rfind('\n')
-                .map(|idx| idx + 1)
-                .unwrap_or(0);
-            if let Some(marker_line_end_rel) = contents[marker_line_start..].find('\n') {
-                return Some(marker_line_start + marker_line_end_rel + 1);
-            }
-            return Some(contents.len());
+    if let Some(marker_pos) = contents.find(APP_BUILDER_END_MARKER)
+        && marker_pos >= start_pos
+    {
+        let marker_line_start = contents[..marker_pos]
+            .rfind('\n')
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        if let Some(marker_line_end_rel) = contents[marker_line_start..].find('\n') {
+            return Some(marker_line_start + marker_line_end_rel + 1);
         }
+        return Some(contents.len());
     }
     find_statement_terminator(contents, start_pos).map(|idx| idx + 1)
 }

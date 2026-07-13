@@ -247,15 +247,15 @@ impl ConfigBuilder {
             self.config.server.host = host;
         }
         // Check TIDEWAY_PORT first, fall back to PORT (for Railway/Heroku compatibility)
-        if let Some(port) = get_env_with_prefix("PORT") {
-            if let Ok(p) = port.parse() {
-                self.config.server.port = p;
-            }
+        if let Some(port) = get_env_with_prefix("PORT")
+            && let Ok(p) = port.parse()
+        {
+            self.config.server.port = p;
         }
-        if let Some(max_body_size) = get_env_with_prefix("MAX_BODY_SIZE") {
-            if let Ok(size) = max_body_size.parse() {
-                self.config.server.max_body_size = size;
-            }
+        if let Some(max_body_size) = get_env_with_prefix("MAX_BODY_SIZE")
+            && let Ok(size) = max_body_size.parse()
+        {
+            self.config.server.max_body_size = size;
         }
         if let Some(level) = get_env_with_prefix("LOG_LEVEL") {
             self.config.logging.level = level;

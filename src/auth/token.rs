@@ -57,10 +57,10 @@ impl TokenExtractor {
             .ok_or_else(|| TidewayError::unauthorized("No query parameters"))?;
 
         for pair in query.split('&') {
-            if let Some((key, value)) = pair.split_once('=') {
-                if key == param_name {
-                    return Ok(value.to_string());
-                }
+            if let Some((key, value)) = pair.split_once('=')
+                && key == param_name
+            {
+                return Ok(value.to_string());
             }
         }
 

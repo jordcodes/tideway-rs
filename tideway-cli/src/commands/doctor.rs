@@ -217,10 +217,10 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             &env_example_vars,
             &mut report,
         );
-        if let Some(value) = db_value {
-            if let Some(message) = validate_database_url(&value) {
-                report.push_warning(message);
-            }
+        if let Some(value) = db_value
+            && let Some(message) = validate_database_url(&value)
+        {
+            report.push_warning(message);
         }
     }
 
@@ -233,10 +233,10 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             &env_example_vars,
             &mut report,
         );
-        if env_vars.contains_key("JWT_SECRET") {
-            if let Some(message) = jwt_secret.as_deref().and_then(validate_jwt_secret) {
-                report.push_warning(message);
-            }
+        if env_vars.contains_key("JWT_SECRET")
+            && let Some(message) = jwt_secret.as_deref().and_then(validate_jwt_secret)
+        {
+            report.push_warning(message);
         }
     }
 
@@ -759,10 +759,10 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
             if file_name == "mod" {
                 continue;
             }
-            if let Ok(contents) = fs::read_to_string(&path) {
-                if !contents.contains("cfg_attr(feature = \"openapi\"") {
-                    continue;
-                }
+            if let Ok(contents) = fs::read_to_string(&path)
+                && !contents.contains("cfg_attr(feature = \"openapi\"")
+            {
+                continue;
             }
 
             let expected_prefix = format!("crate::routes::{}::", file_name);
@@ -829,14 +829,13 @@ fn check_database_wiring(src_dir: &Path, main_contents: Option<&str>, report: &m
             if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
                 continue;
             }
-            if let Ok(contents) = fs::read_to_string(&path) {
-                if contents.contains("sea_orm_connection()")
+            if let Ok(contents) = fs::read_to_string(&path)
+                && (contents.contains("sea_orm_connection()")
                     || contents.contains("Entity::find")
-                    || contents.contains("ActiveModel")
-                {
-                    has_db_routes = true;
-                    break;
-                }
+                    || contents.contains("ActiveModel"))
+            {
+                has_db_routes = true;
+                break;
             }
         }
     }

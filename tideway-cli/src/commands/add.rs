@@ -1027,15 +1027,15 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
     let has_auth_module = contents.contains("auth_module");
 
     if has_jwt_secret && has_jwt_issuer {
-        if !has_auth_provider || !has_auth_module {
-            if let Some(insert_at) = contents.find("let jwt_issuer") {
-                let after = contents[insert_at..]
-                    .find(";\n")
-                    .map(|idx| insert_at + idx + 2)
-                    .unwrap_or(insert_at);
-                let insert = "    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n".to_string();
-                contents.insert_str(after, &insert);
-            }
+        if (!has_auth_provider || !has_auth_module)
+            && let Some(insert_at) = contents.find("let jwt_issuer")
+        {
+            let after = contents[insert_at..]
+                .find(";\n")
+                .map(|idx| insert_at + idx + 2)
+                .unwrap_or(insert_at);
+            let insert = "    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n".to_string();
+            contents.insert_str(after, &insert);
         }
     } else {
         let block = format!(
@@ -1182,10 +1182,10 @@ fn find_fluent_app_builder_statement_range(contents: &str) -> Option<(usize, usi
                 .next()
                 .unwrap_or("")
                 .trim_start();
-            if line.starts_with(needle) {
-                if let Some(end) = find_statement_terminator(contents, line_start) {
-                    return Some((line_start, end));
-                }
+            if line.starts_with(needle)
+                && let Some(end) = find_statement_terminator(contents, line_start)
+            {
+                return Some((line_start, end));
             }
             search_from = abs_pos + needle.len();
         }

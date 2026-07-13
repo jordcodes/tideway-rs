@@ -526,9 +526,9 @@ pub fn init_tracing_with_config(config: &Config) {
     };
 
     // Silently ignore if already initialized
-    if let Err(e) = result {
-        if !e.to_string().contains("already") {
-            eprintln!("Warning: Failed to initialize tracing: {}", e);
-        }
+    if let Err(e) = result
+        && !e.to_string().contains("already")
+    {
+        eprintln!("Warning: Failed to initialize tracing: {}", e);
     }
 }

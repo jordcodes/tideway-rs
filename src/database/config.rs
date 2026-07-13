@@ -86,22 +86,22 @@ impl DatabaseConfig {
 
     /// Parse additional config from environment
     pub fn with_env_overrides(mut self) -> Self {
-        if let Ok(max_conn) = std::env::var("DATABASE_MAX_CONNECTIONS") {
-            if let Ok(value) = max_conn.parse() {
-                self.max_connections = value;
-            }
+        if let Ok(max_conn) = std::env::var("DATABASE_MAX_CONNECTIONS")
+            && let Ok(value) = max_conn.parse()
+        {
+            self.max_connections = value;
         }
 
-        if let Ok(min_conn) = std::env::var("DATABASE_MIN_CONNECTIONS") {
-            if let Ok(value) = min_conn.parse() {
-                self.min_connections = value;
-            }
+        if let Ok(min_conn) = std::env::var("DATABASE_MIN_CONNECTIONS")
+            && let Ok(value) = min_conn.parse()
+        {
+            self.min_connections = value;
         }
 
-        if let Ok(timeout) = std::env::var("DATABASE_CONNECT_TIMEOUT") {
-            if let Ok(value) = timeout.parse() {
-                self.connect_timeout = value;
-            }
+        if let Ok(timeout) = std::env::var("DATABASE_CONNECT_TIMEOUT")
+            && let Ok(value) = timeout.parse()
+        {
+            self.connect_timeout = value;
         }
 
         if let Ok(auto_migrate) = std::env::var("DATABASE_AUTO_MIGRATE") {
@@ -140,15 +140,15 @@ pub fn redact_database_url(url: &str) -> String {
     } else {
         // Fallback: simple regex-like replacement for common patterns
         // Matches user:password@ pattern
-        if let Some(at_pos) = url.find('@') {
-            if let Some(colon_pos) = url[..at_pos].rfind(':') {
-                // Check if there's a scheme before this (://user:pass@)
-                if let Some(scheme_end) = url.find("://") {
-                    if colon_pos > scheme_end + 3 {
-                        // Found password pattern
-                        return format!("{}[REDACTED]{}", &url[..colon_pos + 1], &url[at_pos..]);
-                    }
-                }
+        if let Some(at_pos) = url.find('@')
+            && let Some(colon_pos) = url[..at_pos].rfind(':')
+        {
+            // Check if there's a scheme before this (://user:pass@)
+            if let Some(scheme_end) = url.find("://")
+                && colon_pos > scheme_end + 3
+            {
+                // Found password pattern
+                return format!("{}[REDACTED]{}", &url[..colon_pos + 1], &url[at_pos..]);
             }
         }
         // Can't identify password, return as-is (might not contain one)

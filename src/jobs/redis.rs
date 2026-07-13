@@ -391,27 +391,27 @@ impl JobQueue for RedisJobQueue {
             })?;
 
         for job_json in jobs {
-            if let Ok(job_data) = serde_json::from_str::<JobData>(&job_json) {
-                if job_data.job_id == job_id {
-                    // Remove from processing
-                    redis::cmd("LREM")
-                        .arg(&processing_key)
-                        .arg(1)
-                        .arg(&job_json)
-                        .query_async::<()>(&mut conn)
-                        .await
-                        .map_err(|e| {
-                            TidewayError::internal(format!(
-                                "Failed to remove job from processing: {}",
-                                e
-                            ))
-                        })?;
+            if let Ok(job_data) = serde_json::from_str::<JobData>(&job_json)
+                && job_data.job_id == job_id
+            {
+                // Remove from processing
+                redis::cmd("LREM")
+                    .arg(&processing_key)
+                    .arg(1)
+                    .arg(&job_json)
+                    .query_async::<()>(&mut conn)
+                    .await
+                    .map_err(|e| {
+                        TidewayError::internal(format!(
+                            "Failed to remove job from processing: {}",
+                            e
+                        ))
+                    })?;
 
-                    // Optionally add to completed list (for history)
-                    // redis::cmd("LPUSH").arg("jobs:completed").arg(&job_json).query_async(&mut conn).await?;
+                // Optionally add to completed list (for history)
+                // redis::cmd("LPUSH").arg("jobs:completed").arg(&job_json).query_async(&mut conn).await?;
 
-                    return Ok(());
-                }
+                return Ok(());
             }
         }
 
@@ -434,64 +434,58 @@ impl JobQueue for RedisJobQueue {
             })?;
 
         for job_json in jobs {
-            if let Ok(mut job_data) = serde_json::from_str::<JobData>(&job_json) {
-                if job_data.job_id == job_id {
-                    // Remove from processing
-                    redis::cmd("LREM")
-                        .arg(&processing_key)
-                        .arg(1)
+            if let Ok(mut job_data) = serde_json::from_str::<JobData>(&job_json)
+                && job_data.job_id == job_id
+            {
+                // Remove from processing
+                redis::cmd("LREM")
+                    .arg(&processing_key)
+                    .arg(1)
+                    .arg(&job_json)
+                    .query_async::<()>(&mut conn)
+                    .await
+                    .map_err(|e| {
+                        TidewayError::internal(format!(
+                            "Failed to remove job from processing: {}",
+                            e
+                        ))
+                    })?;
+
+                if job_data.should_retry() {
+                    // Schedule retry with exponential backoff
+                    let backoff_seconds =
+                        self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
+                    let retry_at = Utc::now() + Duration::seconds(backoff_seconds as i64);
+
+                    job_data.increment_retry();
+
+                    let retry_json = serde_json::to_string(&job_data).map_err(|e| {
+                        TidewayError::internal(format!("Failed to serialize job for retry: {}", e))
+                    })?;
+
+                    // Add to scheduled set
+                    redis::cmd("ZADD")
+                        .arg(SCHEDULED_JOBS_KEY)
+                        .arg(retry_at.timestamp())
+                        .arg(&retry_json)
+                        .query_async::<()>(&mut conn)
+                        .await
+                        .map_err(|e| {
+                            TidewayError::internal(format!("Failed to schedule retry: {}", e))
+                        })?;
+                } else {
+                    // Max retries exceeded, move to failed
+                    redis::cmd("LPUSH")
+                        .arg("jobs:failed")
                         .arg(&job_json)
                         .query_async::<()>(&mut conn)
                         .await
                         .map_err(|e| {
-                            TidewayError::internal(format!(
-                                "Failed to remove job from processing: {}",
-                                e
-                            ))
+                            TidewayError::internal(format!("Failed to add to failed list: {}", e))
                         })?;
-
-                    if job_data.should_retry() {
-                        // Schedule retry with exponential backoff
-                        let backoff_seconds =
-                            self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
-                        let retry_at = Utc::now() + Duration::seconds(backoff_seconds as i64);
-
-                        job_data.increment_retry();
-
-                        let retry_json = serde_json::to_string(&job_data).map_err(|e| {
-                            TidewayError::internal(format!(
-                                "Failed to serialize job for retry: {}",
-                                e
-                            ))
-                        })?;
-
-                        // Add to scheduled set
-                        redis::cmd("ZADD")
-                            .arg(SCHEDULED_JOBS_KEY)
-                            .arg(retry_at.timestamp())
-                            .arg(&retry_json)
-                            .query_async::<()>(&mut conn)
-                            .await
-                            .map_err(|e| {
-                                TidewayError::internal(format!("Failed to schedule retry: {}", e))
-                            })?;
-                    } else {
-                        // Max retries exceeded, move to failed
-                        redis::cmd("LPUSH")
-                            .arg("jobs:failed")
-                            .arg(&job_json)
-                            .query_async::<()>(&mut conn)
-                            .await
-                            .map_err(|e| {
-                                TidewayError::internal(format!(
-                                    "Failed to add to failed list: {}",
-                                    e
-                                ))
-                            })?;
-                    }
-
-                    return Ok(());
                 }
+
+                return Ok(());
             }
         }
 
@@ -514,57 +508,51 @@ impl JobQueue for RedisJobQueue {
             })?;
 
         for job_json in jobs {
-            if let Ok(mut job_data) = serde_json::from_str::<JobData>(&job_json) {
-                if job_data.job_id == job_id {
-                    // Remove from processing
-                    redis::cmd("LREM")
-                        .arg(&processing_key)
-                        .arg(1)
+            if let Ok(mut job_data) = serde_json::from_str::<JobData>(&job_json)
+                && job_data.job_id == job_id
+            {
+                // Remove from processing
+                redis::cmd("LREM")
+                    .arg(&processing_key)
+                    .arg(1)
+                    .arg(&job_json)
+                    .query_async::<()>(&mut conn)
+                    .await
+                    .map_err(|e| {
+                        TidewayError::internal(format!(
+                            "Failed to remove job from processing: {}",
+                            e
+                        ))
+                    })?;
+
+                if job_data.should_retry() {
+                    job_data.increment_retry();
+                    let retry_json = serde_json::to_string(&job_data).map_err(|e| {
+                        TidewayError::internal(format!("Failed to serialize job for retry: {}", e))
+                    })?;
+
+                    // Re-enqueue to pending
+                    redis::cmd("LPUSH")
+                        .arg(PENDING_JOBS_KEY)
+                        .arg(&retry_json)
+                        .query_async::<()>(&mut conn)
+                        .await
+                        .map_err(|e| {
+                            TidewayError::internal(format!("Failed to retry job: {}", e))
+                        })?;
+                } else {
+                    // Max retries exceeded
+                    redis::cmd("LPUSH")
+                        .arg("jobs:failed")
                         .arg(&job_json)
                         .query_async::<()>(&mut conn)
                         .await
                         .map_err(|e| {
-                            TidewayError::internal(format!(
-                                "Failed to remove job from processing: {}",
-                                e
-                            ))
+                            TidewayError::internal(format!("Failed to add to failed list: {}", e))
                         })?;
-
-                    if job_data.should_retry() {
-                        job_data.increment_retry();
-                        let retry_json = serde_json::to_string(&job_data).map_err(|e| {
-                            TidewayError::internal(format!(
-                                "Failed to serialize job for retry: {}",
-                                e
-                            ))
-                        })?;
-
-                        // Re-enqueue to pending
-                        redis::cmd("LPUSH")
-                            .arg(PENDING_JOBS_KEY)
-                            .arg(&retry_json)
-                            .query_async::<()>(&mut conn)
-                            .await
-                            .map_err(|e| {
-                                TidewayError::internal(format!("Failed to retry job: {}", e))
-                            })?;
-                    } else {
-                        // Max retries exceeded
-                        redis::cmd("LPUSH")
-                            .arg("jobs:failed")
-                            .arg(&job_json)
-                            .query_async::<()>(&mut conn)
-                            .await
-                            .map_err(|e| {
-                                TidewayError::internal(format!(
-                                    "Failed to add to failed list: {}",
-                                    e
-                                ))
-                            })?;
-                    }
-
-                    return Ok(());
                 }
+
+                return Ok(());
             }
         }
 

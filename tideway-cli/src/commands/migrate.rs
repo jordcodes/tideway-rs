@@ -180,10 +180,10 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
         command.args(&args.args);
     }
 
-    if !args.no_env {
-        if let Some(env_map) = read_env_map(&project_dir.join(".env")) {
-            command.envs(env_map);
-        }
+    if !args.no_env
+        && let Some(env_map) = read_env_map(&project_dir.join(".env"))
+    {
+        command.envs(env_map);
     }
 
     print_info(&format!("Running sea-orm-cli migrate {}...", args.action));

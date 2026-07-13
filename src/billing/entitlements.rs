@@ -347,7 +347,7 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
         let count = self
             .operation_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count % CLEANUP_INTERVAL == 0 {
+        if count.is_multiple_of(CLEANUP_INTERVAL) {
             self.cleanup_expired();
             self.enforce_max_entries();
         }
@@ -388,14 +388,13 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
 
         // Check cache first
         // If lock is poisoned, treat as cache miss (safe for read-only cache check)
-        if let Ok(mut cache) = self.cache.write() {
-            if let Some(entry) = cache.entries.get_mut(billable_id) {
-                if entry.expires_at > std::time::Instant::now() {
-                    // Update last accessed time
-                    entry.last_accessed = std::time::Instant::now();
-                    return Ok(entry.entitlements.clone());
-                }
-            }
+        if let Ok(mut cache) = self.cache.write()
+            && let Some(entry) = cache.entries.get_mut(billable_id)
+            && entry.expires_at > std::time::Instant::now()
+        {
+            // Update last accessed time
+            entry.last_accessed = std::time::Instant::now();
+            return Ok(entry.entitlements.clone());
         }
 
         // Cache miss or expired - fetch from storage

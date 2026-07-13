@@ -112,10 +112,10 @@ impl SecurityConfig {
             config.enabled = parse_bool_with_default(&enabled, config.enabled);
         }
 
-        if let Some(max_age) = get_env_with_prefix("SECURITY_HSTS_MAX_AGE") {
-            if let Ok(age) = max_age.parse() {
-                config.hsts_max_age = age;
-            }
+        if let Some(max_age) = get_env_with_prefix("SECURITY_HSTS_MAX_AGE")
+            && let Ok(age) = max_age.parse()
+        {
+            config.hsts_max_age = age;
         }
 
         if let Some(preload) = get_env_with_prefix("SECURITY_HSTS_PRELOAD") {

@@ -138,10 +138,10 @@ impl CorsConfig {
             config.allow_credentials = credentials.parse().unwrap_or(false);
         }
 
-        if let Some(max_age) = get_env_with_prefix("CORS_MAX_AGE") {
-            if let Ok(val) = max_age.parse() {
-                config.max_age_seconds = val;
-            }
+        if let Some(max_age) = get_env_with_prefix("CORS_MAX_AGE")
+            && let Ok(val) = max_age.parse()
+        {
+            config.max_age_seconds = val;
         }
 
         config

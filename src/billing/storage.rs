@@ -87,10 +87,10 @@ pub trait BillingStore: Send + Sync {
             }
         }
 
-        if let Some(current) = self.get_subscription(billable_id).await? {
-            if current.updated_at != expected_version {
-                return Ok(false);
-            }
+        if let Some(current) = self.get_subscription(billable_id).await?
+            && current.updated_at != expected_version
+        {
+            return Ok(false);
         }
         self.save_subscription(billable_id, subscription).await?;
         Ok(true)
@@ -684,10 +684,10 @@ pub mod test {
             let mut subs = self.inner.subscriptions.write().unwrap();
 
             // Check if current version matches expected
-            if let Some(current) = subs.get(billable_id) {
-                if current.updated_at != expected_version {
-                    return Ok(false);
-                }
+            if let Some(current) = subs.get(billable_id)
+                && current.updated_at != expected_version
+            {
+                return Ok(false);
             }
 
             // Version matches (or no existing record), save the new subscription
@@ -898,12 +898,11 @@ impl<S: PlanStore> CachedPlanStore<S> {
 impl<S: PlanStore + Send + Sync> PlanStore for CachedPlanStore<S> {
     async fn list_plans(&self) -> Result<Vec<StoredPlan>> {
         // Check cache
-        if let Ok(cache) = self.cache.read() {
-            if let Some(ref cached) = cache.active_plans {
-                if cached.expires_at > std::time::Instant::now() {
-                    return Ok(cached.plans.clone());
-                }
-            }
+        if let Ok(cache) = self.cache.read()
+            && let Some(ref cached) = cache.active_plans
+            && cached.expires_at > std::time::Instant::now()
+        {
+            return Ok(cached.plans.clone());
         }
 
         // Cache miss - fetch from store
@@ -922,12 +921,11 @@ impl<S: PlanStore + Send + Sync> PlanStore for CachedPlanStore<S> {
 
     async fn list_all_plans(&self) -> Result<Vec<StoredPlan>> {
         // Check cache
-        if let Ok(cache) = self.cache.read() {
-            if let Some(ref cached) = cache.all_plans {
-                if cached.expires_at > std::time::Instant::now() {
-                    return Ok(cached.plans.clone());
-                }
-            }
+        if let Ok(cache) = self.cache.read()
+            && let Some(ref cached) = cache.all_plans
+            && cached.expires_at > std::time::Instant::now()
+        {
+            return Ok(cached.plans.clone());
         }
 
         // Cache miss - fetch from store
@@ -946,12 +944,11 @@ impl<S: PlanStore + Send + Sync> PlanStore for CachedPlanStore<S> {
 
     async fn get_plan(&self, plan_id: &str) -> Result<Option<StoredPlan>> {
         // Check cache
-        if let Ok(cache) = self.cache.read() {
-            if let Some(cached) = cache.plans.get(plan_id) {
-                if cached.expires_at > std::time::Instant::now() {
-                    return Ok(cached.plan.clone());
-                }
-            }
+        if let Ok(cache) = self.cache.read()
+            && let Some(cached) = cache.plans.get(plan_id)
+            && cached.expires_at > std::time::Instant::now()
+        {
+            return Ok(cached.plan.clone());
         }
 
         // Cache miss - fetch from store
@@ -973,16 +970,15 @@ impl<S: PlanStore + Send + Sync> PlanStore for CachedPlanStore<S> {
 
     async fn get_plan_by_stripe_price(&self, stripe_price_id: &str) -> Result<Option<StoredPlan>> {
         // For price lookups, check all_plans cache first
-        if let Ok(cache) = self.cache.read() {
-            if let Some(ref cached) = cache.all_plans {
-                if cached.expires_at > std::time::Instant::now() {
-                    return Ok(cached
-                        .plans
-                        .iter()
-                        .find(|p| p.stripe_price_id == stripe_price_id)
-                        .cloned());
-                }
-            }
+        if let Ok(cache) = self.cache.read()
+            && let Some(ref cached) = cache.all_plans
+            && cached.expires_at > std::time::Instant::now()
+        {
+            return Ok(cached
+                .plans
+                .iter()
+                .find(|p| p.stripe_price_id == stripe_price_id)
+                .cloned());
         }
 
         // Fall through to inner store

@@ -812,10 +812,10 @@ impl tideway::auth::storage::MfaTokenStore for InMemoryMfaTokenStore {
 
     async fn consume(&self, token: &str) -> AppResult<Option<String>> {
         let mut tokens = self.tokens.write().unwrap();
-        if let Some((user_id, expires)) = tokens.remove(token) {
-            if SystemTime::now() < expires {
-                return Ok(Some(user_id));
-            }
+        if let Some((user_id, expires)) = tokens.remove(token)
+            && SystemTime::now() < expires
+        {
+            return Ok(Some(user_id));
         }
         Ok(None)
     }

@@ -136,7 +136,7 @@ impl InvitationRateLimiter {
     pub fn check(&self, org_id: &str, actor_id: &str) -> std::result::Result<(), (String, u64)> {
         // Periodically shrink the state stores
         let count = self.request_count.fetch_add(1, Ordering::Relaxed);
-        if count % SHRINK_INTERVAL == 0 && count > 0 {
+        if count.is_multiple_of(SHRINK_INTERVAL) && count > 0 {
             self.org_limiter.retain_recent();
             self.actor_limiter.retain_recent();
         }

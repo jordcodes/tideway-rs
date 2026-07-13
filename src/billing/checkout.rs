@@ -73,18 +73,18 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone>
         }];
 
         // Add extra seats if requested
-        if let Some(extra_seats) = request.extra_seats {
-            if extra_seats > 0 {
-                let seat_price = plan.extra_seat_price_id.as_ref().ok_or_else(|| {
-                    crate::error::TidewayError::BadRequest(
-                        "Plan does not support extra seats".to_string(),
-                    )
-                })?;
-                line_items.push(CheckoutLineItem {
-                    price_id: seat_price.clone(),
-                    quantity: extra_seats,
-                });
-            }
+        if let Some(extra_seats) = request.extra_seats
+            && extra_seats > 0
+        {
+            let seat_price = plan.extra_seat_price_id.as_ref().ok_or_else(|| {
+                crate::error::TidewayError::BadRequest(
+                    "Plan does not support extra seats".to_string(),
+                )
+            })?;
+            line_items.push(CheckoutLineItem {
+                price_id: seat_price.clone(),
+                quantity: extra_seats,
+            });
         }
 
         // Determine trial days

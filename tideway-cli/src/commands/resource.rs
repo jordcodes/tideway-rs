@@ -2847,11 +2847,12 @@ fn next_migration_name(migration_src: &Path, resource_plural: &str) -> Result<(S
             }
             let stem = name.trim_end_matches(".rs");
             let number_part = stem.trim_start_matches('m').split('_').next().unwrap_or("");
-            if number_part.chars().all(|c| c.is_ascii_digit()) && !number_part.is_empty() {
-                if let Ok(num) = number_part.parse::<u64>() {
-                    max_num = max_num.max(num);
-                    width = width.max(number_part.len());
-                }
+            if number_part.chars().all(|c| c.is_ascii_digit())
+                && !number_part.is_empty()
+                && let Ok(num) = number_part.parse::<u64>()
+            {
+                max_num = max_num.max(num);
+                width = width.max(number_part.len());
             }
         }
     }

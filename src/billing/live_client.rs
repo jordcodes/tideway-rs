@@ -1083,26 +1083,26 @@ impl StripeSubscriptionClient for LiveStripeClient {
         }
 
         // Handle seat quantity updates
-        if let Some(seat_quantity) = update.seat_quantity {
-            if let Some(ref seat_item_id) = seat_item_id {
-                params.items = Some(vec![stripe::UpdateSubscriptionItems {
-                    id: Some(seat_item_id.clone()),
-                    quantity: Some(seat_quantity as u64),
-                    ..Default::default()
-                }]);
-            }
+        if let Some(seat_quantity) = update.seat_quantity
+            && let Some(ref seat_item_id) = seat_item_id
+        {
+            params.items = Some(vec![stripe::UpdateSubscriptionItems {
+                id: Some(seat_item_id.clone()),
+                quantity: Some(seat_quantity as u64),
+                ..Default::default()
+            }]);
         }
 
         // Handle price changes
-        if let Some(ref price_id) = update.price_id {
-            if let Some(ref base_item_id) = base_item_id {
-                let items = params.items.get_or_insert_with(Vec::new);
-                items.push(stripe::UpdateSubscriptionItems {
-                    id: Some(base_item_id.clone()),
-                    price: Some(price_id.clone()),
-                    ..Default::default()
-                });
-            }
+        if let Some(ref price_id) = update.price_id
+            && let Some(ref base_item_id) = base_item_id
+        {
+            let items = params.items.get_or_insert_with(Vec::new);
+            items.push(stripe::UpdateSubscriptionItems {
+                id: Some(base_item_id.clone()),
+                price: Some(price_id.clone()),
+                ..Default::default()
+            });
         }
 
         let subscription = with_retry_cb(

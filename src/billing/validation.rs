@@ -185,17 +185,17 @@ pub fn validate_plan(plan: &StoredPlan) -> Result<()> {
     }
 
     // Validate description length
-    if let Some(ref desc) = plan.description {
-        if desc.len() > MAX_PLAN_DESCRIPTION_LENGTH {
-            return Err(BillingError::InvalidPlanId {
-                id: plan.id.clone(),
-                reason: format!(
-                    "plan description exceeds maximum length of {}",
-                    MAX_PLAN_DESCRIPTION_LENGTH
-                ),
-            }
-            .into());
+    if let Some(ref desc) = plan.description
+        && desc.len() > MAX_PLAN_DESCRIPTION_LENGTH
+    {
+        return Err(BillingError::InvalidPlanId {
+            id: plan.id.clone(),
+            reason: format!(
+                "plan description exceeds maximum length of {}",
+                MAX_PLAN_DESCRIPTION_LENGTH
+            ),
         }
+        .into());
     }
 
     // Validate Stripe price ID

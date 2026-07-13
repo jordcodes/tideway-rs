@@ -477,10 +477,10 @@ where
                 required: "organization_creation".to_string(),
             });
         }
-        if let Some(max) = self.config.max_orgs_per_user {
-            if self.org_store.count_owned_by_user(user_id).await? >= max {
-                return Err(OrganizationError::max_orgs_reached(max));
-            }
+        if let Some(max) = self.config.max_orgs_per_user
+            && self.org_store.count_owned_by_user(user_id).await? >= max
+        {
+            return Err(OrganizationError::max_orgs_reached(max));
         }
 
         let slug = slug.map(str::to_string).unwrap_or_else(|| slugify(name));

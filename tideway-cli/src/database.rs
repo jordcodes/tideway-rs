@@ -58,18 +58,16 @@ pub fn redact_database_url(database_url: &str) -> String {
         return parsed.to_string();
     }
 
-    if let Some(at_pos) = database_url.find('@') {
-        if let Some(colon_pos) = database_url[..at_pos].rfind(':') {
-            if let Some(scheme_end) = database_url.find("://") {
-                if colon_pos > scheme_end + 3 {
-                    return format!(
-                        "{}[REDACTED]{}",
-                        &database_url[..colon_pos + 1],
-                        &database_url[at_pos..]
-                    );
-                }
-            }
-        }
+    if let Some(at_pos) = database_url.find('@')
+        && let Some(colon_pos) = database_url[..at_pos].rfind(':')
+        && let Some(scheme_end) = database_url.find("://")
+        && colon_pos > scheme_end + 3
+    {
+        return format!(
+            "{}[REDACTED]{}",
+            &database_url[..colon_pos + 1],
+            &database_url[at_pos..]
+        );
     }
 
     database_url.to_string()

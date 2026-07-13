@@ -87,16 +87,16 @@ impl RateLimitConfig {
             config.enabled = enabled.parse().unwrap_or(true);
         }
 
-        if let Some(max_requests) = get_env_with_prefix("RATE_LIMIT_MAX_REQUESTS") {
-            if let Ok(val) = max_requests.parse() {
-                config.max_requests = val;
-            }
+        if let Some(max_requests) = get_env_with_prefix("RATE_LIMIT_MAX_REQUESTS")
+            && let Ok(val) = max_requests.parse()
+        {
+            config.max_requests = val;
         }
 
-        if let Some(window) = get_env_with_prefix("RATE_LIMIT_WINDOW_SECONDS") {
-            if let Ok(val) = window.parse() {
-                config.window_seconds = val;
-            }
+        if let Some(window) = get_env_with_prefix("RATE_LIMIT_WINDOW_SECONDS")
+            && let Ok(val) = window.parse()
+        {
+            config.window_seconds = val;
         }
 
         if let Some(strategy) = get_env_with_prefix("RATE_LIMIT_STRATEGY") {

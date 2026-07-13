@@ -111,7 +111,7 @@ impl RateLimitState {
                 // Periodically shrink the state store to remove stale entries
                 // This prevents unbounded memory growth from many unique IPs
                 let count = self.request_count.fetch_add(1, Ordering::Relaxed);
-                if count % SHRINK_INTERVAL == 0 && count > 0 {
+                if count.is_multiple_of(SHRINK_INTERVAL) && count > 0 {
                     limiter.retain_recent();
                 }
 

@@ -133,7 +133,7 @@ impl LoginRateLimiter {
     pub fn check(&self, ip: &str) -> std::result::Result<(), u64> {
         // Periodically shrink the state store
         let count = self.request_count.fetch_add(1, Ordering::Relaxed);
-        if count % SHRINK_INTERVAL == 0 && count > 0 {
+        if count.is_multiple_of(SHRINK_INTERVAL) && count > 0 {
             self.limiter.retain_recent();
         }
 

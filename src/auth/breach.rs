@@ -281,10 +281,10 @@ impl BreachChecker {
     /// Response format: "SUFFIX:COUNT\r\n" per line
     fn find_in_response(&self, suffix: &str, response: &str) -> Option<u32> {
         for line in response.lines() {
-            if let Some((hash_suffix, count_str)) = line.split_once(':') {
-                if hash_suffix.eq_ignore_ascii_case(suffix) {
-                    return count_str.trim().parse().ok();
-                }
+            if let Some((hash_suffix, count_str)) = line.split_once(':')
+                && hash_suffix.eq_ignore_ascii_case(suffix)
+            {
+                return count_str.trim().parse().ok();
             }
         }
         None

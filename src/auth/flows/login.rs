@@ -304,19 +304,19 @@ where
         let user_id = self.user_store.user_id(&user);
 
         // Check if locked
-        if let Some(until) = self.user_store.is_locked(&user).await? {
-            if until > SystemTime::now() {
-                tracing::warn!(
-                    target: "auth.login.locked",
-                    user_id = %user_id,
-                    email = %email,
-                    locked_until = ?until,
-                    "Login blocked: account locked"
-                );
-                return Ok(LoginResponse::error(
-                    "Account temporarily locked. Try again later.",
-                ));
-            }
+        if let Some(until) = self.user_store.is_locked(&user).await?
+            && until > SystemTime::now()
+        {
+            tracing::warn!(
+                target: "auth.login.locked",
+                user_id = %user_id,
+                email = %email,
+                locked_until = ?until,
+                "Login blocked: account locked"
+            );
+            return Ok(LoginResponse::error(
+                "Account temporarily locked. Try again later.",
+            ));
         }
 
         // Check if verified (if required)
@@ -449,18 +449,18 @@ where
         let email = self.user_store.user_email(user);
 
         // Try TOTP first (6 digits)
-        if code.len() == 6 && code.chars().all(|c| c.is_ascii_digit()) {
-            if let Some(secret) = self.user_store.get_totp_secret(user).await? {
-                if self.totp_manager.verify(&secret, code, &email)? {
-                    tracing::info!(
-                        target: "auth.mfa.success",
-                        user_id = %user_id,
-                        method = "totp",
-                        "MFA verification successful"
-                    );
-                    return self.complete_login(user, remember_me).await;
-                }
-            }
+        if code.len() == 6
+            && code.chars().all(|c| c.is_ascii_digit())
+            && let Some(secret) = self.user_store.get_totp_secret(user).await?
+            && self.totp_manager.verify(&secret, code, &email)?
+        {
+            tracing::info!(
+                target: "auth.mfa.success",
+                user_id = %user_id,
+                method = "totp",
+                "MFA verification successful"
+            );
+            return self.complete_login(user, remember_me).await;
         }
 
         // Try backup code (typically 8+ chars alphanumeric)
@@ -679,10 +679,10 @@ mod tests {
         #[cfg(feature = "auth-mfa")]
         async fn remove_backup_code(&self, user: &Self::User, index: usize) -> Result<()> {
             let mut users = self.users.write().unwrap();
-            if let Some(u) = users.get_mut(&user.email) {
-                if index < u.backup_codes.len() {
-                    u.backup_codes.remove(index);
-                }
+            if let Some(u) = users.get_mut(&user.email)
+                && index < u.backup_codes.len()
+            {
+                u.backup_codes.remove(index);
             }
             Ok(())
         }

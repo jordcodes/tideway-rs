@@ -148,13 +148,13 @@ impl ConnectionManager {
             let conn_guard = conn.read().await;
 
             // Remove from user mapping
-            if let Some(user_id) = conn_guard.user_id() {
-                if let Some(mut user_conns) = self.users.get_mut(user_id) {
-                    user_conns.remove(conn_id);
-                    if user_conns.is_empty() {
-                        drop(user_conns);
-                        self.users.remove(user_id);
-                    }
+            if let Some(user_id) = conn_guard.user_id()
+                && let Some(mut user_conns) = self.users.get_mut(user_id)
+            {
+                user_conns.remove(conn_id);
+                if user_conns.is_empty() {
+                    drop(user_conns);
+                    self.users.remove(user_id);
                 }
             }
 
@@ -406,10 +406,10 @@ impl ConnectionManager {
             .insert(conn_id.to_string());
 
         // Also update the connection's local state
-        if let Some(conn) = self.connections.get(conn_id) {
-            if let Ok(mut conn_guard) = conn.try_write() {
-                conn_guard.join_room(room);
-            }
+        if let Some(conn) = self.connections.get(conn_id)
+            && let Ok(mut conn_guard) = conn.try_write()
+        {
+            conn_guard.join_room(room);
         }
     }
 
@@ -424,10 +424,10 @@ impl ConnectionManager {
         }
 
         // Also update the connection's local state
-        if let Some(conn) = self.connections.get(conn_id) {
-            if let Ok(mut conn_guard) = conn.try_write() {
-                conn_guard.leave_room(room);
-            }
+        if let Some(conn) = self.connections.get(conn_id)
+            && let Ok(mut conn_guard) = conn.try_write()
+        {
+            conn_guard.leave_room(room);
         }
     }
 
@@ -485,13 +485,13 @@ impl ConnectionManager {
     pub fn update_user_mapping(&self, conn_id: &str) {
         if let Some(conn) = self.connections.get(conn_id) {
             // Try to read without blocking
-            if let Ok(conn_guard) = conn.try_read() {
-                if let Some(user_id) = conn_guard.user_id() {
-                    self.users
-                        .entry(user_id.to_string())
-                        .or_default()
-                        .insert(conn_id.to_string());
-                }
+            if let Ok(conn_guard) = conn.try_read()
+                && let Some(user_id) = conn_guard.user_id()
+            {
+                self.users
+                    .entry(user_id.to_string())
+                    .or_default()
+                    .insert(conn_id.to_string());
             }
         }
     }

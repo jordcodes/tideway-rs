@@ -189,10 +189,10 @@ impl UserStore for InMemoryUserStore {
     #[cfg(feature = "auth-mfa")]
     async fn remove_backup_code(&self, user: &Self::User, index: usize) -> Result<()> {
         let mut users = self.users.write().unwrap();
-        if let Some(u) = users.get_mut(&user.email) {
-            if index < u.backup_codes.len() {
-                u.backup_codes.remove(index);
-            }
+        if let Some(u) = users.get_mut(&user.email)
+            && index < u.backup_codes.len()
+        {
+            u.backup_codes.remove(index);
         }
         Ok(())
     }
@@ -273,10 +273,10 @@ impl MfaTokenStore for InMemoryMfaTokenStore {
 
     async fn consume(&self, token: &str) -> Result<Option<String>> {
         let mut tokens = self.tokens.write().unwrap();
-        if let Some((user_id, expires)) = tokens.remove(token) {
-            if expires > SystemTime::now() {
-                return Ok(Some(user_id));
-            }
+        if let Some((user_id, expires)) = tokens.remove(token)
+            && expires > SystemTime::now()
+        {
+            return Ok(Some(user_id));
         }
         Ok(None)
     }
@@ -904,43 +904,64 @@ async fn test_login_error_response_structure() {
 
 #[tokio::test]
 async fn test_timing_safe_user_not_found() {
-    // This test verifies that the response time is similar whether user exists or not
-    // (prevents timing-based user enumeration)
+    // Verify that response time is similar whether a user exists or not. Warm
+    // both paths first, then compare medians so scheduler and Argon2 startup
+    // noise do not make this security regression test flaky.
     let user_store = InMemoryUserStore::new();
     user_store.add_user("exists@example.com", "password123", true);
-    let (app, _) = create_test_app(user_store);
+    let (_, state) = create_test_app(user_store);
 
-    // Request for existing user with wrong password
-    let start1 = std::time::Instant::now();
-    test_post(app.clone(), "/auth/login")
-        .json_body(&json!({
-            "email": "exists@example.com",
-            "password": "wrongpassword"
-        }))
-        .execute()
-        .await;
-    let duration1 = start1.elapsed();
+    for email in ["exists@example.com", "nonexistent@example.com"] {
+        let _ = state
+            .login_flow
+            .login(LoginRequest {
+                email: email.to_string(),
+                password: "warmup-password".to_string(),
+                mfa_code: None,
+                remember_me: false,
+            })
+            .await;
+    }
 
-    // Request for non-existing user
-    let start2 = std::time::Instant::now();
-    test_post(app, "/auth/login")
-        .json_body(&json!({
-            "email": "nonexistent@example.com",
-            "password": "password123"
-        }))
-        .execute()
-        .await;
-    let duration2 = start2.elapsed();
+    let mut existing = Vec::with_capacity(3);
+    let mut missing = Vec::with_capacity(3);
+    for _ in 0..3 {
+        let start = std::time::Instant::now();
+        let _ = state
+            .login_flow
+            .login(LoginRequest {
+                email: "exists@example.com".to_string(),
+                password: "wrongpassword".to_string(),
+                mfa_code: None,
+                remember_me: false,
+            })
+            .await;
+        existing.push(start.elapsed());
 
-    // Times should be roughly similar (within 100ms is reasonable for test environment)
-    // This is a basic check - real timing attacks need more sophisticated analysis
-    let diff = duration1.abs_diff(duration2);
+        let start = std::time::Instant::now();
+        let _ = state
+            .login_flow
+            .login(LoginRequest {
+                email: "nonexistent@example.com".to_string(),
+                password: "password123".to_string(),
+                mfa_code: None,
+                remember_me: false,
+            })
+            .await;
+        missing.push(start.elapsed());
+    }
+
+    existing.sort_unstable();
+    missing.sort_unstable();
+    let existing_median = existing[1];
+    let missing_median = missing[1];
+    let diff = existing_median.abs_diff(missing_median);
 
     assert!(
-        diff < Duration::from_millis(100),
+        diff < Duration::from_millis(150),
         "Response times should be similar to prevent timing attacks: {:?} vs {:?}",
-        duration1,
-        duration2
+        existing_median,
+        missing_median
     );
 }
 

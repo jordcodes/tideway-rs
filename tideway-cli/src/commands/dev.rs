@@ -58,10 +58,10 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
         command.args(&args.args);
     }
 
-    if !args.no_env {
-        if let Some(env_map) = &env_map {
-            command.envs(env_map);
-        }
+    if !args.no_env
+        && let Some(env_map) = &env_map
+    {
+        command.envs(env_map);
     }
 
     if !args.no_migrate {
@@ -129,10 +129,10 @@ fn explicit_auto_migrate(env_map: &Option<BTreeMap<String, String>>) -> Option<S
         return Some(value.trim().to_string());
     }
 
-    if let Some(map) = env_map {
-        if let Some(value) = map.get("DATABASE_AUTO_MIGRATE") {
-            return Some(value.trim().to_string());
-        }
+    if let Some(map) = env_map
+        && let Some(value) = map.get("DATABASE_AUTO_MIGRATE")
+    {
+        return Some(value.trim().to_string());
     }
 
     None

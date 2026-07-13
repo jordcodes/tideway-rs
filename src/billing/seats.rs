@@ -67,19 +67,19 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
 
         // Version conflict after Stripe success - try to reconcile
         // Re-read to check if another process (e.g., webhook) already updated the state
-        if let Some(current) = self.store.get_subscription(billable_id).await? {
-            if current.extra_seats == updated_extra_seats {
-                // State is already consistent (likely updated by webhook)
-                tracing::debug!(
-                    billable_id = %billable_id,
-                    "Local state already matches Stripe after version conflict"
-                );
-                return Ok(SeatChangeResult {
-                    previous_seats: sub.extra_seats,
-                    new_seats: current.extra_seats,
-                    total_seats: plan.included_seats + current.extra_seats,
-                });
-            }
+        if let Some(current) = self.store.get_subscription(billable_id).await?
+            && current.extra_seats == updated_extra_seats
+        {
+            // State is already consistent (likely updated by webhook)
+            tracing::debug!(
+                billable_id = %billable_id,
+                "Local state already matches Stripe after version conflict"
+            );
+            return Ok(SeatChangeResult {
+                previous_seats: sub.extra_seats,
+                new_seats: current.extra_seats,
+                total_seats: plan.included_seats + current.extra_seats,
+            });
         }
 
         // Local state differs from Stripe - this shouldn't happen normally.

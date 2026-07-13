@@ -75,16 +75,16 @@ impl CacheConfig {
             config.redis_url = Some(url);
         }
 
-        if let Some(ttl) = get_env_with_prefix("CACHE_DEFAULT_TTL_SECONDS") {
-            if let Ok(seconds) = ttl.parse() {
-                config.default_ttl_seconds = seconds;
-            }
+        if let Some(ttl) = get_env_with_prefix("CACHE_DEFAULT_TTL_SECONDS")
+            && let Ok(seconds) = ttl.parse()
+        {
+            config.default_ttl_seconds = seconds;
         }
 
-        if let Some(max) = get_env_with_prefix("CACHE_MAX_ENTRIES") {
-            if let Ok(entries) = max.parse() {
-                config.max_entries = entries;
-            }
+        if let Some(max) = get_env_with_prefix("CACHE_MAX_ENTRIES")
+            && let Ok(entries) = max.parse()
+        {
+            config.max_entries = entries;
         }
 
         config

@@ -221,18 +221,17 @@ impl LockoutStatus {
     pub fn remaining_wait_seconds(&self) -> u64 {
         let now = SystemTime::now();
 
-        if self.is_locked {
-            if let Some(until) = self.locked_until {
-                if let Ok(duration) = until.duration_since(now) {
-                    return duration.as_secs();
-                }
-            }
+        if self.is_locked
+            && let Some(until) = self.locked_until
+            && let Ok(duration) = until.duration_since(now)
+        {
+            return duration.as_secs();
         }
 
-        if let Some(until) = self.delay_until {
-            if let Ok(duration) = until.duration_since(now) {
-                return duration.as_secs();
-            }
+        if let Some(until) = self.delay_until
+            && let Ok(duration) = until.duration_since(now)
+        {
+            return duration.as_secs();
         }
 
         0
@@ -369,40 +368,38 @@ impl<S: LockoutStore> LockoutManager<S> {
         ip: Option<&str>,
     ) -> Result<Option<LockoutStatus>> {
         // Check user lockout
-        if let Some(status) = self.store.get_lockout_status(user_id).await? {
-            if !status.can_attempt_now() {
-                tracing::debug!(
-                    target: "auth.lockout.blocked",
-                    user_id = %user_id,
-                    is_locked = status.is_locked,
-                    remaining_seconds = status.remaining_wait_seconds(),
-                    "Login attempt blocked by lockout"
-                );
-                return Ok(Some(status));
-            }
+        if let Some(status) = self.store.get_lockout_status(user_id).await?
+            && !status.can_attempt_now()
+        {
+            tracing::debug!(
+                target: "auth.lockout.blocked",
+                user_id = %user_id,
+                is_locked = status.is_locked,
+                remaining_seconds = status.remaining_wait_seconds(),
+                "Login attempt blocked by lockout"
+            );
+            return Ok(Some(status));
         }
 
         // Check IP lockout if enabled
-        if self.policy.track_by_ip {
-            if let Some(ip) = ip.map(truncate_ip) {
-                if let Some(locked_until) = self.store.is_ip_locked(ip).await? {
-                    if SystemTime::now() < locked_until {
-                        tracing::debug!(
-                            target: "auth.lockout.ip_blocked",
-                            ip = %ip,
-                            "Login attempt blocked by IP lockout"
-                        );
-                        return Ok(Some(LockoutStatus {
-                            failed_attempts: 0,
-                            is_locked: true,
-                            locked_until: Some(locked_until),
-                            delay_seconds: None,
-                            delay_until: None,
-                            last_attempt_at: None,
-                        }));
-                    }
-                }
-            }
+        if self.policy.track_by_ip
+            && let Some(ip) = ip.map(truncate_ip)
+            && let Some(locked_until) = self.store.is_ip_locked(ip).await?
+            && SystemTime::now() < locked_until
+        {
+            tracing::debug!(
+                target: "auth.lockout.ip_blocked",
+                ip = %ip,
+                "Login attempt blocked by IP lockout"
+            );
+            return Ok(Some(LockoutStatus {
+                failed_attempts: 0,
+                is_locked: true,
+                locked_until: Some(locked_until),
+                delay_seconds: None,
+                delay_until: None,
+                last_attempt_at: None,
+            }));
         }
 
         Ok(None)
@@ -421,20 +418,20 @@ impl<S: LockoutStore> LockoutManager<S> {
         let mut notification_sent = false;
 
         // Also track by IP if enabled
-        if self.policy.track_by_ip {
-            if let Some(ip) = ip.map(truncate_ip) {
-                let ip_count = self.store.increment_failed_attempts_by_ip(ip).await?;
-                if ip_count >= self.policy.max_attempts {
-                    let until = SystemTime::now() + self.policy.lockout_duration;
-                    self.store.set_lockout_by_ip(ip, until).await?;
-                    tracing::warn!(
-                        target: "auth.lockout.ip_locked",
-                        ip = %ip,
-                        attempts = ip_count,
-                        duration_secs = self.policy.lockout_duration.as_secs(),
-                        "IP address locked out"
-                    );
-                }
+        if self.policy.track_by_ip
+            && let Some(ip) = ip.map(truncate_ip)
+        {
+            let ip_count = self.store.increment_failed_attempts_by_ip(ip).await?;
+            if ip_count >= self.policy.max_attempts {
+                let until = SystemTime::now() + self.policy.lockout_duration;
+                self.store.set_lockout_by_ip(ip, until).await?;
+                tracing::warn!(
+                    target: "auth.lockout.ip_locked",
+                    ip = %ip,
+                    attempts = ip_count,
+                    duration_secs = self.policy.lockout_duration.as_secs(),
+                    "IP address locked out"
+                );
             }
         }
 
@@ -455,23 +452,21 @@ impl<S: LockoutStore> LockoutManager<S> {
             );
 
             // Send notification if enabled
-            if self.policy.send_notifications {
-                if let Ok(Some(email)) = self.store.get_user_email(user_id).await {
-                    if self
-                        .store
-                        .send_lockout_notification(user_id, &email, until)
-                        .await
-                        .is_ok()
-                    {
-                        notification_sent = true;
-                        tracing::info!(
-                            target: "auth.lockout.notification_sent",
-                            user_id = %user_id,
-                            email = %email,
-                            "Lockout notification email sent"
-                        );
-                    }
-                }
+            if self.policy.send_notifications
+                && let Ok(Some(email)) = self.store.get_user_email(user_id).await
+                && self
+                    .store
+                    .send_lockout_notification(user_id, &email, until)
+                    .await
+                    .is_ok()
+            {
+                notification_sent = true;
+                tracing::info!(
+                    target: "auth.lockout.notification_sent",
+                    user_id = %user_id,
+                    email = %email,
+                    "Lockout notification email sent"
+                );
             }
 
             return Ok(FailedAttemptResult {
@@ -498,20 +493,20 @@ impl<S: LockoutStore> LockoutManager<S> {
             }
         });
 
-        if let Some(secs) = delay_seconds {
-            if secs > 0 {
-                if let Some(until) = delay_until {
-                    self.store.set_delay(user_id, until).await?;
-                }
-
-                tracing::info!(
-                    target: "auth.lockout.delay_applied",
-                    user_id = %user_id,
-                    attempts = new_count,
-                    delay_seconds = secs,
-                    "Progressive delay applied"
-                );
+        if let Some(secs) = delay_seconds
+            && secs > 0
+        {
+            if let Some(until) = delay_until {
+                self.store.set_delay(user_id, until).await?;
             }
+
+            tracing::info!(
+                target: "auth.lockout.delay_applied",
+                user_id = %user_id,
+                attempts = new_count,
+                delay_seconds = secs,
+                "Progressive delay applied"
+            );
         }
 
         Ok(FailedAttemptResult {
@@ -532,10 +527,10 @@ impl<S: LockoutStore> LockoutManager<S> {
     pub async fn record_successful_login(&self, user_id: &str, ip: Option<&str>) -> Result<()> {
         self.store.clear_lockout(user_id).await?;
 
-        if self.policy.track_by_ip {
-            if let Some(ip) = ip.map(truncate_ip) {
-                self.store.clear_ip_lockout(ip).await?;
-            }
+        if self.policy.track_by_ip
+            && let Some(ip) = ip.map(truncate_ip)
+        {
+            self.store.clear_ip_lockout(ip).await?;
         }
 
         tracing::debug!(
@@ -562,10 +557,11 @@ impl<S: LockoutStore> LockoutManager<S> {
         );
 
         // Send notification if enabled
-        if self.policy.send_notifications && had_lockout {
-            if let Ok(Some(email)) = self.store.get_user_email(user_id).await {
-                let _ = self.store.send_unlock_notification(user_id, &email).await;
-            }
+        if self.policy.send_notifications
+            && had_lockout
+            && let Ok(Some(email)) = self.store.get_user_email(user_id).await
+        {
+            let _ = self.store.send_unlock_notification(user_id, &email).await;
         }
 
         Ok(had_lockout)

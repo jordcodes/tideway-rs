@@ -481,20 +481,20 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
         }
 
         // Check for existing session
-        if let Some(existing) = self.store.get_session_for_user(&req.target_user_id).await? {
-            if !existing.is_expired() {
-                tracing::warn!(
-                    target: "auth.impersonation.rejected",
-                    admin_id = %req.admin_id,
-                    target_user_id = %req.target_user_id,
-                    existing_admin = %existing.admin_id,
-                    reason = "already_impersonated",
-                    "Impersonation rejected: user already being impersonated"
-                );
-                return Err(TidewayError::BadRequest(
-                    "User is already being impersonated".into(),
-                ));
-            }
+        if let Some(existing) = self.store.get_session_for_user(&req.target_user_id).await?
+            && !existing.is_expired()
+        {
+            tracing::warn!(
+                target: "auth.impersonation.rejected",
+                admin_id = %req.admin_id,
+                target_user_id = %req.target_user_id,
+                existing_admin = %existing.admin_id,
+                reason = "already_impersonated",
+                "Impersonation rejected: user already being impersonated"
+            );
+            return Err(TidewayError::BadRequest(
+                "User is already being impersonated".into(),
+            ));
         }
 
         // Calculate duration
@@ -535,13 +535,13 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
         self.store.record_audit(&audit).await?;
 
         // Notify user if configured
-        if self.config.notify_user {
-            if let Ok(Some(email)) = self.store.get_user_email(&req.target_user_id).await {
-                let _ = self
-                    .store
-                    .send_notification(&email, &req.admin_id, &ImpersonationEvent::Started)
-                    .await;
-            }
+        if self.config.notify_user
+            && let Ok(Some(email)) = self.store.get_user_email(&req.target_user_id).await
+        {
+            let _ = self
+                .store
+                .send_notification(&email, &req.admin_id, &ImpersonationEvent::Started)
+                .await;
         }
 
         tracing::info!(
@@ -585,13 +585,13 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
         self.store.record_audit(&audit).await?;
 
         // Notify user if configured
-        if self.config.notify_on_end {
-            if let Ok(Some(email)) = self.store.get_user_email(&session.target_user_id).await {
-                let _ = self
-                    .store
-                    .send_notification(&email, &session.admin_id, &ImpersonationEvent::Ended)
-                    .await;
-            }
+        if self.config.notify_on_end
+            && let Ok(Some(email)) = self.store.get_user_email(&session.target_user_id).await
+        {
+            let _ = self
+                .store
+                .send_notification(&email, &session.admin_id, &ImpersonationEvent::Ended)
+                .await;
         }
 
         tracing::info!(
@@ -651,37 +651,37 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
         }
 
         // Check if action is blocked
-        if let Some(action) = action {
-            if session.is_action_blocked(action) {
-                let now = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
+        if let Some(action) = action
+            && session.is_action_blocked(action)
+        {
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
 
-                let audit = ImpersonationAuditEntry {
-                    event: ImpersonationEvent::BlockedAttempt,
-                    session_id: session_id.to_string(),
-                    admin_id: session.admin_id.clone(),
-                    target_user_id: session.target_user_id.clone(),
-                    reason: session.reason.clone(),
-                    timestamp: now,
-                    metadata: Some(format!("Attempted action: {action}")),
-                };
-                self.store.record_audit(&audit).await?;
+            let audit = ImpersonationAuditEntry {
+                event: ImpersonationEvent::BlockedAttempt,
+                session_id: session_id.to_string(),
+                admin_id: session.admin_id.clone(),
+                target_user_id: session.target_user_id.clone(),
+                reason: session.reason.clone(),
+                timestamp: now,
+                metadata: Some(format!("Attempted action: {action}")),
+            };
+            self.store.record_audit(&audit).await?;
 
-                tracing::warn!(
-                    target: "auth.impersonation.blocked",
-                    session_id = %session_id,
-                    admin_id = %session.admin_id,
-                    target_user_id = %session.target_user_id,
-                    action = %action,
-                    "Blocked action attempted during impersonation"
-                );
+            tracing::warn!(
+                target: "auth.impersonation.blocked",
+                session_id = %session_id,
+                admin_id = %session.admin_id,
+                target_user_id = %session.target_user_id,
+                action = %action,
+                "Blocked action attempted during impersonation"
+            );
 
-                return Err(TidewayError::Forbidden(format!(
-                    "Action '{action}' is not allowed during impersonation"
-                )));
-            }
+            return Err(TidewayError::Forbidden(format!(
+                "Action '{action}' is not allowed during impersonation"
+            )));
         }
 
         Ok(session)
