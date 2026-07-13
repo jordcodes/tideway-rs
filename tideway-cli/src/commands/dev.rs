@@ -5,7 +5,7 @@ mod watch;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
@@ -53,6 +53,9 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
         None
     };
 
+    if !args.no_watch {
+        preflight_dev_port(&env_map)?;
+    }
     preflight_database(&project_dir, &env_map)?;
     print_local_urls(&project_dir, &env_map)?;
 
@@ -150,7 +153,8 @@ fn build_dev_plan(args: &DevArgs) -> ExecutionPlan {
     plan = if args.no_watch {
         plan.info("One-shot local run (--no-watch).")
     } else {
-        plan.info("Would watch source and manifest changes, rebuild, and restart on success.")
+        plan.info("Would verify the configured port is free before building.")
+            .info("Would watch source and manifest changes, rebuild, and restart on success.")
     };
     if !app_args.is_empty() {
         plan = plan.info(format!(
@@ -219,10 +223,7 @@ fn project_uses_database(project_dir: &Path) -> Result<bool> {
 }
 
 fn print_local_urls(project_dir: &Path, env_map: &Option<BTreeMap<String, String>>) -> Result<()> {
-    let port = effective_env_value(env_map, "TIDEWAY_PORT")
-        .or_else(|| effective_env_value(env_map, "PORT"))
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "8000".to_string());
+    let (_, port) = dev_server_address(env_map)?;
     let base_url = format!("http://localhost:{port}");
     print_info("Local URLs once the server is ready:");
     print_info(&format!("API: {base_url}"));
@@ -238,6 +239,50 @@ fn print_local_urls(project_dir: &Path, env_map: &Option<BTreeMap<String, String
         }
     }
     Ok(())
+}
+
+fn preflight_dev_port(env_map: &Option<BTreeMap<String, String>>) -> Result<()> {
+    let (host, port) = dev_server_address(env_map)?;
+    match TcpListener::bind((host.as_str(), port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => {
+            Err(anyhow::anyhow!(error_contract(
+                &format!("Port {port} is already in use on {host}."),
+                "Stop the process using that port or set TIDEWAY_PORT to a free local port.",
+                "Run `lsof -nP -iTCP:<port> -sTCP:LISTEN` on macOS/Linux to identify the listener."
+            )))
+        }
+        Err(err) => Err(anyhow::anyhow!(error_contract(
+            &format!("Cannot bind the development server to {host}:{port}: {err}"),
+            "Set TIDEWAY_HOST and TIDEWAY_PORT to a local address this process can bind.",
+            "Use TIDEWAY_HOST=127.0.0.1 for a loopback-only development server."
+        ))),
+    }
+}
+
+fn dev_server_address(env_map: &Option<BTreeMap<String, String>>) -> Result<(String, u16)> {
+    let host = effective_env_value(env_map, "TIDEWAY_HOST")
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "0.0.0.0".to_string());
+    let raw_port = effective_env_value(env_map, "TIDEWAY_PORT")
+        .or_else(|| effective_env_value(env_map, "PORT"))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "8000".to_string());
+    let port = raw_port
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port != 0)
+        .ok_or_else(|| {
+            anyhow::anyhow!(error_contract(
+                &format!("Invalid development server port `{raw_port}`."),
+                "Set TIDEWAY_PORT to a number between 1 and 65535.",
+                "Remove the override to use Tideway's default port 8000."
+            ))
+        })?;
+    Ok((host, port))
 }
 
 fn env_flag(env_map: &Option<BTreeMap<String, String>>, key: &str, default: bool) -> bool {

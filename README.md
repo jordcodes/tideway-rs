@@ -71,7 +71,7 @@ cd my_app
 tideway dev --fix-env
 ```
 
-`tideway dev` watches Rust sources, migrations, Cargo manifests, and `.env` by default. Successful builds restart the server; failed builds leave the last working server running. Use `tideway dev --no-watch` for a one-shot run.
+`tideway dev` verifies that the configured port is free, then watches Rust sources, migrations, Cargo manifests, and `.env` by default. Successful builds restart the server; failed builds leave the last working server running. Use `tideway dev --no-watch` for a one-shot run.
 
 Then visit `http://localhost:8000/health`.
 If OpenAPI is enabled, visit `http://localhost:8000/swagger-ui`.

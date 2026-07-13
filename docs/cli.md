@@ -260,7 +260,7 @@ tideway dev --no-watch
 
 Before starting Cargo, `tideway dev` validates database configuration and prints the local API, health, Swagger UI, and OpenAPI URLs that are enabled by the effective configuration. Existing shell environment variables take precedence over values in `.env`; `.env` supplies only missing values. The command enables pending migrations for the local run unless `--no-migrate` is supplied, which explicitly sets `DATABASE_AUTO_MIGRATE=false` for that run.
 
-By default, the command watches Rust sources, migrations, Cargo manifests, and `.env`. It debounces editor save events, cancels superseded builds, and restarts the application only after a successful build. If compilation fails, the last working server keeps running while Tideway waits for the next change. Press Ctrl-C to stop the watcher and its child processes. Use `--no-watch` for the previous one-shot `cargo run` behaviour.
+By default, the command verifies that the configured development port is available before compiling, then watches Rust sources, migrations, Cargo manifests, and `.env`. It debounces editor save events, cancels superseded builds, and restarts the application only after a successful build. If compilation fails, the last working server keeps running while Tideway waits for the next change. Press Ctrl-C to stop the watcher and its child processes. Use `--no-watch` for the previous one-shot `cargo run` behaviour.
 
 Arguments after the first `--` are passed to Cargo. To pass arguments to the application in watch mode, add a second separator: `tideway dev -- --release -- --seed`.
 

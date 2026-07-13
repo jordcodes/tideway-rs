@@ -19,7 +19,6 @@ use axum::{
 };
 #[cfg(feature = "database")]
 use sea_orm_migration::MigratorTrait;
-use std::time::Duration;
 use tokio::signal;
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -677,6 +676,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_signal_returns_without_a_fixed_delay() {
+        tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            complete_shutdown_signal(std::future::ready(()), std::future::pending()),
+        )
+        .await
+        .expect("shutdown should immediately hand graceful draining to Axum");
+    }
+
+    #[tokio::test]
     async fn test_serve_applies_connect_info_for_per_ip_rate_limit() {
         let port = {
             let probe = match std::net::TcpListener::bind("127.0.0.1:0") {
@@ -777,6 +786,14 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    complete_shutdown_signal(ctrl_c, terminate).await;
+}
+
+async fn complete_shutdown_signal<C, T>(ctrl_c: C, terminate: T)
+where
+    C: std::future::Future<Output = ()>,
+    T: std::future::Future<Output = ()>,
+{
     tokio::select! {
         _ = ctrl_c => {
             tracing::info!("Received Ctrl+C signal, starting graceful shutdown");
@@ -786,8 +803,6 @@ async fn shutdown_signal() {
         },
     }
 
-    // Give connections a grace period to close
-    // TODO: Make this configurable via ServerConfig
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    tracing::info!("Shutdown complete");
+    // Returning starts Axum's graceful connection drain. Sleeping here would delay
+    // shutdown rather than give active requests time to finish.
 }

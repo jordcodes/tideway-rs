@@ -492,6 +492,50 @@ fn test_dev_fails_fast_when_postgres_server_is_unreachable() {
 }
 
 #[test]
+fn test_dev_watch_fails_before_cargo_when_port_is_occupied() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_project(&project_dir);
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("reserve occupied port");
+    let port = listener.local_addr().expect("listener address").port();
+    fs::write(
+        project_dir.join(".env"),
+        format!("TIDEWAY_HOST=127.0.0.1\nTIDEWAY_PORT={port}\n"),
+    )
+    .expect("write .env");
+
+    let fake_cargo_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_cargo_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("cargo-invocation.log");
+    write_fake_cargo(&fake_cargo_dir, &invocation_log);
+
+    let output = run_tideway_with_path(
+        &[
+            "dev",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ],
+        &fake_cargo_dir,
+    );
+    assert!(
+        !output.status.success(),
+        "expected tideway dev to reject an occupied port"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("already in use"), "{combined}");
+    assert!(combined.contains("TIDEWAY_PORT"), "{combined}");
+    assert!(
+        !invocation_log.exists(),
+        "cargo must not run when the configured port is occupied"
+    );
+}
+
+#[test]
 fn test_dev_bootstraps_env_when_example_exists() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

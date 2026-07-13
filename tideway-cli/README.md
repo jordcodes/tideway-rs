@@ -198,7 +198,7 @@ tideway dev --no-watch
 
 Values already set in the shell take precedence over `.env`; the file supplies only missing values. `--no-migrate` explicitly disables `DATABASE_AUTO_MIGRATE` for that run.
 
-By default, Tideway watches Rust sources, migrations, Cargo manifests, and `.env`, then rebuilds and restarts after successful changes. Compile failures leave the previous working server running. Use `--no-watch` for a one-shot `cargo run`. Arguments after the first `--` go to Cargo; use a second `--` before application arguments.
+By default, Tideway verifies that the configured port is available, watches Rust sources, migrations, Cargo manifests, and `.env`, then rebuilds and restarts after successful changes. Compile failures leave the previous working server running. Use `--no-watch` for a one-shot `cargo run`. Arguments after the first `--` go to Cargo; use a second `--` before application arguments.
 
 ### `tideway migrate`
 
