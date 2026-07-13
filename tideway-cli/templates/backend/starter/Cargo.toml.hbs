@@ -15,6 +15,7 @@ tracing = "0.1"
 {{/if}}
 {{#if has_database_feature}}
 sea-orm = { version = "1.1", features = ["{{#if is_sqlite_database}}sqlx-sqlite{{else}}sqlx-postgres{{/if}}", "runtime-tokio-rustls"{{#if has_auth_feature}}, "with-chrono", "with-uuid"{{/if}}] }
+migration = { path = "migration" }
 {{#if has_auth_feature}}
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -27,7 +28,6 @@ utoipa = { version = "5", features = ["axum_extras"] }
 {{#if has_auth_feature}}
 
 [dev-dependencies]
-migration = { path = "migration" }
 tower = { version = "0.5", features = ["util"] }
 {{/if}}
 {{/if}}

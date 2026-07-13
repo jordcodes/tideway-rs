@@ -176,6 +176,10 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
         .arg(&args.action)
         .current_dir(project_dir);
 
+    if std::env::var_os("CARGO_TARGET_DIR").is_none() {
+        command.env("CARGO_TARGET_DIR", "target");
+    }
+
     if !args.args.is_empty() {
         command.args(&args.args);
     }

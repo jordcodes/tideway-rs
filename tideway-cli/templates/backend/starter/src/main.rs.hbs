@@ -112,6 +112,13 @@ async fn main() -> Result<(), std::io::Error> {
         .register_module(routes::ApiModule);
     // tideway:app-builder:end
 
+{{#if has_database_feature}}
+    let app = app
+        .run_migrations::<migration::Migrator>()
+        .await
+        .expect("Failed to run database migrations");
+
+{{/if}}
 {{#if has_openapi_feature}}
     let app = if {{#if has_config}}config.tideway{{else}}config{{/if}}.openapi.enabled {
         let openapi = {{#if has_auth_feature}}{{#if has_database_feature}}tideway::openapi_merge!(openapi_docs::ApiDoc, auth::AuthApiDoc){{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}}{{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}};

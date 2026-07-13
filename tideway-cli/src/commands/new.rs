@@ -242,8 +242,8 @@ fn scaffold_files(
     let normalized_features = normalize_features(&args.features);
     let has_auth_feature = normalized_features.contains("auth");
     let has_auth_mfa_feature = normalized_features.contains("auth-mfa");
+    let has_database_feature = normalized_features.contains("database");
     let has_database_auth = has_auth_feature && normalized_features.contains("database");
-    let is_api_preset = matches!(args.preset, Some(NewPreset::Api));
 
     write_file_with_force_or_error_default(
         &target_dir.join("Cargo.toml"),
@@ -332,7 +332,7 @@ fn scaffold_files(
         )?;
     }
 
-    if is_api_preset || has_database_auth {
+    if has_database_feature {
         write_file_with_force_or_error_default(
             &target_dir.join("migration/Cargo.toml"),
             &engine.render("starter/migration/Cargo.toml")?,
@@ -343,12 +343,21 @@ fn scaffold_files(
             &engine.render("starter/migration/src/lib.rs")?,
             args.force,
         )?;
+        write_file_with_force_or_error_default(
+            &target_dir.join("migration/src/main.rs"),
+            &engine.render("starter/migration/src/main.rs")?,
+            args.force,
+        )?;
+        write_file_with_force_or_error_default(
+            &target_dir.join("src/entities/mod.rs"),
+            &engine.render("starter/src/entities/mod.rs")?,
+            args.force,
+        )?;
 
         if has_database_auth {
             for (path, template) in [
                 ("src/auth/store.rs", "starter/src/auth/store.rs"),
                 ("src/auth/tests.rs", "starter/src/auth/tests.rs"),
-                ("src/entities/mod.rs", "starter/src/entities/mod.rs"),
                 ("src/entities/user.rs", "starter/src/entities/user.rs"),
                 (
                     "src/entities/refresh_token_family.rs",
@@ -424,6 +433,7 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
     let needs_env = needs_env_from_args(args);
     let normalized_features = normalize_features(&args.features);
     let has_auth_feature = normalized_features.contains("auth");
+    let has_database_feature = normalized_features.contains("database");
     let has_database_auth = has_auth_feature && normalized_features.contains("database");
     let mut files = vec!["Cargo.toml".to_string()];
 
@@ -462,10 +472,14 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
         files.push(".env.example".to_string());
     }
 
-    if backend_preset.is_none() && has_database_auth {
+    if backend_preset.is_none() && has_database_feature {
         files.push("migration/Cargo.toml".to_string());
         files.push("migration/src/lib.rs".to_string());
+        files.push("migration/src/main.rs".to_string());
         files.push("src/entities/mod.rs".to_string());
+    }
+
+    if backend_preset.is_none() && has_database_auth {
         files.push("src/auth/store.rs".to_string());
         files.push("src/entities/user.rs".to_string());
         files.push("src/entities/refresh_token_family.rs".to_string());
@@ -689,6 +703,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "src/admin/routes.rs".to_string(),
         "migration/Cargo.toml".to_string(),
         "migration/src/lib.rs".to_string(),
+        "migration/src/main.rs".to_string(),
         "migration/src/m001_create_users.rs".to_string(),
         "migration/src/m002_create_refresh_token_families.rs".to_string(),
         "migration/src/m003_create_verification_tokens.rs".to_string(),

@@ -197,11 +197,41 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
         &project_dir.join("src/main.rs"),
         "openapi_docs::ApiDoc, auth::AuthApiDoc",
     );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".run_migrations::<migration::Migrator>()",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/main.rs"),
+        "cli::run_cli(migration::Migrator).await",
+    );
 
     patch_scaffold_to_workspace(&project_dir);
 
     run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
     run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+    run_cargo_in_project(
+        temp_dir.path(),
+        &project_dir,
+        &[
+            "clippy",
+            "--all-targets",
+            "--no-deps",
+            "--",
+            "-D",
+            "warnings",
+        ],
+    );
+    run_cargo_in_project(
+        temp_dir.path(),
+        &project_dir,
+        &[
+            "check",
+            "--manifest-path",
+            "migration/Cargo.toml",
+            "--all-targets",
+        ],
+    );
 }
 
 #[test]
@@ -465,6 +495,15 @@ fn test_new_command_with_preset_api() {
     assert!(project_dir.join("migration/Cargo.toml").exists());
     assert_file_contains(&project_dir.join("migration/Cargo.toml"), "\"sqlx-sqlite\"");
     assert!(project_dir.join("migration/src/lib.rs").exists());
+    assert!(project_dir.join("migration/src/main.rs").exists());
+    assert_file_contains(
+        &project_dir.join("migration/src/main.rs"),
+        "cli::run_cli(migration::Migrator).await",
+    );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".run_migrations::<migration::Migrator>()",
+    );
     assert!(
         project_dir
             .join("migration/src/m004_create_todos.rs")
@@ -700,6 +739,12 @@ fn test_new_command_with_preset_worker() {
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join("src/config.rs").exists());
+    assert!(project_dir.join("src/entities/mod.rs").exists());
+    assert!(project_dir.join("migration/src/main.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".run_migrations::<migration::Migrator>()",
+    );
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {

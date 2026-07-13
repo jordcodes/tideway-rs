@@ -132,6 +132,11 @@ fn test_golden_path_default_api_boots_and_serves_health() {
     let mut child = command.spawn().expect("run tideway dev");
 
     wait_for_health(&mut child, port, Duration::from_secs(120), &log_path);
+    assert!(
+        endpoint_returns_ok(port, "/api/todos"),
+        "expected auto-migrated todo endpoint to return 200; log:\n{}",
+        fs::read_to_string(&log_path).unwrap_or_default()
+    );
 
     terminate_process_tree(&mut child);
 }
@@ -488,6 +493,11 @@ fn test_migrate_accepts_sqlite_database_url() {
         "expected sea-orm-cli status invocation, got:\n{}",
         invocation
     );
+    assert!(
+        invocation.contains("ENV:CARGO_TARGET_DIR=target"),
+        "expected migrations to reuse the app target directory, got:\n{}",
+        invocation
+    );
 }
 
 fn run_tideway(args: &[&str]) -> std::process::Output {
@@ -505,7 +515,7 @@ fn run_tideway_with_path(args: &[&str], fake_cargo_dir: &Path) -> std::process::
     }
     let current_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", fake_cargo_dir.display(), current_path);
-    command.env("PATH", new_path);
+    command.env("PATH", new_path).env_remove("CARGO_TARGET_DIR");
     command.output().expect("run tideway")
 }
 
@@ -595,6 +605,7 @@ set -euo pipefail\n\
 log=\"{}\"\n\
 echo \"ARG:$1\" > \"$log\"\n\
 echo \"ARG:$2\" >> \"$log\"\n\
+echo \"ENV:CARGO_TARGET_DIR=${{CARGO_TARGET_DIR:-}}\" >> \"$log\"\n\
 exit 0\n",
         invocation_log.display()
     );
@@ -698,14 +709,16 @@ fn wait_for_health(child: &mut std::process::Child, port: u16, timeout: Duration
 }
 
 fn health_check(port: u16) -> bool {
+    endpoint_returns_ok(port, "/health")
+}
+
+fn endpoint_returns_ok(port: u16, path: &str) -> bool {
     let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
         return false;
     };
 
-    if stream
-        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
+    let request = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
         return false;
     }
 

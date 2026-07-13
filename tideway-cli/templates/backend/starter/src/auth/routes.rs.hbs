@@ -102,6 +102,7 @@ impl AuthModule {
 
     /// Mount email-dependent auth routes after implementing the delivery hooks
     /// in `DbUserStore`.
+    #[allow(dead_code)] // Generated extension point; used only when email delivery is configured.
     pub fn with_email_delivery(mut self) -> Self {
         self.state.email_delivery_enabled = true;
         self
@@ -109,6 +110,7 @@ impl AuthModule {
 
     {{#if has_auth_mfa_feature}}
     /// Override the MFA cipher, primarily for explicit secret injection and tests.
+    #[allow(dead_code)] // Generated extension point; normal apps load the cipher from the environment.
     pub fn with_mfa_cipher(mut self, cipher: Arc<MfaSecretCipher>) -> Self {
         self.state.mfa_cipher = Some(cipher);
         self

@@ -1693,7 +1693,7 @@ mod tests {{
     };
     let sea_orm_imports = if uses_inline_auth_helpers {
         "use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};\n"
-    } else if with_db {
+    } else if with_db && !with_repo {
         match (paginate, search) {
             (true, true) => {
                 "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};\n"
@@ -1717,7 +1717,7 @@ mod tests {{
         "use crate::entities::{organization_member, user};\n".to_string()
     } else if uses_inline_auth_helpers && context.saas_admin_guard {
         "use crate::entities::user;\n".to_string()
-    } else if with_db {
+    } else if with_db && !with_repo {
         format!("use crate::entities::{resource_name};\n")
     } else {
         String::new()
@@ -3762,8 +3762,7 @@ impl {resource_pascal}Service {{
     }}
 
     pub async fn get_required(&self, id: {id_type}) -> Result<crate::entities::{resource_name}::Model> {{
-        self.repo
-            .get(id)
+        self.get(id)
             .await?
             .ok_or_else(|| TidewayError::not_found("{resource_pascal} not found"))
     }}
