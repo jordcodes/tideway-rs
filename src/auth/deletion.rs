@@ -321,7 +321,7 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
                 .await?
                 .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
 
-            if !self.password_hasher.verify(password, &hash)? {
+            if !self.password_hasher.verify_async(password, &hash).await? {
                 tracing::warn!(
                     target: "auth.deletion.password_invalid",
                     user_id = %req.user_id,

@@ -2,6 +2,12 @@
 
 mod provider;
 mod routes;
+{{#if has_database_feature}}
+mod store;
+{{/if}}
 
 pub use provider::{SimpleAuthProvider, SimpleUser};
 pub use routes::AuthModule;
+{{#if has_database_feature}}
+pub use store::{AppTokenIssuer, DbRefreshTokenStore, DbUserStore, InMemoryMfaTokenStore};
+{{/if}}

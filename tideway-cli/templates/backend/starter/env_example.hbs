@@ -10,6 +10,8 @@ DATABASE_URL={{{database_url}}}
 {{#if has_auth_feature}}
 # Auth
 JWT_SECRET=replace-with-at-least-32-random-bytes
+# Keep false unless a verification-email delivery integration is wired.
+REQUIRE_EMAIL_VERIFICATION=false
 
 {{/if}}
 {{#if has_openapi_feature}}

@@ -86,6 +86,37 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert!(billing_routes.contains("deactivate_plans_with_price(state, price_id).await?"));
 }
 
+#[test]
+fn test_backend_auth_uses_shared_guards_and_atomic_token_updates() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("src");
+    let migrations_dir = temp_dir.path().join("migration/src");
+
+    let output = run_tideway(&[
+        "backend",
+        "b2b",
+        "--name",
+        "my_app",
+        "--output",
+        output_dir.to_str().expect("output dir utf8"),
+        "--migrations-output",
+        migrations_dir.to_str().expect("migrations dir utf8"),
+    ]);
+    assert_success(&output, "tideway backend b2b");
+
+    let routes = fs::read_to_string(output_dir.join("auth/routes.rs")).expect("read auth routes");
+    assert!(routes.contains("login_rate_limiter: LoginRateLimiter"));
+    assert!(routes.contains("state.mfa_tokens.clone()"));
+    assert!(routes.contains("login_with_ip(request, Some(address.ip().to_string()))"));
+    assert!(routes.contains("DbUserStore::from_transaction(transaction.clone())"));
+    assert!(routes.contains("Arc::try_unwrap(transaction)"));
+
+    let store = fs::read_to_string(output_dir.join("auth/store.rs")).expect("read auth store");
+    assert!(store.contains("compare_and_swap_family_generation"));
+    assert!(store.contains("update.rows_affected == 1"));
+    assert!(store.contains("revoke_all_for_user(user_id)"));
+}
+
 fn run_tideway(args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
     for arg in args {

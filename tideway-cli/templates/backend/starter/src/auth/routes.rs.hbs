@@ -1,5 +1,255 @@
-//! Minimal auth routes for starters.
+//! Authentication routes for Tideway starters.
 
+{{#if has_database_feature}}
+use axum::{
+    extract::{ConnectInfo, Extension},
+    routing::{get, post},
+    Json, Router,
+};
+use sea_orm::DatabaseConnection;
+use serde::{Deserialize, Serialize};
+use std::{net::SocketAddr, sync::Arc};
+use tideway::auth::{
+    AuthUser, JwtIssuer, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter,
+    LoginRequest, LoginResponse, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest,
+    RegisterRequest, RegistrationFlow, TokenRefreshFlow,
+};
+use tideway::{AppContext, MessageResponse, Result, RouteModule};
+
+use crate::auth::{
+    AppTokenIssuer, DbRefreshTokenStore, DbUserStore, InMemoryMfaTokenStore, SimpleAuthProvider,
+    SimpleUser,
+};
+
+#[derive(Clone)]
+pub struct AuthState {
+    db: Arc<DatabaseConnection>,
+    jwt_issuer: Arc<JwtIssuer>,
+    jwt_secret: Arc<str>,
+    app_name: Arc<str>,
+    require_email_verification: bool,
+    login_rate_limiter: LoginRateLimiter,
+    mfa_tokens: InMemoryMfaTokenStore,
+}
+
+pub struct AuthModule {
+    state: AuthState,
+}
+
+impl AuthModule {
+    pub fn new(
+        db: Arc<DatabaseConnection>,
+        jwt_issuer: Arc<JwtIssuer>,
+        jwt_secret: String,
+        app_name: impl Into<String>,
+    ) -> Self {
+        let require_email_verification = std::env::var("REQUIRE_EMAIL_VERIFICATION")
+            .map(|value| value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        Self {
+            state: AuthState {
+                db,
+                jwt_issuer,
+                jwt_secret: jwt_secret.into(),
+                app_name: app_name.into().into(),
+                require_email_verification,
+                login_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::default()),
+                mfa_tokens: InMemoryMfaTokenStore::default(),
+            },
+        }
+    }
+}
+
+impl RouteModule for AuthModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/register", post(register))
+            .route("/login", post(login))
+            .route("/refresh", post(refresh))
+            .route("/logout", post(logout))
+            .route("/password/reset", post(request_password_reset))
+            .route(
+                "/password/reset/complete",
+                post(complete_password_reset),
+            )
+            .route("/me", get(me))
+            .layer(Extension(self.state.clone()))
+    }
+
+    fn prefix(&self) -> Option<&str> {
+        Some("/auth")
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterBody {
+    pub email: String,
+    pub password: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RegisterResponse {
+    pub user_id: String,
+    pub message: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LoginBody {
+    pub email: String,
+    pub password: String,
+    pub remember_me: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RefreshBody {
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RefreshResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: u64,
+    pub token_type: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogoutBody {
+    pub refresh_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordResetBody {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PasswordResetCompleteBody {
+    pub token: String,
+    pub new_password: String,
+}
+
+fn user_store(state: &AuthState) -> DbUserStore {
+    DbUserStore::new(state.db.clone(), state.require_email_verification)
+}
+
+async fn register(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<RegisterBody>,
+) -> Result<Json<RegisterResponse>> {
+    let flow = RegistrationFlow::new(user_store(&state));
+    let user = flow
+        .register(RegisterRequest {
+            email: body.email,
+            password: body.password,
+            name: body.name,
+        })
+        .await?;
+
+    Ok(Json(RegisterResponse {
+        user_id: user.id.to_string(),
+        message: "Registration successful",
+    }))
+}
+
+async fn login(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<LoginBody>,
+) -> Result<Json<LoginResponse>> {
+    let flow = LoginFlow::new(
+        user_store(&state),
+        state.mfa_tokens.clone(),
+        AppTokenIssuer::new(state.jwt_issuer.clone()),
+        LoginFlowConfig::new(state.app_name.as_ref())
+            .require_verification(state.require_email_verification),
+    )
+    .with_refresh_store(DbRefreshTokenStore::new(state.db.clone()))
+    .with_rate_limiter(state.login_rate_limiter.clone());
+
+    let client_ip = Some(address.ip().to_string());
+    let response = flow
+        .login_with_ip(
+            LoginRequest {
+                email: body.email,
+                password: body.password,
+                remember_me: body.remember_me.unwrap_or(false),
+                mfa_code: None,
+            },
+            client_ip,
+        )
+        .await?;
+
+    Ok(Json(response))
+}
+
+async fn refresh(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<RefreshBody>,
+) -> Result<Json<RefreshResponse>> {
+    let flow = TokenRefreshFlow::new(
+        state.jwt_issuer.as_ref().clone(),
+        DbRefreshTokenStore::new(state.db.clone()),
+        user_store(&state),
+        state.jwt_secret.as_bytes(),
+    );
+    let tokens = flow.refresh(&body.refresh_token).await?;
+
+    Ok(Json(RefreshResponse {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_in: tokens.expires_in,
+        token_type: "Bearer",
+    }))
+}
+
+async fn logout(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<LogoutBody>,
+) -> Result<MessageResponse> {
+    let flow = TokenRefreshFlow::new(
+        state.jwt_issuer.as_ref().clone(),
+        DbRefreshTokenStore::new(state.db.clone()),
+        user_store(&state),
+        state.jwt_secret.as_bytes(),
+    );
+    flow.revoke(&body.refresh_token).await?;
+    Ok(MessageResponse::success("Logged out"))
+}
+
+async fn request_password_reset(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<PasswordResetBody>,
+) -> Result<MessageResponse> {
+    let flow = PasswordResetFlow::new(user_store(&state));
+    // Deliberately ignore user-specific delivery errors to prevent account enumeration.
+    let _ = flow
+        .request_reset(PasswordResetRequest { email: body.email })
+        .await;
+    Ok(MessageResponse::success(
+        "If that account exists, password reset instructions have been sent.",
+    ))
+}
+
+async fn complete_password_reset(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<PasswordResetCompleteBody>,
+) -> Result<MessageResponse> {
+    PasswordResetFlow::new(user_store(&state))
+        .complete_reset(PasswordResetComplete {
+            token: body.token,
+            new_password: body.new_password,
+        })
+        .await?;
+    Ok(MessageResponse::success("Password reset complete"))
+}
+
+async fn me(AuthUser(user): AuthUser<SimpleAuthProvider>) -> Result<Json<SimpleUser>> {
+    Ok(Json(user))
+}
+{{else}}
 use axum::{
     extract::Extension,
     routing::{get, post},
@@ -60,13 +310,12 @@ async fn login(
     Extension(_state): Extension<AuthState>,
     Json(_body): Json<LoginBody>,
 ) -> Result<Json<LoginResponse>> {
-    // Fail closed until the application wires a real user store and password verifier.
-    // Never replace this with credential acceptance based only on request shape.
     Err(TidewayError::service_unavailable(
-        "Authentication is not configured. Wire database-backed user lookup and password verification before enabling login.",
+        "Authentication is not configured. Add the database feature before enabling login.",
     ))
 }
 
 async fn me(AuthUser(user): AuthUser<SimpleAuthProvider>) -> Result<Json<SimpleUser>> {
     Ok(Json(user))
 }
+{{/if}}

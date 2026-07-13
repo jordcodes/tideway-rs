@@ -81,7 +81,7 @@ impl<C: UserCreator> RegistrationFlow<C> {
         }
 
         // Hash password
-        let hash = self.password_hasher.hash(&req.password)?;
+        let hash = self.password_hasher.hash_async(&req.password).await?;
 
         // Create user
         let user = self

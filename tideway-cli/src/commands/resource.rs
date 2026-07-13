@@ -887,7 +887,7 @@ fn render_repository_list_body(
             String::new()
         };
         format!(
-            "        let mut query = {resource_name}::Entity::find();\n        if let Some(limit) = limit {{ query = query.limit(limit); }}\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
+            "        let mut query = {resource_name}::Entity::find();\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
         )
     } else {
         format!("        Ok({resource_name}::Entity::find().all(&self.db).await?)")
@@ -1779,7 +1779,7 @@ pub struct PaginationParams {{
             String::new()
         };
         format!(
-            "    if let Some(limit) = params.limit {{ query = query.limit(limit); }}\n    if let Some(offset) = params.offset {{ query = query.offset(offset); }}\n{search_query}",
+            "    query = query.limit(params.limit.unwrap_or(20).clamp(1, 100));\n    if let Some(offset) = params.offset {{ query = query.offset(offset); }}\n{search_query}",
             search_query = search_query
         )
     } else {
@@ -3159,7 +3159,7 @@ fn render_repository(
         };
         let scoped_list_body = if paginate {
             format!(
-                "        let mut query = {resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))\n            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()));\n        if let Some(limit) = limit {{ query = query.limit(limit); }}\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{scoped_search_query}        Ok(query.all(&self.db).await?)",
+                "        let mut query = {resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))\n            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()));\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{scoped_search_query}        Ok(query.all(&self.db).await?)",
             )
         } else {
             format!(

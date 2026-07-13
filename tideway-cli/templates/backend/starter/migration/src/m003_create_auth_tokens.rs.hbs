@@ -1,0 +1,68 @@
+//! Create one-time authentication tokens.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(AuthTokens::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(AuthTokens::Id).uuid().not_null().primary_key())
+                    .col(ColumnDef::new(AuthTokens::UserId).uuid().not_null())
+                    .col(
+                        ColumnDef::new(AuthTokens::TokenHash)
+                            .string()
+                            .not_null()
+                            .unique_key(),
+                    )
+                    .col(ColumnDef::new(AuthTokens::TokenType).string().not_null())
+                    .col(
+                        ColumnDef::new(AuthTokens::ExpiresAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(AuthTokens::UsedAt).timestamp_with_time_zone())
+                    .col(
+                        ColumnDef::new(AuthTokens::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(AuthTokens::Table, AuthTokens::UserId)
+                            .to(
+                                super::m001_create_users::Users::Table,
+                                super::m001_create_users::Users::Id,
+                            )
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(AuthTokens::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum AuthTokens {
+    Table,
+    Id,
+    UserId,
+    TokenHash,
+    TokenType,
+    ExpiresAt,
+    UsedAt,
+    CreatedAt,
+}

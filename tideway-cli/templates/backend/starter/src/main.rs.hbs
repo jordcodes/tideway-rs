@@ -76,8 +76,19 @@ async fn main() -> Result<(), std::io::Error> {
         "{{project_name}}",
     ).expect("JWT_SECRET must be at least 32 bytes").audience(env!("CARGO_PKG_NAME")))
         .expect("Failed to create JWT issuer"));
+    {{#if has_database_feature}}
+    let auth_db = Arc::new(db.clone());
+    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret, auth_db.clone());
+    let auth_module = AuthModule::new(
+        auth_db,
+        jwt_issuer.clone(),
+        jwt_secret,
+        "{{project_name}}",
+    );
+    {{else}}
     let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);
     let auth_module = AuthModule::new(jwt_issuer.clone());
+    {{/if}}
 {{/if}}
 
 {{#if has_config}}

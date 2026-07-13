@@ -1,7 +1,14 @@
 use async_trait::async_trait;
 use serde::Serialize;
 use tideway::auth::{AccessTokenClaims, AuthProvider, JwtVerifier};
-use tideway::Result;
+use tideway::{Result, TidewayError};
+{{#if has_database_feature}}
+use sea_orm::{DatabaseConnection, EntityTrait};
+use std::sync::Arc;
+use uuid::Uuid;
+
+use crate::entities::user;
+{{/if}}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SimpleUser {
@@ -13,9 +20,23 @@ pub struct SimpleUser {
 #[derive(Clone)]
 pub struct SimpleAuthProvider {
     verifier: JwtVerifier<AccessTokenClaims<serde_json::Value>>,
+    {{#if has_database_feature}}
+    db: Arc<DatabaseConnection>,
+    {{/if}}
 }
 
 impl SimpleAuthProvider {
+    {{#if has_database_feature}}
+    pub fn from_secret(secret: &str, db: Arc<DatabaseConnection>) -> Self {
+        Self {
+            verifier: JwtVerifier::from_secret_checked(secret.as_bytes())
+                .expect("JWT_SECRET must be at least 32 bytes")
+                .with_issuer(env!("CARGO_PKG_NAME"))
+                .with_audience(env!("CARGO_PKG_NAME")),
+            db,
+        }
+    }
+    {{else}}
     pub fn from_secret(secret: &str) -> Self {
         Self {
             verifier: JwtVerifier::from_secret_checked(secret.as_bytes())
@@ -24,6 +45,7 @@ impl SimpleAuthProvider {
                 .with_audience(env!("CARGO_PKG_NAME")),
         }
     }
+    {{/if}}
 }
 
 #[async_trait]
@@ -37,10 +59,26 @@ impl AuthProvider for SimpleAuthProvider {
     }
 
     async fn load_user(&self, claims: &Self::Claims) -> Result<Self::User> {
+        {{#if has_database_feature}}
+        let user_id = Uuid::parse_str(&claims.standard.sub)
+            .map_err(|_| TidewayError::unauthorized("Invalid token subject"))?;
+        let user = user::Entity::find_by_id(user_id)
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?
+            .ok_or_else(|| TidewayError::unauthorized("User no longer exists"))?;
+
+        Ok(SimpleUser {
+            id: user.id.to_string(),
+            email: Some(user.email),
+            name: user.name,
+        })
+        {{else}}
         Ok(SimpleUser {
             id: claims.standard.sub.clone(),
             email: claims.email.clone(),
             name: claims.name.clone(),
         })
+        {{/if}}
     }
 }

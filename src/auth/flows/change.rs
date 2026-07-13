@@ -162,7 +162,8 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
         // Verify current password
         if !self
             .password_hasher
-            .verify(&req.current_password, &current_hash)?
+            .verify_async(&req.current_password, &current_hash)
+            .await?
         {
             tracing::warn!(
                 target: "auth.password.change_failed",
@@ -189,7 +190,8 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
         // Prevent setting same password
         if self
             .password_hasher
-            .verify(&req.new_password, &current_hash)?
+            .verify_async(&req.new_password, &current_hash)
+            .await?
         {
             tracing::info!(
                 target: "auth.password.change_failed",
@@ -203,7 +205,7 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
         }
 
         // Hash new password
-        let new_hash = self.password_hasher.hash(&req.new_password)?;
+        let new_hash = self.password_hasher.hash_async(&req.new_password).await?;
 
         // Update password
         self.store.update_password(user_id, &new_hash).await?;

@@ -74,7 +74,7 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
     assert_file_contains(&project_dir.join("src/routes/todo.rs"), "params.q");
     assert!(
         project_dir
-            .join("migration/src/m001_create_todos.rs")
+            .join("migration/src/m004_create_todos.rs")
             .exists()
     );
 }
@@ -113,6 +113,13 @@ fn test_new_command_includes_features_and_env() {
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert!(project_dir.join("src/auth/routes.rs").exists());
     assert!(project_dir.join("src/auth/provider.rs").exists());
+    assert!(project_dir.join("src/auth/store.rs").exists());
+    assert!(project_dir.join("src/entities/user.rs").exists());
+    assert!(
+        project_dir
+            .join("migration/src/m001_create_users.rs")
+            .exists()
+    );
 }
 
 #[test]
@@ -371,23 +378,29 @@ fn test_new_command_with_preset_api() {
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert_file_contains(
         &project_dir.join("src/auth/routes.rs"),
-        "Authentication is not configured",
+        "RegistrationFlow::new",
     );
-    assert_file_not_contains(
+    assert_file_contains(
         &project_dir.join("src/auth/routes.rs"),
-        "let user_id = body.email.clone()",
+        ".with_rate_limiter(state.login_rate_limiter.clone())",
     );
+    assert_file_contains(
+        &project_dir.join("src/auth/store.rs"),
+        "compare_and_swap_family_generation",
+    );
+    assert!(project_dir.join("src/entities/user.rs").exists());
+    assert!(project_dir.join("src/entities/auth_token.rs").exists());
     assert!(project_dir.join("migration/Cargo.toml").exists());
     assert_file_contains(&project_dir.join("migration/Cargo.toml"), "\"sqlx-sqlite\"");
     assert!(project_dir.join("migration/src/lib.rs").exists());
     assert!(
         project_dir
-            .join("migration/src/m001_create_todos.rs")
+            .join("migration/src/m004_create_todos.rs")
             .exists()
     );
     assert_file_contains(
         &project_dir.join("migration/src/lib.rs"),
-        "Box::new(m001_create_todos::Migration)",
+        "Box::new(m004_create_todos::Migration)",
     );
     assert!(project_dir.join("src/entities/mod.rs").exists());
     assert!(project_dir.join("src/entities/todo.rs").exists());

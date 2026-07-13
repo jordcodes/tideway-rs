@@ -45,7 +45,8 @@ If you run it without extra flags, it will prompt for options and default to the
 The first interactive screen promotes `api`, `saas`, and `worker`; `minimal`, backend presets, and custom feature picking stay under an advanced branch.
 In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
 For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
-The API preset already seeds a sample `todo` resource wired through entity, repository, and service layers, with `limit`, `offset`, and `q` support on the list endpoint.
+The API preset seeds a sample `todo` resource wired through entity, repository, and service layers, with `limit`, `offset`, and `q` support on the list endpoint. Generated list queries default to 20 rows and cap `limit` at 100.
+It also generates database-backed registration, login, refresh rotation, logout, password-reset storage, and `GET /auth/me`. Password-reset email delivery is an explicit `DbUserStore` integration hook. Keep `REQUIRE_EMAIL_VERIFICATION=false` until verification-email delivery is implemented.
 The SaaS preset generates the B2B auth/billing/organizations/admin backend scaffold with Postgres Docker, CI, env defaults, and a public `GET /billing/public/plans` smoke endpoint.
 
 Use a preset to apply common defaults:

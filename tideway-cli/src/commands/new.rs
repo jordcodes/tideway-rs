@@ -233,7 +233,9 @@ fn scaffold_files(
     needs_env: bool,
     is_backend_scaffold: bool,
 ) -> Result<()> {
-    let has_auth_feature = normalize_features(&args.features).contains("auth");
+    let normalized_features = normalize_features(&args.features);
+    let has_auth_feature = normalized_features.contains("auth");
+    let has_database_auth = has_auth_feature && normalized_features.contains("database");
     let is_api_preset = matches!(args.preset, Some(NewPreset::Api));
 
     write_file_with_force_or_error_default(
@@ -318,7 +320,7 @@ fn scaffold_files(
         )?;
     }
 
-    if is_api_preset {
+    if is_api_preset || has_database_auth {
         write_file_with_force_or_error_default(
             &target_dir.join("migration/Cargo.toml"),
             &engine.render("starter/migration/Cargo.toml")?,
@@ -329,6 +331,40 @@ fn scaffold_files(
             &engine.render("starter/migration/src/lib.rs")?,
             args.force,
         )?;
+
+        if has_database_auth {
+            for (path, template) in [
+                ("src/auth/store.rs", "starter/src/auth/store.rs"),
+                ("src/entities/mod.rs", "starter/src/entities/mod.rs"),
+                ("src/entities/user.rs", "starter/src/entities/user.rs"),
+                (
+                    "src/entities/refresh_token_family.rs",
+                    "starter/src/entities/refresh_token_family.rs",
+                ),
+                (
+                    "src/entities/auth_token.rs",
+                    "starter/src/entities/auth_token.rs",
+                ),
+                (
+                    "migration/src/m001_create_users.rs",
+                    "starter/migration/src/m001_create_users.rs",
+                ),
+                (
+                    "migration/src/m002_create_refresh_token_families.rs",
+                    "starter/migration/src/m002_create_refresh_token_families.rs",
+                ),
+                (
+                    "migration/src/m003_create_auth_tokens.rs",
+                    "starter/migration/src/m003_create_auth_tokens.rs",
+                ),
+            ] {
+                write_file_with_force_or_error_default(
+                    &target_dir.join(path),
+                    &engine.render(template)?,
+                    args.force,
+                )?;
+            }
+        }
     }
 
     Ok(())
@@ -354,7 +390,9 @@ fn planned_files_for(
 
 fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) -> Vec<String> {
     let needs_env = needs_env_from_args(args);
-    let has_auth_feature = normalize_features(&args.features).contains("auth");
+    let normalized_features = normalize_features(&args.features);
+    let has_auth_feature = normalized_features.contains("auth");
+    let has_database_auth = has_auth_feature && normalized_features.contains("database");
     let mut files = vec!["Cargo.toml".to_string()];
 
     if let Some(backend_preset) = backend_preset {
@@ -388,11 +426,21 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
         files.push(".env.example".to_string());
     }
 
-    if matches!(args.preset, Some(NewPreset::Api)) {
+    if backend_preset.is_none() && has_database_auth {
         files.push("migration/Cargo.toml".to_string());
         files.push("migration/src/lib.rs".to_string());
-        files.push("migration/src/m001_create_todos.rs".to_string());
         files.push("src/entities/mod.rs".to_string());
+        files.push("src/auth/store.rs".to_string());
+        files.push("src/entities/user.rs".to_string());
+        files.push("src/entities/refresh_token_family.rs".to_string());
+        files.push("src/entities/auth_token.rs".to_string());
+        files.push("migration/src/m001_create_users.rs".to_string());
+        files.push("migration/src/m002_create_refresh_token_families.rs".to_string());
+        files.push("migration/src/m003_create_auth_tokens.rs".to_string());
+    }
+
+    if matches!(args.preset, Some(NewPreset::Api)) {
+        files.push("migration/src/m004_create_todos.rs".to_string());
         files.push("src/entities/todo.rs".to_string());
         files.push("src/repositories/mod.rs".to_string());
         files.push("src/repositories/todo.rs".to_string());
@@ -1162,6 +1210,9 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
             println!("{}", "First request:".yellow().bold());
             println!("  curl http://localhost:8000/api/todos");
             println!("  curl \"http://localhost:8000/api/todos?limit=20&offset=0&q=Example\"");
+            println!(
+                "  curl -X POST http://localhost:8000/auth/register -H 'content-type: application/json' -d '{{\"email\":\"dev@example.com\",\"password\":\"correct horse battery staple\"}}'"
+            );
             println!("  # OpenAPI (if enabled): http://localhost:8000/swagger-ui");
             println!();
         }

@@ -2,12 +2,23 @@
 
 pub use sea_orm_migration::prelude::*;
 
+{{#if has_auth_feature}}
+mod m001_create_users;
+mod m002_create_refresh_token_families;
+mod m003_create_auth_tokens;
+{{/if}}
+
 pub struct Migrator;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
         vec![
+            {{#if has_auth_feature}}
+            Box::new(m001_create_users::Migration),
+            Box::new(m002_create_refresh_token_families::Migration),
+            Box::new(m003_create_auth_tokens::Migration),
+            {{/if}}
         ]
     }
 }

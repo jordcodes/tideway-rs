@@ -127,7 +127,7 @@ impl<S: PasswordResetStore> PasswordResetFlow<S> {
         };
 
         // Hash new password
-        let password_hash = self.password_hasher.hash(&req.new_password)?;
+        let password_hash = self.password_hasher.hash_async(&req.new_password).await?;
 
         // Update password
         self.store.update_password(&user_id, &password_hash).await?;

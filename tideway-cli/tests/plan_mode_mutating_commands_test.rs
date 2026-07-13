@@ -238,7 +238,7 @@ fn test_new_api_plan_mode_is_non_mutating() {
         stdout
     );
     assert!(
-        stdout.contains("migration/src/m001_create_todos.rs"),
+        stdout.contains("migration/src/m004_create_todos.rs"),
         "expected API preset migration in plan output, got:\n{}",
         stdout
     );

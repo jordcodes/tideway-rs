@@ -919,6 +919,10 @@ async fn main() {
 
     let repo_path = project_dir.join("src/repositories/user.rs");
     assert_file_contains(&repo_path, "limit: Option<u64>");
+    assert_file_contains(
+        &repo_path,
+        "query = query.limit(limit.unwrap_or(20).clamp(1, 100));",
+    );
 }
 
 #[test]

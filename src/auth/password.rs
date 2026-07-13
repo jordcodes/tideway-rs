@@ -22,6 +22,12 @@
 use crate::error::{Result, TidewayError};
 
 #[cfg(feature = "auth")]
+use std::sync::{Arc, OnceLock};
+
+#[cfg(feature = "auth")]
+use tokio::sync::Semaphore;
+
+#[cfg(feature = "auth")]
 use argon2::{
     Algorithm, Argon2, Params, Version,
     password_hash::{
@@ -105,6 +111,29 @@ impl PasswordHasher {
             .map_err(|e| TidewayError::Internal(format!("Password hashing failed: {}", e)))
     }
 
+    /// Hash a password without blocking the async runtime.
+    ///
+    /// Argon2 is intentionally CPU- and memory-intensive. This method runs the
+    /// work on Tokio's blocking pool and bounds concurrent password operations
+    /// process-wide to avoid memory spikes under load.
+    #[cfg(feature = "auth")]
+    pub async fn hash_async(&self, password: &str) -> Result<String> {
+        let password = password.to_owned();
+        let hasher = self.clone();
+        let permit = password_work_semaphore()
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| TidewayError::internal("Password worker pool unavailable"))?;
+
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            hasher.hash(&password)
+        })
+        .await
+        .map_err(|e| TidewayError::internal(format!("Password worker failed: {e}")))?
+    }
+
     /// Verify a password against a stored hash.
     ///
     /// Uses constant-time comparison to prevent timing attacks.
@@ -117,6 +146,28 @@ impl PasswordHasher {
         Ok(Argon2::default()
             .verify_password(password.as_bytes(), &parsed_hash)
             .is_ok())
+    }
+
+    /// Verify a password without blocking the async runtime.
+    ///
+    /// Uses the same process-wide concurrency bound as [`Self::hash_async`].
+    #[cfg(feature = "auth")]
+    pub async fn verify_async(&self, password: &str, hash: &str) -> Result<bool> {
+        let password = password.to_owned();
+        let hash = hash.to_owned();
+        let hasher = self.clone();
+        let permit = password_work_semaphore()
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| TidewayError::internal("Password worker pool unavailable"))?;
+
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            hasher.verify(&password, &hash)
+        })
+        .await
+        .map_err(|e| TidewayError::internal(format!("Password worker failed: {e}")))?
     }
 
     /// Check if a hash needs to be rehashed (params changed).
@@ -170,7 +221,17 @@ impl PasswordHasher {
     }
 
     #[cfg(not(feature = "auth"))]
+    pub async fn hash_async(&self, _password: &str) -> Result<String> {
+        Err(TidewayError::Internal("auth feature not enabled".into()))
+    }
+
+    #[cfg(not(feature = "auth"))]
     pub fn verify(&self, _password: &str, _hash: &str) -> Result<bool> {
+        Err(TidewayError::Internal("auth feature not enabled".into()))
+    }
+
+    #[cfg(not(feature = "auth"))]
+    pub async fn verify_async(&self, _password: &str, _hash: &str) -> Result<bool> {
         Err(TidewayError::Internal("auth feature not enabled".into()))
     }
 
@@ -178,6 +239,21 @@ impl PasswordHasher {
     pub fn needs_rehash(&self, _hash: &str) -> Result<bool> {
         Err(TidewayError::Internal("auth feature not enabled".into()))
     }
+}
+
+#[cfg(feature = "auth")]
+fn password_work_semaphore() -> &'static Arc<Semaphore> {
+    static SEMAPHORE: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+    SEMAPHORE.get_or_init(|| {
+        // Four concurrent default Argon2 jobs use roughly 76 MiB. Smaller
+        // machines stay at their available parallelism instead of overcommitting.
+        let workers = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(1)
+            .clamp(1, 4);
+        Arc::new(Semaphore::new(workers))
+    })
 }
 
 /// Password strength validation policy.
@@ -431,6 +507,23 @@ mod tests {
                 .unwrap()
         );
         assert!(!hasher.verify("wrong-password", &hash).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_async_hash_and_verify() {
+        let hasher = fast_hasher();
+        let hash = hasher
+            .hash_async("correct-horse-battery-staple")
+            .await
+            .unwrap();
+
+        assert!(
+            hasher
+                .verify_async("correct-horse-battery-staple", &hash)
+                .await
+                .unwrap()
+        );
+        assert!(!hasher.verify_async("wrong-password", &hash).await.unwrap());
     }
 
     #[test]

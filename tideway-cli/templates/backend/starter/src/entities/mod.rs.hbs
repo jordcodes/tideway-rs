@@ -1,0 +1,7 @@
+//! Database entities.
+
+{{#if has_auth_feature}}
+pub mod auth_token;
+pub mod refresh_token_family;
+pub mod user;
+{{/if}}

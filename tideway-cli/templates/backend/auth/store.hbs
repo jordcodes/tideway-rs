@@ -1,7 +1,10 @@
 //! Authentication store implementations.
 
 use async_trait::async_trait;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{
+    sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    DatabaseTransaction, EntityTrait, QueryFilter, Set,
+};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tideway::auth::{
@@ -16,8 +19,8 @@ use crate::entities::{user, refresh_token_family, verification_token};
 
 /// Database-backed user store implementation.
 #[derive(Clone)]
-pub struct DbUserStore {
-    db: Arc<DatabaseConnection>,
+pub struct DbUserStore<C = DatabaseConnection> {
+    db: Arc<C>,
     max_failed_attempts: i32,
     lockout_duration_minutes: i64,
 }
@@ -32,8 +35,21 @@ impl DbUserStore {
     }
 }
 
+impl DbUserStore<DatabaseTransaction> {
+    pub fn from_transaction(db: Arc<DatabaseTransaction>) -> Self {
+        Self {
+            db,
+            max_failed_attempts: 5,
+            lockout_duration_minutes: 15,
+        }
+    }
+}
+
 #[async_trait]
-impl UserStore for DbUserStore {
+impl<C> UserStore for DbUserStore<C>
+where
+    C: ConnectionTrait + Send + Sync,
+{
     type User = user::Model;
 
     async fn find_by_email(&self, email: &str) -> Result<Option<Self::User>> {
@@ -168,7 +184,10 @@ impl UserStore for DbUserStore {
 }
 
 #[async_trait]
-impl UserCreator for DbUserStore {
+impl<C> UserCreator for DbUserStore<C>
+where
+    C: ConnectionTrait + Send + Sync,
+{
     type User = user::Model;
 
     fn user_id(&self, user: &Self::User) -> String {
@@ -265,25 +284,25 @@ impl PasswordResetStore for DbUserStore {
             .filter(verification_token::Column::TokenHash.eq(token_hash))
             .filter(verification_token::Column::TokenType.eq("password_reset"))
             .filter(verification_token::Column::UsedAt.is_null())
+            .filter(verification_token::Column::ExpiresAt.gt(Utc::now()))
             .one(self.db.as_ref())
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        if let Some(token) = token {
-            let expires_at: SystemTime = token.expires_at.into();
-            if expires_at < SystemTime::now() {
-                return Ok(None);
-            }
+        let Some(token) = token else {
+            return Ok(None);
+        };
 
-            let user_id = token.user_id.to_string();
-            let mut active: verification_token::ActiveModel = token.into();
-            active.used_at = Set(Some(Utc::now().into()));
-            active.update(self.db.as_ref()).await
-                .map_err(|e| TidewayError::Database(e.to_string()))?;
+        let update = verification_token::Entity::update_many()
+            .col_expr(verification_token::Column::UsedAt, Expr::value(Some(Utc::now())))
+            .filter(verification_token::Column::Id.eq(token.id))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .filter(verification_token::Column::ExpiresAt.gt(Utc::now()))
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-            return Ok(Some(user_id));
-        }
-        Ok(None)
+        Ok((update.rows_affected == 1).then(|| token.user_id.to_string()))
     }
 
     async fn update_password(&self, user_id: &str, hash: &str) -> Result<()> {
@@ -299,8 +318,10 @@ impl PasswordResetStore for DbUserStore {
         self.update_password_hash(&user, hash).await
     }
 
-    async fn invalidate_sessions(&self, _user_id: &str) -> Result<()> {
-        Ok(())
+    async fn invalidate_sessions(&self, user_id: &str) -> Result<()> {
+        DbRefreshTokenStore::new(self.db.clone())
+            .revoke_all_for_user(user_id)
+            .await
     }
 
     async fn send_reset_email(
@@ -347,25 +368,25 @@ impl VerificationStore for DbUserStore {
             .filter(verification_token::Column::TokenHash.eq(token_hash))
             .filter(verification_token::Column::TokenType.eq("email_verification"))
             .filter(verification_token::Column::UsedAt.is_null())
+            .filter(verification_token::Column::ExpiresAt.gt(Utc::now()))
             .one(self.db.as_ref())
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        if let Some(token) = token {
-            let expires_at: SystemTime = token.expires_at.into();
-            if expires_at < SystemTime::now() {
-                return Ok(None);
-            }
+        let Some(token) = token else {
+            return Ok(None);
+        };
 
-            let user_id = token.user_id.to_string();
-            let mut active: verification_token::ActiveModel = token.into();
-            active.used_at = Set(Some(Utc::now().into()));
-            active.update(self.db.as_ref()).await
-                .map_err(|e| TidewayError::Database(e.to_string()))?;
+        let update = verification_token::Entity::update_many()
+            .col_expr(verification_token::Column::UsedAt, Expr::value(Some(Utc::now())))
+            .filter(verification_token::Column::Id.eq(token.id))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .filter(verification_token::Column::ExpiresAt.gt(Utc::now()))
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-            return Ok(Some(user_id));
-        }
-        Ok(None)
+        Ok((update.rows_affected == 1).then(|| token.user_id.to_string()))
     }
 
     async fn mark_user_verified(&self, user_id: &str) -> Result<()> {
@@ -443,32 +464,45 @@ impl RefreshTokenStore for DbRefreshTokenStore {
     }
 
     async fn set_family_generation(&self, family: &str, generation: u32) -> Result<()> {
-        let record = refresh_token_family::Entity::find_by_id(family.to_string())
-            .one(self.db.as_ref())
+        refresh_token_family::Entity::update_many()
+            .col_expr(
+                refresh_token_family::Column::Generation,
+                Expr::value(generation as i32),
+            )
+            .filter(refresh_token_family::Column::Family.eq(family))
+            .exec(self.db.as_ref())
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
-
-        if let Some(record) = record {
-            let mut active: refresh_token_family::ActiveModel = record.into();
-            active.generation = Set(generation as i32);
-            active.update(self.db.as_ref()).await
-                .map_err(|e| TidewayError::Database(e.to_string()))?;
-        }
         Ok(())
     }
 
-    async fn revoke_family(&self, family: &str) -> Result<()> {
-        let record = refresh_token_family::Entity::find_by_id(family.to_string())
-            .one(self.db.as_ref())
+    async fn compare_and_swap_family_generation(
+        &self,
+        family: &str,
+        expected_generation: u32,
+        new_generation: u32,
+    ) -> Result<bool> {
+        let update = refresh_token_family::Entity::update_many()
+            .col_expr(
+                refresh_token_family::Column::Generation,
+                Expr::value(new_generation as i32),
+            )
+            .filter(refresh_token_family::Column::Family.eq(family))
+            .filter(refresh_token_family::Column::Generation.eq(expected_generation as i32))
+            .filter(refresh_token_family::Column::Revoked.eq(false))
+            .exec(self.db.as_ref())
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
+        Ok(update.rows_affected == 1)
+    }
 
-        if let Some(record) = record {
-            let mut active: refresh_token_family::ActiveModel = record.into();
-            active.revoked = Set(true);
-            active.update(self.db.as_ref()).await
-                .map_err(|e| TidewayError::Database(e.to_string()))?;
-        }
+    async fn revoke_family(&self, family: &str) -> Result<()> {
+        refresh_token_family::Entity::update_many()
+            .col_expr(refresh_token_family::Column::Revoked, Expr::value(true))
+            .filter(refresh_token_family::Column::Family.eq(family))
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -476,19 +510,13 @@ impl RefreshTokenStore for DbRefreshTokenStore {
         let uuid = Uuid::parse_str(user_id)
             .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
 
-        let families = refresh_token_family::Entity::find()
+        refresh_token_family::Entity::update_many()
+            .col_expr(refresh_token_family::Column::Revoked, Expr::value(true))
             .filter(refresh_token_family::Column::UserId.eq(uuid))
             .filter(refresh_token_family::Column::Revoked.eq(false))
-            .all(self.db.as_ref())
+            .exec(self.db.as_ref())
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
-
-        for family in families {
-            let mut active: refresh_token_family::ActiveModel = family.into();
-            active.revoked = Set(true);
-            active.update(self.db.as_ref()).await
-                .map_err(|e| TidewayError::Database(e.to_string()))?;
-        }
         Ok(())
     }
 
@@ -511,15 +539,15 @@ impl RefreshTokenStore for DbRefreshTokenStore {
 }
 
 /// In-memory MFA token store (for development).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct InMemoryMfaTokenStore {
-    tokens: std::sync::RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>,
+    tokens: Arc<std::sync::RwLock<std::collections::HashMap<String, (String, std::time::Instant)>>>,
 }
 
 impl InMemoryMfaTokenStore {
     pub fn new() -> Self {
         Self {
-            tokens: std::sync::RwLock::new(std::collections::HashMap::new()),
+            tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -528,12 +556,18 @@ impl InMemoryMfaTokenStore {
 impl tideway::auth::MfaTokenStore for InMemoryMfaTokenStore {
     async fn store(&self, token: &str, user_id: &str, ttl: std::time::Duration) -> Result<()> {
         let expires_at = std::time::Instant::now() + ttl;
-        self.tokens.write().unwrap().insert(token.to_string(), (user_id.to_string(), expires_at));
+        self.tokens
+            .write()
+            .map_err(|_| TidewayError::internal("MFA token store unavailable"))?
+            .insert(token.to_string(), (user_id.to_string(), expires_at));
         Ok(())
     }
 
     async fn consume(&self, token: &str) -> Result<Option<String>> {
-        let mut tokens = self.tokens.write().unwrap();
+        let mut tokens = self
+            .tokens
+            .write()
+            .map_err(|_| TidewayError::internal("MFA token store unavailable"))?;
         if let Some((user_id, expires_at)) = tokens.remove(token) {
             if std::time::Instant::now() < expires_at {
                 return Ok(Some(user_id));

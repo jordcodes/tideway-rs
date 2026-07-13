@@ -290,7 +290,7 @@ where
             Some(u) => u,
             None => {
                 // Timing-safe: hash anyway to prevent enumeration
-                let _ = self.password_hasher.hash("dummy");
+                let _ = self.password_hasher.hash_async("dummy").await;
                 tracing::warn!(
                     target: "auth.login.failed",
                     email = %email,
@@ -334,7 +334,11 @@ where
 
         // Verify password
         let hash = self.user_store.get_password_hash(&user).await?;
-        if !self.password_hasher.verify(&req.password, &hash)? {
+        if !self
+            .password_hasher
+            .verify_async(&req.password, &hash)
+            .await?
+        {
             self.user_store.record_failed_attempt(&user).await?;
             tracing::warn!(
                 target: "auth.login.failed",
@@ -348,7 +352,7 @@ where
 
         // Rehash if needed (transparent upgrade)
         if self.password_hasher.needs_rehash(&hash)? {
-            let new_hash = self.password_hasher.hash(&req.password)?;
+            let new_hash = self.password_hasher.hash_async(&req.password).await?;
             self.user_store
                 .update_password_hash(&user, &new_hash)
                 .await?;

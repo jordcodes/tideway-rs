@@ -51,7 +51,9 @@ List presets:
 tideway new --preset list
 ```
 
-Preset `api` also includes a DB-backed sample resource and migration scaffold.
+Preset `api` also includes a DB-backed sample resource, migrations, and database-backed auth routes for registration, login, refresh, logout, password reset, and `GET /auth/me`. Generated list endpoints default to 20 rows and cap requests at 100 rows.
+
+The password-reset and optional email-verification delivery methods are intentionally application hooks. Implement those methods before enabling the corresponding production flows; keep `REQUIRE_EMAIL_VERIFICATION=false` until verification delivery is wired.
 
 Docker example:
 ```bash
@@ -244,7 +246,8 @@ cargo run
 ```
 
 Your API will be running at `http://localhost:3000` with routes:
-- `POST /auth/register`, `POST /auth/login`, `GET /auth/me`
+- `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`
+- `POST /auth/password/reset`, `POST /auth/password/reset/complete`
 - `GET /organizations`, `POST /organizations`
 - `GET /admin/users`, `GET /admin/organizations`
 
