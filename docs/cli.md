@@ -69,6 +69,8 @@ With features and explicit local Postgres:
 tideway new my_app --features auth,database --with-docker
 ```
 
+Feature names are validated before any files are written. Common aliases are normalized (`db` to `database`, `session` to `sessions`, and `mfa` to `auth-mfa`); unknown names fail with a supported-feature list and a nearby suggestion when available.
+
 With config scaffolding and CI:
 
 ```bash
@@ -242,7 +244,7 @@ tideway dev -- --release
 
 `--fix-env` is the recommended first-run command. It creates `.env` from `.env.example` and replaces recognized JWT placeholders and an empty `MFA_ENCRYPTION_KEY` with independent cryptographically random local values. Existing configured secrets are not rotated. The generated `.env` is gitignored; production secrets should come from your deployment secret manager.
 
-Before starting Cargo, `tideway dev` validates database configuration and prints the local API, health, Swagger UI, and OpenAPI URLs that are enabled by the project configuration. It also enables pending migrations for the local run unless `--no-migrate` is supplied.
+Before starting Cargo, `tideway dev` validates database configuration and prints the local API, health, Swagger UI, and OpenAPI URLs that are enabled by the effective configuration. Existing shell environment variables take precedence over values in `.env`; `.env` supplies only missing values. The command enables pending migrations for the local run unless `--no-migrate` is supplied, which explicitly sets `DATABASE_AUTO_MIGRATE=false` for that run.
 
 ### `tideway migrate`
 

@@ -259,6 +259,83 @@ fn test_dev_bootstraps_env_example_and_passes_env_to_cargo() {
 }
 
 #[test]
+fn test_dev_shell_env_overrides_dotenv_for_urls_and_child_process() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_project(&project_dir);
+    fs::write(
+        project_dir.join(".env"),
+        "TIDEWAY_PORT=8000\nJWT_SECRET=file-secret\n",
+    )
+    .expect("write .env");
+
+    let fake_cargo_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_cargo_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("cargo-invocation.log");
+    write_fake_cargo(&fake_cargo_dir, &invocation_log);
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fake_cargo_dir.display(), current_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .args([
+            "dev",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ])
+        .env("PATH", new_path)
+        .env("TIDEWAY_PORT", "18082")
+        .env("JWT_SECRET", "shell-secret")
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("run tideway dev");
+    assert_success(&output, "tideway dev with shell overrides");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("API: http://localhost:18082"), "{stdout}");
+    assert!(!stdout.contains("API: http://localhost:8000"), "{stdout}");
+
+    let invocation = fs::read_to_string(&invocation_log).expect("read invocation log");
+    assert!(
+        invocation.contains("ENV:JWT_SECRET=shell-secret"),
+        "{invocation}"
+    );
+    assert!(
+        !invocation.contains("ENV:JWT_SECRET=file-secret"),
+        "{invocation}"
+    );
+}
+
+#[test]
+fn test_dev_no_migrate_overrides_dotenv_setting() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_project(&project_dir);
+    fs::write(project_dir.join(".env"), "DATABASE_AUTO_MIGRATE=true\n").expect("write .env");
+
+    let fake_cargo_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_cargo_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("cargo-invocation.log");
+    write_fake_cargo(&fake_cargo_dir, &invocation_log);
+
+    let output = run_tideway_with_path(
+        &[
+            "dev",
+            "--no-migrate",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ],
+        &fake_cargo_dir,
+    );
+    assert_success(&output, "tideway dev --no-migrate");
+
+    let invocation = fs::read_to_string(&invocation_log).expect("read invocation log");
+    assert!(
+        invocation.contains("ENV:DATABASE_AUTO_MIGRATE=false"),
+        "{invocation}"
+    );
+}
+
+#[test]
 fn test_auth_mfa_golden_path_generates_local_secrets_and_runs() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

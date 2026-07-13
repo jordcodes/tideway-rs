@@ -62,10 +62,17 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
     if !args.no_env
         && let Some(env_map) = &env_map
     {
-        command.envs(env_map);
+        command.envs(
+            env_map
+                .iter()
+                .filter(|(key, _)| std::env::var_os(key).is_none()),
+        );
     }
 
-    if !args.no_migrate {
+    if args.no_migrate {
+        command.env("DATABASE_AUTO_MIGRATE", "false");
+        print_info("Disabling automatic migrations for this run (--no-migrate).");
+    } else {
         if let Some(auto_migrate) = explicit_auto_migrate(&env_map) {
             if auto_migrate.eq_ignore_ascii_case("true") {
                 print_info("DATABASE_AUTO_MIGRATE already set; honoring existing value");
@@ -126,17 +133,7 @@ fn build_dev_plan(args: &DevArgs) -> ExecutionPlan {
 }
 
 fn explicit_auto_migrate(env_map: &Option<BTreeMap<String, String>>) -> Option<String> {
-    if let Ok(value) = std::env::var("DATABASE_AUTO_MIGRATE") {
-        return Some(value.trim().to_string());
-    }
-
-    if let Some(map) = env_map
-        && let Some(value) = map.get("DATABASE_AUTO_MIGRATE")
-    {
-        return Some(value.trim().to_string());
-    }
-
-    None
+    effective_env_value(env_map, "DATABASE_AUTO_MIGRATE").map(|value| value.trim().to_string())
 }
 
 fn preflight_database(
@@ -182,11 +179,10 @@ fn project_uses_database(project_dir: &Path) -> Result<bool> {
 }
 
 fn print_local_urls(project_dir: &Path, env_map: &Option<BTreeMap<String, String>>) -> Result<()> {
-    let port = env_map
-        .as_ref()
-        .and_then(|env| env.get("TIDEWAY_PORT").or_else(|| env.get("PORT")))
-        .map(String::as_str)
-        .unwrap_or("8000");
+    let port = effective_env_value(env_map, "TIDEWAY_PORT")
+        .or_else(|| effective_env_value(env_map, "PORT"))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "8000".to_string());
     let base_url = format!("http://localhost:{port}");
     print_info("Local URLs once the server is ready:");
     print_info(&format!("API: {base_url}"));
@@ -205,11 +201,19 @@ fn print_local_urls(project_dir: &Path, env_map: &Option<BTreeMap<String, String
 }
 
 fn env_flag(env_map: &Option<BTreeMap<String, String>>, key: &str, default: bool) -> bool {
-    env_map
-        .as_ref()
-        .and_then(|env| env.get(key))
+    effective_env_value(env_map, key)
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn effective_env_value(env_map: &Option<BTreeMap<String, String>>, key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => {
+            env_map.as_ref().and_then(|env| env.get(key)).cloned()
+        }
+        Err(std::env::VarError::NotUnicode(_)) => None,
+    }
 }
 
 fn project_uses_tideway_feature(project_dir: &Path, feature: &str) -> Result<bool> {

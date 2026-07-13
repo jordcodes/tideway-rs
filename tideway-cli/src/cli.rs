@@ -201,7 +201,7 @@ pub struct DevArgs {
     #[arg(long, default_value = "false")]
     pub fix_env: bool,
 
-    /// Skip setting DATABASE_AUTO_MIGRATE=true
+    /// Disable automatic migrations for this run
     #[arg(long, default_value = "false")]
     pub no_migrate: bool,
 

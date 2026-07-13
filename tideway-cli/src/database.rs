@@ -11,18 +11,22 @@ pub enum DatabaseUrlKind {
 }
 
 pub fn resolve_database_url(env_map: &Option<BTreeMap<String, String>>) -> Option<String> {
-    if let Ok(value) = std::env::var("DATABASE_URL") {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
+    match std::env::var("DATABASE_URL") {
+        Ok(value) => return non_empty_trimmed(value),
+        Err(std::env::VarError::NotPresent) => {}
+        Err(std::env::VarError::NotUnicode(_)) => return None,
     }
 
     env_map
         .as_ref()
         .and_then(|map| map.get("DATABASE_URL"))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+        .cloned()
+        .and_then(non_empty_trimmed)
+}
+
+fn non_empty_trimmed(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 pub fn validate_database_url(value: &str) -> Result<DatabaseUrlKind> {

@@ -50,6 +50,38 @@ const ADVANCED_PRESET_OPTIONS: [&str; 4] = [
     "Custom (pick features)",
 ];
 
+const SUPPORTED_TIDEWAY_FEATURES: &[&str] = &[
+    "admin",
+    "auth",
+    "auth-breach",
+    "auth-mfa",
+    "billing",
+    "billing-seaorm",
+    "cache",
+    "cache-redis",
+    "database",
+    "database-sqlx",
+    "default",
+    "email",
+    "feature-gate-errors",
+    "feature-gate-warnings",
+    "jobs",
+    "jobs-redis",
+    "macros",
+    "metrics",
+    "openapi",
+    "organizations",
+    "organizations-billing",
+    "organizations-seaorm",
+    "sessions",
+    "test-auth-bypass",
+    "test-billing",
+    "test-containers",
+    "test-organizations",
+    "validation",
+    "websocket",
+];
+
 /// Run the new command
 pub fn run(args: NewArgs) -> Result<()> {
     run_with_runtime(args, CommandRuntime::from_process_state())
@@ -86,6 +118,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     let project_name = normalize_project_name(&name);
     let project_name_pascal = to_pascal_case(&project_name);
     let features = normalize_features(&args.features);
+    validate_features(&features)?;
     let has_auth_feature = features.contains("auth");
     let has_auth_mfa_feature = features.contains("auth-mfa");
     let has_database_feature = features.contains("database");
@@ -741,12 +774,67 @@ fn normalize_features(features: &[String]) -> BTreeSet<String> {
         let mapped = match lowered.as_str() {
             "db" => "database",
             "dbs" => "database",
+            "mfa" => "auth-mfa",
             "session" => "sessions",
             other => other,
         };
         normalized.insert(mapped.to_string());
     }
     normalized
+}
+
+fn validate_features(features: &BTreeSet<String>) -> Result<()> {
+    let unknown = features
+        .iter()
+        .filter(|feature| !SUPPORTED_TIDEWAY_FEATURES.contains(&feature.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+
+    let primary_fix = unknown
+        .first()
+        .and_then(|feature| closest_supported_feature(feature))
+        .map(|suggestion| format!("Did you mean `{suggestion}`? Correct --features and rerun."))
+        .unwrap_or_else(|| "Correct --features and rerun `tideway new`.".to_string());
+
+    Err(anyhow!(error_contract(
+        &format!("Unknown Tideway feature(s): {}.", unknown.join(", ")),
+        &primary_fix,
+        &format!(
+            "Supported Tideway features: {}.",
+            SUPPORTED_TIDEWAY_FEATURES.join(", ")
+        )
+    )))
+}
+
+fn closest_supported_feature(feature: &str) -> Option<&'static str> {
+    SUPPORTED_TIDEWAY_FEATURES
+        .iter()
+        .copied()
+        .map(|candidate| (candidate, edit_distance(feature, candidate)))
+        .min_by_key(|(_, distance)| *distance)
+        .filter(|(_, distance)| *distance <= 3)
+        .map(|(candidate, _)| candidate)
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+
+    for (left_index, left_char) in left.chars().enumerate() {
+        let mut current = vec![left_index + 1];
+        for (right_index, right_char) in right.iter().enumerate() {
+            let insertion = current[right_index] + 1;
+            let deletion = previous[right_index + 1] + 1;
+            let substitution = previous[right_index] + if left_char == *right_char { 0 } else { 1 };
+            current.push(insertion.min(deletion).min(substitution));
+        }
+        previous = current;
+    }
+
+    previous[right.len()]
 }
 
 #[cfg(test)]
@@ -759,6 +847,7 @@ mod tests {
         let features = vec![
             "db".to_string(),
             "session".to_string(),
+            "mfa".to_string(),
             "auth".to_string(),
             "SESSIONS".to_string(),
         ];
@@ -766,8 +855,16 @@ mod tests {
         let normalized = normalize_features(&features);
         assert!(normalized.contains("database"));
         assert!(normalized.contains("sessions"));
+        assert!(normalized.contains("auth-mfa"));
         assert!(normalized.contains("auth"));
-        assert_eq!(normalized.len(), 3);
+        assert_eq!(normalized.len(), 4);
+    }
+
+    #[test]
+    fn test_validate_features_suggests_nearest_supported_feature() {
+        let features = BTreeSet::from(["auth-mfaa".to_string()]);
+        let error = validate_features(&features).expect_err("unknown feature should fail");
+        assert!(error.to_string().contains("Did you mean `auth-mfa`?"));
     }
 
     #[test]

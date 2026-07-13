@@ -289,6 +289,37 @@ fn test_new_command_auth_mfa_scaffold_is_secure_and_compiles() {
 }
 
 #[test]
+fn test_new_command_mfa_alias_generates_auth_mfa_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: vec!["mfa".to_string()],
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command with mfa alias");
+
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"auth-mfa\"");
+    assert_file_not_contains(&project_dir.join("Cargo.toml"), "\"mfa\"");
+    assert!(project_dir.join("src/entities/mfa_backup_code.rs").exists());
+    assert!(
+        project_dir
+            .join("migration/src/m004_create_mfa.rs")
+            .exists()
+    );
+}
+
+#[test]
 fn test_new_command_minimal_compiles_against_workspace_source() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

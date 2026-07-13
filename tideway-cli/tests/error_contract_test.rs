@@ -10,6 +10,35 @@ fn test_new_missing_name_uses_error_contract() {
 }
 
 #[test]
+fn test_new_unknown_feature_fails_before_writing_project() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    let output = run_tideway(&[
+        "new",
+        "my_app",
+        "--no-prompt",
+        "--features",
+        "auth-mfaa",
+        "--path",
+        project_dir.to_str().expect("utf8 path"),
+    ]);
+
+    assert_failure(&output, "tideway new --features auth-mfaa");
+    assert_error_contract(&output);
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(combined.contains("Unknown Tideway feature(s): auth-mfaa"));
+    assert!(combined.contains("Did you mean `auth-mfa`?"));
+    assert!(
+        !project_dir.exists(),
+        "invalid feature input must not create a partial project"
+    );
+}
+
+#[test]
 fn test_add_missing_cargo_uses_error_contract() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let output = run_tideway(&[

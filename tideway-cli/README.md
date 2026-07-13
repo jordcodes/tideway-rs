@@ -26,7 +26,7 @@ If you run it without extra flags, it will prompt for common options.
 
 Options:
 - `--preset` - Preset to apply (minimal, api)
-- `--features` - Tideway features to enable (comma-separated)
+- `--features` - Validated Tideway features to enable (comma-separated; `mfa` aliases to `auth-mfa`)
 - `--with-config` - Generate config.rs and error.rs starter files
 - `--with-docker` - Generate docker-compose.yml for local Postgres
 - `--with-ci` - Generate GitHub Actions CI workflow
@@ -194,6 +194,8 @@ tideway dev --fix-env
 tideway dev --no-migrate
 tideway dev -- --release
 ```
+
+Values already set in the shell take precedence over `.env`; the file supplies only missing values. `--no-migrate` explicitly disables `DATABASE_AUTO_MIGRATE` for that run.
 
 ### `tideway migrate`
 
