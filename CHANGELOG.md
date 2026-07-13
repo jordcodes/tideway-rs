@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [0.7.22] - 2026-07-13
+
+### Security
+
+- Trusted-proxy resolution now accepts forwarded client IPs only from explicitly configured proxy networks and safely handles malformed or untrusted forwarding chains.
+- Generated database-backed auth includes production-shaped registration, login, refresh rotation, logout, email verification, password reset, and access-token purpose checks.
+- Generated MFA setup encrypts TOTP secrets at rest, hashes single-use backup codes, prevents secret disclosure through logs or caches, and verifies the complete enrollment and recovery lifecycle.
+- Generated API onboarding uses secure environment defaults and makes authentication boundaries explicit in the starter routes and OpenAPI output.
+
+### Fixed
+
+- Fresh database-backed projects now include a runnable migration binary and automatically run migrations during local development when `DATABASE_AUTO_MIGRATE=true`.
+- `tideway migrate` reuses the application target directory by default, avoiding a redundant migration build while preserving an explicitly configured `CARGO_TARGET_DIR`.
+- Generated repository/service resources and auth extension hooks compile cleanly under strict Clippy without broad warning suppression.
+
+### Changed
+
+- `tideway-cli` 0.1.35 scaffolds Tideway 0.7.22.
+- Database-enabled presets now generate a consistent entities and migration structure, including worker presets.
+- The documented API workflow consistently follows `new` -> `dev --fix-env` -> `resource` -> `migrate`.
+
+### DX Gate
+
+- Quickstart parity, documentation drift, scaffold idempotency, golden-path integration, CLI filesystem policy, and public API checks pass.
+- Fresh generated API projects compile, test, pass strict Clippy, start with an initialized database, and expose working health, resource, auth, OpenAPI, and Swagger routes.
+
+### Migration Notes
+
+- No public API removals or intentional breaking changes are included.
+- Upgrade the framework to `tideway = "0.7.22"` and install `tideway-cli` 0.1.35 for newly generated projects.
+- Existing generated applications are not rewritten automatically; adopt the new migration runner and hardened auth scaffolding deliberately when upgrading.
+- Applications behind reverse proxies should configure trusted proxy networks explicitly before relying on forwarded client IP headers.
+
 ## [0.7.21] - 2026-07-11
 
 ### Security
