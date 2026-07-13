@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [tideway-cli 0.1.36] - 2026-07-13
+
+### Fixed
+
+- `tideway new --features mfa` now normalizes to the supported `auth-mfa` feature and generates the complete MFA entity, migration, route, and test scaffold.
+- Unknown feature names fail before any files are written, with the supported feature list and a nearby suggestion when available.
+- Existing shell environment variables now take precedence over `.env` for dev preflight, displayed URLs, and the Cargo child process.
+- `tideway dev --no-migrate` explicitly sets `DATABASE_AUTO_MIGRATE=false` for the run, even when the shell or `.env` enables it.
+
+### DX Gate
+
+- Full CLI and workspace tests, strict all-feature Clippy, formatting, and all repository DX guardrails pass.
+- A published-framework clean-room app booted on a shell-provided port that differed from `.env`, reported the effective URLs, honored `--no-migrate`, and returned a healthy response.
+
+### Migration Notes
+
+- No generated source paths or public framework APIs changed.
+- Install with `cargo install tideway-cli --version 0.1.36`; generated projects continue to use Tideway 0.7.22.
+
 ## [0.7.22] - 2026-07-13
 
 ### Security
