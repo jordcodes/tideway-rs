@@ -9,13 +9,13 @@ use axum::{
 };
 use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, net::{IpAddr, SocketAddr}, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 use tideway::auth::{
     AuthUser, JwtIssuer, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter,
     LoginHttpResponse, LoginRequest, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest,
     RegisterRequest, RegistrationFlow, TokenRefreshFlow,
 };
-use tideway::{AppContext, MessageResponse, Result, RouteModule};
+use tideway::{AppContext, ClientIpResolver, MessageResponse, Result, RouteModule};
 
 use crate::auth::{
     AppTokenIssuer, DbRefreshTokenStore, DbUserStore, InMemoryMfaTokenStore, SimpleAuthProvider,
@@ -30,7 +30,7 @@ pub struct AuthState {
     app_name: Arc<str>,
     require_email_verification: bool,
     email_delivery_enabled: bool,
-    trusted_proxy_ips: Arc<HashSet<IpAddr>>,
+    client_ip_resolver: Arc<ClientIpResolver>,
     login_rate_limiter: LoginRateLimiter,
     mfa_tokens: InMemoryMfaTokenStore,
 }
@@ -58,7 +58,10 @@ impl AuthModule {
                 app_name: app_name.into().into(),
                 require_email_verification,
                 email_delivery_enabled: false,
-                trusted_proxy_ips: Arc::new(trusted_proxy_ips_from_env()),
+                client_ip_resolver: Arc::new(
+                    ClientIpResolver::from_env("TRUSTED_PROXY_IPS")
+                        .expect("TRUSTED_PROXY_IPS must contain only non-catch-all IP addresses or CIDR networks"),
+                ),
                 login_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::default()),
                 mfa_tokens: InMemoryMfaTokenStore::default(),
             },
@@ -194,7 +197,12 @@ async fn login(
     .with_refresh_store(DbRefreshTokenStore::new(state.db.clone()))
     .with_rate_limiter(state.login_rate_limiter.clone());
 
-    let client_ip = Some(resolve_client_ip(address.ip(), &headers, &state.trusted_proxy_ips).to_string());
+    let client_ip = Some(
+        state
+            .client_ip_resolver
+            .resolve(address.ip(), &headers)
+            .to_string(),
+    );
     let response = flow
         .login_with_ip(
             LoginRequest {
@@ -208,33 +216,6 @@ async fn login(
         .await?;
 
     Ok(response.into())
-}
-
-fn trusted_proxy_ips_from_env() -> HashSet<IpAddr> {
-    std::env::var("TRUSTED_PROXY_IPS")
-        .unwrap_or_default()
-        .split(',')
-        .filter_map(|value| value.trim().parse().ok())
-        .collect()
-}
-
-fn resolve_client_ip(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &HashSet<IpAddr>) -> IpAddr {
-    if !trusted_proxies.contains(&peer) {
-        return peer;
-    }
-
-    headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .and_then(|value| value.trim().parse().ok())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.trim().parse().ok())
-        })
-        .unwrap_or(peer)
 }
 
 async fn refresh(
@@ -306,29 +287,6 @@ async fn me(AuthUser(user): AuthUser<SimpleAuthProvider>) -> Result<Json<SimpleU
     Ok(Json(user))
 }
 
-#[cfg(test)]
-mod client_ip_tests {
-    use super::*;
-
-    #[test]
-    fn ignores_forwarded_headers_from_untrusted_peers() {
-        let peer: IpAddr = "203.0.113.10".parse().expect("peer IP");
-        let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "198.51.100.20".parse().unwrap());
-        assert_eq!(resolve_client_ip(peer, &headers, &HashSet::new()), peer);
-    }
-
-    #[test]
-    fn accepts_forwarded_headers_from_allowlisted_peers() {
-        let peer: IpAddr = "10.0.0.10".parse().expect("peer IP");
-        let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "198.51.100.20".parse().unwrap());
-        assert_eq!(
-            resolve_client_ip(peer, &headers, &HashSet::from([peer])),
-            "198.51.100.20".parse::<IpAddr>().unwrap()
-        );
-    }
-}
 {{else}}
 use axum::{
     extract::Extension,

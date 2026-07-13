@@ -6,7 +6,7 @@
 //! - Automatic cleanup of stale entries via periodic shrinking
 //! - High performance under concurrent load
 
-use super::config::RateLimitConfig;
+use super::{client_ip::ClientIpResolver, config::RateLimitConfig};
 use axum::{
     extract::Request,
     http::StatusCode,
@@ -77,7 +77,7 @@ enum LimiterState {
 #[derive(Clone)]
 struct RateLimitState {
     limiter: LimiterState,
-    config: RateLimitConfig,
+    client_ip_resolver: ClientIpResolver,
     /// Counter for periodic shrinking of keyed state store
     request_count: Arc<AtomicU64>,
 }
@@ -98,9 +98,23 @@ impl RateLimitState {
             LimiterState::Global(Arc::new(RateLimiter::direct(quota)))
         };
 
+        let client_ip_resolver = match ClientIpResolver::new(&config.trusted_proxies) {
+            Ok(resolver) => resolver,
+            Err(error) => {
+                tracing::error!(%error, "invalid rate-limit trusted proxy configuration; forwarded headers will be ignored");
+                ClientIpResolver::default()
+            }
+        };
+
+        if config.trust_proxy && client_ip_resolver.is_empty() {
+            tracing::warn!(
+                "RATE_LIMIT_TRUST_PROXY no longer trusts forwarded headers without RATE_LIMIT_TRUSTED_PROXIES; using the direct peer IP"
+            );
+        }
+
         Self {
             limiter,
-            config,
+            client_ip_resolver,
             request_count: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -199,37 +213,17 @@ where
             });
         }
 
-        // Extract IP address from request
-        //
-        // SECURITY: Only trust proxy headers if explicitly configured.
-        // Trusting X-Forwarded-For without proper proxy configuration allows
-        // attackers to spoof their IP and bypass per-IP rate limiting.
-        let ip: Option<std::net::IpAddr> = if self.state.config.trust_proxy {
-            // Trust mode: Check proxy headers first, fall back to connection IP
-            req.headers()
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                // X-Forwarded-For may contain multiple IPs: "client, proxy1, proxy2"
-                // The leftmost is the original client (if proxy is trusted to set it)
-                .and_then(|s| s.split(',').next().unwrap_or(s).trim().parse().ok())
-                .or_else(|| {
-                    req.headers()
-                        .get("x-real-ip")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|s| s.trim().parse().ok())
-                })
-                .or_else(|| {
-                    req.extensions()
-                        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                        .map(|addr| addr.ip())
-                })
-        } else {
-            // Safe mode (default): Only use direct connection IP
-            // This prevents IP spoofing but requires trust_proxy=true behind a proxy
-            req.extensions()
-                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-                .map(|addr| addr.ip())
-        };
+        // Forwarded headers are only considered when the socket peer belongs to
+        // the explicit trusted-proxy allowlist. Without ConnectInfo, requests use
+        // the shared unknown bucket rather than an attacker-controlled header.
+        let ip = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|address| {
+                self.state
+                    .client_ip_resolver
+                    .resolve(address.ip(), req.headers())
+            });
 
         // Check rate limit
         match self.state.check_rate_limit(ip) {
@@ -279,6 +273,7 @@ mod tests {
             window_seconds: 60,
             strategy: "per_ip".to_string(),
             trust_proxy: false,
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -352,6 +347,7 @@ mod tests {
             window_seconds: 60,
             strategy: "per_ip".to_string(),
             trust_proxy: false,
+            trusted_proxies: Vec::new(),
         };
         let state = RateLimitState::new(config);
 
@@ -375,6 +371,7 @@ mod tests {
             window_seconds: 60,
             strategy: "per_ip".to_string(),
             trust_proxy: false,
+            trusted_proxies: Vec::new(),
         };
         let state = RateLimitState::new(config);
 
@@ -392,6 +389,7 @@ mod tests {
             window_seconds: 60,
             strategy: "per_ip".to_string(),
             trust_proxy: false,
+            trusted_proxies: Vec::new(),
         };
         let state = RateLimitState::new(config);
 

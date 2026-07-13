@@ -107,8 +107,8 @@ fn test_backend_auth_uses_shared_guards_and_atomic_token_updates() {
     let routes = fs::read_to_string(output_dir.join("auth/routes.rs")).expect("read auth routes");
     assert!(routes.contains("login_rate_limiter: LoginRateLimiter"));
     assert!(routes.contains("state.mfa_tokens.clone()"));
-    assert!(routes.contains("resolve_client_ip(address.ip(), &headers, &state.trusted_proxy_ips)"));
-    assert!(routes.contains("if !trusted_proxies.contains(&peer)"));
+    assert!(routes.contains("ClientIpResolver::from_env(\"TRUSTED_PROXY_IPS\")"));
+    assert!(routes.contains("state.client_ip_resolver.resolve(address.ip(), &headers)"));
     assert!(routes.contains("DbUserStore::from_transaction(transaction.clone())"));
     assert!(routes.contains("Arc::try_unwrap(transaction)"));
 

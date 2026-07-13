@@ -365,6 +365,22 @@ impl ConfigBuilder {
                     self.config.rate_limit.strategy
                 )));
             }
+
+            if self.config.rate_limit.trust_proxy
+                && self.config.rate_limit.trusted_proxies.is_empty()
+            {
+                return Err(crate::error::TidewayError::bad_request(
+                    "RATE_LIMIT_TRUST_PROXY no longer enables forwarded headers by itself; configure RATE_LIMIT_TRUSTED_PROXIES with explicit proxy IPs or CIDR networks",
+                ));
+            }
+
+            crate::ClientIpResolver::new(&self.config.rate_limit.trusted_proxies).map_err(
+                |error| {
+                    crate::error::TidewayError::bad_request(format!(
+                        "Invalid rate limit trusted proxy configuration: {error}"
+                    ))
+                },
+            )?;
         }
 
         // Validate port is in valid range
@@ -704,6 +720,40 @@ mod tests {
             let result = builder.build();
             assert!(result.is_ok(), "Strategy '{}' should be valid", strategy);
         }
+    }
+
+    #[test]
+    fn test_config_builder_rejects_legacy_proxy_trust_without_allowlist() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.rate_limit.enabled = true;
+        builder.config.rate_limit.trust_proxy = true;
+
+        let error = builder
+            .build()
+            .expect_err("legacy trust switch without an allowlist must fail closed");
+        assert!(error.to_string().contains("RATE_LIMIT_TRUSTED_PROXIES"));
+    }
+
+    #[test]
+    fn test_config_builder_rejects_invalid_trusted_proxy() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.rate_limit.enabled = true;
+        builder.config.rate_limit.trusted_proxies = vec!["not-a-network".to_string()];
+
+        let error = builder
+            .build()
+            .expect_err("invalid trusted proxies must fail startup");
+        assert!(error.to_string().contains("not-a-network"));
+    }
+
+    #[test]
+    fn test_config_builder_accepts_trusted_proxy_networks() {
+        let mut builder = ConfigBuilder::new();
+        builder.config.rate_limit.enabled = true;
+        builder.config.rate_limit.trusted_proxies =
+            vec!["10.0.0.0/8".to_string(), "2001:db8::/32".to_string()];
+
+        assert!(builder.build().is_ok());
     }
 
     #[test]

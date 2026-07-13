@@ -200,6 +200,7 @@ pub use http::{
 };
 #[cfg(feature = "metrics")]
 pub use metrics::{MetricsCollector, MetricsConfig, MetricsConfigBuilder};
+pub use ratelimit::{ClientIpResolver, TrustedProxyParseError};
 pub use ratelimit::{RateLimitConfig, RateLimitConfigBuilder};
 pub use request_logging::{RequestLoggingConfig, RequestLoggingConfigBuilder};
 pub use security::{SecurityConfig, SecurityConfigBuilder};

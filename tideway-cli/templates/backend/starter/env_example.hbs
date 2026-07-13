@@ -10,6 +10,7 @@ DATABASE_URL={{{database_url}}}
 {{#if has_auth_feature}}
 # Auth
 JWT_SECRET=replace-with-at-least-32-random-bytes
+# Comma-separated proxy IPs/CIDRs. Leave empty unless traffic arrives through them.
 TRUSTED_PROXY_IPS=
 REFRESH_TOKEN_RETENTION_DAYS=120
 # Keep false unless a verification-email delivery integration is wired.

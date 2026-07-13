@@ -47,7 +47,8 @@ let app = App::with_config(config);
 | `max_requests` | `u32` | `100` | Maximum requests allowed per window |
 | `window_seconds` | `u64` | `60` | Time window in seconds |
 | `strategy` | `String` | `"per_ip"` | Rate limiting strategy: `"per_ip"` or `"global"` |
-| `trust_proxy` | `bool` | `false` | Trust X-Forwarded-For header (see [Security](#security-proxy-headers)) |
+| `trusted_proxies` | `Vec<String>` | empty | Proxy IP/CIDR allowlist for forwarded headers |
+| `trust_proxy` | `bool` | `false` | Legacy switch; no longer enables header trust by itself |
 
 ### Builder Methods
 
@@ -59,7 +60,11 @@ RateLimitConfig::builder()
     .per_ip()                         // Use per-IP rate limiting
     .global()                         // Use global rate limiting
     .strategy("per_ip")               // Set strategy explicitly
-    .trust_proxy(true)                // Trust proxy headers (see Security section)
+    .trusted_proxy("10.0.0.0/8")      // Allow a proxy network to supply client IPs
+    .trusted_proxies([                // Or replace the complete allowlist
+        "10.0.0.0/8",
+        "2001:db8:1234::/48",
+    ])
     .build()
 ```
 
@@ -117,29 +122,41 @@ If you trust this header without a proxy in front, attackers can:
 
 ### Safe Configuration
 
-**Default behavior (trust_proxy: false):**
+**Default behavior (empty `trusted_proxies`):**
 - Only uses the direct connection IP
 - Safe but won't work correctly behind a proxy
 - All requests appear from the proxy's IP
 
-**Behind a trusted proxy (trust_proxy: true):**
+**Behind trusted proxies:**
 ```rust
 let rate_limit = RateLimitConfig::builder()
     .enabled(true)
     .max_requests(100)
     .per_ip()
-    .trust_proxy(true)  // Only if behind a trusted proxy!
+    .trusted_proxies([
+        "10.20.0.0/16",       // Internal load balancer network
+        "2001:db8:1234::/48", // IPv6 ingress network
+    ])
     .build();
 ```
 
-### When to Enable trust_proxy
+Tideway accepts `X-Forwarded-For` and `X-Real-IP` only when the direct
+connection peer matches this allowlist. For multi-proxy deployments,
+`X-Forwarded-For` is evaluated from right to left and trusted hops are removed.
+Malformed chains fail closed to the direct peer address.
 
-Enable `trust_proxy: true` **only if**:
+### Choosing the Allowlist
+
+Configure trusted proxies **only if**:
 1. Your application is behind a reverse proxy you control
-2. The proxy is configured to **overwrite** (not append to) X-Forwarded-For
+2. You know the proxy's source IP address or network
 3. External clients cannot directly reach your application
 
-Common setups where trust_proxy should be enabled:
+Use the narrowest stable network supplied by your infrastructure provider.
+Tideway rejects `0.0.0.0/0` and `::/0` because they would restore blind header
+trust.
+
+Common setups where an allowlist should be configured:
 - Behind nginx/Apache configured correctly
 - Behind AWS Application Load Balancer
 - Behind Cloudflare
@@ -149,12 +166,14 @@ Common setups where trust_proxy should be enabled:
 
 **nginx:**
 ```nginx
-# Ensure nginx sets X-Forwarded-For (not appends)
-proxy_set_header X-Forwarded-For $remote_addr;
+# Append the observed peer. Tideway safely walks the resulting chain from right to left.
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 ```
 
 **AWS ALB:**
-ALB automatically sets X-Forwarded-For. Enable trust_proxy.
+ALB supplies `X-Forwarded-For`. Allowlist the private subnet or security-group
+source ranges through which the ALB reaches the application, not arbitrary
+public client ranges.
 
 ## Preset Configurations
 
@@ -162,14 +181,14 @@ ALB automatically sets X-Forwarded-For. Enable trust_proxy.
 
 ```rust
 let rate_limit = RateLimitConfig::permissive();
-// 1000 requests per minute, global strategy, trust_proxy: false
+// 1000 requests per minute, global strategy, no trusted proxies
 ```
 
 ### Restrictive (Production)
 
 ```rust
 let rate_limit = RateLimitConfig::restrictive();
-// 100 requests per minute per IP, trust_proxy: false
+// 100 requests per minute per IP, no trusted proxies
 ```
 
 ## Environment Variables
@@ -182,9 +201,18 @@ Configure rate limiting via environment variables:
 | `TIDEWAY_RATE_LIMIT_MAX_REQUESTS` | Maximum requests per window | `100` |
 | `TIDEWAY_RATE_LIMIT_WINDOW_SECONDS` | Window duration in seconds | `60` |
 | `TIDEWAY_RATE_LIMIT_STRATEGY` | Strategy: `per_ip` or `global` | `per_ip` |
-| `TIDEWAY_RATE_LIMIT_TRUST_PROXY` | Trust proxy headers | `false` |
+| `TIDEWAY_RATE_LIMIT_TRUSTED_PROXIES` | Comma-separated proxy IP/CIDR allowlist | empty |
+| `TIDEWAY_RATE_LIMIT_TRUST_PROXY` | Legacy switch; requires the allowlist above | `false` |
 
 Alternative unprefixed variables are also supported (e.g., `RATE_LIMIT_ENABLED`).
+
+### Migrating from `trust_proxy`
+
+Replace `.trust_proxy(true)` with `.trusted_proxy("<proxy-ip-or-cidr>")`, or set
+`TIDEWAY_RATE_LIMIT_TRUSTED_PROXIES`. The legacy boolean is retained for config
+deserialization but deliberately does not trust headers without an allowlist.
+Code that constructs `RateLimitConfig` with a struct literal must add
+`trusted_proxies: vec![]`; using the builder avoids this migration detail.
 
 ## Rate Limit Responses
 
@@ -238,7 +266,7 @@ async fn main() {
         .max_requests(100)
         .window_seconds(60)
         .per_ip()
-        .trust_proxy(true)  // Behind nginx/ALB/Cloudflare
+        .trusted_proxies(["10.20.0.0/16", "2001:db8:1234::/48"])
         .build();
 
     let app = App::builder()
@@ -263,7 +291,7 @@ async fn main() {
         .max_requests(100)
         .window_seconds(60)
         .per_ip()
-        // trust_proxy defaults to false - safe for direct connections
+        // An empty trusted-proxy list is safe for direct connections.
         .build();
 
     let app = App::builder()
@@ -340,7 +368,7 @@ async fn test_rate_limit() {
 3. **Consider use cases**: Different endpoints may need different limits
 4. **Document limits**: Let API consumers know your rate limits
 5. **Use Retry-After**: Clients should respect the `Retry-After` header
-6. **Configure trust_proxy correctly**: Only enable behind trusted proxies
+6. **Keep proxy trust narrow**: Allowlist only the proxy networks that connect to the app
 
 ## Troubleshooting
 
@@ -352,15 +380,15 @@ async fn test_rate_limit() {
 
 ### All requests counted as same IP
 
-- You're likely behind a proxy but `trust_proxy` is `false`
-- Enable `trust_proxy: true` if behind nginx/ALB/Cloudflare
+- You're likely behind a proxy but `trusted_proxies` is empty
+- Add the proxy's source IP or CIDR to `trusted_proxies`
 - Verify your proxy sets `X-Forwarded-For` correctly
 
 ### Rate limits easily bypassed
 
-- You may have `trust_proxy: true` without an actual proxy
-- Attackers are spoofing X-Forwarded-For headers
-- Set `trust_proxy: false` if clients connect directly
+- Check that `trusted_proxies` does not contain client-facing ranges such as `0.0.0.0/0`
+- Confirm direct application access is restricted to your proxy tier
+- Remove the allowlist if clients connect directly
 
 ### Memory concerns
 

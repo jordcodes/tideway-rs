@@ -20,21 +20,26 @@ pub struct RateLimitConfig {
     #[serde(default = "default_strategy")]
     pub strategy: String,
 
-    /// Trust X-Forwarded-For header for client IP detection
+    /// Legacy proxy-header switch retained for configuration compatibility.
     ///
     /// **SECURITY WARNING**: Only enable this if your application is behind
     /// a trusted reverse proxy (nginx, cloudflare, AWS ALB, etc.).
     ///
-    /// When `false` (default): Only uses the direct connection IP, ignoring
-    /// proxy headers. This is safe but won't work correctly behind a proxy.
-    ///
-    /// When `true`: Trusts X-Forwarded-For and X-Real-IP headers. Only enable
-    /// if your proxy is properly configured to overwrite (not append to) these
-    /// headers, otherwise attackers can spoof their IP to bypass rate limiting.
+    /// This flag no longer controls header trust on its own. When
+    /// `trusted_proxies` is empty, only the direct connection IP is used. Set
+    /// `trusted_proxies` to the exact proxy IP addresses or CIDR networks that
+    /// may supply headers.
     ///
     /// Default: `false`
     #[serde(default)]
     pub trust_proxy: bool,
+
+    /// Trusted reverse proxy IP addresses or CIDR networks.
+    ///
+    /// Forwarded headers are ignored unless the direct socket peer matches one
+    /// of these entries. Configuring this list supersedes `trust_proxy`.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for RateLimitConfig {
@@ -45,6 +50,7 @@ impl Default for RateLimitConfig {
             window_seconds: default_window_seconds(),
             strategy: default_strategy(),
             trust_proxy: false,
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -64,6 +70,7 @@ impl RateLimitConfig {
             window_seconds: 60,
             strategy: "global".to_string(),
             trust_proxy: false,
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -76,6 +83,7 @@ impl RateLimitConfig {
             window_seconds: 60,
             strategy: "per_ip".to_string(),
             trust_proxy: false,
+            trusted_proxies: Vec::new(),
         }
     }
 
@@ -105,6 +113,15 @@ impl RateLimitConfig {
 
         if let Some(trust_proxy) = get_env_with_prefix("RATE_LIMIT_TRUST_PROXY") {
             config.trust_proxy = trust_proxy.parse().unwrap_or(false);
+        }
+
+        if let Some(trusted_proxies) = get_env_with_prefix("RATE_LIMIT_TRUSTED_PROXIES") {
+            config.trusted_proxies = trusted_proxies
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect();
         }
 
         config
@@ -154,12 +171,32 @@ impl RateLimitConfigBuilder {
         self
     }
 
-    /// Trust proxy headers (X-Forwarded-For, X-Real-IP) for client IP detection.
+    /// Legacy switch for trusting proxy headers.
     ///
-    /// **SECURITY WARNING**: Only enable this if behind a trusted reverse proxy.
-    /// See [`RateLimitConfig::trust_proxy`] for details.
+    /// This switch no longer enables forwarded headers by itself. Configure
+    /// [`Self::trusted_proxies`] with the exact proxy IPs or networks instead.
+    #[deprecated(
+        since = "0.7.22",
+        note = "use trusted_proxy or trusted_proxies with an explicit IP/CIDR allowlist"
+    )]
     pub fn trust_proxy(mut self, trust: bool) -> Self {
         self.config.trust_proxy = trust;
+        self
+    }
+
+    /// Add a trusted reverse proxy IP address or CIDR network.
+    pub fn trusted_proxy(mut self, proxy: impl Into<String>) -> Self {
+        self.config.trusted_proxies.push(proxy.into());
+        self
+    }
+
+    /// Replace the trusted reverse proxy allowlist.
+    pub fn trusted_proxies<I, S>(mut self, proxies: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.config.trusted_proxies = proxies.into_iter().map(Into::into).collect();
         self
     }
 
@@ -203,6 +240,7 @@ mod tests {
         assert_eq!(config.strategy, "per_ip");
         // Security: trust_proxy defaults to false
         assert!(!config.trust_proxy);
+        assert!(config.trusted_proxies.is_empty());
     }
 
     #[test]
@@ -241,6 +279,7 @@ mod tests {
 
     #[test]
     fn test_builder_trust_proxy() {
+        #[allow(deprecated)]
         let config = RateLimitConfig::builder()
             .enabled(true)
             .per_ip()
@@ -248,6 +287,16 @@ mod tests {
             .build();
 
         assert!(config.trust_proxy);
+    }
+
+    #[test]
+    fn test_builder_trusted_proxies() {
+        let config = RateLimitConfig::builder()
+            .trusted_proxy("10.0.0.10")
+            .trusted_proxies(["10.0.0.0/8", "2001:db8::/32"])
+            .build();
+
+        assert_eq!(config.trusted_proxies, ["10.0.0.0/8", "2001:db8::/32"]);
     }
 
     #[test]

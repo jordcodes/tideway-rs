@@ -1126,21 +1126,21 @@ async fn login_handler(
 
 ### Behind a Proxy
 
-When behind a reverse proxy, extract the real client IP from headers:
+When behind a reverse proxy, resolve the client IP through an explicit proxy
+allowlist. Never read `X-Forwarded-For` directly from an internet-facing request:
 
 ```rust
 async fn login_handler(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Extension(client_ips): Extension<Arc<ClientIpResolver>>,
     State(flow): State<LoginFlow<...>>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>> {
-    // Extract from X-Forwarded-For (trust your proxy!)
-    let client_ip = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+    // Construct ClientIpResolver once at startup from known proxy IPs/CIDRs.
+    let client_ip = client_ips.resolve(peer.ip(), &headers).to_string();
 
-    let response = flow.login_with_ip(req, client_ip).await?;
+    let response = flow.login_with_ip(req, Some(client_ip)).await?;
     Ok(Json(response))
 }
 ```
