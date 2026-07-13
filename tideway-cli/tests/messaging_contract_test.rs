@@ -9,8 +9,8 @@ fn test_dev_plan_mentions_primary_command() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Plan: run command `cargo run` (cwd: /tmp/nonexistent)"),
-        "expected explicit cargo run plan, got:\n{}",
+        stdout.contains("Plan: run command `cargo build` (cwd: /tmp/nonexistent)"),
+        "expected explicit cargo build plan, got:\n{}",
         stdout
     );
     assert!(

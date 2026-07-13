@@ -205,7 +205,11 @@ pub struct DevArgs {
     #[arg(long, default_value = "false")]
     pub no_migrate: bool,
 
-    /// Extra args passed to `cargo run`
+    /// Run once without watching for source changes
+    #[arg(long, default_value = "false")]
+    pub no_watch: bool,
+
+    /// Extra Cargo args; use a second `--` before application args
     #[arg(trailing_var_arg = true)]
     pub args: Vec<String>,
 }

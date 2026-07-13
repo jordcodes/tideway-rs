@@ -1,5 +1,7 @@
 //! Dev command - run a Tideway app with sensible defaults.
 
+mod watch;
+
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
@@ -24,6 +26,8 @@ use crate::{
     CommandRuntime, ExecutionPlan, PlannedCommand, error_contract, print_info, print_success,
     print_warning,
 };
+
+use self::watch::WatchConfig;
 
 pub fn run(args: DevArgs) -> Result<()> {
     run_with_runtime(args, CommandRuntime::from_process_state())
@@ -52,25 +56,22 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
     preflight_database(&project_dir, &env_map)?;
     print_local_urls(&project_dir, &env_map)?;
 
-    let mut command = Command::new("cargo");
-    command.arg("run").current_dir(&project_dir);
-
-    if !args.args.is_empty() {
-        command.args(&args.args);
-    }
+    let mut child_env = BTreeMap::new();
+    let mut forced_env = BTreeMap::new();
 
     if !args.no_env
         && let Some(env_map) = &env_map
     {
-        command.envs(
+        child_env.extend(
             env_map
                 .iter()
-                .filter(|(key, _)| std::env::var_os(key).is_none()),
+                .filter(|(key, _)| std::env::var_os(key).is_none())
+                .map(|(key, value)| (key.clone(), value.clone())),
         );
     }
 
     if args.no_migrate {
-        command.env("DATABASE_AUTO_MIGRATE", "false");
+        forced_env.insert("DATABASE_AUTO_MIGRATE".into(), "false".into());
         print_info("Disabling automatic migrations for this run (--no-migrate).");
     } else {
         if let Some(auto_migrate) = explicit_auto_migrate(&env_map) {
@@ -83,12 +84,29 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
                 ));
             }
         } else {
-            command.env("DATABASE_AUTO_MIGRATE", "true");
+            forced_env.insert("DATABASE_AUTO_MIGRATE".into(), "true".into());
             print_info(
                 "Setting DATABASE_AUTO_MIGRATE=true for this run. Use --no-migrate to disable.",
             );
         }
     }
+    child_env.extend(forced_env.clone());
+
+    if !args.no_watch {
+        return watch::run(WatchConfig {
+            project_dir,
+            cargo_args: args.args,
+            load_env: !args.no_env,
+            forced_env,
+        });
+    }
+
+    let mut command = Command::new("cargo");
+    command
+        .arg("run")
+        .args(&args.args)
+        .current_dir(&project_dir)
+        .envs(&child_env);
 
     print_info("Starting Tideway app (primary local run command)...");
     let status = command.status().context("Failed to run cargo")?;
@@ -102,22 +120,44 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
 }
 
 fn build_dev_plan(args: &DevArgs) -> ExecutionPlan {
-    let summary = if args.no_migrate {
-        "would run tideway dev (cargo run) without auto-migrations".to_string()
+    let mode = if args.no_watch {
+        "cargo run once"
     } else {
-        "would run tideway dev (cargo run) with env + migrations".to_string()
+        "watch, build, and restart"
+    };
+    let summary = if args.no_migrate {
+        format!("would {mode} without auto-migrations")
+    } else {
+        format!("would {mode} with env + migrations")
     };
 
+    let cargo_action = if args.no_watch { "run" } else { "build" };
+    let (cargo_args, app_args) = if args.no_watch {
+        (args.args.clone(), Vec::new())
+    } else {
+        watch::split_args(args.args.clone())
+    };
     let mut command = PlannedCommand::new("cargo")
-        .arg("run")
+        .arg(cargo_action)
         .cwd(args.path.clone());
-    if !args.args.is_empty() {
-        command = command.args(args.args.clone());
+    if !cargo_args.is_empty() {
+        command = command.args(cargo_args);
     }
 
     let mut plan = ExecutionPlan::new(summary)
         .command(command)
         .info("Primary run command for local development.");
+    plan = if args.no_watch {
+        plan.info("One-shot local run (--no-watch).")
+    } else {
+        plan.info("Would watch source and manifest changes, rebuild, and restart on success.")
+    };
+    if !app_args.is_empty() {
+        plan = plan.info(format!(
+            "Would pass application arguments after rebuild: {}",
+            app_args.join(" ")
+        ));
+    }
 
     if args.no_env {
         plan = plan.info("Skipping `.env` loading (--no-env).");

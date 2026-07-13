@@ -71,6 +71,8 @@ cd my_app
 tideway dev --fix-env
 ```
 
+`tideway dev` watches Rust sources, migrations, Cargo manifests, and `.env` by default. Successful builds restart the server; failed builds leave the last working server running. Use `tideway dev --no-watch` for a one-shot run.
+
 Then visit `http://localhost:8000/health`.
 If OpenAPI is enabled, visit `http://localhost:8000/swagger-ui`.
 Generated authentication and MFA operations are included in the API preset's OpenAPI document, including JWT bearer security. `--fix-env` creates independent random local JWT and MFA encryption secrets without changing configured values; production secrets belong in your deployment secret manager.

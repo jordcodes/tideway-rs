@@ -186,16 +186,19 @@ Options:
 
 ### `tideway dev`
 
-Run your app with `.env` loaded and optional auto-migrations.
+Run your app with `.env` loaded, optional auto-migrations, and automatic rebuilds.
 
 ```bash
 tideway dev
 tideway dev --fix-env
 tideway dev --no-migrate
 tideway dev -- --release
+tideway dev --no-watch
 ```
 
 Values already set in the shell take precedence over `.env`; the file supplies only missing values. `--no-migrate` explicitly disables `DATABASE_AUTO_MIGRATE` for that run.
+
+By default, Tideway watches Rust sources, migrations, Cargo manifests, and `.env`, then rebuilds and restarts after successful changes. Compile failures leave the previous working server running. Use `--no-watch` for a one-shot `cargo run`. Arguments after the first `--` go to Cargo; use a second `--` before application arguments.
 
 ### `tideway migrate`
 

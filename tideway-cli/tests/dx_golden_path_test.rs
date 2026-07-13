@@ -56,7 +56,7 @@ fn test_golden_path_new_then_doctor_then_dev_plan() {
 
     let dev_stdout = String::from_utf8_lossy(&dev_output.stdout);
     assert!(
-        dev_stdout.contains("Plan: would run tideway dev (cargo run) with env + migrations"),
+        dev_stdout.contains("Plan: would watch, build, and restart with env + migrations"),
         "expected dev plan marker, got:\n{}",
         dev_stdout
     );
@@ -131,7 +131,10 @@ fn test_golden_path_default_api_boots_and_serves_health() {
     let log_path = temp_dir.path().join("tideway-dev.log");
     let stdout_log = File::create(&log_path).expect("create dev log");
     let stderr_log = stdout_log.try_clone().expect("clone dev log handle");
-    let target_dir = temp_dir.path().join("cargo-target");
+    let target_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("target/dx-golden-path");
 
     let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
     command
@@ -151,6 +154,19 @@ fn test_golden_path_default_api_boots_and_serves_health() {
         "expected auto-migrated todo endpoint to return 200; log:\n{}",
         fs::read_to_string(&log_path).unwrap_or_default()
     );
+
+    let main_path = project_dir.join("src/main.rs");
+    let mut main = fs::read_to_string(&main_path).expect("read generated main.rs");
+    main.push('\n');
+    fs::write(&main_path, main).expect("trigger watch rebuild");
+    wait_for_log_occurrences(
+        &mut child,
+        &log_path,
+        "Build succeeded; Tideway app restarted",
+        2,
+        Duration::from_secs(60),
+    );
+    wait_for_health(&mut child, port, Duration::from_secs(30), &log_path);
 
     terminate_process_tree(&mut child);
 }
@@ -211,7 +227,7 @@ fn test_golden_path_saas_scaffold_supports_doctor_and_dev_plan() {
 
     let dev_stdout = String::from_utf8_lossy(&dev_output.stdout);
     assert!(
-        dev_stdout.contains("Plan: would run tideway dev (cargo run) with env + migrations"),
+        dev_stdout.contains("Plan: would watch, build, and restart with env + migrations"),
         "expected dev plan marker, got:\n{}",
         dev_stdout
     );
@@ -236,6 +252,7 @@ fn test_dev_bootstraps_env_example_and_passes_env_to_cargo() {
     let output = run_tideway_with_path(
         &[
             "dev",
+            "--no-watch",
             "--path",
             project_dir.to_str().expect("project path utf8"),
         ],
@@ -293,6 +310,7 @@ fn test_dev_shell_env_overrides_dotenv_for_urls_and_child_process() {
     let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
         .args([
             "dev",
+            "--no-watch",
             "--path",
             project_dir.to_str().expect("project path utf8"),
         ])
@@ -334,6 +352,7 @@ fn test_dev_no_migrate_overrides_dotenv_setting() {
     let output = run_tideway_with_path(
         &[
             "dev",
+            "--no-watch",
             "--no-migrate",
             "--path",
             project_dir.to_str().expect("project path utf8"),
@@ -375,6 +394,7 @@ fn test_auth_mfa_golden_path_generates_local_secrets_and_runs() {
     let output = run_tideway_with_path(
         &[
             "dev",
+            "--no-watch",
             "--fix-env",
             "--path",
             project_dir.to_str().expect("project path utf8"),
@@ -437,6 +457,7 @@ fn test_dev_fails_fast_when_postgres_server_is_unreachable() {
     let output = run_tideway_with_path(
         &[
             "dev",
+            "--no-watch",
             "--path",
             project_dir.to_str().expect("project path utf8"),
         ],
@@ -485,6 +506,7 @@ fn test_dev_bootstraps_env_when_example_exists() {
     let output = run_tideway_with_path(
         &[
             "dev",
+            "--no-watch",
             "--path",
             project_dir.to_str().expect("project path utf8"),
         ],
@@ -531,6 +553,7 @@ sea-orm = { version = "1.1", features = ["sqlx-sqlite", "runtime-tokio-rustls"] 
     let output = run_tideway_with_path(
         &[
             "dev",
+            "--no-watch",
             "--path",
             project_dir.to_str().expect("project path utf8"),
         ],
@@ -799,6 +822,33 @@ fn wait_for_health(child: &mut std::process::Child, port: u16, timeout: Duration
     }
 }
 
+fn wait_for_log_occurrences(
+    child: &mut std::process::Child,
+    log_path: &Path,
+    needle: &str,
+    expected: usize,
+    timeout: Duration,
+) {
+    let start = Instant::now();
+    loop {
+        let log = fs::read_to_string(log_path).unwrap_or_default();
+        if log.matches(needle).count() >= expected {
+            return;
+        }
+        if let Some(status) = child.try_wait().expect("poll tideway dev") {
+            panic!(
+                "tideway dev exited before watch rebuild.\nstatus: {}\nlog:\n{}",
+                status, log
+            );
+        }
+        if start.elapsed() > timeout {
+            terminate_process_tree(child);
+            panic!("timed out waiting for `{needle}` {expected} times.\nlog:\n{log}");
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn health_check(port: u16) -> bool {
     endpoint_returns_ok(port, "/health")
 }
@@ -825,9 +875,9 @@ fn terminate_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         let _ = Command::new("kill")
-            .arg("-TERM")
+            .arg("-INT")
             .arg("--")
-            .arg(format!("-{}", child.id()))
+            .arg(child.id().to_string())
             .status();
     }
 
@@ -836,5 +886,13 @@ fn terminate_process_tree(child: &mut std::process::Child) {
         let _ = child.kill();
     }
 
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
     let _ = child.wait();
 }

@@ -247,17 +247,22 @@ tideway setup
 
 ### `tideway dev`
 
-Run a Tideway app in dev mode (loads `.env`, optional migrations).
+Run a Tideway app in dev mode with automatic rebuilds and restarts (loads `.env`, optional migrations).
 
 ```bash
 tideway dev --fix-env
 tideway dev --no-migrate
 tideway dev -- --release
+tideway dev --no-watch
 ```
 
 `--fix-env` is the recommended first-run command. It creates `.env` from `.env.example` and replaces recognized JWT placeholders and an empty `MFA_ENCRYPTION_KEY` with independent cryptographically random local values. Existing configured secrets are not rotated. The generated `.env` is gitignored; production secrets should come from your deployment secret manager.
 
 Before starting Cargo, `tideway dev` validates database configuration and prints the local API, health, Swagger UI, and OpenAPI URLs that are enabled by the effective configuration. Existing shell environment variables take precedence over values in `.env`; `.env` supplies only missing values. The command enables pending migrations for the local run unless `--no-migrate` is supplied, which explicitly sets `DATABASE_AUTO_MIGRATE=false` for that run.
+
+By default, the command watches Rust sources, migrations, Cargo manifests, and `.env`. It debounces editor save events, cancels superseded builds, and restarts the application only after a successful build. If compilation fails, the last working server keeps running while Tideway waits for the next change. Press Ctrl-C to stop the watcher and its child processes. Use `--no-watch` for the previous one-shot `cargo run` behaviour.
+
+Arguments after the first `--` are passed to Cargo. To pass arguments to the application in watch mode, add a second separator: `tideway dev -- --release -- --seed`.
 
 ### `tideway migrate`
 
