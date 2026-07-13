@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [tideway-cli 0.1.37] - 2026-07-13
+
+### Added
+
+- `tideway dev` now watches Rust sources, migrations, Cargo manifests, and `.env`, then rebuilds and restarts the application after successful changes.
+- Compile failures keep the last working server available, while superseded builds are cancelled and rapid editor saves are coalesced.
+- `--no-watch` preserves the one-shot `cargo run` workflow, and a second `--` separates application arguments from Cargo arguments.
+
+### Fixed
+
+- Watch mode validates the configured host and port before compiling, with actionable guidance when the port is unavailable.
+- `.env` changes are reloaded on restart, shell values retain precedence, and Ctrl-C or termination signals clean up child process trees.
+
+### DX Gate
+
+- A generated API was dogfooded through successful edits, compile failure and recovery, `.env` reload, save bursts, argument forwarding, health checks, and process cleanup.
+- The CLI golden-path suite and repository DX guardrails pass without manually triggering hosted workflows.
+
+### Migration Notes
+
+- `tideway dev` now watches by default; use `tideway dev --no-watch` for the previous one-shot behaviour.
+- Install with `cargo install tideway-cli --version 0.1.37`; generated projects use Tideway 0.7.23.
+
+## [0.7.23] - 2026-07-13
+
+### Fixed
+
+- Graceful shutdown now hands control to Axum immediately instead of delaying connection draining by a fixed five seconds, substantially reducing development restart latency.
+- The locked dependency graph uses the non-yanked `spin` 0.9.9 patch release.
+
+### DX Gate
+
+- The framework library suite, shutdown regression, generated-app health tests, and downstream smoke-project tests pass.
+- Real-project incremental builds complete in roughly one second, with restart occurring immediately after graceful shutdown begins.
+
+### Migration Notes
+
+- No public APIs or generated source paths changed.
+- Upgrade to `tideway = "0.7.23"`; applications receive the corrected shutdown behaviour without code changes.
+
 ## [tideway-cli 0.1.36] - 2026-07-13
 
 ### Fixed
