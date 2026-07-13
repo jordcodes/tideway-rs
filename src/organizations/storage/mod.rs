@@ -10,6 +10,7 @@ mod organization;
 
 pub use audit::{OptionalAuditStore, OrgAuditStore, WithAuditStore};
 pub use invitation::InvitationStore;
+#[cfg(any(test, feature = "organizations-seaorm", feature = "test-organizations"))]
 pub(crate) use invitation::hash_invitation_token;
 pub use membership::MembershipStore;
 pub use organization::OrganizationStore;

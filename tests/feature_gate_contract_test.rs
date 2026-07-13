@@ -68,7 +68,14 @@ fn feature_gate_warnings_mode_still_compiles() {
 
 #[test]
 fn isolated_feature_builds_stay_warning_free() {
-    for feature in ["billing", "database-sqlx", "openapi"] {
+    for feature in [
+        "auth",
+        "billing",
+        "database-sqlx",
+        "openapi",
+        "organizations",
+        "websocket",
+    ] {
         let output = Command::new("cargo")
             .args([
                 "check",

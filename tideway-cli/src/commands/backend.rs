@@ -177,7 +177,9 @@ pub(crate) fn scaffold(
         println!(
             "     sea-orm = {{ version = \"1.1\", features = [\"sqlx-postgres\", \"runtime-tokio-rustls\"] }}"
         );
-        println!("     tokio = {{ version = \"1\", features = [\"full\"] }}");
+        println!(
+            "     tokio = {{ version = \"1\", features = [\"macros\", \"rt-multi-thread\"] }}"
+        );
         println!("     serde = {{ version = \"1\", features = [\"derive\"] }}");
         println!("     serde_json = \"1\"");
         println!("     anyhow = \"1\"");

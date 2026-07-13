@@ -1,7 +1,7 @@
 # DX Metrics Snapshot
 
 Updated: 2026-07-13
-Scope: `main` at `76149a6` before the automated benchmark workflow was added
+Scope: feature-gating working tree based on `main` at `140db4c`
 
 ## DX Gate Status
 
@@ -12,11 +12,20 @@ Scope: `main` at `76149a6` before the automated benchmark workflow was added
 
 ## Metrics Snapshot
 
-- Time to `GET /health` from clean machine (p50/p95): 28.84s / 29.70s (5-sample local baseline; fresh project and target directory, shared Cargo registry/git cache).
-- Time to scaffold DB resource and run tests (p50/p95): 5.82s / 5.99s (5-sample local baseline; resource journey follows the health boot in the same project).
+- Time to `GET /health` from clean machine (p50/p95): 27.33s / 30.61s (5-sample local result after feature gating; previous baseline 28.84s / 29.70s; fresh project and target directory, shared Cargo registry/git cache).
+- Time to scaffold DB resource and run tests (p50/p95): 5.60s / 5.72s (5-sample local result; previous baseline 5.82s / 5.99s; resource journey follows the health boot in the same project).
 - Idempotency pass rate for mutating CLI commands: 100% while the scaffold idempotency gate is passing.
 - Number of onboarding docs that show non-canonical flows: 0 while `bash scripts/check_onboarding_single_path.sh` is passing.
 - Number of user-reported "which command should I use" issues: manual issue-tracker query required at release time.
+
+## Dependency-Gating Profile
+
+Single-run clean-build diagnostics on the same Apple Silicon machine, with a shared Cargo registry/git cache and a fresh target directory for every build:
+
+- Generated `minimal` preset: 20.09s / 296 compile units before; 9.19s / 263 units after.
+- Generated `api` preset: 29.54s / 457 compile units before; 26.74s / 453 units after.
+
+The minimal result is the primary justification for the dependency-gating change. The API clean-build and end-to-end results are directional; the five-sample end-to-end p95 contained one slower outlier, so no stronger latency claim is made.
 
 ## Benchmark Methodology
 

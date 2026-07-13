@@ -2,8 +2,10 @@
 
 use crate::error::Result;
 use async_trait::async_trait;
+#[cfg(any(test, feature = "organizations-seaorm", feature = "test-organizations"))]
 use sha2::{Digest, Sha256};
 
+#[cfg(any(test, feature = "organizations-seaorm", feature = "test-organizations"))]
 pub(crate) fn hash_invitation_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }

@@ -5,5 +5,5 @@ edition = "2021"
 
 [dependencies]
 tideway = { version = "0.7.22", default-features = false }
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 axum = "0.8"

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tideway = { version = "{{tideway_version}}", default-features = false{{#if has_tideway_features}}, features = [{{#each tideway_features}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}} }
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 axum = "0.8"
 {{#if has_auth_feature}}
 async-trait = "0.1"
