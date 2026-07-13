@@ -73,6 +73,7 @@ tideway dev --fix-env
 
 Then visit `http://localhost:8000/health`.
 If OpenAPI is enabled, visit `http://localhost:8000/swagger-ui`.
+Generated authentication and MFA operations are included in the API preset's OpenAPI document, including JWT bearer security. `--fix-env` creates independent random local JWT and MFA encryption secrets without changing configured values; production secrets belong in your deployment secret manager.
 
 The default API-first scaffold uses SQLite for local development.
 If you want local Postgres instead, add `--with-docker` and start it with `docker compose up -d`.
@@ -192,7 +193,7 @@ Visit `http://localhost:8000/health` to see the built-in health check.
 
 Canonical onboarding path:
 - `tideway new my_app`
-- `tideway dev`
+- `tideway dev --fix-env`
 - `tideway resource <name> --wire --db --repo --service --paginate --search`
 - `tideway migrate`
 

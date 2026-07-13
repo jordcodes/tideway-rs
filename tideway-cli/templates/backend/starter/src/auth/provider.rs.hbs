@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::entities::user;
 {{/if}}
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct SimpleUser {
     pub id: String,
     pub email: Option<String>,

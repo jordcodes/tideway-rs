@@ -185,6 +185,19 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
 
     tideway_cli::commands::new::run(args).expect("run new command");
 
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "pub(crate) AuthApiDoc",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "security((\"bearer_auth\" = []))",
+    );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        "openapi_docs::ApiDoc, auth::AuthApiDoc",
+    );
+
     patch_scaffold_to_workspace(&project_dir);
 
     run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
@@ -228,6 +241,18 @@ fn test_new_command_auth_mfa_scaffold_is_secure_and_compiles() {
         "MfaLastTotpStep",
     );
     assert!(project_dir.join("src/entities/mfa_backup_code.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "path = \"/auth/mfa/verify\"",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "path = \"/auth/mfa/setup\"",
+    );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        "openapi_docs::ApiDoc, auth::AuthApiDoc",
+    );
 
     patch_scaffold_to_workspace(&project_dir);
     run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
@@ -471,7 +496,7 @@ fn test_new_command_with_preset_api() {
     );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
-        "tideway::openapi_merge_module!(openapi_docs, ApiDoc)",
+        "tideway::openapi_merge!(openapi_docs::ApiDoc, auth::AuthApiDoc)",
     );
     assert_file_not_contains(
         &project_dir.join("src/openapi_docs.rs"),

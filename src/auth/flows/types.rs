@@ -32,6 +32,7 @@ pub struct MfaVerifyRequest {
 
 /// Response to a login attempt.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "status")]
 pub enum LoginResponse {
     /// Login successful, here's your tokens.
@@ -161,6 +162,7 @@ mod login_http_response_tests {
 
 /// Type of MFA being used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum MfaType {
     /// Time-based one-time password.

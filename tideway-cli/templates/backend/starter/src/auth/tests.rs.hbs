@@ -11,10 +11,61 @@ use sea_orm::Database;
 use serde_json::{json, Value};
 use tideway::{auth::{JwtIssuer, JwtIssuerConfig{{#if has_auth_mfa_feature}}, MfaSecretCipher, TotpConfig, TotpManager{{/if}}}, App};
 use tower::ServiceExt;
+{{#if has_openapi_feature}}
+use utoipa::OpenApi;
+{{/if}}
 
 use super::{AuthModule, SimpleAuthProvider};
 
 const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
+
+{{#if has_openapi_feature}}
+#[test]
+fn auth_openapi_covers_generated_routes_and_bearer_security() {
+    let document = crate::auth::AuthApiDoc::openapi();
+    for path in [
+        "/auth/register",
+        "/auth/login",
+        "/auth/refresh",
+        "/auth/logout",
+        "/auth/me",
+        {{#if has_auth_mfa_feature}}
+        "/auth/mfa/setup",
+        "/auth/mfa/enable",
+        "/auth/mfa/verify",
+        "/auth/mfa",
+        {{/if}}
+    ] {
+        assert!(document.paths.paths.contains_key(path), "missing OpenAPI path: {path}");
+    }
+    assert!(
+        document
+            .components
+            .as_ref()
+            .is_some_and(|components| components.security_schemes.contains_key("bearer_auth")),
+        "missing bearer_auth security scheme"
+    );
+
+    let document = serde_json::to_value(document).expect("serialize OpenAPI document");
+    for (schema, field) in [
+        ("RegisterBody", "password"),
+        ("LoginBody", "password"),
+        ("RefreshBody", "refresh_token"),
+        ("LogoutBody", "refresh_token"),
+        {{#if has_auth_mfa_feature}}
+        ("MfaVerifyBody", "mfa_token"),
+        ("MfaVerifyBody", "code"),
+        ("MfaSetupBody", "password"),
+        {{/if}}
+    ] {
+        assert_eq!(
+            document["components"]["schemas"][schema]["properties"][field]["writeOnly"],
+            true,
+            "{schema}.{field} must be write-only in OpenAPI"
+        );
+    }
+}
+{{/if}}
 
 async fn test_app() -> Router {
     let db = Database::connect("sqlite::memory:")

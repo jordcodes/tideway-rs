@@ -15,13 +15,16 @@ Use `--no-prompt` for the same defaults in CI/non-interactive runs, or `--preset
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
 The default API scaffold uses SQLite locally, so this path boots without extra database setup.
 It also includes a sample `todo` resource wired through entity, repository, and service layers, with pagination and `q` search already enabled on the list endpoint.
-If you want local Postgres instead, run `tideway new my_app --with-docker`, then `docker compose up -d` before `tideway dev`.
+`tideway dev --fix-env` creates `.env` from `.env.example`, replaces known development placeholders with cryptographically random local secrets, and runs pending migrations. It is safe to rerun: configured secrets are preserved.
+If you want local Postgres instead, run `tideway new my_app --with-docker`, then `docker compose up -d` before `tideway dev --fix-env`.
 
 ## 2) Run the server
 
 Visit:
 - `http://localhost:8000/health`
 - `http://localhost:8000/api`
+- `http://localhost:8000/swagger-ui`
+- `http://localhost:8000/api-docs/openapi.json`
 
 ## 3) Add a DB-backed resource (recommended)
 
@@ -31,7 +34,7 @@ tideway migrate
 ```
 
 This command scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring.
-If `tideway dev` is not already running, start it now.
+If `tideway dev --fix-env` is not already running, start it now.
 Run `tideway doctor` when you want a quick sanity check; it is not required for the happy path.
 
 ## 4) OpenAPI docs
@@ -40,6 +43,18 @@ If you followed the API-first scaffold, OpenAPI is already wired when enabled. V
 
 - `http://localhost:8000/swagger-ui`
 - `http://localhost:8000/api-docs/openapi.json`
+
+The generated document includes resource routes, authentication routes, JWT bearer security, and MFA routes when `auth-mfa` is enabled. Passwords, refresh tokens, MFA challenges, and verification codes are marked write-only in their request schemas.
+
+For an MFA-enabled API from the start:
+
+```bash
+tideway new my_app --preset api --features auth-mfa
+cd my_app
+tideway dev --fix-env
+```
+
+The command generates independent local `JWT_SECRET` and `MFA_ENCRYPTION_KEY` values in the gitignored `.env`; `.env.example` remains secret-free. In production, inject stable secrets through your deployment secret manager. Changing `MFA_ENCRYPTION_KEY` makes previously encrypted MFA secrets unreadable.
 
 If you need manual OpenAPI composition instead of the scaffolded path, see `docs/openapi.md`.
 If you need trait-based module contracts or alternative registration styles, see:

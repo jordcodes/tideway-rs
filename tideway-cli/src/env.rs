@@ -1,6 +1,7 @@
 //! Shared environment helpers for CLI commands.
 
 use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rand::RngCore;
 use std::collections::BTreeMap;
 use std::fs;
@@ -37,7 +38,7 @@ pub fn ensure_env(project_dir: &Path, fix_env: bool) -> Result<()> {
     let env_path = project_dir.join(".env");
     if env_path.exists() {
         if fix_env {
-            replace_jwt_placeholder(&env_path)?;
+            replace_local_secret_placeholders(&env_path)?;
         }
         return Ok(());
     }
@@ -50,37 +51,56 @@ pub fn ensure_env(project_dir: &Path, fix_env: bool) -> Result<()> {
 
     let contents = fs::read_to_string(&env_example_path)
         .with_context(|| format!("Failed to read {}", env_example_path.display()))?;
-    write_file(&env_path, &replace_jwt_placeholder_in_contents(&contents))
-        .with_context(|| format!("Failed to create {}", env_path.display()))?;
+    write_file(
+        &env_path,
+        &replace_local_secret_placeholders_in_contents(&contents),
+    )
+    .with_context(|| format!("Failed to create {}", env_path.display()))?;
     print_success("Created .env from .env.example");
     Ok(())
 }
 
-fn replace_jwt_placeholder(path: &Path) -> Result<()> {
+fn replace_local_secret_placeholders(path: &Path) -> Result<()> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
-    let updated = replace_jwt_placeholder_in_contents(&contents);
+    let replaced_jwt = contains_jwt_placeholder(&contents);
+    let replaced_mfa = contains_empty_mfa_key(&contents);
+    let updated = replace_local_secret_placeholders_in_contents(&contents);
     if updated != contents {
         write_file(path, &updated)
             .with_context(|| format!("Failed to update {}", path.display()))?;
+    }
+    if replaced_jwt {
         print_success("Replaced placeholder JWT_SECRET with a random local secret");
+    }
+    if replaced_mfa {
+        print_success("Generated a random local MFA_ENCRYPTION_KEY");
     }
     Ok(())
 }
 
-fn replace_jwt_placeholder_in_contents(contents: &str) -> String {
-    let uses_placeholder = contents.lines().any(|line| {
+fn contains_jwt_placeholder(contents: &str) -> bool {
+    contents.lines().any(|line| {
         let Some((key, value)) = line.trim().split_once('=') else {
             return false;
         };
         key.trim() == "JWT_SECRET"
             && JWT_SECRET_PLACEHOLDERS.contains(&value.trim().trim_matches(['\"', '\'']))
-    });
-    if !uses_placeholder {
-        return contents.to_string();
-    }
+    })
+}
 
-    let secret = generate_jwt_secret();
+fn contains_empty_mfa_key(contents: &str) -> bool {
+    contents.lines().any(|line| {
+        let Some((key, value)) = line.trim().split_once('=') else {
+            return false;
+        };
+        key.trim() == "MFA_ENCRYPTION_KEY" && value.trim().trim_matches(['\"', '\'']).is_empty()
+    })
+}
+
+fn replace_local_secret_placeholders_in_contents(contents: &str) -> String {
+    let jwt_secret = contains_jwt_placeholder(contents).then(generate_jwt_secret);
+    let mfa_key = contains_empty_mfa_key(contents).then(generate_mfa_encryption_key);
     contents
         .lines()
         .map(|line| {
@@ -90,7 +110,17 @@ fn replace_jwt_placeholder_in_contents(contents: &str) -> String {
             if key.trim() == "JWT_SECRET"
                 && JWT_SECRET_PLACEHOLDERS.contains(&value.trim().trim_matches(['\"', '\'']))
             {
-                format!("JWT_SECRET={secret}")
+                format!(
+                    "JWT_SECRET={}",
+                    jwt_secret.as_deref().expect("generated above")
+                )
+            } else if key.trim() == "MFA_ENCRYPTION_KEY"
+                && value.trim().trim_matches(['\"', '\'']).is_empty()
+            {
+                format!(
+                    "MFA_ENCRYPTION_KEY={}",
+                    mfa_key.as_deref().expect("generated above")
+                )
             } else {
                 line.to_string()
             }
@@ -104,6 +134,12 @@ fn generate_jwt_secret() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn generate_mfa_encryption_key() -> String {
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    STANDARD.encode(bytes)
 }
 
 pub fn read_env_map(path: &Path) -> Option<BTreeMap<String, String>> {
@@ -127,4 +163,32 @@ fn parse_env_map(contents: &str) -> BTreeMap<String, String> {
         }
     }
     vars
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_secret_bootstrap_generates_independent_valid_values() {
+        let updated = replace_local_secret_placeholders_in_contents(
+            "JWT_SECRET=replace-with-at-least-32-random-bytes\nMFA_ENCRYPTION_KEY=\n",
+        );
+        let env = parse_env_map(&updated);
+        let jwt = env.get("JWT_SECRET").expect("JWT secret");
+        let mfa = env.get("MFA_ENCRYPTION_KEY").expect("MFA key");
+
+        assert_eq!(jwt.len(), 64);
+        assert_eq!(STANDARD.decode(mfa).expect("base64 MFA key").len(), 32);
+        assert_ne!(jwt, mfa);
+    }
+
+    #[test]
+    fn local_secret_bootstrap_preserves_user_supplied_values() {
+        let contents = "JWT_SECRET=user-supplied-secret-with-at-least-32-bytes\nMFA_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n";
+        assert_eq!(
+            replace_local_secret_placeholders_in_contents(contents),
+            contents
+        );
+    }
 }

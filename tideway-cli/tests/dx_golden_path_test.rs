@@ -9,6 +9,8 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
 #[test]
 fn test_golden_path_new_then_doctor_then_dev_plan() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
@@ -252,6 +254,60 @@ fn test_dev_bootstraps_env_example_and_passes_env_to_cargo() {
 }
 
 #[test]
+fn test_auth_mfa_golden_path_generates_local_secrets_and_runs() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_output = run_tideway(&[
+        "new",
+        "my_app",
+        "--preset",
+        "api",
+        "--features",
+        "auth-mfa",
+        "--no-prompt",
+        "--path",
+        project_dir.to_str().expect("project path utf8"),
+    ]);
+    assert_success(&new_output, "tideway new --features auth-mfa");
+
+    let fake_cargo_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_cargo_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("cargo-invocation.log");
+    write_fake_cargo(&fake_cargo_dir, &invocation_log);
+
+    let output = run_tideway_with_path(
+        &[
+            "dev",
+            "--fix-env",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ],
+        &fake_cargo_dir,
+    );
+    assert_success(&output, "tideway dev --fix-env");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Swagger UI: http://localhost:8000/swagger-ui"));
+    assert!(stdout.contains("OpenAPI: http://localhost:8000/api-docs/openapi.json"));
+
+    let env = fs::read_to_string(project_dir.join(".env")).expect("read generated .env");
+    let jwt = env_value(&env, "JWT_SECRET").expect("JWT secret");
+    let mfa = env_value(&env, "MFA_ENCRYPTION_KEY").expect("MFA key");
+    assert_eq!(jwt.len(), 64);
+    assert_eq!(STANDARD.decode(mfa).expect("base64 MFA key").len(), 32);
+    assert_ne!(jwt, mfa);
+    assert!(
+        fs::read_to_string(project_dir.join(".env.example"))
+            .expect("read env example")
+            .contains("MFA_ENCRYPTION_KEY=\n"),
+        "generated secrets must not be written to .env.example"
+    );
+
+    let invocation = fs::read_to_string(&invocation_log).expect("read invocation log");
+    assert!(invocation.contains("ENV:MFA_ENCRYPTION_KEY="));
+}
+
+#[test]
 fn test_dev_fails_fast_when_postgres_server_is_unreachable() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -463,6 +519,13 @@ fn assert_success(output: &std::process::Output, label: &str) {
     );
 }
 
+fn env_value<'a>(contents: &'a str, key: &str) -> Option<&'a str> {
+    contents.lines().find_map(|line| {
+        let (candidate, value) = line.split_once('=')?;
+        (candidate == key).then_some(value)
+    })
+}
+
 fn create_minimal_project(project_dir: &Path) {
     fs::create_dir_all(project_dir.join("src")).expect("create src");
     fs::write(
@@ -508,8 +571,9 @@ set -euo pipefail\n\
 log=\"{}\"\n\
 echo \"ARG:$1\" > \"$log\"\n\
 echo \"ENV:DATABASE_AUTO_MIGRATE=${{DATABASE_AUTO_MIGRATE:-}}\" >> \"$log\"\n\
-echo \"ENV:JWT_SECRET=${{JWT_SECRET:-}}\" >> \"$log\"\n\
-echo \"ENV:DATABASE_URL=${{DATABASE_URL:-}}\" >> \"$log\"\n\
+	echo \"ENV:JWT_SECRET=${{JWT_SECRET:-}}\" >> \"$log\"\n\
+	echo \"ENV:MFA_ENCRYPTION_KEY=${{MFA_ENCRYPTION_KEY:-}}\" >> \"$log\"\n\
+	echo \"ENV:DATABASE_URL=${{DATABASE_URL:-}}\" >> \"$log\"\n\
 exit 0\n",
         invocation_log.display()
     );

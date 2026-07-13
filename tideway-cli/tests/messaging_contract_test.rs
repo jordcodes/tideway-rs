@@ -143,8 +143,8 @@ fn test_new_keeps_dev_as_primary_next_step_and_doctor_optional() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("2. tideway dev"),
-        "expected dev to stay in numbered next steps, got:\n{}",
+        stdout.contains("2. tideway dev --fix-env"),
+        "expected dev --fix-env to stay in numbered next steps, got:\n{}",
         stdout
     );
     assert!(

@@ -235,11 +235,14 @@ tideway setup
 Run a Tideway app in dev mode (loads `.env`, optional migrations).
 
 ```bash
-tideway dev
-tideway dev
+tideway dev --fix-env
 tideway dev --no-migrate
 tideway dev -- --release
 ```
+
+`--fix-env` is the recommended first-run command. It creates `.env` from `.env.example` and replaces recognized JWT placeholders and an empty `MFA_ENCRYPTION_KEY` with independent cryptographically random local values. Existing configured secrets are not rotated. The generated `.env` is gitignored; production secrets should come from your deployment secret manager.
+
+Before starting Cargo, `tideway dev` validates database configuration and prints the local API, health, Swagger UI, and OpenAPI URLs that are enabled by the project configuration. It also enables pending migrations for the local run unless `--no-migrate` is supplied.
 
 ### `tideway migrate`
 

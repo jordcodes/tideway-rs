@@ -211,7 +211,11 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
             println!("  {}. docker compose up -d", step);
             step += 1;
         }
-        println!("  {}. tideway dev", step);
+        if needs_env {
+            println!("  {}. tideway dev --fix-env", step);
+        } else {
+            println!("  {}. tideway dev", step);
+        }
         println!();
         println!("Optional: run `tideway doctor` for a project/setup audit.");
         println!();
@@ -1241,13 +1245,18 @@ fn should_suggest_migrate(preset: Option<NewPreset>, has_database_feature: bool)
 fn print_preset_next_steps(preset: Option<NewPreset>) {
     match preset {
         Some(NewPreset::Api) => {
-            println!("{}", "First request:".yellow().bold());
+            println!("{}", "Local development URLs:".yellow().bold());
+            println!("  API:        http://localhost:8000");
+            println!("  Health:     http://localhost:8000/health");
+            println!("  Swagger UI: http://localhost:8000/swagger-ui");
+            println!("  OpenAPI:    http://localhost:8000/api-docs/openapi.json");
+            println!();
+            println!("{}", "First requests:".yellow().bold());
             println!("  curl http://localhost:8000/api/todos");
             println!("  curl \"http://localhost:8000/api/todos?limit=20&offset=0&q=Example\"");
             println!(
                 "  curl -X POST http://localhost:8000/auth/register -H 'content-type: application/json' -d '{{\"email\":\"dev@example.com\",\"password\":\"correct horse battery staple\"}}'"
             );
-            println!("  # OpenAPI (if enabled): http://localhost:8000/swagger-ui");
             println!();
         }
         Some(NewPreset::Saas) => {

@@ -50,6 +50,7 @@ pub fn run_with_runtime(args: DevArgs, runtime: CommandRuntime) -> Result<()> {
     };
 
     preflight_database(&project_dir, &env_map)?;
+    print_local_urls(&project_dir, &env_map)?;
 
     let mut command = Command::new("cargo");
     command.arg("run").current_dir(&project_dir);
@@ -178,6 +179,47 @@ fn project_uses_database(project_dir: &Path) -> Result<bool> {
         .context("Failed to parse Cargo.toml")?;
 
     Ok(has_dependency(&doc, "sea-orm") || has_tideway_feature(&doc, "database"))
+}
+
+fn print_local_urls(project_dir: &Path, env_map: &Option<BTreeMap<String, String>>) -> Result<()> {
+    let port = env_map
+        .as_ref()
+        .and_then(|env| env.get("TIDEWAY_PORT").or_else(|| env.get("PORT")))
+        .map(String::as_str)
+        .unwrap_or("8000");
+    let base_url = format!("http://localhost:{port}");
+    print_info("Local URLs once the server is ready:");
+    print_info(&format!("API: {base_url}"));
+    print_info(&format!("Health: {base_url}/health"));
+
+    if project_uses_tideway_feature(project_dir, "openapi")? {
+        let openapi_enabled = env_flag(env_map, "OPENAPI_ENABLED", false);
+        if openapi_enabled && env_flag(env_map, "OPENAPI_SWAGGER_UI", false) {
+            print_info(&format!("Swagger UI: {base_url}/swagger-ui"));
+        }
+        if openapi_enabled && env_flag(env_map, "OPENAPI_SERVE_SPEC", false) {
+            print_info(&format!("OpenAPI: {base_url}/api-docs/openapi.json"));
+        }
+    }
+    Ok(())
+}
+
+fn env_flag(env_map: &Option<BTreeMap<String, String>>, key: &str, default: bool) -> bool {
+    env_map
+        .as_ref()
+        .and_then(|env| env.get(key))
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn project_uses_tideway_feature(project_dir: &Path, feature: &str) -> Result<bool> {
+    let cargo_path = project_dir.join("Cargo.toml");
+    let contents = fs::read_to_string(&cargo_path)
+        .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
+    let doc = contents
+        .parse::<DocumentMut>()
+        .context("Failed to parse Cargo.toml")?;
+    Ok(has_tideway_feature(&doc, feature))
 }
 
 fn has_tideway_feature(doc: &DocumentMut, feature: &str) -> bool {

@@ -114,7 +114,7 @@ async fn main() -> Result<(), std::io::Error> {
 
 {{#if has_openapi_feature}}
     let app = if {{#if has_config}}config.tideway{{else}}config{{/if}}.openapi.enabled {
-        let openapi = tideway::openapi_merge_module!(openapi_docs, ApiDoc);
+        let openapi = {{#if has_auth_feature}}{{#if has_database_feature}}tideway::openapi_merge!(openapi_docs::ApiDoc, auth::AuthApiDoc){{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}}{{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}};
         let openapi_router = tideway::openapi::create_openapi_router(
             openapi,
             &{{#if has_config}}config.tideway{{else}}config{{/if}}.openapi,

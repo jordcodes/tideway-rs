@@ -162,71 +162,83 @@ impl RouteModule for AuthModule {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct RegisterBody {
     pub email: String,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub password: String,
     pub name: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct RegisterResponse {
     pub user_id: String,
     pub message: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct LoginBody {
     pub email: String,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub password: String,
     pub remember_me: Option<bool>,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub mfa_code: Option<String>,
 }
 
 {{#if has_auth_mfa_feature}}
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct MfaVerifyBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub mfa_token: String,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub code: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct MfaSetupBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct MfaSetupResponse {
     pub secret: String,
     pub uri: String,
     pub qr_code_base64: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct MfaEnableBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub password: String,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub secret: String,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub code: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct MfaEnableResponse {
     pub backup_codes: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct MfaDisableBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub password: String,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub code: String,
 }
 {{/if}}
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct RefreshBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub refresh_token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct RefreshResponse {
     pub access_token: String,
     pub refresh_token: String,
@@ -234,19 +246,22 @@ pub struct RefreshResponse {
     pub token_type: &'static str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct LogoutBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub refresh_token: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct PasswordResetBody {
     pub email: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct PasswordResetCompleteBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub token: String,
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub new_password: String,
 }
 
@@ -260,6 +275,19 @@ fn user_store(state: &AuthState) -> DbUserStore {
     )
 }
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    post,
+    path = "/auth/register",
+    tag = "Authentication",
+    request_body = RegisterBody,
+    responses(
+        (status = 200, description = "User registered", body = RegisterResponse),
+        (status = 400, description = "Invalid registration", body = tideway::ErrorResponse),
+        (status = 429, description = "Rate limited", body = tideway::ErrorResponse)
+    )
+)]
+{{/if}}
 async fn register(
     Extension(state): Extension<AuthState>,
     Json(body): Json<RegisterBody>,
@@ -279,6 +307,21 @@ async fn register(
     }))
 }
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    post,
+    path = "/auth/login",
+    tag = "Authentication",
+    request_body = LoginBody,
+    responses(
+        (status = 200, description = "Login succeeded or MFA is required", body = tideway::auth::LoginResponse),
+        (status = 401, description = "Invalid credentials", body = tideway::ErrorResponse),
+        (status = 403, description = "Email verification required", body = tideway::ErrorResponse),
+        (status = 423, description = "Account temporarily locked", body = tideway::ErrorResponse),
+        (status = 429, description = "Rate limited", body = tideway::ErrorResponse)
+    )
+)]
+{{/if}}
 async fn login(
     ConnectInfo(address): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
@@ -317,6 +360,19 @@ async fn login(
 }
 
 {{#if has_auth_mfa_feature}}
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    post,
+    path = "/auth/mfa/verify",
+    tag = "MFA",
+    request_body = MfaVerifyBody,
+    responses(
+        (status = 200, description = "MFA verified", body = tideway::auth::LoginResponse),
+        (status = 401, description = "Invalid or expired MFA challenge", body = tideway::ErrorResponse),
+        (status = 423, description = "Account temporarily locked", body = tideway::ErrorResponse)
+    )
+)]
+{{/if}}
 async fn verify_mfa(
     Extension(state): Extension<AuthState>,
     Json(body): Json<MfaVerifyBody>,
@@ -363,6 +419,20 @@ async fn reauthenticate_mfa_change(
     Ok((store, user))
 }
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    post,
+    path = "/auth/mfa/setup",
+    tag = "MFA",
+    request_body = MfaSetupBody,
+    responses(
+        (status = 200, description = "Temporary TOTP setup data; do not cache", body = MfaSetupResponse),
+        (status = 400, description = "MFA is already enabled", body = tideway::ErrorResponse),
+        (status = 401, description = "Reauthentication failed", body = tideway::ErrorResponse)
+    ),
+    security(("bearer_auth" = []))
+)]
+{{/if}}
 async fn setup_mfa(
     AuthUser(actor): AuthUser<SimpleAuthProvider>,
     Extension(state): Extension<AuthState>,
@@ -385,6 +455,20 @@ async fn setup_mfa(
         .into_response())
 }
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    post,
+    path = "/auth/mfa/enable",
+    tag = "MFA",
+    request_body = MfaEnableBody,
+    responses(
+        (status = 200, description = "MFA enabled; recovery codes are returned once", body = MfaEnableResponse),
+        (status = 400, description = "MFA is already enabled", body = tideway::ErrorResponse),
+        (status = 401, description = "Password or MFA code is invalid", body = tideway::ErrorResponse)
+    ),
+    security(("bearer_auth" = []))
+)]
+{{/if}}
 async fn enable_mfa(
     AuthUser(actor): AuthUser<SimpleAuthProvider>,
     Extension(state): Extension<AuthState>,
@@ -414,6 +498,20 @@ async fn enable_mfa(
         .into_response())
 }
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    delete,
+    path = "/auth/mfa",
+    tag = "MFA",
+    request_body = MfaDisableBody,
+    responses(
+        (status = 200, description = "MFA disabled", body = tideway::MessageResponse),
+        (status = 400, description = "MFA is not enabled", body = tideway::ErrorResponse),
+        (status = 401, description = "Password or MFA code is invalid", body = tideway::ErrorResponse)
+    ),
+    security(("bearer_auth" = []))
+)]
+{{/if}}
 async fn disable_mfa(
     AuthUser(actor): AuthUser<SimpleAuthProvider>,
     Extension(state): Extension<AuthState>,
@@ -439,6 +537,18 @@ async fn disable_mfa(
 }
 {{/if}}
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    post,
+    path = "/auth/refresh",
+    tag = "Authentication",
+    request_body = RefreshBody,
+    responses(
+        (status = 200, description = "Token pair rotated", body = RefreshResponse),
+        (status = 401, description = "Invalid or reused refresh token", body = tideway::ErrorResponse)
+    )
+)]
+{{/if}}
 async fn refresh(
     Extension(state): Extension<AuthState>,
     Json(body): Json<RefreshBody>,
@@ -459,6 +569,18 @@ async fn refresh(
     }))
 }
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    post,
+    path = "/auth/logout",
+    tag = "Authentication",
+    request_body = LogoutBody,
+    responses(
+        (status = 200, description = "Refresh-token family revoked", body = tideway::MessageResponse),
+        (status = 401, description = "Invalid refresh token", body = tideway::ErrorResponse)
+    )
+)]
+{{/if}}
 async fn logout(
     Extension(state): Extension<AuthState>,
     Json(body): Json<LogoutBody>,
@@ -504,9 +626,69 @@ async fn complete_password_reset(
     Ok(MessageResponse::success("Password reset complete"))
 }
 
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    get,
+    path = "/auth/me",
+    tag = "Authentication",
+    responses(
+        (status = 200, description = "Current authenticated user", body = SimpleUser),
+        (status = 401, description = "Missing or invalid access token", body = tideway::ErrorResponse)
+    ),
+    security(("bearer_auth" = []))
+)]
+{{/if}}
 async fn me(AuthUser(user): AuthUser<SimpleAuthProvider>) -> Result<Json<SimpleUser>> {
     Ok(Json(user))
 }
+
+{{#if has_openapi_feature}}
+struct BearerSecurity;
+
+impl utoipa::Modify for BearerSecurity {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+
+        openapi
+            .components
+            .get_or_insert_with(utoipa::openapi::Components::new)
+            .add_security_scheme(
+                "bearer_auth",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            );
+    }
+}
+
+tideway::openapi_doc!(
+    pub(crate) AuthApiDoc,
+    paths(register, login, refresh, logout, me{{#if has_auth_mfa_feature}}, verify_mfa, setup_mfa, enable_mfa, disable_mfa{{/if}}),
+    components(schemas(
+        RegisterBody,
+        RegisterResponse,
+        LoginBody,
+        RefreshBody,
+        RefreshResponse,
+        LogoutBody,
+        SimpleUser,
+        tideway::auth::LoginResponse,
+        tideway::auth::MfaType,
+        tideway::MessageResponse,
+        tideway::ErrorResponse{{#if has_auth_mfa_feature}},
+        MfaVerifyBody,
+        MfaSetupBody,
+        MfaSetupResponse,
+        MfaEnableBody,
+        MfaEnableResponse,
+        MfaDisableBody{{/if}}
+    )),
+    modifiers(&BearerSecurity)
+);
+{{/if}}
 
 {{else}}
 use axum::{

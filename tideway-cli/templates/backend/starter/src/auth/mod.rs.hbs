@@ -12,6 +12,11 @@ mod tests;
 
 pub use provider::{SimpleAuthProvider, SimpleUser};
 pub use routes::AuthModule;
+{{#if has_openapi_feature}}
+{{#if has_database_feature}}
+pub(crate) use routes::AuthApiDoc;
+{{/if}}
+{{/if}}
 {{#if has_database_feature}}
 pub use store::{AppTokenIssuer, DbMfaTokenStore, DbRefreshTokenStore, DbUserStore};
 {{/if}}

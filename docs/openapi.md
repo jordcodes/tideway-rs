@@ -51,6 +51,10 @@ Once your application is running with OpenAPI enabled:
 1. **Swagger UI**: Visit `http://localhost:8000/swagger-ui` to explore the API interactively
 2. **OpenAPI Spec**: Download the spec from `http://localhost:8000/api-docs/openapi.json`
 
+The API preset merges its generated resource and authentication documents. Authentication operations declare JWT bearer security where required. Sensitive request fields such as passwords, refresh tokens, MFA challenge tokens, and verification codes are marked `writeOnly`.
+
+The scaffold enables Swagger UI and the JSON specification for local development. Treat both as deployment choices: keep them disabled for a private production API unless they are intentionally exposed and protected by your edge or application access controls.
+
 ## Usage Scenarios
 
 ### Development - Private API
