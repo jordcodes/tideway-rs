@@ -369,6 +369,14 @@ fn test_new_command_with_preset_api() {
         "DATABASE_URL=sqlite:./my_app.db?mode=rwc",
     );
     assert!(project_dir.join("src/auth/mod.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "Authentication is not configured",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "let user_id = body.email.clone()",
+    );
     assert!(project_dir.join("migration/Cargo.toml").exists());
     assert_file_contains(&project_dir.join("migration/Cargo.toml"), "\"sqlx-sqlite\"");
     assert!(project_dir.join("migration/src/lib.rs").exists());

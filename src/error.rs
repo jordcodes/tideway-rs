@@ -283,14 +283,18 @@ impl TidewayError {
             stack_trace: None,
         };
 
+        let expose_context = dev_mode || !status.is_server_error();
+
         if let Some(info) = info {
             response.error_id = info.context.error_id;
-            response.details = info.context.details;
-            if !info.context.context.is_empty() {
-                response.context = Some(info.context.context);
-            }
-            if !info.context.field_errors.is_empty() {
-                response.field_errors = Some(info.context.field_errors);
+            if expose_context {
+                response.details = info.context.details;
+                if !info.context.context.is_empty() {
+                    response.context = Some(info.context.context);
+                }
+                if !info.context.field_errors.is_empty() {
+                    response.field_errors = Some(info.context.field_errors);
+                }
             }
             if dev_mode {
                 response.stack_trace = info.stack_trace;
@@ -918,6 +922,50 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
         assert!(json.get("stack_trace").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_production_server_error_hides_details_and_context() {
+        let err = TidewayError::internal("database password: secret123");
+        let info = ErrorInfo::new().with_context(
+            ErrorContext::new()
+                .with_error_id("safe-correlation-id")
+                .with_detail("connected to db.internal with secret123")
+                .with_context("database_url", "postgres://admin:secret123@db.internal/app")
+                .with_field_error("internal_query", "SELECT secret FROM credentials"),
+        );
+
+        let response = err.into_response_with_info(Some(info), false);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["error"], "Internal server error");
+        assert_eq!(json["error_id"], "safe-correlation-id");
+        assert!(json.get("details").is_none());
+        assert!(json.get("context").is_none());
+        assert!(json.get("field_errors").is_none());
+        assert!(!String::from_utf8_lossy(&body).contains("secret123"));
+    }
+
+    #[tokio::test]
+    async fn test_dev_server_error_includes_details_and_context() {
+        let err = TidewayError::internal("debug error");
+        let info = ErrorInfo::new().with_context(
+            ErrorContext::new()
+                .with_detail("debug detail")
+                .with_context("component", "database"),
+        );
+
+        let response = err.into_response_with_info(Some(info), true);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["details"], "debug detail");
+        assert_eq!(json["context"]["component"], "database");
     }
 
     #[tokio::test]

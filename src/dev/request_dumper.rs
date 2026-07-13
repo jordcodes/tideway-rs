@@ -122,8 +122,67 @@ where
 fn format_headers(headers: &HeaderMap) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (key, value) in headers.iter() {
-        let value_str = value.to_str().unwrap_or("<invalid>").to_string();
+        let value_str = if is_sensitive_header(key.as_str()) {
+            "[REDACTED]".to_string()
+        } else {
+            value.to_str().unwrap_or("<invalid>").to_string()
+        };
         map.insert(key.to_string(), json!(value_str));
     }
     json!(map)
+}
+
+fn is_sensitive_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "authorization"
+            | "cookie"
+            | "set-cookie"
+            | "proxy-authorization"
+            | "x-api-key"
+            | "x-auth-token"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, HeaderValue};
+
+    #[test]
+    fn request_dumper_redacts_sensitive_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            HeaderValue::from_static("Bearer secret-token"),
+        );
+        headers.insert("cookie", HeaderValue::from_static("session=secret-session"));
+        headers.insert("x-api-key", HeaderValue::from_static("secret-api-key"));
+        headers.insert("content-type", HeaderValue::from_static("application/json"));
+
+        let formatted = format_headers(&headers);
+
+        assert_eq!(formatted["authorization"], "[REDACTED]");
+        assert_eq!(formatted["cookie"], "[REDACTED]");
+        assert_eq!(formatted["x-api-key"], "[REDACTED]");
+        assert_eq!(formatted["content-type"], "application/json");
+        let serialized = formatted.to_string();
+        assert!(!serialized.contains("secret-token"));
+        assert!(!serialized.contains("secret-session"));
+        assert!(!serialized.contains("secret-api-key"));
+    }
+
+    #[test]
+    fn response_dumper_redacts_set_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "set-cookie",
+            HeaderValue::from_static("session=secret-session; HttpOnly"),
+        );
+
+        let formatted = format_headers(&headers);
+
+        assert_eq!(formatted["set-cookie"], "[REDACTED]");
+        assert!(!formatted.to_string().contains("secret-session"));
+    }
 }

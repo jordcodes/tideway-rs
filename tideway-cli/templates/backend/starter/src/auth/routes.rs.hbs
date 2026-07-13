@@ -7,7 +7,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tideway::auth::{AuthUser, JwtIssuer, TokenPair, TokenSubject};
+use tideway::auth::{AuthUser, JwtIssuer, TokenPair};
 use tideway::{AppContext, Result, RouteModule, TidewayError};
 
 use crate::auth::{SimpleAuthProvider, SimpleUser};
@@ -57,30 +57,14 @@ pub struct LoginResponse {
 }
 
 async fn login(
-    Extension(state): Extension<AuthState>,
-    Json(body): Json<LoginBody>,
+    Extension(_state): Extension<AuthState>,
+    Json(_body): Json<LoginBody>,
 ) -> Result<Json<LoginResponse>> {
-    if body.email.trim().is_empty() {
-        return Err(TidewayError::bad_request("Email is required"));
-    }
-    if body.password.trim().is_empty() {
-        return Err(TidewayError::bad_request("Password is required"));
-    }
-
-    // TODO: Replace this stub with real user lookup + password verification.
-    let user_id = body.email.clone();
-
-    let mut subject = TokenSubject::new(&user_id).with_email(&body.email);
-    if let Some(name) = body.name.as_deref() {
-        if !name.is_empty() {
-            subject = subject.with_name(name);
-        }
-    }
-
-    let remember_me = body.remember_me.unwrap_or(false);
-    let tokens = state.jwt_issuer.issue(subject, remember_me)?;
-
-    Ok(Json(LoginResponse { user_id, tokens }))
+    // Fail closed until the application wires a real user store and password verifier.
+    // Never replace this with credential acceptance based only on request shape.
+    Err(TidewayError::service_unavailable(
+        "Authentication is not configured. Wire database-backed user lookup and password verification before enabling login.",
+    ))
 }
 
 async fn me(AuthUser(user): AuthUser<SimpleAuthProvider>) -> Result<Json<SimpleUser>> {
