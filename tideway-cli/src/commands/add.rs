@@ -104,7 +104,7 @@ fn validate_add_args(args: &AddArgs) -> Result<()> {
         return Err(anyhow::anyhow!(error_contract(
             "--db is only supported with `tideway add organizations`",
             "Run `tideway add organizations --wire --db` for database-backed organization scaffolding.",
-            "For DB-backed CRUD resources, use `tideway resource <name> --wire --db --repo --service`.",
+            "For DB-backed CRUD resources, use `tideway resource <name>`.",
         )));
     }
 

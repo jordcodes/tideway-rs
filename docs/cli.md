@@ -137,13 +137,25 @@ It currently expects an existing org-aware DB-backed auth/user contract (`Reques
 
 Generate a CRUD route module for a resource.
 
+Recommended full API resource:
+
 ```bash
 tideway resource user
-tideway resource user --profile stub
+```
+
+Intent-specific full-stack profiles:
+
+```bash
 tideway resource organization --profile tenant
 tideway resource subscription --profile owned
 tideway resource admin_user --profile admin
 tideway resource audit_event --profile event
+```
+
+Advanced shape overrides and lightweight scaffolds:
+
+```bash
+tideway resource user --profile stub
 tideway resource user --wire
 tideway resource invoice_item --wire
 tideway resource user --wire --db
@@ -157,6 +169,7 @@ tideway resource user --wire --db --paginate --search
 ```
 
 `--profile api` is the default and applies full-stack defaults (`--wire --db --repo --service --paginate --search`) when no shape flags are set.
+For the primary workflow, prefer `tideway resource <name>` and let the profile choose those implementation details.
 `--profile tenant` generates a tenant or organization-shaped schema (`name`, `slug`, `status`, timestamps).
 `--profile owned` generates a tenant-owned resource shape (`organization_id`, `owner_id`, `name`, `status`, timestamps).
 `--profile admin` generates an operator/admin shape (`email`, `role`, `enabled`, timestamps).
@@ -260,7 +273,7 @@ tideway migrate up -- --num 2
 
 ## Notes
 
-- Canonical path: `new` -> `dev` -> `resource ...` -> `migrate`.
+- Canonical path: `new` -> `dev` -> `resource <name>` -> `migrate`.
 - `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
 - `tideway doctor` is a quick sanity check and repair tool, not a required first-run step.
 - Frontend `generate` / `setup` flows are currently Vue-focused advanced helpers, not a co-equal onboarding path with the backend/API workflow.

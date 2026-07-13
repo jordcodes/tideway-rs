@@ -3,7 +3,7 @@
 //! Usage:
 //!   tideway new my_app
 //!   tideway dev
-//!   tideway resource user --wire --db --repo --service --paginate --search
+//!   tideway resource user
 //!   tideway generate auth --framework vue --style shadcn
 
 use anyhow::Result;

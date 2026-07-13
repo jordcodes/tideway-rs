@@ -6,7 +6,7 @@ Follow these conventions to work efficiently and safely.
 ## Golden Path (API)
 - Prefer the CLI wizard: `tideway new my_app` and follow prompts.
 - Add resources with:
-  - `tideway resource <name> --wire --db --repo --service --paginate --search`
+  - `tideway resource <name>`
 - Run the app:
   - `tideway dev --fix-env`
   - `tideway migrate` for DB migrations

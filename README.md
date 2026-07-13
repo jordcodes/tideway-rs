@@ -79,9 +79,9 @@ The default API-first scaffold uses SQLite for local development.
 If you want local Postgres instead, add `--with-docker` and start it with `docker compose up -d`.
 It also seeds a sample `todo` resource that already follows the recommended entity -> repository -> service path, with pagination and `q` search on the list route.
 
-Canonical next step: add your first DB-backed resource with
-`tideway resource <name> --wire --db --repo --service --paginate --search`,
-then run `tideway migrate`.
+Canonical next step: run `tideway resource <name>` to add a fully wired DB-backed
+resource, then run `tideway migrate`. The zero-flag API profile includes routes,
+an entity and migration, a repository, a service, pagination, and search.
 
 Optional sanity check: run `tideway doctor` if you want a project/setup audit before you keep building.
 
@@ -97,7 +97,7 @@ Frontend `generate` / `setup` helpers are advanced and currently intended for ex
 If you're using coding agents (Codex, Claude Code, OpenCode), start here:
 
 - Use `tideway new my_app` and follow the wizard (fastest path).
-- Add resources with `tideway resource <name> --wire --db --repo --service --paginate --search`.
+- Add full API resources with `tideway resource <name>`.
 - Run `tideway dev --fix-env` to boot with env + migrations.
 
 Agent-friendly flags:
@@ -194,7 +194,7 @@ Visit `http://localhost:8000/health` to see the built-in health check.
 Canonical onboarding path:
 - `tideway new my_app`
 - `tideway dev --fix-env`
-- `tideway resource <name> --wire --db --repo --service --paginate --search`
+- `tideway resource <name>`
 - `tideway migrate`
 
 For advanced/manual composition patterns, see `docs/module_contracts.md`.

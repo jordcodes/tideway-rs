@@ -7,7 +7,7 @@ Make Tideway's canonical path trustworthy:
 1. `tideway new <app>`
 2. `tideway dev --fix-env`
 3. first successful request
-4. `tideway resource <name> --wire --db --repo --service --paginate --search`
+4. `tideway resource <name>`
 
 The concrete product target is:
 
@@ -167,7 +167,7 @@ Tasks:
    - SaaS preset
    - worker preset
 2. Ensure the default starter does not front-load unnecessary concerns.
-3. Keep `resource ... --wire --db --repo --service --paginate --search` as the first explicit persistence step users take.
+3. Keep `resource <name>` as the first explicit persistence step users take; reserve shape flags for intentional customization.
 
 Acceptance criteria:
 

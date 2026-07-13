@@ -48,14 +48,14 @@ tideway add auth
 Primary:
 ```bash
 cd my_app
-tideway resource user --wire --db --repo --service --paginate --search
+tideway resource user
 ```
 
 Advanced:
 ```bash
 tideway new my_app
 cd my_app
-tideway resource user --wire --db --repo --service --paginate --search
+tideway resource user
 ```
 
 ### 5) `tideway resource ... --repo` fails without `--db`

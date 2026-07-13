@@ -1092,11 +1092,52 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         print_info("Skipped route unit tests for the DB-backed resource");
     }
 
-    print_info(&format!(
-        "Primary path reminder: run {} to boot and verify the new resource.",
-        DEV_FIX_ENV_COMMAND
-    ));
     print_success(&format!("Generated {} resource", resource_name));
+
+    let mut generated_parts = vec!["route"];
+    if args.db {
+        generated_parts.extend(["entity", "migration"]);
+    }
+    if args.repo {
+        generated_parts.push("repository");
+    }
+    if args.service {
+        generated_parts.push("service");
+    }
+    if args.wire {
+        generated_parts.push("wiring");
+    }
+    if args.wire && has_openapi {
+        generated_parts.push("OpenAPI");
+    }
+    print_info(&format!("Included: {}", generated_parts.join(", ")));
+
+    if args.db {
+        print_info("Next: run `tideway migrate` to apply the generated migration.");
+    }
+    if args.wire {
+        print_info(&format!("Run or restart: {}", DEV_FIX_ENV_COMMAND));
+        let list_url = if args.paginate {
+            format!("http://localhost:8000/api/{resource_plural}?limit=20")
+        } else {
+            format!("http://localhost:8000/api/{resource_plural}")
+        };
+        if matches!(
+            args.profile,
+            ResourceProfile::Owned | ResourceProfile::Admin
+        ) {
+            print_info(&format!(
+                "Try it with an access token: `curl -H \"Authorization: Bearer $ACCESS_TOKEN\" \"{list_url}\"`"
+            ));
+        } else {
+            print_info(&format!("Try it: `curl \"{list_url}\"`"));
+        }
+    } else {
+        print_info(&format!(
+            "Primary path reminder: run {} after wiring the resource.",
+            DEV_FIX_ENV_COMMAND
+        ));
+    }
     Ok(())
 }
 

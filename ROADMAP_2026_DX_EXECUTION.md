@@ -22,7 +22,7 @@ Fastest path from zero to a production-shaped Rust API, without sacrificing modu
 ## Canonical Path (Single Story)
 1. `tideway new <app>` (wizard/preset)
 2. `tideway dev --fix-env`
-3. `tideway resource <name> --wire --db --repo --service --paginate --search`
+3. `tideway resource <name>` (the default API profile wires the full stack)
 4. `tideway migrate` (or auto via dev)
 
 Everything else should be either:

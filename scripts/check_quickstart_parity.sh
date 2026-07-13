@@ -33,7 +33,7 @@ if [[ "$actual_fast_start" != "$expected_fast_start" ]]; then
 fi
 
 required_lines=(
-  "tideway resource <name> --wire --db --repo --service --paginate --search"
+  "tideway resource <name>"
   "tideway dev --fix-env"
 )
 for line in "${required_lines[@]}"; do
@@ -41,6 +41,10 @@ for line in "${required_lines[@]}"; do
     fail "README Agent Quickstart is missing required line: '${line}'"
   fi
 done
+
+if grep -Fq "tideway resource <name> --wire" README.md; then
+  fail "README primary guidance must keep resource shape flags behind the advanced path."
+fi
 
 if ! grep -Fq 'Then visit `http://localhost:8000/health`.' README.md; then
   fail "README quickstart must include the health endpoint verification line."

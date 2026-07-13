@@ -29,7 +29,7 @@ Notes:
 - Treat `backend`, `add`, and `init` as advanced commands for existing or nonstandard projects.
 
 If adding a resource:
-- `tideway resource carehome --wire --db --repo --service --paginate --search`
+- `tideway resource carehome`
 
 ## CLI Behavior (Important)
 - `--json` outputs machine-readable JSON lines.

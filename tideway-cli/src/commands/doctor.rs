@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::DoctorArgs;
 use crate::commands::messaging::{
     DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
-    PRIMARY_PATH_REMINDER_CHAIN, RESOURCE_WIRE_FLOW, SEA_ORM_MIGRATE_INIT_COMMAND,
+    PRIMARY_PATH_REMINDER_CHAIN, RESOURCE_API_FLOW, SEA_ORM_MIGRATE_INIT_COMMAND,
     TIDEWAY_ADD_DATABASE_WIRE_COMMAND, TIDEWAY_ADD_OPENAPI_COMMAND,
     TIDEWAY_ADD_OPENAPI_WIRE_COMMAND, TIDEWAY_BACKEND_COMMAND, TIDEWAY_DEV_COMMAND,
     TIDEWAY_RESOURCE_WIRE_COMMAND,
@@ -772,7 +772,7 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
             format!(
                 "OpenAPI docs file has no paths() entries (add routes or run {}; primary path reminder: {})",
                 TIDEWAY_RESOURCE_WIRE_COMMAND,
-                RESOURCE_WIRE_FLOW
+                RESOURCE_API_FLOW
             ),
         );
         return;
@@ -885,7 +885,7 @@ fn check_database_wiring(src_dir: &Path, main_contents: Option<&str>, report: &m
                 format!(
                     "DB-backed routes detected but AppContext is not wired (advanced fix: run {}; primary path for new resources: {})",
                     TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
-                    RESOURCE_WIRE_FLOW
+                    RESOURCE_API_FLOW
                 ),
             );
         }

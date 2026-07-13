@@ -29,11 +29,11 @@ Visit:
 ## 3) Add a DB-backed resource (recommended)
 
 ```bash
-tideway resource user --wire --db --repo --service --paginate --search
+tideway resource user
 tideway migrate
 ```
 
-This command scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring.
+The default API profile scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring. Use the shape flags in the CLI reference only when you intentionally want a partial or customized scaffold.
 If `tideway dev --fix-env` is not already running, start it now.
 Run `tideway doctor` when you want a quick sanity check; it is not required for the happy path.
 

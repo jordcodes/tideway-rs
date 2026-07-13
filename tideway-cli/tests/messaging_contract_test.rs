@@ -63,6 +63,16 @@ fn test_root_help_mentions_primary_path_trailer() {
         stdout
     );
     assert!(
+        stdout.contains("tideway resource <name> -> tideway migrate"),
+        "expected zero-flag resource command in root help, got:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("tideway resource <name> --wire"),
+        "root help should keep resource shape flags out of the primary path, got:\n{}",
+        stdout
+    );
+    assert!(
         stdout.contains("Advanced commands are for existing projects or nonstandard workflows."),
         "expected advanced-command note in root help, got:\n{}",
         stdout
@@ -160,7 +170,7 @@ fn test_new_keeps_dev_as_primary_next_step_and_doctor_optional() {
 }
 
 #[test]
-fn test_resource_mentions_primary_path_reminder() {
+fn test_resource_prints_actionable_completion_guidance() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
     create_minimal_resource_project(&project_dir);
@@ -176,8 +186,18 @@ fn test_resource_mentions_primary_path_reminder() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Primary path reminder"),
-        "expected primary resource reminder, got:\n{}",
+        stdout.contains("Included: route, wiring"),
+        "expected generated-parts summary, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Run or restart: `tideway dev --fix-env`"),
+        "expected run guidance, got:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains("curl \"http://localhost:8000/api/users\""),
+        "expected endpoint smoke command, got:\n{}",
         stdout
     );
 }

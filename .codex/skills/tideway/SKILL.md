@@ -21,7 +21,7 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
 - Create a new app with the wizard:
   - `tideway new my_app`
 - Add a DB-backed resource:
-  - `tideway resource <name> --wire --db --repo --service --paginate --search`
+  - `tideway resource <name>`
 - Run:
   - `tideway dev --fix-env`
   - `tideway migrate`

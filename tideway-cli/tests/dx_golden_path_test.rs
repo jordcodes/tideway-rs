@@ -79,20 +79,34 @@ fn test_golden_path_no_prompt_scaffold_accepts_primary_resource_flow() {
     let resource_output = run_tideway(&[
         "resource",
         "user",
-        "--wire",
-        "--db",
-        "--repo",
-        "--service",
-        "--paginate",
-        "--search",
         "--path",
         project_dir.to_str().expect("project path utf8"),
     ]);
     assert_success(&resource_output, "tideway resource");
 
     assert!(project_dir.join("src/routes/user.rs").exists());
+    assert!(project_dir.join("src/entities/user.rs").exists());
     assert!(project_dir.join("src/repositories/user.rs").exists());
     assert!(project_dir.join("src/services/user.rs").exists());
+    assert!(project_dir.join("migration/src/lib.rs").exists());
+
+    let resource_stdout = String::from_utf8_lossy(&resource_output.stdout);
+    assert!(
+        resource_stdout
+            .contains("Included: route, entity, migration, repository, service, wiring, OpenAPI"),
+        "expected full-stack completion summary, got:\n{}",
+        resource_stdout
+    );
+    assert!(
+        resource_stdout.contains("Next: run `tideway migrate`"),
+        "expected migration next step, got:\n{}",
+        resource_stdout
+    );
+    assert!(
+        resource_stdout.contains("curl \"http://localhost:8000/api/users?limit=20\""),
+        "expected generated endpoint smoke command, got:\n{}",
+        resource_stdout
+    );
 }
 
 #[test]
