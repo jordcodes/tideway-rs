@@ -29,6 +29,9 @@ required_lines=(
   "- Idempotency pass rate for mutating CLI commands:"
   "- Number of onboarding docs that show non-canonical flows:"
   "- Number of user-reported \"which command should I use\" issues:"
+  "## Benchmark Methodology"
+  "python3 scripts/benchmark_dx.py"
+  "tideway-dx-benchmark"
   "## Release Notes Guidance"
 )
 

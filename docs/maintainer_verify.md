@@ -141,6 +141,19 @@ Fix:
 - restore/update `docs/dx_metrics_snapshot.md`
 - keep the gate summary and metrics fields aligned with `.github/RELEASE_TEMPLATE.md`
 - if release scope materially changed onboarding or scaffold performance, refresh the snapshot before release
+- build the release CLI outside the timed journey, then run the five-sample benchmark:
+
+```bash
+cargo build --release --locked -p tideway-cli
+python3 scripts/benchmark_dx.py \
+  --samples 5 \
+  --cli target/release/tideway \
+  --framework-source . \
+  --output target/dx-benchmarks/results.json
+```
+
+- record the environment/cache model with the p50/p95 values; do not compare results from different cache models as if they were equivalent
+- use the scheduled `Benchmarks` workflow artifact for the shared Linux trend and keep latency observational until the baseline is stable
 - re-run:
 
 ```bash

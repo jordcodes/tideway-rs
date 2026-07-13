@@ -24,6 +24,7 @@ required_lines=(
   "- [ ] golden path integration tests"
   "### Metrics Snapshot"
   "- Metrics snapshot file: \`docs/dx_metrics_snapshot.md\`"
+  "- Latest \`tideway-dx-benchmark\` workflow run/artifact:"
   "- Time to \`GET /health\` from clean machine (p50/p95):"
   "- Time to scaffold DB resource and run tests (p50/p95):"
   "- Idempotency pass rate for mutating CLI commands:"
