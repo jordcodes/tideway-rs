@@ -23,3 +23,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 {{#if has_openapi_feature}}
 utoipa = { version = "5", features = ["axum_extras"] }
 {{/if}}
+{{#if is_sqlite_database}}
+{{#if has_auth_feature}}
+
+[dev-dependencies]
+migration = { path = "migration" }
+tower = { version = "0.5", features = ["util"] }
+{{/if}}
+{{/if}}

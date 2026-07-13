@@ -2,6 +2,7 @@
 
 use axum::{
     extract::{ConnectInfo, Extension},
+    http::HeaderMap,
     routing::post,
     Json, Router,
 };
@@ -11,10 +12,10 @@ use sea_orm::{entity::*, ActiveModelTrait, DatabaseConnection, TransactionTrait}
 use sea_orm::DatabaseConnection;
 {{/if}}
 use serde::{Deserialize, Serialize};
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, net::{IpAddr, SocketAddr}, sync::Arc};
 use tideway::auth::{
     JwtIssuer, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter, LoginRequest,
-    LoginResponse, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest,
+    LoginHttpResponse, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest,
     RegisterRequest, RegistrationFlow,
 };
 use tideway::{AppContext, MessageResponse, Result, RouteModule};
@@ -34,6 +35,9 @@ pub struct AuthState {
     pub jwt_issuer: Arc<JwtIssuer>,
     pub jwt_secret: String,
     pub app_name: String,
+    require_email_verification: bool,
+    email_delivery_enabled: bool,
+    trusted_proxy_ips: Arc<HashSet<IpAddr>>,
     login_rate_limiter: LoginRateLimiter,
     mfa_tokens: InMemoryMfaTokenStore,
 }
@@ -50,30 +54,59 @@ impl AuthModule {
         jwt_secret: String,
         app_name: String,
     ) -> Self {
+        let require_email_verification = std::env::var("REQUIRE_EMAIL_VERIFICATION")
+            .map(|value| value.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
         Self {
             state: AuthState {
                 db,
                 jwt_issuer,
                 jwt_secret,
                 app_name,
+                require_email_verification,
+                email_delivery_enabled: false,
+                trusted_proxy_ips: Arc::new(trusted_proxy_ips_from_env()),
                 login_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::default()),
                 mfa_tokens: InMemoryMfaTokenStore::default(),
             },
         }
     }
+
+    /// Mount email-dependent auth routes after implementing the delivery hooks
+    /// in `DbUserStore`.
+    pub fn with_email_delivery(mut self) -> Self {
+        self.state.email_delivery_enabled = true;
+        self
+    }
 }
 
 impl RouteModule for AuthModule {
     fn routes(&self) -> Router<AppContext> {
-        Router::new()
+        assert!(
+            !self.state.require_email_verification || self.state.email_delivery_enabled,
+            "REQUIRE_EMAIL_VERIFICATION=true requires AuthModule::with_email_delivery() and implemented delivery hooks",
+        );
+
+        let router = Router::new()
             .route("/register", post(register))
             .route("/login", post(login))
             .route("/logout", post(logout))
             .route("/refresh", post(refresh))
-            .route("/password/reset", post(request_password_reset))
-            .route("/password/reset/complete", post(complete_password_reset))
+            {{#if has_auth_mfa_feature}}
             .route("/mfa/verify", post(verify_mfa))
-            .layer(Extension(self.state.clone()))
+            {{/if}}
+            ;
+
+        let router = if self.state.email_delivery_enabled {
+            router
+                .route("/password/reset", post(request_password_reset))
+                .route("/password/reset/complete", post(complete_password_reset))
+        } else {
+            router
+        };
+
+        router.layer(Extension(self.state.clone()))
     }
 
     fn prefix(&self) -> Option<&str> {
@@ -140,11 +173,13 @@ pub struct PasswordResetCompleteBody {
     pub new_password: String,
 }
 
+{{#if has_auth_mfa_feature}}
 #[derive(Debug, Deserialize)]
 pub struct MfaVerifyBody {
     pub mfa_token: String,
     pub code: String,
 }
+{{/if}}
 
 // Handlers
 
@@ -256,9 +291,10 @@ fn generate_slug(name: &str) -> String {
 
 async fn login(
     ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<LoginBody>,
-) -> Result<Json<LoginResponse>> {
+) -> Result<LoginHttpResponse> {
     let user_store = DbUserStore::new(state.db.clone());
     let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone());
     let token_store = DbRefreshTokenStore::new(state.db.clone());
@@ -267,7 +303,8 @@ async fn login(
         user_store,
         state.mfa_tokens.clone(),
         token_issuer,
-        LoginFlowConfig::new(&state.app_name),
+        LoginFlowConfig::new(&state.app_name)
+            .require_verification(state.require_email_verification),
     )
     .with_refresh_store(token_store)
     .with_rate_limiter(state.login_rate_limiter.clone());
@@ -280,9 +317,39 @@ async fn login(
     };
 
     let response = flow
-        .login_with_ip(request, Some(address.ip().to_string()))
+        .login_with_ip(
+            request,
+            Some(resolve_client_ip(address.ip(), &headers, &state.trusted_proxy_ips).to_string()),
+        )
         .await?;
-    Ok(Json(response))
+    Ok(response.into())
+}
+
+fn trusted_proxy_ips_from_env() -> HashSet<IpAddr> {
+    std::env::var("TRUSTED_PROXY_IPS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|value| value.trim().parse().ok())
+        .collect()
+}
+
+fn resolve_client_ip(peer: IpAddr, headers: &HeaderMap, trusted_proxies: &HashSet<IpAddr>) -> IpAddr {
+    if !trusted_proxies.contains(&peer) {
+        return peer;
+    }
+
+    headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .and_then(|value| value.trim().parse().ok())
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse().ok())
+        })
+        .unwrap_or(peer)
 }
 
 async fn logout(
@@ -337,7 +404,9 @@ async fn request_password_reset(
     let flow = PasswordResetFlow::new(user_store);
     let request = PasswordResetRequest { email: body.email };
 
-    let _ = flow.request_reset(request).await;
+    if let Err(error) = flow.request_reset(request).await {
+        tracing::error!(%error, "Password reset request failed");
+    }
 
     Ok(MessageResponse::success(
         "If an account with that email exists, a password reset link has been sent.",
@@ -361,10 +430,11 @@ async fn complete_password_reset(
     Ok(MessageResponse::success("Password has been reset successfully."))
 }
 
+{{#if has_auth_mfa_feature}}
 async fn verify_mfa(
     Extension(state): Extension<AuthState>,
     Json(body): Json<MfaVerifyBody>,
-) -> Result<Json<LoginResponse>> {
+) -> Result<LoginHttpResponse> {
     let user_store = DbUserStore::new(state.db.clone());
     let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone());
     let token_store = DbRefreshTokenStore::new(state.db.clone());
@@ -373,7 +443,8 @@ async fn verify_mfa(
         user_store,
         state.mfa_tokens.clone(),
         token_issuer,
-        LoginFlowConfig::new(&state.app_name),
+        LoginFlowConfig::new(&state.app_name)
+            .require_verification(state.require_email_verification),
     )
     .with_refresh_store(token_store);
 
@@ -383,5 +454,6 @@ async fn verify_mfa(
     };
 
     let response = flow.verify_mfa(request).await?;
-    Ok(Json(response))
+    Ok(response.into())
 }
+{{/if}}

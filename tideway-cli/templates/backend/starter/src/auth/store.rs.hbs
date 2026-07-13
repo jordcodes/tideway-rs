@@ -8,7 +8,7 @@ use sea_orm::{
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock},
+    sync::{Arc, RwLock, atomic::{AtomicI64, Ordering}},
     time::{Instant, SystemTime},
 };
 use tideway::auth::{
@@ -106,17 +106,34 @@ impl UserStore for DbUserStore {
 
     async fn record_failed_attempt(&self, user: &Self::User) -> Result<()> {
         const MAX_FAILED_ATTEMPTS: i32 = 5;
-        let failed_attempts = user.failed_attempts.saturating_add(1);
-        let mut active: user::ActiveModel = user.clone().into();
-        active.failed_attempts = Set(failed_attempts);
-        if failed_attempts >= MAX_FAILED_ATTEMPTS {
-            active.locked_until = Set(Some((Utc::now() + Duration::minutes(15)).into()));
-        }
-        active.updated_at = Set(Utc::now().into());
-        active
-            .update(self.db.as_ref())
+        user::Entity::update_many()
+            .col_expr(
+                user::Column::FailedAttempts,
+                Expr::col(user::Column::FailedAttempts).add(1),
+            )
+            .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(user::Column::Id.eq(user.id))
+            .exec(self.db.as_ref())
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        let failed_attempts = user::Entity::find_by_id(user.id)
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?
+            .ok_or_else(|| TidewayError::not_found("User not found"))?
+            .failed_attempts;
+        if failed_attempts >= MAX_FAILED_ATTEMPTS {
+            user::Entity::update_many()
+                .col_expr(
+                    user::Column::LockedUntil,
+                    Expr::value(Some(Utc::now() + Duration::minutes(15))),
+                )
+                .filter(user::Column::Id.eq(user.id))
+                .exec(self.db.as_ref())
+                .await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -297,6 +314,36 @@ impl DbRefreshTokenStore {
     pub fn new(db: Arc<DatabaseConnection>) -> Self {
         Self { db }
     }
+
+    async fn cleanup_stale_families(&self) -> Result<()> {
+        static LAST_CLEANUP: AtomicI64 = AtomicI64::new(0);
+        let now = Utc::now().timestamp();
+        if LAST_CLEANUP
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                (now.saturating_sub(last) >= 3600).then_some(now)
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+        let retention_days = std::env::var("REFRESH_TOKEN_RETENTION_DAYS")
+            .ok()
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(120)
+            .clamp(1, 3650);
+        let cleanup = refresh_token_family::Entity::delete_many()
+            .filter(
+                refresh_token_family::Column::CreatedAt
+                    .lt(Utc::now() - Duration::days(retention_days)),
+            )
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()));
+        if cleanup.is_err() {
+            LAST_CLEANUP.store(0, Ordering::Relaxed);
+        }
+        cleanup.map(|_| ())
+    }
 }
 
 #[async_trait]
@@ -352,8 +399,7 @@ impl RefreshTokenStore for DbRefreshTokenStore {
     }
 
     async fn revoke_family(&self, family: &str) -> Result<()> {
-        refresh_token_family::Entity::update_many()
-            .col_expr(refresh_token_family::Column::Revoked, Expr::value(true))
+        refresh_token_family::Entity::delete_many()
             .filter(refresh_token_family::Column::Family.eq(family))
             .exec(self.db.as_ref())
             .await
@@ -362,8 +408,7 @@ impl RefreshTokenStore for DbRefreshTokenStore {
     }
 
     async fn revoke_all_for_user(&self, user_id: &str) -> Result<()> {
-        refresh_token_family::Entity::update_many()
-            .col_expr(refresh_token_family::Column::Revoked, Expr::value(true))
+        refresh_token_family::Entity::delete_many()
             .filter(refresh_token_family::Column::UserId.eq(DbUserStore::parse_user_id(user_id)?))
             .exec(self.db.as_ref())
             .await
@@ -372,6 +417,7 @@ impl RefreshTokenStore for DbRefreshTokenStore {
     }
 
     async fn associate_family_with_user(&self, family: &str, user_id: &str) -> Result<()> {
+        self.cleanup_stale_families().await?;
         refresh_token_family::ActiveModel {
             family: Set(family.to_owned()),
             user_id: Set(DbUserStore::parse_user_id(user_id)?),

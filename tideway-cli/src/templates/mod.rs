@@ -143,6 +143,8 @@ pub struct BackendTemplateContext {
     pub has_tideway_features: bool,
     /// Whether auth is requested (starter templates)
     pub has_auth_feature: bool,
+    /// Whether MFA auth support is requested
+    pub has_auth_mfa_feature: bool,
     /// Whether database is requested (starter templates)
     pub has_database_feature: bool,
     /// Whether billing is requested (backend templates)

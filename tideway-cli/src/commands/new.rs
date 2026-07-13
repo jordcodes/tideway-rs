@@ -87,6 +87,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     let project_name_pascal = to_pascal_case(&project_name);
     let features = normalize_features(&args.features);
     let has_auth_feature = features.contains("auth");
+    let has_auth_mfa_feature = features.contains("auth-mfa");
     let has_database_feature = features.contains("database");
     let has_openapi_feature = features.contains("openapi");
     let has_tideway_features = !features.is_empty();
@@ -139,6 +140,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         tideway_features: features.iter().cloned().collect(),
         has_tideway_features,
         has_auth_feature,
+        has_auth_mfa_feature,
         has_database_feature,
         has_billing_feature: features.contains("billing"),
         has_openapi_feature,
@@ -299,6 +301,11 @@ fn scaffold_files(
             &engine.render("starter/github-ci")?,
             args.force,
         )?;
+        write_file_with_force_or_error_default(
+            &target_dir.join(".github/dependabot.yml"),
+            &engine.render("starter/dependabot")?,
+            args.force,
+        )?;
     }
     write_file_with_force_or_error_default(
         &target_dir.join(".gitignore"),
@@ -335,6 +342,7 @@ fn scaffold_files(
         if has_database_auth {
             for (path, template) in [
                 ("src/auth/store.rs", "starter/src/auth/store.rs"),
+                ("src/auth/tests.rs", "starter/src/auth/tests.rs"),
                 ("src/entities/mod.rs", "starter/src/entities/mod.rs"),
                 ("src/entities/user.rs", "starter/src/entities/user.rs"),
                 (
@@ -405,6 +413,9 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
             files.push("src/auth/mod.rs".to_string());
             files.push("src/auth/provider.rs".to_string());
             files.push("src/auth/routes.rs".to_string());
+            if has_database_auth {
+                files.push("src/auth/tests.rs".to_string());
+            }
         }
 
         if args.with_config {
@@ -417,6 +428,7 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
     }
     if args.with_ci {
         files.push(".github/workflows/ci.yml".to_string());
+        files.push(".github/dependabot.yml".to_string());
     }
 
     files.push(".gitignore".to_string());
@@ -898,7 +910,6 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
         NewPreset::Api => &["auth", "database", "openapi", "validation"],
         NewPreset::Saas => &[
             "auth",
-            "auth-mfa",
             "database",
             "billing",
             "billing-seaorm",
@@ -944,14 +955,7 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
 }
 
 fn apply_backend_defaults(args: &mut NewArgs, has_organizations: bool) {
-    let mut features = vec![
-        "auth",
-        "auth-mfa",
-        "database",
-        "billing",
-        "billing-seaorm",
-        "admin",
-    ];
+    let mut features = vec!["auth", "database", "billing", "billing-seaorm", "admin"];
     if has_organizations {
         features.push("organizations");
     }
@@ -1076,6 +1080,7 @@ fn backend_template_engine(
         tideway_features: Vec::new(),
         has_tideway_features: false,
         has_auth_feature: false,
+        has_auth_mfa_feature: false,
         has_database_feature: false,
         has_billing_feature: true,
         has_openapi_feature: false,

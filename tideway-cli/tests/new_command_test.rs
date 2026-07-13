@@ -59,6 +59,11 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
     assert!(project_dir.join("src/config.rs").exists());
     assert!(!project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
+    assert!(project_dir.join(".github/dependabot.yml").exists());
+    assert_file_contains(
+        &project_dir.join(".github/workflows/ci.yml"),
+        "rustsec/audit-check",
+    );
     assert!(project_dir.join(".env.example").exists());
     assert_file_contains(
         &project_dir.join(".env.example"),

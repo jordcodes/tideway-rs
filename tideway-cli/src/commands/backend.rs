@@ -115,6 +115,7 @@ pub(crate) fn scaffold(
         tideway_features: Vec::new(),
         has_tideway_features: false,
         has_auth_feature: false,
+        has_auth_mfa_feature: false,
         has_database_feature: false,
         has_billing_feature: true,
         has_openapi_feature: false,
@@ -169,7 +170,7 @@ pub(crate) fn scaffold(
         println!("{}", "Next steps:".yellow().bold());
         println!("  1. Add dependencies to Cargo.toml:");
         println!(
-            "     tideway = {{ version = \"{}\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}",
+            "     tideway = {{ version = \"{}\", features = [\"auth\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}",
             TIDEWAY_VERSION
         );
         println!("     axum = {{ version = \"0.8\", features = [\"macros\"] }}");

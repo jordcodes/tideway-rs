@@ -1,11 +1,11 @@
 //! Organization routes module.
 
 use axum::{
-    extract::{Extension, Path},
+    extract::{Extension, Path, Query},
     routing::{get, patch, delete},
     Json, Router,
 };
-use sea_orm::{entity::*, DatabaseConnection, QueryFilter, ColumnTrait};
+use sea_orm::{entity::*, DatabaseConnection, QueryFilter, QueryOrder, QuerySelect, ColumnTrait};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tideway::auth::{AccessTokenClaims, JwtVerifier};
@@ -101,6 +101,14 @@ pub struct MemberResponse {
 #[derive(Debug, Serialize)]
 pub struct MembersListResponse {
     pub members: Vec<MemberResponse>,
+    pub limit: u64,
+    pub offset: u64,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct MembersListQuery {
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +231,7 @@ async fn list_members(
     Extension(state): Extension<OrganizationState>,
     headers: axum::http::HeaderMap,
     Path(org_id): Path<String>,
+    Query(query): Query<MembersListQuery>,
 ) -> Result<Json<MembersListResponse>> {
     let _actor = RequestActor::for_organization_with_verifier(
         &headers,
@@ -232,8 +241,13 @@ async fn list_members(
     )
     .await?;
 
+    let limit = query.limit.unwrap_or(50).clamp(1, 100);
+    let offset = query.offset.unwrap_or(0);
     let organization_members = organization_member::Entity::find()
         .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .order_by_asc(organization_member::Column::JoinedAt)
+        .limit(limit)
+        .offset(offset)
         .all(state.db.as_ref())
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
@@ -261,7 +275,7 @@ async fn list_members(
         })
         .collect();
 
-    Ok(Json(MembersListResponse { members }))
+    Ok(Json(MembersListResponse { members, limit, offset }))
 }
 
 async fn update_member_role(

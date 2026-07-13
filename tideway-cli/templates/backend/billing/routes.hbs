@@ -989,7 +989,11 @@ async fn admin_set_plan_active(
     state.billing_store.set_plan_active(&plan_id, body.is_active).await?;
 
     // Fetch updated plan
-    let plan = state.billing_store.get_plan(&plan_id).await?.unwrap();
+    let plan = state
+        .billing_store
+        .get_plan(&plan_id)
+        .await?
+        .ok_or_else(|| tideway::TidewayError::not_found("Plan disappeared during update"))?;
 
     tracing::info!(plan_id = %plan_id, is_active = body.is_active, "Updated plan active status");
     Ok(Json(AdminPlanResponse::from(plan)))

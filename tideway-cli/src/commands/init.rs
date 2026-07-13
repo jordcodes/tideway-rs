@@ -145,7 +145,7 @@ pub fn run_with_runtime(args: InitArgs, runtime: CommandRuntime) -> Result<()> {
         println!();
         println!("  2. Ensure dependencies in Cargo.toml:");
         println!(
-            "     tideway = {{ version = \"{}\", features = [\"auth\", \"auth-mfa\", \"database\", \"billing\", \"billing-seaorm\"] }}",
+            "     tideway = {{ version = \"{}\", features = [\"auth\", \"database\", \"billing\", \"billing-seaorm\"] }}",
             TIDEWAY_VERSION
         );
         println!();

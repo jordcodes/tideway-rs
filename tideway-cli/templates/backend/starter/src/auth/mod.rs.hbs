@@ -4,6 +4,10 @@ mod provider;
 mod routes;
 {{#if has_database_feature}}
 mod store;
+{{#if is_sqlite_database}}
+#[cfg(test)]
+mod tests;
+{{/if}}
 {{/if}}
 
 pub use provider::{SimpleAuthProvider, SimpleUser};

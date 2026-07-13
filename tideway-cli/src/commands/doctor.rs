@@ -272,6 +272,16 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
 
     let main_contents = fs::read_to_string(src_dir.join("main.rs")).ok();
 
+    if needs_auth {
+        check_auth_capabilities(
+            &src_dir,
+            &tideway_features,
+            &env_vars,
+            main_contents.as_deref(),
+            &mut report,
+        );
+    }
+
     if tideway_features.contains("openapi") {
         check_openapi_setup(&src_dir, main_contents.as_deref(), &mut report);
         check_openapi_doc_coverage(&src_dir, &mut report);
@@ -291,6 +301,40 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     }
 
     Ok(report)
+}
+
+fn check_auth_capabilities(
+    src_dir: &Path,
+    tideway_features: &BTreeSet<String>,
+    env_vars: &BTreeMap<String, String>,
+    main_contents: Option<&str>,
+    report: &mut DoctorReport,
+) {
+    let store = fs::read_to_string(src_dir.join("auth/store.rs")).unwrap_or_default();
+    let email_verification_required = env_vars
+        .get("REQUIRE_EMAIL_VERIFICATION")
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+
+    if email_verification_required
+        && !main_contents
+            .unwrap_or_default()
+            .contains(".with_email_delivery()")
+    {
+        report.push_warning(
+            "REQUIRE_EMAIL_VERIFICATION=true, but AuthModule is not configured with_email_delivery(); implement the delivery hooks before enabling verification"
+                .to_string(),
+        );
+    }
+
+    if tideway_features.contains("auth-mfa")
+        && store.contains("async fn has_mfa_enabled")
+        && store.contains("Ok(false)")
+    {
+        report.push_warning(
+            "The auth-mfa feature is enabled, but the generated user store still reports MFA as disabled; implement MFA secret and backup-code persistence before advertising MFA"
+                .to_string(),
+        );
+    }
 }
 
 fn read_cargo_toml(path: &Path) -> Result<toml::Value> {

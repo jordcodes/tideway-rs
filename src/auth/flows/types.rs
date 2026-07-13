@@ -1,5 +1,10 @@
 //! Request and response types for authentication flows.
 
+use axum::{
+    Json,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::{Deserialize, Serialize};
 
 /// Login request from client.
@@ -84,6 +89,72 @@ impl LoginResponse {
     pub fn error(message: impl Into<String>) -> Self {
         Self::Error {
             message: message.into(),
+        }
+    }
+}
+
+/// HTTP-aware wrapper for [`LoginResponse`].
+///
+/// This keeps the existing JSON response shape while ensuring failed logins do
+/// not accidentally return `200 OK`. Successful and MFA-challenge responses
+/// remain `200 OK`; invalid credentials use `401`, unverified accounts use
+/// `403`, and temporarily locked accounts use `423`.
+#[derive(Debug, Clone)]
+pub struct LoginHttpResponse(pub LoginResponse);
+
+impl From<LoginResponse> for LoginHttpResponse {
+    fn from(response: LoginResponse) -> Self {
+        Self(response)
+    }
+}
+
+impl IntoResponse for LoginHttpResponse {
+    fn into_response(self) -> Response {
+        let status = match &self.0 {
+            LoginResponse::Success { .. } | LoginResponse::MfaRequired { .. } => StatusCode::OK,
+            LoginResponse::Error { message } if message.contains("temporarily locked") => {
+                StatusCode::LOCKED
+            }
+            LoginResponse::Error { message } if message.contains("verify your email") => {
+                StatusCode::FORBIDDEN
+            }
+            LoginResponse::Error { .. } => StatusCode::UNAUTHORIZED,
+        };
+
+        (status, Json(self.0)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod login_http_response_tests {
+    use super::*;
+
+    #[test]
+    fn maps_login_outcomes_to_http_statuses() {
+        let cases = [
+            (
+                LoginResponse::error("Invalid credentials"),
+                StatusCode::UNAUTHORIZED,
+            ),
+            (
+                LoginResponse::error("Please verify your email before logging in."),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                LoginResponse::error("Account temporarily locked. Try again later."),
+                StatusCode::LOCKED,
+            ),
+            (
+                LoginResponse::success("access".into(), "refresh".into(), 900),
+                StatusCode::OK,
+            ),
+        ];
+
+        for (response, expected) in cases {
+            assert_eq!(
+                LoginHttpResponse(response).into_response().status(),
+                expected
+            );
         }
     }
 }
