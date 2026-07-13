@@ -36,6 +36,8 @@ struct TestUser {
     totp_secret: Option<String>,
     #[cfg(feature = "auth-mfa")]
     backup_codes: Vec<String>,
+    #[cfg(feature = "auth-mfa")]
+    last_totp_step: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -68,6 +70,8 @@ impl InMemoryUserStore {
             totp_secret: None,
             #[cfg(feature = "auth-mfa")]
             backup_codes: vec![],
+            #[cfg(feature = "auth-mfa")]
+            last_totp_step: None,
         };
         self.users
             .write()
@@ -182,6 +186,19 @@ impl UserStore for InMemoryUserStore {
     }
 
     #[cfg(feature = "auth-mfa")]
+    async fn consume_totp_step(&self, user: &Self::User, step: u64) -> Result<bool> {
+        let mut users = self.users.write().unwrap();
+        let Some(user) = users.get_mut(&user.email) else {
+            return Ok(false);
+        };
+        if user.last_totp_step.is_some_and(|last| last >= step) {
+            return Ok(false);
+        }
+        user.last_totp_step = Some(step);
+        Ok(true)
+    }
+
+    #[cfg(feature = "auth-mfa")]
     async fn get_backup_codes(&self, user: &Self::User) -> Result<Vec<String>> {
         Ok(user.backup_codes.clone())
     }
@@ -195,6 +212,20 @@ impl UserStore for InMemoryUserStore {
             u.backup_codes.remove(index);
         }
         Ok(())
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    async fn consume_backup_code(&self, user: &Self::User, code: &str) -> Result<Option<usize>> {
+        let mut users = self.users.write().unwrap();
+        let Some(user) = users.get_mut(&user.email) else {
+            return Ok(None);
+        };
+        let Some(index) = tideway::auth::mfa::BackupCodeGenerator::verify(code, &user.backup_codes)
+        else {
+            return Ok(None);
+        };
+        user.backup_codes.remove(index);
+        Ok(Some(user.backup_codes.len()))
     }
 }
 
@@ -231,6 +262,8 @@ impl UserCreator for InMemoryUserStore {
             totp_secret: None,
             #[cfg(feature = "auth-mfa")]
             backup_codes: vec![],
+            #[cfg(feature = "auth-mfa")]
+            last_totp_step: None,
         };
         self.users
             .write()
@@ -348,7 +381,7 @@ impl RefreshTokenStore for InMemoryRefreshTokenStore {
 
     async fn revoke_all_for_user(&self, user_id: &str) -> Result<()> {
         let mut families = self.families.write().unwrap();
-        for (_, (uid, _, revoked)) in families.iter_mut() {
+        for (uid, _, revoked) in families.values_mut() {
             if uid == user_id {
                 *revoked = true;
             }
