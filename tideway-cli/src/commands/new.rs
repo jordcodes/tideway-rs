@@ -237,6 +237,7 @@ fn scaffold_files(
 ) -> Result<()> {
     let normalized_features = normalize_features(&args.features);
     let has_auth_feature = normalized_features.contains("auth");
+    let has_auth_mfa_feature = normalized_features.contains("auth-mfa");
     let has_database_auth = has_auth_feature && normalized_features.contains("database");
     let is_api_preset = matches!(args.preset, Some(NewPreset::Api));
 
@@ -372,6 +373,25 @@ fn scaffold_files(
                     args.force,
                 )?;
             }
+
+            if has_auth_mfa_feature {
+                for (path, template) in [
+                    (
+                        "src/entities/mfa_backup_code.rs",
+                        "starter/src/entities/mfa_backup_code.rs",
+                    ),
+                    (
+                        "migration/src/m004_create_mfa.rs",
+                        "starter/migration/src/m004_create_mfa.rs",
+                    ),
+                ] {
+                    write_file_with_force_or_error_default(
+                        &target_dir.join(path),
+                        &engine.render(template)?,
+                        args.force,
+                    )?;
+                }
+            }
         }
     }
 
@@ -449,10 +469,19 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
         files.push("migration/src/m001_create_users.rs".to_string());
         files.push("migration/src/m002_create_refresh_token_families.rs".to_string());
         files.push("migration/src/m003_create_auth_tokens.rs".to_string());
+        if normalized_features.contains("auth-mfa") {
+            files.push("src/entities/mfa_backup_code.rs".to_string());
+            files.push("migration/src/m004_create_mfa.rs".to_string());
+        }
     }
 
     if matches!(args.preset, Some(NewPreset::Api)) {
-        files.push("migration/src/m004_create_todos.rs".to_string());
+        let todo_migration = if normalized_features.contains("auth-mfa") {
+            "migration/src/m005_create_todos.rs"
+        } else {
+            "migration/src/m004_create_todos.rs"
+        };
+        files.push(todo_migration.to_string());
         files.push("src/entities/todo.rs".to_string());
         files.push("src/repositories/mod.rs".to_string());
         files.push("src/repositories/todo.rs".to_string());

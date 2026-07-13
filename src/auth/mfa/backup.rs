@@ -28,7 +28,7 @@ impl BackupCodes {
 pub struct BackupCodeGenerator {
     /// Number of codes to generate (default: 10).
     pub count: usize,
-    /// Length of each code (default: 8).
+    /// Length of each code (default: 12, approximately 60 bits of entropy).
     pub length: usize,
 }
 
@@ -36,7 +36,7 @@ impl Default for BackupCodeGenerator {
     fn default() -> Self {
         Self {
             count: 10,
-            length: 8,
+            length: 12,
         }
     }
 }
@@ -85,12 +85,30 @@ impl BackupCodeGenerator {
     ///
     /// Returns the index of the matched code (so it can be removed), or None.
     pub fn verify(code: &str, valid_codes: &[String]) -> Option<usize> {
-        // Normalize: remove dashes, uppercase
-        let normalized = code.replace('-', "").to_uppercase();
+        let normalized = Self::normalize(code);
 
         valid_codes
             .iter()
             .position(|c| constant_time_compare(c, &normalized))
+    }
+
+    /// Normalize a user-entered backup code before hashing or verification.
+    pub fn normalize(code: &str) -> String {
+        code.trim().replace('-', "").to_uppercase()
+    }
+
+    /// Hash a backup code with Argon2id without blocking the async runtime.
+    pub async fn hash(code: &str) -> crate::Result<String> {
+        crate::auth::PasswordHasher::default()
+            .hash_async(&Self::normalize(code))
+            .await
+    }
+
+    /// Verify a backup code against an Argon2id hash without blocking the async runtime.
+    pub async fn verify_hash(code: &str, hash: &str) -> crate::Result<bool> {
+        crate::auth::PasswordHasher::default()
+            .verify_async(&Self::normalize(code), hash)
+            .await
     }
 }
 
@@ -113,7 +131,7 @@ mod tests {
         let codes = generator.generate();
 
         assert_eq!(codes.codes.len(), 10);
-        assert!(codes.codes.iter().all(|c| c.len() == 8));
+        assert!(codes.codes.iter().all(|c| c.len() == 12));
     }
 
     #[test]
@@ -129,6 +147,23 @@ mod tests {
         let with_dash = format!("{}-{}", &codes.codes[0][..4], &codes.codes[0][4..]);
         let result = BackupCodeGenerator::verify(&with_dash, &codes.codes);
         assert_eq!(result, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_hash_and_verify_code() {
+        let hash = BackupCodeGenerator::hash("ABCD-EFGH").await.unwrap();
+
+        assert!(
+            BackupCodeGenerator::verify_hash("abcdefgh", &hash)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !BackupCodeGenerator::verify_hash("wrong-code", &hash)
+                .await
+                .unwrap()
+        );
+        assert!(!hash.contains("ABCDEFGH"));
     }
 
     #[test]

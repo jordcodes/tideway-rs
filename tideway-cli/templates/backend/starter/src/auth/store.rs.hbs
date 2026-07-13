@@ -6,37 +6,164 @@ use sea_orm::{
     sea_query::Expr, ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter,
     Set,
 };
+{{#if has_auth_mfa_feature}}
+use sea_orm::{Condition, PaginatorTrait, QueryOrder, TransactionTrait};
+{{/if}}
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock, atomic::{AtomicI64, Ordering}},
-    time::{Instant, SystemTime},
+    sync::{Arc, atomic::{AtomicI64, Ordering}},
+    time::SystemTime,
 };
 use tideway::auth::{
     JwtIssuer, MfaTokenStore, PasswordResetStore, RefreshTokenStore, TokenIssuer, UserCreator,
     UserLoader, UserStore,
 };
+{{#if has_auth_mfa_feature}}
+use tideway::auth::{BackupCodeGenerator, MfaSecretCipher};
+{{/if}}
 use tideway::{Result, TidewayError};
 use uuid::Uuid;
 
 use crate::entities::{auth_token, refresh_token_family, user};
+{{#if has_auth_mfa_feature}}
+use crate::entities::mfa_backup_code;
+{{/if}}
 
 #[derive(Clone)]
 pub struct DbUserStore {
     db: Arc<DatabaseConnection>,
     require_email_verification: bool,
+    {{#if has_auth_mfa_feature}}
+    mfa_cipher: Arc<MfaSecretCipher>,
+    {{/if}}
 }
 
 impl DbUserStore {
-    pub fn new(db: Arc<DatabaseConnection>, require_email_verification: bool) -> Self {
+    pub fn new(
+        db: Arc<DatabaseConnection>,
+        require_email_verification: bool,
+        {{#if has_auth_mfa_feature}}
+        mfa_cipher: Arc<MfaSecretCipher>,
+        {{/if}}
+    ) -> Self {
         Self {
             db,
             require_email_verification,
+            {{#if has_auth_mfa_feature}}
+            mfa_cipher,
+            {{/if}}
         }
     }
 
     fn parse_user_id(id: &str) -> Result<Uuid> {
         Uuid::parse_str(id).map_err(|_| TidewayError::bad_request("Invalid user ID"))
     }
+
+    {{#if has_auth_mfa_feature}}
+    /// Persist verified TOTP enrollment and a fresh set of plaintext backup codes.
+    ///
+    /// Call this only after verifying a TOTP code against `totp_secret`. The
+    /// secret is encrypted and backup codes are Argon2id-hashed before the
+    /// transaction writes any MFA state.
+    pub async fn enable_mfa(
+        &self,
+        user_id: Uuid,
+        totp_secret: &str,
+        backup_codes: &[String],
+    ) -> Result<()> {
+        if backup_codes.is_empty() {
+            return Err(TidewayError::bad_request("At least one MFA backup code is required"));
+        }
+        let encrypted = self.mfa_cipher.encrypt(&user_id.to_string(), totp_secret)?;
+        let mut hashes = Vec::with_capacity(backup_codes.len());
+        for code in backup_codes {
+            hashes.push(BackupCodeGenerator::hash(code).await?);
+        }
+
+        let transaction = self
+            .db
+            .begin()
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        let updated = user::Entity::update_many()
+            .col_expr(user::Column::MfaEnabled, Expr::value(true))
+            .col_expr(
+                user::Column::MfaTotpSecretEncrypted,
+                Expr::value(Some(encrypted)),
+            )
+            .col_expr(
+                user::Column::MfaLastTotpStep,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(user::Column::FailedMfaAttempts, Expr::value(0))
+            .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(user::Column::Id.eq(user_id))
+            .filter(user::Column::MfaEnabled.eq(false))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        if updated.rows_affected != 1 {
+            return Err(TidewayError::bad_request("MFA is already enabled or the user does not exist"));
+        }
+        mfa_backup_code::Entity::delete_many()
+            .filter(mfa_backup_code::Column::UserId.eq(user_id))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        for code_hash in hashes {
+            mfa_backup_code::ActiveModel {
+                id: Set(Uuid::new_v4()),
+                user_id: Set(user_id),
+                code_hash: Set(code_hash),
+                created_at: Set(Utc::now().into()),
+            }
+            .insert(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))
+    }
+
+    /// Disable MFA and remove all recovery material atomically.
+    pub async fn disable_mfa(&self, user_id: Uuid) -> Result<()> {
+        let transaction = self
+            .db
+            .begin()
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        let updated = user::Entity::update_many()
+            .col_expr(user::Column::MfaEnabled, Expr::value(false))
+            .col_expr(
+                user::Column::MfaTotpSecretEncrypted,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                user::Column::MfaLastTotpStep,
+                Expr::value(Option::<i64>::None),
+            )
+            .col_expr(user::Column::FailedMfaAttempts, Expr::value(0))
+            .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(user::Column::Id.eq(user_id))
+            .filter(user::Column::MfaEnabled.eq(true))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        if updated.rows_affected != 1 {
+            return Err(TidewayError::bad_request("MFA is not enabled or the user does not exist"));
+        }
+        mfa_backup_code::Entity::delete_many()
+            .filter(mfa_backup_code::Column::UserId.eq(user_id))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))
+    }
+    {{/if}}
 }
 
 #[async_trait]
@@ -137,9 +264,47 @@ impl UserStore for DbUserStore {
         Ok(())
     }
 
+    {{#if has_auth_mfa_feature}}
+    async fn record_failed_mfa_attempt(&self, user: &Self::User) -> Result<()> {
+        const MAX_FAILED_MFA_ATTEMPTS: i32 = 5;
+        user::Entity::update_many()
+            .col_expr(
+                user::Column::FailedMfaAttempts,
+                Expr::col(user::Column::FailedMfaAttempts).add(1),
+            )
+            .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(user::Column::Id.eq(user.id))
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+        let failed = user::Entity::find_by_id(user.id)
+            .one(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?
+            .ok_or_else(|| TidewayError::not_found("User not found"))?
+            .failed_mfa_attempts;
+        if failed >= MAX_FAILED_MFA_ATTEMPTS {
+            user::Entity::update_many()
+                .col_expr(
+                    user::Column::LockedUntil,
+                    Expr::value(Some(Utc::now() + Duration::minutes(15))),
+                )
+                .filter(user::Column::Id.eq(user.id))
+                .exec(self.db.as_ref())
+                .await
+                .map_err(|error| TidewayError::Database(error.to_string()))?;
+        }
+        Ok(())
+    }
+    {{/if}}
+
     async fn clear_failed_attempts(&self, user: &Self::User) -> Result<()> {
         let mut active: user::ActiveModel = user.clone().into();
         active.failed_attempts = Set(0);
+        {{#if has_auth_mfa_feature}}
+        active.failed_mfa_attempts = Set(0);
+        {{/if}}
         active.locked_until = Set(None);
         active.updated_at = Set(Utc::now().into());
         active
@@ -149,9 +314,102 @@ impl UserStore for DbUserStore {
         Ok(())
     }
 
-    async fn has_mfa_enabled(&self, _user: &Self::User) -> Result<bool> {
+    async fn has_mfa_enabled(&self, user: &Self::User) -> Result<bool> {
+        {{#if has_auth_mfa_feature}}
+        return Ok(user.mfa_enabled && user.mfa_totp_secret_encrypted.is_some());
+        {{else}}
+        let _ = user;
         Ok(false)
+        {{/if}}
     }
+
+    {{#if has_auth_mfa_feature}}
+    async fn get_totp_secret(&self, user: &Self::User) -> Result<Option<String>> {
+        user.mfa_totp_secret_encrypted
+            .as_deref()
+            .map(|encrypted| self.mfa_cipher.decrypt(&user.id.to_string(), encrypted))
+            .transpose()
+    }
+
+    async fn consume_totp_step(&self, user: &Self::User, step: u64) -> Result<bool> {
+        let step = i64::try_from(step)
+            .map_err(|_| TidewayError::bad_request("Invalid TOTP time step"))?;
+        let consumed = user::Entity::update_many()
+            .col_expr(user::Column::MfaLastTotpStep, Expr::value(Some(step)))
+            .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(user::Column::Id.eq(user.id))
+            .filter(user::Column::MfaEnabled.eq(true))
+            .filter(
+                Condition::any()
+                    .add(user::Column::MfaLastTotpStep.is_null())
+                    .add(user::Column::MfaLastTotpStep.lt(step)),
+            )
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        Ok(consumed.rows_affected == 1)
+    }
+
+    async fn get_backup_codes(&self, user: &Self::User) -> Result<Vec<String>> {
+        mfa_backup_code::Entity::find()
+            .filter(mfa_backup_code::Column::UserId.eq(user.id))
+            .order_by_asc(mfa_backup_code::Column::CreatedAt)
+            .all(self.db.as_ref())
+            .await
+            .map(|codes| codes.into_iter().map(|code| code.code_hash).collect())
+            .map_err(|error| TidewayError::Database(error.to_string()))
+    }
+
+    async fn remove_backup_code(&self, user: &Self::User, index: usize) -> Result<()> {
+        let code = mfa_backup_code::Entity::find()
+            .filter(mfa_backup_code::Column::UserId.eq(user.id))
+            .order_by_asc(mfa_backup_code::Column::CreatedAt)
+            .all(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?
+            .into_iter()
+            .nth(index);
+        if let Some(code) = code {
+            mfa_backup_code::Entity::delete_by_id(code.id)
+                .exec(self.db.as_ref())
+                .await
+                .map_err(|error| TidewayError::Database(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    async fn consume_backup_code(
+        &self,
+        user: &Self::User,
+        code: &str,
+    ) -> Result<Option<usize>> {
+        let stored_codes = mfa_backup_code::Entity::find()
+            .filter(mfa_backup_code::Column::UserId.eq(user.id))
+            .order_by_asc(mfa_backup_code::Column::CreatedAt)
+            .all(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+        for stored in stored_codes {
+            if BackupCodeGenerator::verify_hash(code, &stored.code_hash).await? {
+                let deleted = mfa_backup_code::Entity::delete_by_id(stored.id)
+                    .exec(self.db.as_ref())
+                    .await
+                    .map_err(|error| TidewayError::Database(error.to_string()))?;
+                if deleted.rows_affected != 1 {
+                    return Ok(None);
+                }
+                let remaining = mfa_backup_code::Entity::find()
+                    .filter(mfa_backup_code::Column::UserId.eq(user.id))
+                    .count(self.db.as_ref())
+                    .await
+                    .map_err(|error| TidewayError::Database(error.to_string()))?;
+                return Ok(Some(remaining as usize));
+            }
+        }
+        Ok(None)
+    }
+    {{/if}}
 }
 
 #[async_trait]
@@ -181,6 +439,12 @@ impl UserCreator for DbUserStore {
             email_verified_at: Set((!self.require_email_verification).then(|| now.into())),
             locked_until: Set(None),
             failed_attempts: Set(0),
+            {{#if has_auth_mfa_feature}}
+            failed_mfa_attempts: Set(0),
+            mfa_enabled: Set(false),
+            mfa_totp_secret_encrypted: Set(None),
+            mfa_last_totp_step: Set(None),
+            {{/if}}
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
         }
@@ -432,28 +696,81 @@ impl RefreshTokenStore for DbRefreshTokenStore {
     }
 }
 
-#[derive(Clone, Default)]
-pub struct InMemoryMfaTokenStore {
-    tokens: Arc<RwLock<HashMap<String, (String, Instant)>>>,
+#[derive(Clone)]
+pub struct DbMfaTokenStore {
+    db: Arc<DatabaseConnection>,
+}
+
+impl DbMfaTokenStore {
+    pub fn new(db: Arc<DatabaseConnection>) -> Self {
+        Self { db }
+    }
+
+    async fn cleanup_expired(&self) -> Result<()> {
+        static LAST_CLEANUP: AtomicI64 = AtomicI64::new(0);
+        let now = Utc::now().timestamp();
+        if LAST_CLEANUP
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                (now.saturating_sub(last) >= 3600).then_some(now)
+            })
+            .is_err()
+        {
+            return Ok(());
+        }
+        auth_token::Entity::delete_many()
+            .filter(auth_token::Column::TokenType.eq("mfa_challenge"))
+            .filter(auth_token::Column::ExpiresAt.lt(Utc::now()))
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
-impl MfaTokenStore for InMemoryMfaTokenStore {
+impl MfaTokenStore for DbMfaTokenStore {
     async fn store(&self, token: &str, user_id: &str, ttl: std::time::Duration) -> Result<()> {
-        self.tokens
-            .write()
-            .map_err(|_| TidewayError::internal("MFA token store unavailable"))?
-            .insert(token.to_owned(), (user_id.to_owned(), Instant::now() + ttl));
+        self.cleanup_expired().await?;
+        let expires_at = chrono::Duration::from_std(ttl)
+            .map_err(|_| TidewayError::bad_request("Invalid MFA token TTL"))?;
+        auth_token::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            user_id: Set(DbUserStore::parse_user_id(user_id)?),
+            token_hash: Set(token.to_owned()),
+            token_type: Set("mfa_challenge".to_owned()),
+            expires_at: Set((Utc::now() + expires_at).into()),
+            used_at: Set(None),
+            created_at: Set(Utc::now().into()),
+        }
+        .insert(self.db.as_ref())
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
         Ok(())
     }
 
     async fn consume(&self, token: &str) -> Result<Option<String>> {
-        let value = self
-            .tokens
-            .write()
-            .map_err(|_| TidewayError::internal("MFA token store unavailable"))?
-            .remove(token);
-        Ok(value.and_then(|(user_id, expires)| (Instant::now() < expires).then_some(user_id)))
+        let challenge = auth_token::Entity::find()
+            .filter(auth_token::Column::TokenHash.eq(token))
+            .filter(auth_token::Column::TokenType.eq("mfa_challenge"))
+            .filter(auth_token::Column::UsedAt.is_null())
+            .filter(auth_token::Column::ExpiresAt.gt(Utc::now()))
+            .one(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        let Some(challenge) = challenge else {
+            return Ok(None);
+        };
+
+        let consumed = auth_token::Entity::update_many()
+            .col_expr(auth_token::Column::UsedAt, Expr::value(Some(Utc::now())))
+            .filter(auth_token::Column::Id.eq(challenge.id))
+            .filter(auth_token::Column::UsedAt.is_null())
+            .filter(auth_token::Column::ExpiresAt.gt(Utc::now()))
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+        Ok((consumed.rows_affected == 1).then(|| challenge.user_id.to_string()))
     }
 }
 

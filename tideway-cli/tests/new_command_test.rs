@@ -192,6 +192,48 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
 }
 
 #[test]
+fn test_new_command_auth_mfa_scaffold_is_secure_and_compiles() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: vec!["auth-mfa".to_string()],
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    assert_file_contains(&project_dir.join(".env.example"), "MFA_ENCRYPTION_KEY=");
+    assert_file_contains(&project_dir.join("src/auth/store.rs"), "MfaSecretCipher");
+    assert_file_contains(
+        &project_dir.join("src/auth/store.rs"),
+        "consume_backup_code",
+    );
+    assert_file_contains(&project_dir.join("src/auth/store.rs"), "DbMfaTokenStore");
+    assert_file_contains(
+        &project_dir.join("migration/src/m004_create_mfa.rs"),
+        "MfaTotpSecretEncrypted",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/m004_create_mfa.rs"),
+        "MfaLastTotpStep",
+    );
+    assert!(project_dir.join("src/entities/mfa_backup_code.rs").exists());
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+}
+
+#[test]
 fn test_new_command_minimal_compiles_against_workspace_source() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

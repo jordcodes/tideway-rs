@@ -452,7 +452,8 @@ where
         if code.len() == 6
             && code.chars().all(|c| c.is_ascii_digit())
             && let Some(secret) = self.user_store.get_totp_secret(user).await?
-            && self.totp_manager.verify(&secret, code, &email)?
+            && let Some(step) = self.totp_manager.verify_step(&secret, code, &email)?
+            && self.user_store.consume_totp_step(user, step).await?
         {
             tracing::info!(
                 target: "auth.mfa.success",
@@ -463,11 +464,14 @@ where
             return self.complete_login(user, remember_me).await;
         }
 
-        // Try backup code (typically 8+ chars alphanumeric)
-        let backup_codes = self.user_store.get_backup_codes(user).await?;
-        if let Some(index) = BackupCodeGenerator::verify(code, &backup_codes) {
-            self.user_store.remove_backup_code(user, index).await?;
-            let remaining = backup_codes.len() - 1;
+        // Reject malformed recovery codes before invoking expensive Argon2 checks.
+        let normalized_backup_code = BackupCodeGenerator::normalize(code);
+        if (8..=128).contains(&normalized_backup_code.len())
+            && normalized_backup_code
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+            && let Some(remaining) = self.user_store.consume_backup_code(user, code).await?
+        {
             tracing::info!(
                 target: "auth.mfa.backup_used",
                 user_id = %user_id,
@@ -577,6 +581,8 @@ mod tests {
         totp_secret: Option<String>,
         #[cfg(feature = "auth-mfa")]
         backup_codes: Vec<String>,
+        #[cfg(feature = "auth-mfa")]
+        last_totp_step: Option<u64>,
     }
 
     struct TestUserStore {
@@ -672,6 +678,19 @@ mod tests {
         }
 
         #[cfg(feature = "auth-mfa")]
+        async fn consume_totp_step(&self, user: &Self::User, step: u64) -> Result<bool> {
+            let mut users = self.users.write().unwrap();
+            let Some(user) = users.get_mut(&user.email) else {
+                return Ok(false);
+            };
+            if user.last_totp_step.is_some_and(|last| last >= step) {
+                return Ok(false);
+            }
+            user.last_totp_step = Some(step);
+            Ok(true)
+        }
+
+        #[cfg(feature = "auth-mfa")]
         async fn get_backup_codes(&self, user: &Self::User) -> Result<Vec<String>> {
             Ok(user.backup_codes.clone())
         }
@@ -685,6 +704,25 @@ mod tests {
                 u.backup_codes.remove(index);
             }
             Ok(())
+        }
+
+        #[cfg(feature = "auth-mfa")]
+        async fn consume_backup_code(
+            &self,
+            user: &Self::User,
+            code: &str,
+        ) -> Result<Option<usize>> {
+            let mut users = self.users.write().unwrap();
+            let Some(user) = users.get_mut(&user.email) else {
+                return Ok(None);
+            };
+            let Some(index) =
+                crate::auth::mfa::BackupCodeGenerator::verify(code, &user.backup_codes)
+            else {
+                return Ok(None);
+            };
+            user.backup_codes.remove(index);
+            Ok(Some(user.backup_codes.len()))
         }
     }
 
@@ -718,6 +756,8 @@ mod tests {
             totp_secret: None,
             #[cfg(feature = "auth-mfa")]
             backup_codes: vec![],
+            #[cfg(feature = "auth-mfa")]
+            last_totp_step: None,
         }
     }
 
@@ -1021,12 +1061,23 @@ mod tests {
                 email: "test@example.com".to_string(),
                 password: "password123".to_string(),
                 remember_me: false,
-                mfa_code: Some(code),
+                mfa_code: Some(code.clone()),
             })
             .await
             .unwrap();
 
         assert!(is_success(&response));
+
+        let replay = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: Some(code),
+            })
+            .await
+            .unwrap();
+        assert!(is_error(&replay));
     }
 
     #[cfg(feature = "auth-mfa")]

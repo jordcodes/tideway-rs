@@ -45,6 +45,17 @@ impl MigrationTrait for Migration {
                     )
                     .to_owned(),
             )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_auth_tokens_type_expires")
+                    .table(AuthTokens::Table)
+                    .col(AuthTokens::TokenType)
+                    .col(AuthTokens::ExpiresAt)
+                    .to_owned(),
+            )
             .await
     }
 

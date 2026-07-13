@@ -15,6 +15,12 @@ pub struct Model {
     pub email_verified_at: Option<DateTimeWithTimeZone>,
     pub locked_until: Option<DateTimeWithTimeZone>,
     pub failed_attempts: i32,
+    {{#if has_auth_mfa_feature}}
+    pub failed_mfa_attempts: i32,
+    pub mfa_enabled: bool,
+    pub mfa_totp_secret_encrypted: Option<String>,
+    pub mfa_last_totp_step: Option<i64>,
+    {{/if}}
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }
@@ -25,6 +31,10 @@ pub enum Relation {
     RefreshTokenFamilies,
     #[sea_orm(has_many = "super::auth_token::Entity")]
     AuthTokens,
+    {{#if has_auth_mfa_feature}}
+    #[sea_orm(has_many = "super::mfa_backup_code::Entity")]
+    MfaBackupCodes,
+    {{/if}}
 }
 
 impl Related<super::refresh_token_family::Entity> for Entity {
@@ -38,5 +48,13 @@ impl Related<super::auth_token::Entity> for Entity {
         Relation::AuthTokens.def()
     }
 }
+
+{{#if has_auth_mfa_feature}}
+impl Related<super::mfa_backup_code::Entity> for Entity {
+    fn to() -> RelationDef {
+        Relation::MfaBackupCodes.def()
+    }
+}
+{{/if}}
 
 impl ActiveModelBehavior for ActiveModel {}

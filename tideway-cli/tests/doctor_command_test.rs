@@ -174,6 +174,77 @@ tideway = { version = "0.7", features = ["auth", "auth-mfa"] }
 }
 
 #[test]
+fn test_doctor_requires_a_valid_mfa_encryption_key() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth module");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["auth", "auth-mfa"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join(".env"),
+        "JWT_SECRET=0123456789abcdef0123456789abcdef\nMFA_ENCRYPTION_KEY=not-a-production-key\n",
+    )
+    .expect("write env");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("exactly 32 random bytes")),
+        "expected invalid MFA key warning, got {:?}",
+        report.warnings()
+    );
+}
+
+#[test]
+fn test_doctor_accepts_a_32_byte_base64_mfa_encryption_key() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth module");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["auth", "auth-mfa"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join(".env"),
+        concat!(
+            "JWT_SECRET=0123456789abcdef0123456789abcdef\n",
+            "MFA_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n"
+        ),
+    )
+    .expect("write env");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .warnings()
+            .iter()
+            .all(|warning| !warning.contains("MFA_ENCRYPTION_KEY")),
+        "expected valid MFA key to pass, got {:?}",
+        report.warnings()
+    );
+}
+
+#[test]
 fn test_doctor_env_checks() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

@@ -2,6 +2,9 @@
 
 {{#if has_auth_feature}}
 pub mod auth_token;
+{{#if has_auth_mfa_feature}}
+pub mod mfa_backup_code;
+{{/if}}
 pub mod refresh_token_family;
 pub mod user;
 {{/if}}

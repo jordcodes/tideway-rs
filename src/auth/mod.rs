@@ -85,7 +85,9 @@ pub use flows::{
 
 // MFA re-exports (when auth-mfa feature enabled)
 #[cfg(feature = "auth-mfa")]
-pub use mfa::{BackupCodeGenerator, BackupCodes, MfaStore, TotpConfig, TotpManager, TotpSetup};
+pub use mfa::{
+    BackupCodeGenerator, BackupCodes, MfaSecretCipher, MfaStore, TotpConfig, TotpManager, TotpSetup,
+};
 
 // Breach checking re-exports (when auth-breach feature enabled)
 #[cfg(feature = "auth-breach")]

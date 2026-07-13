@@ -20,9 +20,11 @@
 //! ```
 
 mod backup;
+mod secret;
 mod storage;
 mod totp;
 
 pub use backup::{BackupCodeGenerator, BackupCodes};
+pub use secret::MfaSecretCipher;
 pub use storage::MfaStore;
 pub use totp::{TotpConfig, TotpManager, TotpSetup};

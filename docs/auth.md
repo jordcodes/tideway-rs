@@ -586,6 +586,29 @@ duplicate token verification within the same request.
 
 Requires `auth-mfa` feature.
 
+New API scaffolds provide a production-safe database-backed MFA flow:
+
+- `POST /auth/mfa/setup` reauthenticates with the current password and returns a
+  TOTP secret, URI, and QR code with `Cache-Control: no-store`.
+- `POST /auth/mfa/enable` reauthenticates, verifies the first TOTP code, and
+  returns recovery codes once.
+- `POST /auth/mfa/verify` consumes a short-lived, one-time database challenge.
+- `DELETE /auth/mfa` requires both the current password and a valid TOTP code.
+
+Set `MFA_ENCRYPTION_KEY` to an independent base64-encoded 32-byte random key:
+
+```bash
+openssl rand -base64 32
+```
+
+Do not reuse `JWT_SECRET`. The generated store encrypts TOTP secrets with
+AES-256-GCM and binds each ciphertext to its user ID. Recovery codes are
+Argon2id-hashed and consumed atomically. Successful TOTP time steps are also
+recorded with an atomic conditional update so a code cannot be replayed during
+its validity window. Losing the encryption key prevents existing TOTP secrets
+from being recovered, so manage and rotate it as a production secret with a
+deliberate migration plan.
+
 ### TOTP Setup
 
 ```rust
@@ -614,11 +637,15 @@ use tideway::auth::mfa::BackupCodeGenerator;
 let generator = BackupCodeGenerator::default();
 let codes = generator.generate();
 
-// codes.codes - Vec of 10 hashed backup codes to store
-// codes.display_codes - Plain codes to show user ONCE
+// codes.codes - Vec of 10 plaintext random codes
+// codes.display_codes() - Formatted plaintext codes to show user ONCE
+
+// Hash before persistence; this runs Argon2id off the async runtime.
+let hash = BackupCodeGenerator::hash(&codes.codes[0]).await?;
+assert!(BackupCodeGenerator::verify_hash(&codes.codes[0], &hash).await?);
 
 // Verify backup code (returns index if valid)
-if let Some(index) = BackupCodeGenerator::verify("ABCD-1234", &stored_codes) {
+if let Some(index) = BackupCodeGenerator::verify("ABCD-1234", &in_memory_plaintext_codes) {
     // Remove used code
     stored_codes.remove(index);
 }
@@ -1733,13 +1760,15 @@ Internal logs capture the actual reason for debugging.
 
 ## Database Schema
 
-See `examples/auth_migrations/` for SeaORM migration examples:
+The API starter generates these auth migrations:
 
 - `m001_create_users.rs` - Users table
-- `m002_create_refresh_tokens.rs` - Token families
-- `m003_create_mfa.rs` - MFA configuration
-- `m004_create_verification_tokens.rs` - Email/reset tokens
-- `m005_create_sessions.rs` - Active sessions (for session management)
+- `m002_create_refresh_tokens.rs` - Refresh-token families
+- `m003_create_auth_tokens.rs` - One-time email, reset, and MFA challenge tokens
+- `m004_create_mfa.rs` - Encrypted TOTP state and hashed recovery codes (when
+  `auth-mfa` is enabled)
+
+Additional session-management integrations may add a sessions migration.
 
 ### Sessions Table Schema
 

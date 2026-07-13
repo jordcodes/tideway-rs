@@ -1,6 +1,7 @@
 //! Doctor command - diagnose Tideway project setup issues.
 
 use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use colored::Colorize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -191,6 +192,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
 
     let needs_database = tideway_features.contains("database") || detected.contains("database");
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
+    let needs_mfa = tideway_features.contains("auth-mfa");
     let needs_billing = tideway_features.contains("billing") || detected.contains("billing");
 
     if fix {
@@ -201,6 +203,7 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
             needs_database,
             database_backend,
             needs_auth,
+            needs_mfa,
             needs_billing,
             &mut report,
         )?;
@@ -235,6 +238,22 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
         );
         if env_vars.contains_key("JWT_SECRET")
             && let Some(message) = jwt_secret.as_deref().and_then(validate_jwt_secret)
+        {
+            report.push_warning(message);
+        }
+    }
+
+    if needs_mfa {
+        let mfa_key = check_env_var(
+            "MFA_ENCRYPTION_KEY",
+            &env_file,
+            &env_example_file,
+            &env_vars,
+            &env_example_vars,
+            &mut report,
+        );
+        if env_vars.contains_key("MFA_ENCRYPTION_KEY")
+            && let Some(message) = mfa_key.as_deref().and_then(validate_mfa_encryption_key)
         {
             report.push_warning(message);
         }
@@ -493,6 +512,16 @@ fn validate_jwt_secret(value: &str) -> Option<String> {
     None
 }
 
+fn validate_mfa_encryption_key(value: &str) -> Option<String> {
+    match STANDARD.decode(value.trim()) {
+        Ok(key) if key.len() == 32 => None,
+        _ => Some(
+            "MFA_ENCRYPTION_KEY must be independent base64 encoding exactly 32 random bytes (generate with `openssl rand -base64 32`)"
+                .to_string(),
+        ),
+    }
+}
+
 fn has_log_config(
     env_vars: &BTreeMap<String, String>,
     env_example_vars: &BTreeMap<String, String>,
@@ -533,6 +562,7 @@ fn env_example_template(
     needs_database: bool,
     database_backend: &str,
     needs_auth: bool,
+    needs_mfa: bool,
     needs_billing: bool,
 ) -> Option<Vec<String>> {
     let mut lines = Vec::new();
@@ -562,6 +592,9 @@ fn env_example_template(
     if needs_auth {
         lines.push("# Auth".to_string());
         lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
+        if needs_mfa {
+            lines.push("MFA_ENCRYPTION_KEY=".to_string());
+        }
         lines.push(String::new());
     }
 
@@ -605,6 +638,7 @@ fn apply_env_fixes(
     needs_database: bool,
     database_backend: &str,
     needs_auth: bool,
+    needs_mfa: bool,
     needs_billing: bool,
     report: &mut DoctorReport,
 ) -> Result<()> {
@@ -613,6 +647,7 @@ fn apply_env_fixes(
         needs_database,
         database_backend,
         needs_auth,
+        needs_mfa,
         needs_billing,
     ) else {
         return Ok(());

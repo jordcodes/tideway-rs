@@ -1,6 +1,8 @@
 //! TOTP (Time-based One-Time Password) support.
 
 use crate::error::{Result, TidewayError};
+use std::time::{SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 use totp_rs::{Algorithm, Secret, TOTP};
 
 /// Configuration for TOTP generation.
@@ -96,14 +98,10 @@ impl TotpManager {
     ///
     /// Uses a window of ±1 time step to account for clock drift.
     pub fn verify(&self, secret: &str, code: &str, account_name: &str) -> Result<bool> {
-        let totp = self.build_totp(secret, account_name)?;
-
-        // Clean the code (remove spaces, dashes)
-        let code = code.replace([' ', '-'], "");
-
-        // Verify with 1 step tolerance for clock drift
-        match totp.check_current(&code) {
-            Ok(valid) => Ok(valid),
+        match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(now) => Ok(self
+                .verify_step_at(secret, code, account_name, now.as_secs())?
+                .is_some()),
             Err(e) => {
                 tracing::warn!(error = %e, "TOTP verification error (system time issue?)");
                 // Return false rather than error - this is likely a clock issue
@@ -111,6 +109,40 @@ impl TotpManager {
                 Ok(false)
             }
         }
+    }
+
+    /// Verify a TOTP code and return the matched time-step counter.
+    ///
+    /// Persist and atomically consume this counter to prevent a valid code from
+    /// being replayed during its acceptance window.
+    pub fn verify_step(&self, secret: &str, code: &str, account_name: &str) -> Result<Option<u64>> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| {
+                TidewayError::internal(format!("Unable to read system time for TOTP: {error}"))
+            })?;
+        self.verify_step_at(secret, code, account_name, now.as_secs())
+    }
+
+    /// Verify a TOTP code at a timestamp and return the matched step counter.
+    pub fn verify_step_at(
+        &self,
+        secret: &str,
+        code: &str,
+        account_name: &str,
+        time: u64,
+    ) -> Result<Option<u64>> {
+        let totp = self.build_totp(secret, account_name)?;
+        let code = code.replace([' ', '-'], "");
+        let current_step = time / self.config.step;
+        let mut matched = None;
+        for step in current_step.saturating_sub(1)..=current_step.saturating_add(1) {
+            let expected = totp.generate(step.saturating_mul(self.config.step));
+            if bool::from(expected.as_bytes().ct_eq(code.as_bytes())) {
+                matched = Some(step);
+            }
+        }
+        Ok(matched)
     }
 
     /// Verify with a specific timestamp (useful for testing).
@@ -126,8 +158,10 @@ impl TotpManager {
         Ok(totp.check(&code, time))
     }
 
-    /// Generate the current TOTP code (useful for testing).
-    #[cfg(any(test, feature = "test-auth-bypass"))]
+    /// Generate the current TOTP code.
+    ///
+    /// This is useful for integration tests and trusted administrative tooling.
+    /// Never return generated codes from an API response.
     pub fn generate_current(&self, secret: &str, account_name: &str) -> Result<String> {
         let totp = self.build_totp(secret, account_name)?;
         totp.generate_current()
@@ -167,6 +201,25 @@ mod tests {
             manager
                 .verify(&setup.secret, &code, "user@example.com")
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn test_verify_step_returns_exact_counter_with_skew() {
+        let manager = TotpManager::new(TotpConfig::new("TestApp"));
+        let setup = manager.generate_setup("user@example.com").unwrap();
+        let time = 1_700_000_000;
+        let previous_step = time / manager.config.step - 1;
+        let code = manager
+            .build_totp(&setup.secret, "user@example.com")
+            .unwrap()
+            .generate(previous_step * manager.config.step);
+
+        assert_eq!(
+            manager
+                .verify_step_at(&setup.secret, &code, "user@example.com", time)
+                .unwrap(),
+            Some(previous_step)
         );
     }
 

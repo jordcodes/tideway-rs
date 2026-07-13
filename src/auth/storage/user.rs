@@ -91,6 +91,18 @@ pub trait UserStore: Send + Sync {
     #[cfg(feature = "auth-mfa")]
     async fn get_totp_secret(&self, user: &Self::User) -> Result<Option<String>>;
 
+    /// Atomically consume a successfully verified TOTP time-step counter.
+    ///
+    /// Return `true` only when `step` is newer than the last consumed step.
+    /// Production stores must implement this as a conditional write so the same
+    /// TOTP code cannot succeed concurrently or be replayed within its window.
+    #[cfg(feature = "auth-mfa")]
+    async fn consume_totp_step(&self, _user: &Self::User, _step: u64) -> Result<bool> {
+        Err(crate::TidewayError::internal(
+            "UserStore::consume_totp_step must be implemented atomically",
+        ))
+    }
+
     /// Get the user's backup codes.
     #[cfg(feature = "auth-mfa")]
     async fn get_backup_codes(&self, user: &Self::User) -> Result<Vec<String>>;
@@ -98,6 +110,18 @@ pub trait UserStore: Send + Sync {
     /// Remove a used backup code by index.
     #[cfg(feature = "auth-mfa")]
     async fn remove_backup_code(&self, user: &Self::User, index: usize) -> Result<()>;
+
+    /// Atomically verify and consume a backup code.
+    ///
+    /// Returns the number of remaining codes after a successful consume, or
+    /// `None` when the code is invalid. Production stores must verify hashed
+    /// codes and make deletion conditional so concurrent reuse cannot succeed.
+    #[cfg(feature = "auth-mfa")]
+    async fn consume_backup_code(&self, _user: &Self::User, _code: &str) -> Result<Option<usize>> {
+        Err(crate::TidewayError::internal(
+            "UserStore::consume_backup_code must be implemented atomically",
+        ))
+    }
 }
 
 /// Trait for creating new users during registration.
