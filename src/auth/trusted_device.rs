@@ -595,7 +595,7 @@ pub mod test {
                 .cloned()
                 .collect();
             // Sort by trusted_at descending (newest first)
-            result.sort_by(|a, b| b.trusted_at.cmp(&a.trusted_at));
+            result.sort_by_key(|device| std::cmp::Reverse(device.trusted_at));
             Ok(result)
         }
 

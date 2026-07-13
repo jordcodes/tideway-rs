@@ -852,7 +852,7 @@ impl Plans {
             .collect();
 
         // Sort by additional features (descending)
-        upgrades.sort_by(|a, b| b.1.cmp(&a.1));
+        upgrades.sort_by_key(|upgrade| std::cmp::Reverse(upgrade.1));
 
         upgrades.into_iter().map(|(p, _)| p).collect()
     }

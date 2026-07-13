@@ -802,7 +802,7 @@ pub mod test {
             }
 
             // Sort by created_at descending (newest first)
-            result.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            result.sort_by_key(|session| std::cmp::Reverse(session.created_at));
 
             Ok(result)
         }

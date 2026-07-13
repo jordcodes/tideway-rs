@@ -334,7 +334,7 @@ impl TidewayError {
             if !has_stack_trace {
                 info = Some(
                     info.unwrap_or_default()
-                        .with_stack_trace(format!("{:?}", &self)),
+                        .with_stack_trace(format!("{self:?}")),
                 );
             }
         }
