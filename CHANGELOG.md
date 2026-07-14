@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [tideway-cli 0.1.40] - 2026-07-14
+
+### Fixed
+
+- Fresh SaaS applications now compile their shared modules once through the generated library crate, eliminating warning noise without suppressing useful compiler diagnostics.
+- `tideway resource` adds modules to `lib.rs` for library-based SaaS applications and registers the resource through the application crate, preserving auth visibility and warning-free compilation.
+- The generated SaaS compile regression now treats warnings as errors.
+
+### DX Gate
+
+- The complete CLI suite passes, including warning-free SaaS generation and the `new SaaS` → `resource` → compile workflow.
+- Strict CLI Clippy, formatting, and repository guardrails pass.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.40`; generated projects continue to use Tideway 0.7.25.
+- Existing applications do not require changes; this release affects newly generated files and future resource wiring.
+
 ## [tideway-cli 0.1.39] - 2026-07-14
 
 ### Added
