@@ -49,8 +49,17 @@ Help agents build and maintain downstream APIs that use Tideway, not the Tideway
   - Production webhook stores should atomically claim events before side effects and release claims on retryable processing errors.
 
 ## Updating Existing Tideway Apps
+- Treat generated files as application-owned code. Do not rerun broad scaffolds with `--force` over
+  an existing app; preserve local handlers, services, authorization, and schema conventions.
+- Update the CLI, then inspect the read-only report before editing:
+  - `tideway --json doctor --upgrade`
 - Update the framework dependency in the app `Cargo.toml`, then run:
   - `cargo update -p tideway`
+- Apply only the reported compatibility edits and required additive migrations.
+- After remediation, require a clean machine-readable report and run the normal project checks:
+  - `tideway --json doctor --upgrade --deny-warnings`
+  - `tideway doctor --deny-warnings`
+  - `tideway migrate` when migrations are pending
   - app test suite
 - Update the CLI used for future scaffolding:
   - `cargo install tideway-cli --version <latest>`
@@ -59,6 +68,8 @@ Help agents build and maintain downstream APIs that use Tideway, not the Tideway
 - Replace protected-route access checks with:
   - `verify_access_token(token).await`
 - For billing apps, check custom `BillingStore` implementations for `claim_event` and `release_event_claim`.
+- Built-in `SeaOrmBillingStore` apps require `billing_processed_events.event_id` to be a primary
+  key. Do not treat the generic `webhook_processed_events` table as a substitute.
 
 ## Editing Existing Apps
 - Preserve generated file paths and module names unless the user explicitly wants a migration.

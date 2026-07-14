@@ -743,6 +743,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "migration/src/m004_create_billing.rs".to_string(),
         "migration/src/m008_create_billing_plans.rs".to_string(),
         "migration/src/m009_create_webhook_processed_events.rs".to_string(),
+        "migration/src/m010_create_billing_processed_events.rs".to_string(),
     ];
 
     if *preset == BackendPreset::B2b {

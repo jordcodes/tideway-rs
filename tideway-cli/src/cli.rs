@@ -170,6 +170,10 @@ pub struct DoctorArgs {
     /// Check dependency alignment and source migrations for a Tideway upgrade
     #[arg(long, default_value = "false")]
     pub upgrade: bool,
+
+    /// Exit with a non-zero status when doctor reports warnings
+    #[arg(long, default_value = "false")]
+    pub deny_warnings: bool,
 }
 
 #[derive(Parser, Debug)]

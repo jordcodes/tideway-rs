@@ -4,7 +4,7 @@ exclude = ["load-tests/app"]
 
 [package]
 name = "tideway"
-version = "0.7.23"
+version = "0.7.24"
 edition = "2024"
 authors = ["JD"]
 description = "A batteries-included Rust web framework built on Axum for building SaaS applications quickly"

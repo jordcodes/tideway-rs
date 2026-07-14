@@ -1,0 +1,58 @@
+//! Create billing_processed_events table for Stripe webhook idempotency.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(BillingProcessedEvents::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(BillingProcessedEvents::EventId)
+                            .string()
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(
+                        ColumnDef::new(BillingProcessedEvents::ProcessedAt)
+                            .timestamp_with_time_zone()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_billing_processed_events_processed_at")
+                    .table(BillingProcessedEvents::Table)
+                    .col(BillingProcessedEvents::ProcessedAt)
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(
+                Table::drop()
+                    .table(BillingProcessedEvents::Table)
+                    .to_owned(),
+            )
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum BillingProcessedEvents {
+    Table,
+    EventId,
+    ProcessedAt,
+}

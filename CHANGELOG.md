@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [tideway-cli 0.1.38] - 2026-07-14
+
+### Added
+
+- `tideway doctor --upgrade` warns when a downstream custom `BillingStore` is missing the atomic `claim_event` or retry-safe `release_event_claim` override.
+- The upgrade guide documents the required built-in SeaORM migration and the claim lifecycle contract for custom stores.
+- Upgrade JSON now includes stable finding codes, affected paths, and documentation links; `--deny-warnings` provides a strict CI and agent exit status without modifying files.
+- New backend scaffolds include an additive `billing_processed_events` migration with a primary-key event ID, and upgrade checks detect missing or incomplete versions of that migration.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.38`; its upgrade checks target Tideway 0.7.24.
+
+## [0.7.24] - 2026-07-14
+
+### Fixed
+
+- `SeaOrmBillingStore` now distinguishes inserted webhook claims from conflict results, preventing concurrent duplicate deliveries from both running handler side effects.
+- Empty claim inserts fail closed, and a database-backed concurrency regression test verifies that exactly one caller wins.
+
+### Migration Notes
+
+- Built-in `SeaOrmBillingStore` users must add the `billing_processed_events` migration unless their application already has that table with `event_id` as its primary key.
+- Custom `BillingStore` implementations must provide atomic `claim_event` and retry-safe `release_event_claim` implementations.
+
 ## [tideway-cli 0.1.37] - 2026-07-13
 
 ### Added

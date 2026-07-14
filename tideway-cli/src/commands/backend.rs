@@ -517,6 +517,10 @@ fn generate_migrations(
             "m009_create_webhook_processed_events.rs",
             "migrations/m009_create_webhook_processed_events",
         ),
+        (
+            "m010_create_billing_processed_events.rs",
+            "migrations/m010_create_billing_processed_events",
+        ),
     ];
 
     for (filename, template_name) in core_migrations {

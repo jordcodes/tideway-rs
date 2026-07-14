@@ -151,6 +151,11 @@ fn test_backend_plan_mode_is_non_mutating() {
         "expected plan output to include m009 migration, got:\n{}",
         stdout
     );
+    assert!(
+        stdout.contains("m010_create_billing_processed_events.rs"),
+        "expected plan output to include m010 migration, got:\n{}",
+        stdout
+    );
 }
 
 #[test]

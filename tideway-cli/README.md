@@ -82,11 +82,18 @@ Options:
 - `--path` - Project directory to analyze (default: current directory)
 - `--fix` - Generate .env.example when missing
 - `--upgrade` - Run a read-only Tideway version, dependency, and source-migration check
+- `--deny-warnings` - Exit non-zero when warnings remain (useful for CI and code agents)
 
 Before upgrading an existing application, update the CLI and run:
 
 ```bash
 tideway doctor --upgrade
+```
+
+For a strict machine-readable audit after applying migrations:
+
+```bash
+tideway --json doctor --upgrade --deny-warnings
 ```
 
 See the [Tideway upgrade guide](https://github.com/jordcodes/tideway-rs/blob/main/docs/upgrading.md) for the version-specific migration steps.

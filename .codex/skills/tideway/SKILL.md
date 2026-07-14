@@ -41,6 +41,9 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
   - `verify_access_token(token).await`
 - Keep raw `verify(token).await` only for generic/custom claims flows where the caller performs its own purpose validation.
 - For apps using billing webhooks, update to a version with `BillingStore::claim_event` / `release_event_claim` and prefer atomic insert-or-ignore implementations in production stores.
+- Use `tideway --json doctor --upgrade --deny-warnings` as the post-remediation agent/CI gate.
+- Upgrade checks are advisory and read-only. Never overwrite downstream generated files to apply an
+  upgrade; preserve application-specific code and add schema changes through new migrations.
 
 ## Release Workflow
 - Before a release, confirm the intended versions and update all relevant version sources:

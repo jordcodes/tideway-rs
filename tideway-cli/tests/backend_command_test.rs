@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 #[test]
-fn test_backend_generates_webhook_processed_events_migration() {
+fn test_backend_generates_webhook_idempotency_migrations() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let output_dir = temp_dir.path().join("src");
     let migrations_dir = temp_dir.path().join("migration/src");
@@ -29,6 +29,16 @@ fn test_backend_generates_webhook_processed_events_migration() {
             .exists(),
         "expected m009_create_webhook_processed_events.rs to be generated"
     );
+    let billing_events_migration = migrations_dir.join("m010_create_billing_processed_events.rs");
+    assert!(
+        billing_events_migration.exists(),
+        "expected m010_create_billing_processed_events.rs to be generated"
+    );
+    let billing_events =
+        fs::read_to_string(billing_events_migration).expect("read billing event migration");
+    assert!(billing_events.contains("billing_processed_events"));
+    assert!(billing_events.contains("BillingProcessedEvents::EventId"));
+    assert!(billing_events.contains("primary_key()"));
 
     let lib_rs = fs::read_to_string(migrations_dir.join("lib.rs")).expect("read migration lib");
     assert!(
@@ -39,6 +49,8 @@ fn test_backend_generates_webhook_processed_events_migration() {
         lib_rs.contains("Box::new(m009_create_webhook_processed_events::Migration),"),
         "expected m009 migration registration in lib.rs"
     );
+    assert!(lib_rs.contains("mod m010_create_billing_processed_events;"));
+    assert!(lib_rs.contains("Box::new(m010_create_billing_processed_events::Migration),"));
 }
 
 #[test]

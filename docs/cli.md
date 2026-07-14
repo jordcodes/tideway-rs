@@ -214,7 +214,9 @@ tideway doctor --upgrade
 
 This check is read-only and reports framework-version drift, direct dependency mismatches, and
 known source migrations. It uses the Tideway version bundled into the installed CLI and supports
-global `--json` output. See `docs/upgrading.md` for the complete workflow.
+global `--json` output. Add `--deny-warnings` when CI or an agent should receive a non-zero exit
+status until every warning is resolved. Finding JSON includes stable codes, affected paths, and the
+upgrade-guide URL. See `docs/upgrading.md` for the complete workflow.
 
 `tideway doctor` is optional for the recommended new-app path; use it as a sanity check or when recovering from setup drift.
 

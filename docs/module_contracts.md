@@ -38,7 +38,7 @@ Example:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7.23", default-features = false, features = ["feature-gate-errors"] }
+tideway = { version = "0.7.24", default-features = false, features = ["feature-gate-errors"] }
 ```
 
 In this mode, using disabled modules yields clear messages such as:

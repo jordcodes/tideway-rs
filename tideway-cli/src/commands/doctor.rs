@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use colored::Colorize;
+use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,9 @@ pub enum DoctorFindingLevel {
 pub struct DoctorFinding {
     pub level: DoctorFindingLevel,
     pub message: String,
+    pub code: Option<&'static str>,
+    pub affected_path: Option<String>,
+    pub docs_url: Option<&'static str>,
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +74,24 @@ impl DoctorReport {
         self.push(DoctorFindingLevel::Warning, message);
     }
 
+    fn push_upgrade_info(
+        &mut self,
+        code: &'static str,
+        affected_path: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        self.push_with_metadata(DoctorFindingLevel::Info, code, affected_path, message);
+    }
+
+    fn push_upgrade_warning(
+        &mut self,
+        code: &'static str,
+        affected_path: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        self.push_with_metadata(DoctorFindingLevel::Warning, code, affected_path, message);
+    }
+
     fn messages(&self, level: DoctorFindingLevel) -> Vec<&str> {
         self.findings
             .iter()
@@ -82,6 +104,25 @@ impl DoctorReport {
         self.findings.push(DoctorFinding {
             level,
             message: message.into(),
+            code: None,
+            affected_path: None,
+            docs_url: None,
+        });
+    }
+
+    fn push_with_metadata(
+        &mut self,
+        level: DoctorFindingLevel,
+        code: &'static str,
+        affected_path: impl Into<String>,
+        message: impl Into<String>,
+    ) {
+        self.findings.push(DoctorFinding {
+            level,
+            message: message.into(),
+            code: Some(code),
+            affected_path: Some(affected_path.into()),
+            docs_url: Some(UPGRADE_GUIDE_URL),
         });
     }
 }
@@ -117,20 +158,24 @@ pub fn run_with_runtime(args: DoctorArgs, runtime: CommandRuntime) -> Result<()>
         return Ok(());
     }
 
-    for line in &info {
-        print_info(line);
-    }
-
-    for line in &fixes {
-        print_success(line);
-    }
-
-    if !warnings.is_empty() {
-        if !runtime.json_output() {
-            println!();
+    if runtime.json_output() {
+        for finding in report.findings() {
+            print_finding_json(finding);
         }
-        for warning in &warnings {
-            print_warning(warning);
+    } else {
+        for line in &info {
+            print_info(line);
+        }
+
+        for line in &fixes {
+            print_success(line);
+        }
+
+        if !warnings.is_empty() {
+            println!();
+            for warning in &warnings {
+                print_warning(warning);
+            }
         }
     }
 
@@ -146,7 +191,36 @@ pub fn run_with_runtime(args: DoctorArgs, runtime: CommandRuntime) -> Result<()>
         NEW_APP_COMMAND
     ));
 
+    if args.deny_warnings && !warnings.is_empty() {
+        anyhow::bail!(
+            "Doctor found {} warning(s) and --deny-warnings was requested",
+            warnings.len()
+        );
+    }
+
     Ok(())
+}
+
+fn print_finding_json(finding: &DoctorFinding) {
+    let level = match finding.level {
+        DoctorFindingLevel::Info => "info",
+        DoctorFindingLevel::Fix => "success",
+        DoctorFindingLevel::Warning => "warning",
+    };
+    let mut payload = json!({
+        "level": level,
+        "message": finding.message,
+    });
+    if let Some(code) = finding.code {
+        payload["code"] = json!(code);
+    }
+    if let Some(path) = &finding.affected_path {
+        payload["affected_path"] = json!(path);
+    }
+    if let Some(docs_url) = finding.docs_url {
+        payload["docs_url"] = json!(docs_url);
+    }
+    println!("{payload}");
 }
 
 pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
@@ -166,7 +240,11 @@ pub fn analyze_project_with_upgrade(
 
     if upgrade {
         if !tideway_dependency_present(&cargo_toml) {
-            report.push_warning("Cargo.toml is missing a tideway dependency".to_string());
+            report.push_upgrade_warning(
+                "TW-UPGRADE-DEPENDENCY-MISSING",
+                "Cargo.toml",
+                "Cargo.toml is missing a tideway dependency",
+            );
         }
         check_upgrade_readiness(project_dir, &cargo_toml, &tideway_features, &mut report);
         return Ok(report);
@@ -354,33 +432,42 @@ fn check_upgrade_readiness(
     report: &mut DoctorReport,
 ) {
     match dependency_version(cargo_toml, "tideway") {
-        Some(version) if dependency_version_matches(version, TIDEWAY_VERSION) => report.push_info(format!(
-            "Tideway dependency is aligned with this CLI ({TIDEWAY_VERSION})"
-        )),
-        Some(version) => report.push_warning(format!(
-            "Cargo.toml declares Tideway {version}; this CLI targets {TIDEWAY_VERSION}. Review {UPGRADE_GUIDE_URL}, set tideway = \"{TIDEWAY_VERSION}\", then run `cargo update -p tideway --precise {TIDEWAY_VERSION}`"
-        )),
-        None if tideway_dependency_present(cargo_toml) => report.push_info(
-            "Tideway uses a path or workspace dependency; published-version alignment was not checked"
-                .to_string(),
+        Some(version) if dependency_version_matches(version, TIDEWAY_VERSION) => report.push_upgrade_info(
+            "TW-UPGRADE-VERSION-ALIGNED",
+            "Cargo.toml",
+            format!("Tideway dependency is aligned with this CLI ({TIDEWAY_VERSION})"),
+        ),
+        Some(version) => report.push_upgrade_warning(
+            "TW-UPGRADE-VERSION-MISMATCH",
+            "Cargo.toml",
+            format!("Cargo.toml declares Tideway {version}; this CLI targets {TIDEWAY_VERSION}. Review {UPGRADE_GUIDE_URL}, set tideway = \"{TIDEWAY_VERSION}\", then run `cargo update -p tideway --precise {TIDEWAY_VERSION}`"),
+        ),
+        None if tideway_dependency_present(cargo_toml) => report.push_upgrade_info(
+            "TW-UPGRADE-VERSION-UNPINNED",
+            "Cargo.toml",
+            "Tideway uses a path or workspace dependency; published-version alignment was not checked",
         ),
         None => {}
     }
 
     if tideway_features.contains("validation") {
         match dependency_version(cargo_toml, "validator") {
-            Some(version) if !dependency_version_matches(version, "0.20") => report.push_warning(format!(
-                "Direct validator dependency is {version}, but Tideway {TIDEWAY_VERSION} uses validator 0.20; align it to avoid opaque Axum Handler errors"
-            )),
-            Some(_) => report.push_info(
-                "Direct validator dependency is aligned with Tideway (0.20)".to_string(),
+            Some(version) if !dependency_version_matches(version, "0.20") => report.push_upgrade_warning(
+                "TW-UPGRADE-VALIDATOR-MISMATCH",
+                "Cargo.toml",
+                format!("Direct validator dependency is {version}, but Tideway {TIDEWAY_VERSION} uses validator 0.20; align it to avoid opaque Axum Handler errors"),
+            ),
+            Some(_) => report.push_upgrade_info(
+                "TW-UPGRADE-VALIDATOR-ALIGNED",
+                "Cargo.toml",
+                "Direct validator dependency is aligned with Tideway (0.20)",
             ),
             None => {}
         }
     }
 
-    if tideway_features.contains("billing")
-        && let Some((dependency_name, features)) = async_stripe_features(cargo_toml)
+    let billing_enabled = tideway_features_enable_billing(tideway_features);
+    if billing_enabled && let Some((dependency_name, features)) = async_stripe_features(cargo_toml)
     {
         let incompatible = [
             "runtime-tokio-hyper-rustls",
@@ -392,36 +479,177 @@ fn check_upgrade_readiness(
         .collect::<Vec<_>>();
 
         if incompatible.is_empty() {
-            report.push_info(format!(
-                "Direct {dependency_name} TLS transport does not conflict with Tideway billing"
-            ));
+            report.push_upgrade_info(
+                "TW-UPGRADE-STRIPE-TLS-ALIGNED",
+                "Cargo.toml",
+                format!(
+                    "Direct {dependency_name} TLS transport does not conflict with Tideway billing"
+                ),
+            );
         } else {
-            report.push_warning(format!(
-                "Direct {dependency_name} enables {}, while Tideway {TIDEWAY_VERSION} billing uses runtime-tokio-hyper; async-stripe permits only one TLS implementation. Use runtime-tokio-hyper for the direct dependency",
-                incompatible.join(", ")
-            ));
+            report.push_upgrade_warning(
+                "TW-UPGRADE-STRIPE-TLS-CONFLICT",
+                "Cargo.toml",
+                format!("Direct {dependency_name} enables {}, while Tideway {TIDEWAY_VERSION} billing uses runtime-tokio-hyper; async-stripe permits only one TLS implementation. Use runtime-tokio-hyper for the direct dependency", incompatible.join(", ")),
+            );
         }
     }
 
     let src_dir = project_dir.join("src");
+    if tideway_features.contains("billing-seaorm")
+        || any_rs_file_contains(&src_dir, "SeaOrmBillingStore")
+    {
+        match billing_event_migration_status(project_dir) {
+            BillingEventMigrationStatus::Ready => report.push_upgrade_info(
+                "TW-UPGRADE-BILLING-MIGRATION-READY",
+                "migration/src/",
+                "billing_processed_events migration includes a primary-key event ID",
+            ),
+            BillingEventMigrationStatus::Missing => report.push_upgrade_warning(
+                "TW-UPGRADE-BILLING-MIGRATION-MISSING",
+                "migration/src/",
+                "SeaOrmBillingStore requires a billing_processed_events migration with event_id as the primary key; add and run the 0.7.24 billing idempotency migration before deploying",
+            ),
+            BillingEventMigrationStatus::MissingPrimaryKey => report.push_upgrade_warning(
+                "TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY",
+                "migration/src/",
+                "A billing_processed_events migration was found, but doctor could not confirm event_id is its primary key; duplicate webhook claims are only atomic when the database enforces uniqueness",
+            ),
+        }
+    }
+
+    let missing_claim_methods = custom_billing_store_missing_claim_methods(&src_dir);
+    if billing_enabled && !missing_claim_methods.is_empty() {
+        report.push_upgrade_warning(
+            "TW-UPGRADE-BILLING-CLAIM-LIFECYCLE",
+            "src/",
+            format!(
+                "Custom BillingStore implementation found without {} override(s); implement claim_event as an atomic insert-or-ignore operation and release_event_claim so concurrent webhook deliveries cannot both run side effects and failed deliveries can be retried",
+                missing_claim_methods.join(" and ")
+            ),
+        );
+    }
     if any_rs_file_contains(&src_dir, "JwtIssuerConfig::with_secret(") {
-        report.push_warning(
-            "Deprecated JwtIssuerConfig::with_secret found; migrate to with_secure_secret(...) and propagate its Result"
-                .to_string(),
+        report.push_upgrade_warning(
+            "TW-UPGRADE-JWT-ISSUER-SECRET",
+            "src/",
+            "Deprecated JwtIssuerConfig::with_secret found; migrate to with_secure_secret(...) and propagate its Result",
         );
     }
     if any_rs_file_contains(&src_dir, "JwtVerifier::from_secret(") {
-        report.push_warning(
-            "Deprecated JwtVerifier::from_secret found; migrate to from_secret_checked(...) and propagate its Result"
-                .to_string(),
+        report.push_upgrade_warning(
+            "TW-UPGRADE-JWT-VERIFIER-SECRET",
+            "src/",
+            "Deprecated JwtVerifier::from_secret found; migrate to from_secret_checked(...) and propagate its Result",
         );
     }
     if any_rs_file_contains(&src_dir, ".database.is_some()") {
-        report.push_warning(
-            "Direct AppContext.database access found; use the public database_opt() accessor"
-                .to_string(),
+        report.push_upgrade_warning(
+            "TW-UPGRADE-APP-CONTEXT-DATABASE",
+            "src/",
+            "Direct AppContext.database access found; use the public database_opt() accessor",
         );
     }
+}
+
+fn tideway_features_enable_billing(features: &BTreeSet<String>) -> bool {
+    features.iter().any(|feature| {
+        matches!(
+            feature.as_str(),
+            "billing" | "billing-seaorm" | "organizations-billing"
+        )
+    })
+}
+
+fn custom_billing_store_missing_claim_methods(src_dir: &Path) -> Vec<&'static str> {
+    let missing_claim = any_rs_file_matches(src_dir, |contents| {
+        uncommented_line_contains(contents, "BillingStore for")
+            && !uncommented_line_contains(contents, "fn claim_event")
+    });
+    let missing_release = any_rs_file_matches(src_dir, |contents| {
+        uncommented_line_contains(contents, "BillingStore for")
+            && !uncommented_line_contains(contents, "fn release_event_claim")
+    });
+
+    let mut missing = Vec::new();
+    if missing_claim {
+        missing.push("claim_event");
+    }
+    if missing_release {
+        missing.push("release_event_claim");
+    }
+    missing
+}
+
+fn uncommented_line_contains(contents: &str, needle: &str) -> bool {
+    contents.lines().any(|line| {
+        let trimmed = line.trim_start();
+        !trimmed.starts_with("//") && trimmed.contains(needle)
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BillingEventMigrationStatus {
+    Ready,
+    Missing,
+    MissingPrimaryKey,
+}
+
+fn billing_event_migration_status(project_dir: &Path) -> BillingEventMigrationStatus {
+    let root = project_dir.join("migration").join("src");
+    let mut stack = vec![root];
+    let mut found_table = false;
+
+    while let Some(path) = stack.pop() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            if let Ok(entries) = fs::read_dir(&path) {
+                stack.extend(entries.flatten().map(|entry| entry.path()));
+            }
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+            continue;
+        }
+
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if !contents.contains("billing_processed_events") {
+            continue;
+        }
+
+        found_table = true;
+        if billing_event_id_is_primary_key(&contents) {
+            return BillingEventMigrationStatus::Ready;
+        }
+    }
+
+    if found_table {
+        BillingEventMigrationStatus::MissingPrimaryKey
+    } else {
+        BillingEventMigrationStatus::Missing
+    }
+}
+
+fn billing_event_id_is_primary_key(contents: &str) -> bool {
+    let sea_orm_definition_is_primary =
+        contents.split("ColumnDef::new").skip(1).any(|definition| {
+            definition.contains("BillingProcessedEvents::EventId")
+                && definition.contains("primary_key()")
+        });
+    if sea_orm_definition_is_primary {
+        return true;
+    }
+
+    // Support raw SQL migrations conservatively: the constraint must appear in the same
+    // comma-delimited column definition as event_id, not merely elsewhere in the file.
+    contents
+        .to_ascii_lowercase()
+        .split(',')
+        .any(|definition| definition.contains("event_id") && definition.contains("primary key"))
 }
 
 fn dependency_version<'a>(cargo_toml: &'a toml::Value, name: &str) -> Option<&'a str> {
@@ -1123,6 +1351,10 @@ fn has_webhook_idempotency_migration(project_dir: &Path) -> bool {
 }
 
 fn any_rs_file_contains(root: &Path, needle: &str) -> bool {
+    any_rs_file_matches(root, |contents| contents.contains(needle))
+}
+
+fn any_rs_file_matches(root: &Path, predicate: impl Fn(&str) -> bool) -> bool {
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
         let Ok(metadata) = fs::metadata(&path) else {
@@ -1143,7 +1375,7 @@ fn any_rs_file_contains(root: &Path, needle: &str) -> bool {
         }
 
         if fs::read_to_string(&path)
-            .map(|contents| contents.contains(needle))
+            .map(|contents| predicate(&contents))
             .unwrap_or(false)
         {
             return true;

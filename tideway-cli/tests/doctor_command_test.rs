@@ -50,6 +50,11 @@ stripe = { package = "async-stripe", version = "0.41", default-features = false,
             "expected upgrade warning containing {expected:?}, got {warnings:?}"
         );
     }
+    assert!(report.findings().iter().any(|finding| {
+        finding.code == Some("TW-UPGRADE-VERSION-MISMATCH")
+            && finding.affected_path.as_deref() == Some("Cargo.toml")
+            && finding.docs_url.is_some()
+    }));
 }
 
 #[test]
@@ -91,6 +96,104 @@ stripe = {{ package = "async-stripe", version = "0.41", default-features = false
 }
 
 #[test]
+fn test_doctor_upgrade_warns_for_custom_billing_store_without_claim_lifecycle_overrides() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["billing-seaorm"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/billing_store.rs"),
+        r#"impl BillingStore for CustomBillingStore { /* existing methods */ }
+// TODO: async fn claim_event must use an atomic database operation
+"#,
+    )
+    .expect("write billing store");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+
+    assert!(
+        report.warnings().iter().any(|warning| warning
+            .contains("without claim_event and release_event_claim")
+            && warning.contains("atomic insert-or-ignore")),
+        "expected custom billing store atomic-claim warning, got {:?}",
+        report.warnings()
+    );
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-CLAIM-LIFECYCLE") })
+    );
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-MIGRATION-MISSING") })
+    );
+}
+
+#[test]
+fn test_doctor_upgrade_accepts_custom_billing_store_with_atomic_claim() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["billing"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/billing_store.rs"),
+        r#"impl BillingStore for CustomBillingStore {
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        self.atomic_insert_or_ignore(event_id).await
+    }
+
+    async fn release_event_claim(&self, event_id: &str) -> Result<()> {
+        self.delete_claim(event_id).await
+    }
+}
+"#,
+    )
+    .expect("write billing store");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+
+    assert!(
+        !report
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("Custom BillingStore implementation")),
+        "did not expect custom billing store warning, got {:?}",
+        report.warnings()
+    );
+}
+
+#[test]
 fn test_doctor_upgrade_rejects_fix_mode() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     fs::write(
@@ -101,7 +204,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tideway = "0.7.23"
+tideway = "0.7.24"
 "#,
     )
     .expect("write Cargo.toml");
@@ -124,6 +227,113 @@ tideway = "0.7.23"
     assert!(
         combined.contains("cannot be combined"),
         "expected read-only mode error, got: {combined}"
+    );
+}
+
+#[test]
+fn test_doctor_upgrade_json_has_stable_finding_metadata_and_strict_exit() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    fs::create_dir_all(temp_dir.path().join("src")).expect("create src");
+    fs::write(
+        temp_dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = "0.7.13"
+"#,
+    )
+    .expect("write Cargo.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("--json")
+        .arg("doctor")
+        .arg("--upgrade")
+        .arg("--deny-warnings")
+        .arg("--path")
+        .arg(temp_dir.path())
+        .output()
+        .expect("run tideway doctor");
+
+    assert!(!output.status.success(), "strict upgrade audit should fail");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#""code":"TW-UPGRADE-VERSION-MISMATCH""#));
+    assert!(stdout.contains(r#""affected_path":"Cargo.toml""#));
+    assert!(stdout.contains(
+        r#""docs_url":"https://github.com/jordcodes/tideway-rs/blob/main/docs/upgrading.md""#
+    ));
+}
+
+#[test]
+fn test_doctor_upgrade_checks_billing_event_primary_key_migration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["billing-seaorm"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write main");
+    fs::write(
+        project_dir.join("migration/src/m010_create_billing_processed_events.rs"),
+        "// billing_processed_events\nColumnDef::new(BillingProcessedEvents::EventId).primary_key();\n",
+    )
+    .expect("write migration");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-MIGRATION-READY") })
+    );
+    assert!(!report.findings().iter().any(|finding| {
+        finding.code == Some("TW-UPGRADE-BILLING-MIGRATION-MISSING")
+            || finding.code == Some("TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY")
+    }));
+
+    fs::write(
+        project_dir.join("migration/src/m010_create_billing_processed_events.rs"),
+        "// billing_processed_events\nColumnDef::new(BillingProcessedEvents::EventId);\n",
+    )
+    .expect("write migration without primary key");
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("reanalyze upgrade");
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY") })
+    );
+
+    fs::write(
+        project_dir.join("migration/src/m010_create_billing_processed_events.rs"),
+        r#"// billing_processed_events
+ColumnDef::new(BillingProcessedEvents::Id).primary_key();
+ColumnDef::new(BillingProcessedEvents::EventId);
+"#,
+    )
+    .expect("write migration with unrelated primary key");
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("reanalyze upgrade");
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY") }),
+        "an unrelated primary key must not satisfy the event ID constraint"
     );
 }
 

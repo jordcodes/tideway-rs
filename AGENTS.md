@@ -30,6 +30,16 @@ Follow these conventions to work efficiently and safely.
 - Use `paginate` + `search (q)` for list endpoints when DB-backed.
 - Avoid breaking changes to generated paths; prefer additive updates.
 
+## Upgrading Existing Apps
+- Treat generated files as application-owned code. Never rerun broad scaffolds with `--force` over
+  an existing app or replace custom handlers, services, authorization, or migrations wholesale.
+- Inspect the read-only upgrade report first: `tideway --json doctor --upgrade`.
+- Apply only the reported compatibility edits and additive migrations.
+- After remediation, run `tideway --json doctor --upgrade --deny-warnings`, normal
+  `tideway doctor --deny-warnings`, pending migrations, and the application test suite.
+- For built-in SeaORM billing, require `billing_processed_events.event_id` to be a primary key.
+- See `docs/upgrading.md` for stable finding codes, version-specific steps, testing, and rollback.
+
 ## Testing
 - CLI tests: `cargo test -p tideway-cli`
 - Full test suite: `cargo test`
