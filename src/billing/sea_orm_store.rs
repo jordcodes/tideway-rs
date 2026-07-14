@@ -17,7 +17,7 @@
 use async_trait::async_trait;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, TransactionTrait, entity::prelude::*, sea_query::OnConflict,
+    QuerySelect, Set, TransactionTrait, TryInsertResult, entity::prelude::*, sea_query::OnConflict,
 };
 
 use super::storage::{
@@ -637,7 +637,11 @@ impl BillingStore for SeaOrmBillingStore {
             .await;
 
         match result {
-            Ok(_) => Ok(true),
+            Ok(TryInsertResult::Inserted(_)) => Ok(true),
+            Ok(TryInsertResult::Conflicted) => Ok(false),
+            Ok(TryInsertResult::Empty) => Err(TidewayError::internal(
+                "Billing webhook event claim produced an empty insert",
+            )),
             Err(sea_orm::DbErr::RecordNotInserted) => Ok(false),
             Err(e) => Err(TidewayError::Database(e.to_string())),
         }
@@ -953,6 +957,44 @@ impl SeaOrmBillingStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sea_orm::{ConnectionTrait, Database, Statement};
+
+    async fn setup_billing_events_db() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("sqlite in-memory db should connect");
+
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "CREATE TABLE billing_processed_events (
+                event_id TEXT PRIMARY KEY NOT NULL,
+                processed_at TEXT NOT NULL
+            )"
+            .to_string(),
+        ))
+        .await
+        .expect("should create billing_processed_events table");
+
+        db
+    }
+
+    #[tokio::test]
+    async fn claim_event_allows_exactly_one_concurrent_winner() {
+        let store = SeaOrmBillingStore::new(setup_billing_events_db().await);
+
+        let (first, second) = tokio::join!(
+            store.claim_event("evt_concurrent"),
+            store.claim_event("evt_concurrent")
+        );
+
+        let claims = [
+            first.expect("first claim should not fail"),
+            second.expect("second claim should not fail"),
+        ];
+
+        assert_eq!(claims.into_iter().filter(|claimed| *claimed).count(), 1);
+        assert!(store.is_event_processed("evt_concurrent").await.unwrap());
+    }
 
     #[test]
     fn test_model_to_stored_subscription() {
