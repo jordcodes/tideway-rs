@@ -5395,6 +5395,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tideway-downstream-upgrade-contract"
+version = "0.0.0"
+dependencies = [
+ "async-stripe",
+ "serde",
+ "serde_json",
+ "tideway",
+ "validator",
+]
+
+[[package]]
 name = "tideway-macros"
 version = "0.1.0"
 dependencies = [

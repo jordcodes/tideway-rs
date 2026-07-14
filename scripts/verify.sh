@@ -56,6 +56,9 @@ cargo check --features billing
 echo "[verify] all-features compile check"
 cargo check --all-features
 
+echo "[verify] downstream upgrade contract"
+bash scripts/check_downstream_upgrade.sh
+
 echo "[verify] module contract tests"
 cargo test --test prelude_smoke_test
 cargo test --test feature_gate_contract_test

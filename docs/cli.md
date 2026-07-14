@@ -206,6 +206,16 @@ Fix missing `.env.example`:
 tideway doctor --fix
 ```
 
+Check an existing application before upgrading Tideway:
+
+```bash
+tideway doctor --upgrade
+```
+
+This check is read-only and reports framework-version drift, direct dependency mismatches, and
+known source migrations. It uses the Tideway version bundled into the installed CLI and supports
+global `--json` output. See `docs/upgrading.md` for the complete workflow.
+
 `tideway doctor` is optional for the recommended new-app path; use it as a sanity check or when recovering from setup drift.
 
 ### `tideway backend` (advanced)

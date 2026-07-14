@@ -24,6 +24,7 @@ Briefly describe the release scope and user impact.
 - [ ] docs drift (`bash scripts/check_docs_drift.sh`)
 - [ ] scaffold idempotency (`cargo test -p tideway-cli --test plan_mode_mutating_commands_test` and `cargo test -p tideway-cli --test resource_command_test`)
 - [ ] golden path integration tests (`cargo test -p tideway-cli --test dx_golden_path_test`)
+- [ ] downstream upgrade contract (`bash scripts/check_downstream_upgrade.sh`)
 
 ### Metrics Snapshot
 
@@ -42,6 +43,7 @@ Briefly describe the release scope and user impact.
 - Deprecated or legacy paths touched:
 - Command surface rationale / roadmap issue:
 - Upgrade steps:
+- `docs/upgrading.md` updated for downstream changes:
 - Policy reference: `docs/deprecation_policy.md`
 
 ## Links

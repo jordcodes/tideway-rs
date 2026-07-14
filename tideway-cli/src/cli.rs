@@ -166,6 +166,10 @@ pub struct DoctorArgs {
     /// Generate missing .env.example when possible
     #[arg(long, default_value = "false")]
     pub fix: bool,
+
+    /// Check dependency alignment and source migrations for a Tideway upgrade
+    #[arg(long, default_value = "false")]
+    pub upgrade: bool,
 }
 
 #[derive(Parser, Debug)]

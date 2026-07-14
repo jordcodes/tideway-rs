@@ -23,10 +23,12 @@ bash scripts/verify.sh
 11. `cargo test -p tideway-cli --test messaging_contract_test`
 12. `cargo test -p tideway-cli`
 13. `cargo test --lib`
-14. `cargo check --features billing`
-15. `cargo check --all-features`
-16. `cargo test --test prelude_smoke_test`
-17. `cargo test --test feature_gate_contract_test`
+14. testing-surface example and host tests
+15. `cargo check --features billing`
+16. `cargo check --all-features`
+17. `bash scripts/check_downstream_upgrade.sh`
+18. `cargo test --test prelude_smoke_test`
+19. `cargo test --test feature_gate_contract_test`
 
 ## Common Failures and Fixes
 
@@ -217,6 +219,25 @@ Fix:
 - for intentional scaffold output changes:
   - update relevant files under `tideway-cli/tests/snapshots/`
 - re-run targeted test, then full CLI suite
+
+---
+
+### Downstream Upgrade Contract Failure
+
+Symptoms:
+- the fixture reports an async-stripe TLS feature conflict
+- validator trait versions differ
+- a public Tideway API used by an upgraded application no longer compiles
+
+Fix:
+- update `docs/upgrading.md` and `tideway doctor --upgrade` with the required migration
+- update `tests/fixtures/downstream_upgrade` to represent the documented post-upgrade state
+- keep unrelated dependency refreshes out of the fixture
+- re-run:
+
+```bash
+bash scripts/check_downstream_upgrade.sh
+```
 
 ---
 

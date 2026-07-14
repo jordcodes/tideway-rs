@@ -1,0 +1,13 @@
+[package]
+name = "tideway-downstream-upgrade-contract"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+tideway = { path = "../../..", default-features = false, features = ["auth", "billing", "database", "validation"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+validator = { version = "0.20", features = ["derive"] }
+stripe = { package = "async-stripe", version = "0.41", default-features = false, features = ["runtime-tokio-hyper", "billing", "checkout"] }

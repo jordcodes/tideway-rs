@@ -113,6 +113,7 @@ Project-specific guidance lives in `SKILLS.md`.
 Read the full walkthrough at `docs/getting_started.md`.
 For module composition contracts, see `docs/module_contracts.md`.
 For recovery from common CLI failures, see `docs/error_recovery.md`.
+For upgrading an existing application, see the [upgrade guide](https://github.com/jordcodes/tideway-rs/blob/main/docs/upgrading.md) and run `tideway doctor --upgrade`.
 
 ### CLI Reference
 

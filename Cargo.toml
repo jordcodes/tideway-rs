@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "tideway-macros", "tideway-cli"]
+members = [".", "tideway-macros", "tideway-cli", "tests/fixtures/downstream_upgrade"]
 exclude = ["load-tests/app"]
 
 [package]

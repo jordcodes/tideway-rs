@@ -2,7 +2,130 @@ use std::fs;
 use std::process::Command;
 
 use tideway_cli::cli::{NewArgs, NewPreset};
-use tideway_cli::commands::doctor::analyze_project;
+use tideway_cli::commands::doctor::{analyze_project, analyze_project_with_upgrade};
+
+#[test]
+fn test_doctor_upgrade_reports_dependency_and_source_migrations() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = { version = "0.7.13", features = ["auth", "billing", "validation"] }
+validator = { version = "0.18", features = ["derive"] }
+stripe = { package = "async-stripe", version = "0.41", default-features = false, features = ["runtime-tokio-hyper-rustls-webpki", "billing"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/main.rs"),
+        r#"fn migration_markers(context: tideway::AppContext, secret: &str) {
+    let _ = context.database.is_some();
+    let _ = tideway::auth::JwtIssuerConfig::with_secret(secret, "upgrade_app");
+    let _ = tideway::auth::JwtVerifier::from_secret(secret.as_bytes());
+}
+"#,
+    )
+    .expect("write main.rs");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    let warnings = report.warnings();
+
+    for expected in [
+        "declares Tideway 0.7.13",
+        "validator 0.20",
+        "only one TLS implementation",
+        "with_secure_secret",
+        "from_secret_checked",
+        "database_opt()",
+    ] {
+        assert!(
+            warnings.iter().any(|warning| warning.contains(expected)),
+            "expected upgrade warning containing {expected:?}, got {warnings:?}"
+        );
+    }
+}
+
+#[test]
+fn test_doctor_upgrade_accepts_aligned_dependencies_and_current_apis() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["billing", "validation"] }}
+validator = {{ version = "0.20", features = ["derive"] }}
+stripe = {{ package = "async-stripe", version = "0.41", default-features = false, features = ["runtime-tokio-hyper", "billing"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write main.rs");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    let warnings = report.warnings();
+    assert!(
+        !warnings.iter().any(|warning| warning.contains("validator"))
+            && !warnings
+                .iter()
+                .any(|warning| warning.contains("TLS implementation"))
+            && !warnings
+                .iter()
+                .any(|warning| warning.contains("Deprecated")),
+        "expected aligned upgrade dependencies, got {warnings:?}"
+    );
+}
+
+#[test]
+fn test_doctor_upgrade_rejects_fix_mode() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    fs::write(
+        temp_dir.path().join("Cargo.toml"),
+        r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = "0.7.23"
+"#,
+    )
+    .expect("write Cargo.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .arg("doctor")
+        .arg("--upgrade")
+        .arg("--fix")
+        .arg("--path")
+        .arg(temp_dir.path())
+        .output()
+        .expect("run tideway doctor");
+
+    assert!(!output.status.success(), "combined modes should fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("cannot be combined"),
+        "expected read-only mode error, got: {combined}"
+    );
+}
 
 #[test]
 fn test_doctor_detects_missing_feature() {

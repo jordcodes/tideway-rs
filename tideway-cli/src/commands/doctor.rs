@@ -16,7 +16,12 @@ use crate::commands::messaging::{
     TIDEWAY_RESOURCE_WIRE_COMMAND,
 };
 use crate::database::validate_database_url as shared_validate_database_url;
-use crate::{CommandRuntime, print_info, print_success, print_warning, write_file};
+use crate::{
+    CommandRuntime, TIDEWAY_VERSION, print_info, print_success, print_warning, write_file,
+};
+
+const UPGRADE_GUIDE_URL: &str =
+    "https://github.com/jordcodes/tideway-rs/blob/main/docs/upgrading.md";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DoctorFindingLevel {
@@ -88,8 +93,12 @@ pub fn run(args: DoctorArgs) -> Result<()> {
 pub fn run_with_runtime(args: DoctorArgs, runtime: CommandRuntime) -> Result<()> {
     runtime.install();
 
+    if args.fix && args.upgrade {
+        anyhow::bail!("--fix and --upgrade cannot be combined; upgrade checks are read-only");
+    }
+
     let project_dir = PathBuf::from(args.path);
-    let report = analyze_project(&project_dir, args.fix)?;
+    let report = analyze_project_with_upgrade(&project_dir, args.fix, args.upgrade)?;
     let info = report.info();
     let fixes = report.fixes();
     let warnings = report.warnings();
@@ -141,11 +150,27 @@ pub fn run_with_runtime(args: DoctorArgs, runtime: CommandRuntime) -> Result<()>
 }
 
 pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
+    analyze_project_with_upgrade(project_dir, fix, false)
+}
+
+pub fn analyze_project_with_upgrade(
+    project_dir: &Path,
+    fix: bool,
+    upgrade: bool,
+) -> Result<DoctorReport> {
     let mut report = DoctorReport::default();
 
     let cargo_toml_path = project_dir.join("Cargo.toml");
     let cargo_toml = read_cargo_toml(&cargo_toml_path)?;
     let tideway_features = tideway_features(&cargo_toml);
+
+    if upgrade {
+        if !tideway_dependency_present(&cargo_toml) {
+            report.push_warning("Cargo.toml is missing a tideway dependency".to_string());
+        }
+        check_upgrade_readiness(project_dir, &cargo_toml, &tideway_features, &mut report);
+        return Ok(report);
+    }
 
     let src_dir = project_dir.join("src");
     let detected = detect_modules(&src_dir);
@@ -320,6 +345,124 @@ pub fn analyze_project(project_dir: &Path, fix: bool) -> Result<DoctorReport> {
     }
 
     Ok(report)
+}
+
+fn check_upgrade_readiness(
+    project_dir: &Path,
+    cargo_toml: &toml::Value,
+    tideway_features: &BTreeSet<String>,
+    report: &mut DoctorReport,
+) {
+    match dependency_version(cargo_toml, "tideway") {
+        Some(version) if dependency_version_matches(version, TIDEWAY_VERSION) => report.push_info(format!(
+            "Tideway dependency is aligned with this CLI ({TIDEWAY_VERSION})"
+        )),
+        Some(version) => report.push_warning(format!(
+            "Cargo.toml declares Tideway {version}; this CLI targets {TIDEWAY_VERSION}. Review {UPGRADE_GUIDE_URL}, set tideway = \"{TIDEWAY_VERSION}\", then run `cargo update -p tideway --precise {TIDEWAY_VERSION}`"
+        )),
+        None if tideway_dependency_present(cargo_toml) => report.push_info(
+            "Tideway uses a path or workspace dependency; published-version alignment was not checked"
+                .to_string(),
+        ),
+        None => {}
+    }
+
+    if tideway_features.contains("validation") {
+        match dependency_version(cargo_toml, "validator") {
+            Some(version) if !dependency_version_matches(version, "0.20") => report.push_warning(format!(
+                "Direct validator dependency is {version}, but Tideway {TIDEWAY_VERSION} uses validator 0.20; align it to avoid opaque Axum Handler errors"
+            )),
+            Some(_) => report.push_info(
+                "Direct validator dependency is aligned with Tideway (0.20)".to_string(),
+            ),
+            None => {}
+        }
+    }
+
+    if tideway_features.contains("billing")
+        && let Some((dependency_name, features)) = async_stripe_features(cargo_toml)
+    {
+        let incompatible = [
+            "runtime-tokio-hyper-rustls",
+            "runtime-tokio-hyper-rustls-webpki",
+        ]
+        .iter()
+        .filter(|feature| features.contains(**feature))
+        .copied()
+        .collect::<Vec<_>>();
+
+        if incompatible.is_empty() {
+            report.push_info(format!(
+                "Direct {dependency_name} TLS transport does not conflict with Tideway billing"
+            ));
+        } else {
+            report.push_warning(format!(
+                "Direct {dependency_name} enables {}, while Tideway {TIDEWAY_VERSION} billing uses runtime-tokio-hyper; async-stripe permits only one TLS implementation. Use runtime-tokio-hyper for the direct dependency",
+                incompatible.join(", ")
+            ));
+        }
+    }
+
+    let src_dir = project_dir.join("src");
+    if any_rs_file_contains(&src_dir, "JwtIssuerConfig::with_secret(") {
+        report.push_warning(
+            "Deprecated JwtIssuerConfig::with_secret found; migrate to with_secure_secret(...) and propagate its Result"
+                .to_string(),
+        );
+    }
+    if any_rs_file_contains(&src_dir, "JwtVerifier::from_secret(") {
+        report.push_warning(
+            "Deprecated JwtVerifier::from_secret found; migrate to from_secret_checked(...) and propagate its Result"
+                .to_string(),
+        );
+    }
+    if any_rs_file_contains(&src_dir, ".database.is_some()") {
+        report.push_warning(
+            "Direct AppContext.database access found; use the public database_opt() accessor"
+                .to_string(),
+        );
+    }
+}
+
+fn dependency_version<'a>(cargo_toml: &'a toml::Value, name: &str) -> Option<&'a str> {
+    let dependency = cargo_toml.get("dependencies")?.get(name)?;
+    match dependency {
+        toml::Value::String(version) => Some(version.as_str()),
+        toml::Value::Table(table) => table.get("version")?.as_str(),
+        _ => None,
+    }
+}
+
+fn dependency_version_matches(version: &str, expected: &str) -> bool {
+    let normalized = version.trim().trim_start_matches(['=', '^', '~', ' ']);
+    normalized == expected
+        || normalized
+            .strip_prefix(expected)
+            .is_some_and(|suffix| suffix.starts_with('.'))
+}
+
+fn async_stripe_features(cargo_toml: &toml::Value) -> Option<(&str, BTreeSet<String>)> {
+    let dependencies = cargo_toml.get("dependencies")?.as_table()?;
+    for (name, dependency) in dependencies {
+        let Some(table) = dependency.as_table() else {
+            continue;
+        };
+        let package = table.get("package").and_then(toml::Value::as_str);
+        if name != "async-stripe" && package != Some("async-stripe") {
+            continue;
+        }
+
+        let features = table
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_string)
+            .collect();
+        return Some((name.as_str(), features));
+    }
+    None
 }
 
 fn check_auth_capabilities(
