@@ -722,10 +722,10 @@ fn check_auth_capabilities(
     if email_verification_required
         && !main_contents
             .unwrap_or_default()
-            .contains(".with_email_delivery()")
+            .contains(".with_email_delivery(")
     {
         report.push_warning(
-            "REQUIRE_EMAIL_VERIFICATION=true, but AuthModule is not configured with_email_delivery(); implement the delivery hooks before enabling verification"
+            "REQUIRE_EMAIL_VERIFICATION=true, but AuthModule is not configured with_email_delivery(...); configure a Mailer before enabling verification"
                 .to_string(),
         );
     }

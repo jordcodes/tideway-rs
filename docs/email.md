@@ -2,7 +2,129 @@
 
 Tideway provides a trait-based email system for sending transactional emails. The `Mailer` trait allows you to swap between SMTP, third-party services (Resend, SendGrid, Postmark), or console output for development.
 
-## Quick Start
+## Generated SaaS Quick Start
+
+Create the batteries-included SaaS API and start its local dependencies:
+
+```bash
+tideway new my_saas --preset saas
+cd my_saas
+docker compose up -d
+tideway dev --fix-env
+```
+
+The generated `src/email.rs` owns the application templates and selects a
+provider through environment variables. Verification and reset messages include
+a neutral, accessible HTML design plus a plain-text fallback. Edit that file to
+apply your product's colours, logo, wording, and legal copy without changing the
+provider or auth integration. For local development, update `.env`:
+
+```bash
+TIDEWAY_ENV=development
+APP_URL=http://localhost:5173
+EMAIL_PROVIDER=console
+EMAIL_FROM="My SaaS <noreply@example.com>"
+EMAIL_CONSOLE_SHOW_BODY=true
+REQUIRE_EMAIL_VERIFICATION=true
+```
+
+`EMAIL_CONSOLE_SHOW_BODY=true` exposes reset and verification tokens, so use it
+only on a trusted development machine. It defaults to `false`; production cannot
+use the console provider.
+
+Registering a user sends a verification link. The B2B SaaS preset also requires
+an organization name:
+
+```bash
+curl -X POST http://localhost:8000/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"dev@example.com","password":"correct horse battery staple","name":"Dev","organization_name":"Example Ltd"}'
+```
+
+`APP_URL` is the public browser/frontend origin. The generated email links point
+to `/verify-email?token=...` and `/reset-password?token=...` on that origin. Your
+frontend pages should read the token and call the API. Until those pages exist,
+you can exercise the endpoints directly:
+
+```bash
+# Verify the token printed by the local console mailer.
+curl -X POST http://localhost:8000/auth/email/verify \
+  -H 'content-type: application/json' \
+  -d '{"token":"TOKEN_FROM_EMAIL"}'
+
+# Resend verification without revealing whether an account exists.
+curl -X POST http://localhost:8000/auth/email/verification/resend \
+  -H 'content-type: application/json' \
+  -d '{"email":"dev@example.com"}'
+
+# Request and complete a password reset.
+curl -X POST http://localhost:8000/auth/password/reset \
+  -H 'content-type: application/json' \
+  -d '{"email":"dev@example.com"}'
+
+curl -X POST http://localhost:8000/auth/password/reset/complete \
+  -H 'content-type: application/json' \
+  -d '{"token":"TOKEN_FROM_EMAIL","new_password":"a new correct horse battery staple"}'
+```
+
+Reset and resend requests are throttled by client IP and normalized email
+address. Their responses deliberately do not reveal whether an account exists.
+
+### Use Resend
+
+Verify the sender/domain in Resend, then configure the deployment secret and
+public application URL:
+
+```bash
+TIDEWAY_ENV=production
+APP_URL=https://app.example.com
+EMAIL_PROVIDER=resend
+EMAIL_FROM="My SaaS <noreply@example.com>"
+RESEND_API_KEY=re_replace_me
+REQUIRE_EMAIL_VERIFICATION=true
+```
+
+### Use SMTP
+
+SMTP keeps the same auth and template code and works with providers such as
+Postmark, SendGrid, Amazon SES, and Resend's SMTP relay:
+
+```bash
+EMAIL_PROVIDER=smtp
+EMAIL_FROM="My SaaS <noreply@example.com>"
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USERNAME=replace_me
+SMTP_PASSWORD=replace_me
+SMTP_STARTTLS=true
+```
+
+### Use Another Provider
+
+Implement Tideway's `Mailer` trait in the consuming application, then construct
+the generated service with it:
+
+```rust
+use std::sync::Arc;
+use my_saas::email::EmailService;
+
+let email_service = Arc::new(EmailService::new(
+    Arc::new(MyMailer::new(/* provider config */)),
+    "My SaaS <noreply@example.com>",
+    &app_config.app_name,
+    &app_config.app_url,
+)?);
+```
+
+Pass that service to the generated
+`AuthModule::with_email_delivery(email_service)`. Provider code stays isolated;
+auth and organization modules continue to depend only on the neutral contract.
+
+Before enabling verification in production, confirm that the sender is verified,
+`APP_URL` uses HTTPS, credentials come from a secret manager, and reset and
+verification links reach the intended frontend pages.
+
+## Framework Mailer Quick Start
 
 ```rust
 use tideway::{App, AppContext, ConfigBuilder, ConsoleMailer, Email, Mailer};
@@ -114,29 +236,22 @@ SMTP_STARTTLS=true               # Optional, default: true
 
 ### Resend
 
-[Resend](https://resend.com) provides an SMTP relay. Use `SmtpMailer` with Resend credentials:
+[Resend](https://resend.com) has a built-in HTTPS adapter:
 
 ```rust
-use tideway::{SmtpMailer, SmtpConfig};
+use tideway::{ResendConfig, ResendMailer};
 
-let config = SmtpConfig::new("smtp.resend.com")
-    .port(465)
-    .credentials("resend", "re_YOUR_API_KEY")
-    .from("noreply@yourdomain.com")
-    .no_starttls();  // Resend uses implicit TLS on 465
-
-let mailer = SmtpMailer::new(config)?;
+let mailer = ResendMailer::from_env()?;
+// Or: ResendMailer::new(ResendConfig::new("re_YOUR_API_KEY")?)?;
 ```
 
 Environment setup:
 ```bash
-SMTP_HOST=smtp.resend.com
-SMTP_PORT=465
-SMTP_USERNAME=resend
-SMTP_PASSWORD=re_YOUR_API_KEY
-SMTP_FROM=noreply@yourdomain.com
-SMTP_STARTTLS=false
+RESEND_API_KEY=re_YOUR_API_KEY
 ```
+
+Resend's SMTP relay remains available through `SmtpMailer` if your application
+prefers one transport across providers.
 
 ### SendGrid
 
@@ -186,52 +301,20 @@ let config = SmtpConfig::new("email-smtp.us-east-1.amazonaws.com")
 
 ## Custom Mailer Implementation
 
-Implement the `Mailer` trait for custom backends (e.g., Resend HTTP API):
+Implement the `Mailer` trait for any custom backend:
 
 ```rust
-use tideway::{Email, Mailer, Result, TidewayError};
+use tideway::{Email, Mailer, Result};
 use async_trait::async_trait;
 
-pub struct ResendMailer {
-    api_key: String,
-    client: reqwest::Client,
-}
-
-impl ResendMailer {
-    pub fn new(api_key: impl Into<String>) -> Self {
-        Self {
-            api_key: api_key.into(),
-            client: reqwest::Client::new(),
-        }
-    }
-}
+pub struct MyMailer;
 
 #[async_trait]
-impl Mailer for ResendMailer {
+impl Mailer for MyMailer {
     async fn send(&self, email: &Email) -> Result<()> {
         email.validate()?;
-
-        let body = serde_json::json!({
-            "from": email.from,
-            "to": email.to,
-            "subject": email.subject,
-            "text": email.text,
-            "html": email.html,
-        });
-
-        let response = self.client
-            .post("https://api.resend.com/emails")
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to send email: {}", e)))?;
-
-        if !response.status().is_success() {
-            let error = response.text().await.unwrap_or_default();
-            return Err(TidewayError::internal(format!("Resend API error: {}", error)));
-        }
-
+        // Call your provider without logging credentials, recipients, tokens,
+        // message content, or untrusted provider response bodies.
         Ok(())
     }
 
@@ -268,25 +351,23 @@ async fn send_welcome_email(
 }
 ```
 
-## Environment-Based Mailer Selection
+## Generated SaaS Provider Selection
 
-Switch between console and SMTP based on environment:
+The SaaS scaffold keeps templates application-owned in `src/email.rs` and uses
+one environment switch for providers:
 
-```rust
-use tideway::{ConsoleMailer, SmtpMailer, SmtpConfig, Mailer};
-use std::sync::Arc;
-
-fn create_mailer() -> tideway::Result<Arc<dyn Mailer>> {
-    if std::env::var("SMTP_HOST").is_ok() {
-        // Production: Use SMTP
-        let config = SmtpConfig::from_env()?;
-        Ok(Arc::new(SmtpMailer::new(config)?))
-    } else {
-        // Development: Use console
-        Ok(Arc::new(ConsoleMailer::new()))
-    }
-}
+```bash
+EMAIL_PROVIDER=resend # resend, smtp, console, or custom
+EMAIL_FROM="My App <noreply@example.com>"
+RESEND_API_KEY=re_YOUR_API_KEY
 ```
+
+`console` is rejected outside development/test environments. `custom` is an
+explicit extension point: implement `Mailer` in the consuming application and
+construct the generated `EmailService` with it (or replace the `custom` branch).
+Auth, password reset, and verification code remain provider-neutral. Production
+`APP_URL` values must use HTTPS so generated reset and verification links are
+not sent over plaintext HTTP.
 
 ## Background Email Jobs
 
@@ -388,5 +469,5 @@ Email support requires the `email` feature:
 
 ```toml
 [dependencies]
-tideway = { version = "0.2", features = ["email"] }
+tideway = { version = "0.7", features = ["email"] }
 ```

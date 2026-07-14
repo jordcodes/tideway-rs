@@ -4,7 +4,8 @@ TIDEWAY_PORT=8000
 TIDEWAY_ENV=development
 TIDEWAY_CORS_ENABLED=true
 TIDEWAY_CORS_ALLOWED_ORIGINS=http://localhost:5173
-APP_URL=http://localhost:8000
+# Public browser/frontend origin used for Stripe redirects and email links.
+APP_URL=http://localhost:5173
 
 # Database
 DATABASE_URL={{{database_url}}}
@@ -15,6 +16,20 @@ REQUIRE_EMAIL_VERIFICATION=false
 # Comma-separated proxy IPs/CIDRs. Leave empty unless traffic arrives through them.
 TRUSTED_PROXY_IPS=
 REFRESH_TOKEN_RETENTION_DAYS=120
+
+# Transactional email: console (development only), resend, smtp, or custom.
+EMAIL_PROVIDER=console
+EMAIL_FROM="{{project_name}} <noreply@example.com>"
+# Local development only: reveal reset/verification links in console output.
+EMAIL_CONSOLE_SHOW_BODY=false
+# Required when EMAIL_PROVIDER=resend
+RESEND_API_KEY=
+# Required when EMAIL_PROVIDER=smtp
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_STARTTLS=true
 
 # Billing
 STRIPE_SECRET_KEY=sk_test_replace_me

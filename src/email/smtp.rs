@@ -14,7 +14,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// SMTP configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SmtpConfig {
     /// SMTP server hostname
     pub host: String,
@@ -28,6 +28,20 @@ pub struct SmtpConfig {
     pub default_from: Option<String>,
     /// Use STARTTLS (default: true)
     pub starttls: bool,
+}
+
+impl std::fmt::Debug for SmtpConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username.as_ref().map(|_| "[REDACTED]"))
+            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
+            .field("default_from", &self.default_from)
+            .field("starttls", &self.starttls)
+            .finish()
+    }
 }
 
 impl SmtpConfig {
@@ -287,5 +301,18 @@ impl std::fmt::Debug for SmtpMailer {
             .field("host", &self.config.host)
             .field("port", &self.config.port)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smtp_config_debug_redacts_password() {
+        let config = SmtpConfig::new("smtp.example.com").credentials("user", "secret-password");
+        let debug = format!("{config:?}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(!debug.contains("secret-password"));
     }
 }

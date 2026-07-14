@@ -24,7 +24,7 @@ pub use crate::{Cache, CacheExt};
 pub use crate::{DatabaseConnection, DatabasePool, SeaOrmPool};
 
 #[cfg(feature = "email")]
-pub use crate::{ConsoleMailer, Email, Mailer, SmtpConfig, SmtpMailer};
+pub use crate::{ConsoleMailer, Email, Mailer, ResendConfig, ResendMailer, SmtpConfig, SmtpMailer};
 
 #[cfg(feature = "jobs")]
 pub use crate::{

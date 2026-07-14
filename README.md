@@ -92,6 +92,9 @@ The first interactive screen promotes `api`, `saas`, and `worker`; advanced path
 Use `--no-prompt` for the same API-first defaults in CI/non-interactive runs.
 Use `--preset minimal` only when you explicitly want the lightweight starter.
 For preset variants (`api`, `saas`, `worker`), see `docs/cli.md`.
+The SaaS preset includes provider-neutral transactional email with native Resend,
+generic SMTP, safe local console output, and a custom `Mailer` extension point.
+See the [SaaS transactional email quick start](https://github.com/jordcodes/tideway-rs/blob/main/docs/email.md#generated-saas-quick-start).
 Frontend `generate` / `setup` helpers are advanced and currently intended for existing Vue apps, not the primary onboarding path.
 
 ### Agent Quickstart

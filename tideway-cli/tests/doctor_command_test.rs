@@ -532,6 +532,45 @@ tideway = { version = "0.7", features = ["auth"] }
 }
 
 #[test]
+fn test_doctor_accepts_provider_neutral_email_delivery_configuration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth module");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["auth", "email"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join(".env"),
+        "JWT_SECRET=0123456789abcdef0123456789abcdef\nREQUIRE_EMAIL_VERIFICATION=true\n",
+    )
+    .expect("write env");
+    fs::write(
+        project_dir.join("src/main.rs"),
+        "fn main() { AuthModule::new().with_email_delivery(email_service); }\n",
+    )
+    .expect("write main");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .warnings()
+            .iter()
+            .all(|warning| !warning.contains("with_email_delivery")),
+        "unexpected delivery warning: {:?}",
+        report.warnings()
+    );
+}
+
+#[test]
 fn test_doctor_warns_when_mfa_storage_is_still_a_stub() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

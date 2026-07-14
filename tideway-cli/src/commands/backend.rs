@@ -171,7 +171,7 @@ pub(crate) fn scaffold(
         println!("{}", "Next steps:".yellow().bold());
         println!("  1. Add dependencies to Cargo.toml:");
         println!(
-            "     tideway = {{ version = \"{}\", features = [\"auth\", \"database\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}",
+            "     tideway = {{ version = \"{}\", features = [\"auth\", \"database\", \"email\", \"billing\", \"billing-seaorm\", \"organizations\", \"admin\"] }}",
             TIDEWAY_VERSION
         );
         println!("     axum = {{ version = \"0.8\", features = [\"macros\"] }}");
@@ -264,6 +264,18 @@ fn generate_shared(
             BACKEND_FORCE_OVERWRITE_MESSAGE,
         )?;
         report_generated(emit_progress, "error.rs");
+    }
+
+    if engine.has_template("shared/email") {
+        let content = engine.render("shared/email")?;
+        let file_path = output_path.join("email.rs");
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
+        )?;
+        report_generated(emit_progress, "email.rs");
     }
 
     Ok(())

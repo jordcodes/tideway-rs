@@ -3,6 +3,7 @@
 //! This module provides email sending capabilities with multiple backend options:
 //! - `ConsoleMailer` - Prints emails to stdout (for development)
 //! - `SmtpMailer` - Sends emails via SMTP using lettre
+//! - `ResendMailer` - Sends emails through Resend's HTTPS API
 //!
 //! # Example
 //!
@@ -25,9 +26,11 @@
 //! ```
 
 mod console;
+mod resend;
 mod smtp;
 
 pub use console::ConsoleMailer;
+pub use resend::{ResendConfig, ResendMailer};
 pub use smtp::{SmtpConfig, SmtpMailer};
 
 // Re-export Email from traits for convenience

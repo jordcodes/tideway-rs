@@ -38,7 +38,7 @@ struct ResourceWizardOptions {
 
 const PRIMARY_PRESET_OPTIONS: [&str; 4] = [
     "API preset (recommended: auth + database + openapi + validation + full-stack todo sample)",
-    "SaaS preset (b2b auth + billing + orgs + admin)",
+    "SaaS preset (b2b auth + email + billing + orgs + admin)",
     "Worker preset (jobs + redis + metrics)",
     "Advanced options (minimal, backend presets, custom)",
 ];
@@ -722,6 +722,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "src/lib.rs".to_string(),
         "src/config.rs".to_string(),
         "src/error.rs".to_string(),
+        "src/email.rs".to_string(),
         "src/entities/mod.rs".to_string(),
         "src/entities/prelude.rs".to_string(),
         "src/entities/user.rs".to_string(),
@@ -897,7 +898,7 @@ mod tests {
         );
         assert_eq!(
             PRIMARY_PRESET_OPTIONS[1],
-            "SaaS preset (b2b auth + billing + orgs + admin)"
+            "SaaS preset (b2b auth + email + billing + orgs + admin)"
         );
         assert_eq!(
             PRIMARY_PRESET_OPTIONS[2],
@@ -1059,6 +1060,7 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
         NewPreset::Saas => &[
             "auth",
             "database",
+            "email",
             "billing",
             "billing-seaorm",
             "organizations",
@@ -1103,7 +1105,14 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
 }
 
 fn apply_backend_defaults(args: &mut NewArgs, has_organizations: bool) {
-    let mut features = vec!["auth", "database", "billing", "billing-seaorm", "admin"];
+    let mut features = vec![
+        "auth",
+        "database",
+        "email",
+        "billing",
+        "billing-seaorm",
+        "admin",
+    ];
     if has_organizations {
         features.push("organizations");
     }
@@ -1138,7 +1147,7 @@ fn print_presets(runtime: CommandRuntime) {
         "  - api: auth + database + openapi + validation, plus config, CI, env, and a sample todo resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add --with-docker for Postgres)"
     );
     println!(
-        "  - saas: b2b backend scaffold with auth, billing, organizations, admin, docker, CI, env, and billing-ready defaults"
+        "  - saas: b2b backend scaffold with auth, provider-neutral email, billing, organizations, admin, docker, CI, and env defaults"
     );
     println!(
         "  - worker: jobs-first starter (database + jobs + redis + metrics) with config, docker, CI, and env"

@@ -25,6 +25,7 @@ use {{project_crate}}::organizations::OrganizationModule;
 use {{project_crate}}::admin::AdminModule;
 use {{project_crate}}::config::AppConfig;
 use {{project_crate}}::error::BillingState;
+use {{project_crate}}::email::EmailService;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,13 +57,20 @@ async fn main() -> anyhow::Result<()> {
         &app_config.app_name,
     )?.audience(env!("CARGO_PKG_NAME")))?);
 
+    // Select the transactional email provider without coupling auth to it.
+    let email_service = Arc::new(EmailService::from_env(
+        &app_config.environment,
+        &app_config.app_name,
+        &app_config.app_url,
+    )?);
+
     // Create auth module
     let auth_module = AuthModule::new(
         Arc::new(db.clone()),
         jwt_issuer.clone(),
         app_config.jwt_secret.clone(),
         app_config.app_name.clone(),
-    );
+    ).with_email_delivery(email_service);
 
     {{#if has_organizations}}
     // Create organization module

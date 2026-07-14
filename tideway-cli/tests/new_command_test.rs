@@ -673,6 +673,7 @@ fn test_new_command_with_preset_saas() {
     assert_file_contains(&cargo_toml, "\"billing\"");
     assert_file_contains(&cargo_toml, "\"organizations\"");
     assert_file_contains(&cargo_toml, "\"admin\"");
+    assert_file_contains(&cargo_toml, "\"email\"");
     assert_file_not_contains(&cargo_toml, "\"openapi\"");
     assert!(project_dir.join(".env.example").exists());
     assert!(project_dir.join("docker-compose.yml").exists());
@@ -688,6 +689,24 @@ fn test_new_command_with_preset_saas() {
     assert!(project_dir.join("src/organizations/mod.rs").exists());
     assert!(project_dir.join("src/admin/mod.rs").exists());
     assert!(project_dir.join("src/lib.rs").exists());
+    assert!(project_dir.join("src/email.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/email.rs"),
+        "pub fn new(\n        mailer: Arc<dyn Mailer>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/email.rs"),
+        "APP_URL must use https outside development/test environments",
+    );
+    assert_file_contains(
+        &project_dir.join("src/email.rs"),
+        "fn transactional_email_html(",
+    );
+    assert_file_contains(&project_dir.join("src/email.rs"), ".html(html)");
+    assert_file_contains(
+        &project_dir.join("src/email.rs"),
+        "transactional_html_is_accessible_and_escapes_application_values",
+    );
     assert!(!project_dir.join("src/routes/mod.rs").exists());
     assert!(!project_dir.join("src/auth/provider.rs").exists());
     assert_file_contains(
@@ -704,9 +723,16 @@ fn test_new_command_with_preset_saas() {
     );
     assert_file_contains(
         &project_dir.join(".env.example"),
-        "APP_URL=http://localhost:8000",
+        "APP_URL=http://localhost:5173",
     );
     assert_file_contains(&project_dir.join(".env.example"), "TIDEWAY_ENV=development");
+    assert_file_contains(&project_dir.join(".env.example"), "EMAIL_PROVIDER=console");
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "EMAIL_CONSOLE_SHOW_BODY=false",
+    );
+    assert_file_contains(&project_dir.join(".env.example"), "RESEND_API_KEY=");
+    assert_file_contains(&project_dir.join(".env.example"), "SMTP_HOST=");
     assert_file_contains(
         &project_dir.join(".env.example"),
         "TIDEWAY_CORS_ALLOWED_ORIGINS=http://localhost:5173",
@@ -714,6 +740,26 @@ fn test_new_command_with_preset_saas() {
     assert_file_contains(
         &project_dir.join("src/main.rs"),
         "allowed_redirect_domains([app_host])",
+    );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".with_email_delivery(email_service)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        ".route(\"/email/verify\", post(verify_email))",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "If an unverified account with that email exists",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "email_rate_limiter: LoginRateLimiter",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "format!(\"email:{}\"",
     );
     assert_file_not_contains(&project_dir.join("src/main.rs"), "CorsConfig::permissive()");
     assert_file_not_contains(&project_dir.join(".env.example"), "OPENAPI_ENABLED");
@@ -742,7 +788,7 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project_with_denied_warnings(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project_with_denied_warnings(temp_dir.path(), &project_dir, &["test", "--lib"]);
 }
 
 #[test]

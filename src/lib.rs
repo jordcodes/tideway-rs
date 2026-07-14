@@ -429,7 +429,7 @@ macro_rules! module {
 #[cfg(feature = "database")]
 pub use database::SeaOrmPool;
 #[cfg(feature = "email")]
-pub use email::{ConsoleMailer, SmtpConfig, SmtpMailer};
+pub use email::{ConsoleMailer, ResendConfig, ResendMailer, SmtpConfig, SmtpMailer};
 #[cfg(all(feature = "jobs", feature = "jobs-redis"))]
 pub use jobs::RedisJobQueue;
 #[cfg(feature = "jobs")]

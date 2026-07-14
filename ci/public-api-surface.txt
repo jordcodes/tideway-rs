@@ -45,7 +45,7 @@ pub macro register_optional_modules
 pub macro __tideway_method_router
 pub macro module
 pub use database::SeaOrmPool;
-pub use email::{ConsoleMailer, SmtpConfig, SmtpMailer};
+pub use email::{ConsoleMailer, ResendConfig, ResendMailer, SmtpConfig, SmtpMailer};
 pub use jobs::RedisJobQueue;
 pub use jobs::{InMemoryJobQueue, JobBackend, JobRegistry, JobWorker, WorkerPool};
 pub use traits::database::{DatabaseConnection, DatabasePool};

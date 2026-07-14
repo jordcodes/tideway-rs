@@ -16,7 +16,8 @@ use std::{net::SocketAddr, sync::Arc};
 use tideway::auth::{
     JwtIssuer, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter, LoginRequest,
     LoginHttpResponse, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest,
-    RegisterRequest, RegistrationFlow,
+    EmailVerificationFlow, EmailVerifyRequest, RegisterRequest, RegistrationFlow,
+    ResendVerificationRequest, UserStore,
 };
 use tideway::{AppContext, ClientIpResolver, MessageResponse, Result, RouteModule};
 {{#if has_organizations}}
@@ -24,6 +25,7 @@ use uuid::Uuid;
 {{/if}}
 
 use crate::auth::{AppTokenIssuer, DbRefreshTokenStore, DbUserStore, InMemoryMfaTokenStore};
+use crate::email::EmailService;
 {{#if has_organizations}}
 use crate::entities::{organization, organization_member};
 {{/if}}
@@ -37,8 +39,10 @@ pub struct AuthState {
     pub app_name: String,
     require_email_verification: bool,
     email_delivery_enabled: bool,
+    email_service: Option<Arc<EmailService>>,
     client_ip_resolver: Arc<ClientIpResolver>,
     login_rate_limiter: LoginRateLimiter,
+    email_rate_limiter: LoginRateLimiter,
     mfa_tokens: InMemoryMfaTokenStore,
 }
 
@@ -66,20 +70,22 @@ impl AuthModule {
                 app_name,
                 require_email_verification,
                 email_delivery_enabled: false,
+                email_service: None,
                 client_ip_resolver: Arc::new(
                     ClientIpResolver::from_env("TRUSTED_PROXY_IPS")
                         .expect("TRUSTED_PROXY_IPS must contain only non-catch-all IP addresses or CIDR networks"),
                 ),
                 login_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::default()),
+                email_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::new(5, 3600)),
                 mfa_tokens: InMemoryMfaTokenStore::default(),
             },
         }
     }
 
-    /// Mount email-dependent auth routes after implementing the delivery hooks
-    /// in `DbUserStore`.
-    pub fn with_email_delivery(mut self) -> Self {
+    /// Mount email-dependent auth routes with any configured provider.
+    pub fn with_email_delivery(mut self, email_service: Arc<EmailService>) -> Self {
         self.state.email_delivery_enabled = true;
+        self.state.email_service = Some(email_service);
         self
     }
 }
@@ -105,6 +111,8 @@ impl RouteModule for AuthModule {
             router
                 .route("/password/reset", post(request_password_reset))
                 .route("/password/reset/complete", post(complete_password_reset))
+                .route("/email/verify", post(verify_email))
+                .route("/email/verification/resend", post(resend_verification))
         } else {
             router
         };
@@ -176,6 +184,16 @@ pub struct PasswordResetCompleteBody {
     pub new_password: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct VerifyEmailBody {
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ResendVerificationBody {
+    pub email: String,
+}
+
 {{#if has_auth_mfa_feature}}
 #[derive(Debug, Deserialize)]
 pub struct MfaVerifyBody {
@@ -185,6 +203,34 @@ pub struct MfaVerifyBody {
 {{/if}}
 
 // Handlers
+
+fn user_store(state: &AuthState) -> DbUserStore {
+    let store = DbUserStore::new(state.db.clone());
+    match state.email_service.clone() {
+        Some(email_service) => store.with_email_service(email_service),
+        None => store,
+    }
+}
+
+fn check_email_rate_limit(
+    state: &AuthState,
+    address: SocketAddr,
+    headers: &HeaderMap,
+    email: &str,
+) -> Result<()> {
+    let client_ip = state.client_ip_resolver.resolve(address.ip(), headers);
+    for key in [
+        format!("ip:{client_ip}"),
+        format!("email:{}", email.trim().to_ascii_lowercase()),
+    ] {
+        if state.email_rate_limiter.check(&key).is_err() {
+            return Err(tideway::TidewayError::TooManyRequests(
+                "Too many email requests; try again later".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
 
 async fn register(
     Extension(state): Extension<AuthState>,
@@ -199,8 +245,12 @@ async fn register(
             .map_err(|e| tideway::TidewayError::Database(e.to_string()))?,
     );
     let user_store = DbUserStore::from_transaction(transaction.clone());
+    let user_store = match state.email_service.clone() {
+        Some(email_service) => user_store.with_email_service(email_service),
+        None => user_store,
+    };
     {{else}}
-    let user_store = DbUserStore::new(state.db.clone());
+    let user_store = user_store(&state);
     {{/if}}
 
     let flow = RegistrationFlow::new(user_store);
@@ -232,7 +282,7 @@ async fn register(
         name: Set(body.organization_name),
         slug: Set(slug),
         owner_id: Set(user_id),
-        contact_email: Set(body.email),
+        contact_email: Set(body.email.clone()),
         created_at: Set(now),
         updated_at: Set(now),
     };
@@ -260,6 +310,8 @@ async fn register(
         .await
         .map_err(|e| tideway::TidewayError::Database(e.to_string()))?;
 
+    send_registration_verification(&state, &user_id.to_string(), &body.email).await;
+
     Ok(Json(RegisterResponse {
         success: true,
         message: "Registration successful.".into(),
@@ -267,12 +319,25 @@ async fn register(
         organization_id: org_id,
     }))
     {{else}}
+    send_registration_verification(&state, &user_id.to_string(), &body.email).await;
+
     Ok(Json(RegisterResponse {
         success: true,
         message: "Registration successful.".into(),
         user_id: user_id.to_string(),
     }))
     {{/if}}
+}
+
+async fn send_registration_verification(state: &AuthState, user_id: &str, email: &str) {
+    if !state.require_email_verification {
+        return;
+    }
+
+    let flow = EmailVerificationFlow::new(user_store(state));
+    if let Err(error) = flow.send_verification(user_id, email).await {
+        tracing::error!(user_id, %error, "Failed to send registration verification email");
+    }
 }
 
 {{#if has_organizations}}
@@ -298,7 +363,7 @@ async fn login(
     Extension(state): Extension<AuthState>,
     Json(body): Json<LoginBody>,
 ) -> Result<LoginHttpResponse> {
-    let user_store = DbUserStore::new(state.db.clone());
+    let user_store = user_store(&state);
     let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone());
     let token_store = DbRefreshTokenStore::new(state.db.clone());
 
@@ -333,7 +398,7 @@ async fn logout(
     Json(body): Json<LogoutBody>,
 ) -> Result<MessageResponse> {
     let token_store = DbRefreshTokenStore::new(state.db.clone());
-    let user_store = DbUserStore::new(state.db.clone());
+    let user_store = user_store(&state);
 
     let refresh_flow = tideway::auth::TokenRefreshFlow::new(
         state.jwt_issuer.as_ref().clone(),
@@ -352,7 +417,7 @@ async fn refresh(
     Json(body): Json<RefreshBody>,
 ) -> Result<Json<RefreshResponse>> {
     let token_store = DbRefreshTokenStore::new(state.db.clone());
-    let user_store = DbUserStore::new(state.db.clone());
+    let user_store = user_store(&state);
 
     let refresh_flow = tideway::auth::TokenRefreshFlow::new(
         state.jwt_issuer.as_ref().clone(),
@@ -372,10 +437,13 @@ async fn refresh(
 }
 
 async fn request_password_reset(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<PasswordResetBody>,
 ) -> Result<MessageResponse> {
-    let user_store = DbUserStore::new(state.db.clone());
+    check_email_rate_limit(&state, address, &headers, &body.email)?;
+    let user_store = user_store(&state);
 
     let flow = PasswordResetFlow::new(user_store);
     let request = PasswordResetRequest { email: body.email };
@@ -393,7 +461,7 @@ async fn complete_password_reset(
     Extension(state): Extension<AuthState>,
     Json(body): Json<PasswordResetCompleteBody>,
 ) -> Result<MessageResponse> {
-    let user_store = DbUserStore::new(state.db.clone());
+    let user_store = user_store(&state);
 
     let flow = PasswordResetFlow::new(user_store);
     let request = PasswordResetComplete {
@@ -406,12 +474,56 @@ async fn complete_password_reset(
     Ok(MessageResponse::success("Password has been reset successfully."))
 }
 
+async fn verify_email(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<VerifyEmailBody>,
+) -> Result<MessageResponse> {
+    EmailVerificationFlow::new(user_store(&state))
+        .verify(EmailVerifyRequest { token: body.token })
+        .await?;
+    Ok(MessageResponse::success("Email verified successfully."))
+}
+
+async fn resend_verification(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<ResendVerificationBody>,
+) -> Result<MessageResponse> {
+    let normalized_email = body.email.trim().to_ascii_lowercase();
+    check_email_rate_limit(&state, address, &headers, &normalized_email)?;
+    let store = user_store(&state);
+
+    // Preserve the same response for unknown and already-verified accounts to
+    // avoid exposing registration state.
+    if let Ok(Some(user)) = store.find_by_email(&normalized_email).await {
+        if user.email_verified_at.is_none() {
+            let flow = EmailVerificationFlow::new(store);
+            if let Err(error) = flow
+                .resend(
+                    ResendVerificationRequest {
+                        email: normalized_email,
+                    },
+                    &user.id.to_string(),
+                )
+                .await
+            {
+                tracing::error!(user_id = %user.id, %error, "Verification resend failed");
+            }
+        }
+    }
+
+    Ok(MessageResponse::success(
+        "If an unverified account with that email exists, a verification link has been sent.",
+    ))
+}
+
 {{#if has_auth_mfa_feature}}
 async fn verify_mfa(
     Extension(state): Extension<AuthState>,
     Json(body): Json<MfaVerifyBody>,
 ) -> Result<LoginHttpResponse> {
-    let user_store = DbUserStore::new(state.db.clone());
+    let user_store = user_store(&state);
     let token_issuer = AppTokenIssuer::new(state.jwt_issuer.clone());
     let token_store = DbRefreshTokenStore::new(state.db.clone());
 

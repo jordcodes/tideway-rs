@@ -15,6 +15,7 @@ use tideway::{Result, TidewayError};
 use uuid::Uuid;
 use chrono::{Duration, Utc};
 
+use crate::email::EmailService;
 use crate::entities::{user, refresh_token_family, verification_token};
 
 /// Database-backed user store implementation.
@@ -23,6 +24,7 @@ pub struct DbUserStore<C = DatabaseConnection> {
     db: Arc<C>,
     max_failed_attempts: i32,
     lockout_duration_minutes: i64,
+    email_service: Option<Arc<EmailService>>,
 }
 
 impl DbUserStore {
@@ -31,6 +33,7 @@ impl DbUserStore {
             db,
             max_failed_attempts: 5,
             lockout_duration_minutes: 15,
+            email_service: None,
         }
     }
 }
@@ -41,7 +44,21 @@ impl DbUserStore<DatabaseTransaction> {
             db,
             max_failed_attempts: 5,
             lockout_duration_minutes: 15,
+            email_service: None,
         }
+    }
+}
+
+impl<C> DbUserStore<C> {
+    pub fn with_email_service(mut self, email_service: Arc<EmailService>) -> Self {
+        self.email_service = Some(email_service);
+        self
+    }
+
+    fn email_service(&self) -> Result<&EmailService> {
+        self.email_service
+            .as_deref()
+            .ok_or_else(|| TidewayError::internal("transactional email is not configured"))
     }
 }
 
@@ -254,7 +271,8 @@ where
     }
 
     async fn send_verification_email(&self, _user: &Self::User) -> Result<()> {
-        tracing::warn!("Implement verification delivery before enabling email verification");
+        // Registration routes use EmailVerificationFlow after committing the
+        // user transaction so a secure, stored token can be included.
         Ok(())
     }
 }
@@ -344,12 +362,13 @@ impl PasswordResetStore for DbUserStore {
 
     async fn send_reset_email(
         &self,
-        _user: &Self::User,
-        _token: &str,
-        _expires_in: std::time::Duration,
+        user: &Self::User,
+        token: &str,
+        expires_in: std::time::Duration,
     ) -> Result<()> {
-        tracing::warn!("Implement reset delivery before mounting password reset routes");
-        Ok(())
+        self.email_service()?
+            .send_password_reset(&user.email, token, expires_in)
+            .await
     }
 }
 
@@ -423,12 +442,13 @@ impl VerificationStore for DbUserStore {
     async fn send_verification_email(
         &self,
         _user_id: &str,
-        _email: &str,
-        _token: &str,
-        _expires_in: std::time::Duration,
+        email: &str,
+        token: &str,
+        expires_in: std::time::Duration,
     ) -> Result<()> {
-        tracing::warn!("Implement verification delivery before enabling email verification");
-        Ok(())
+        self.email_service()?
+            .send_verification(email, token, expires_in)
+            .await
     }
 }
 
