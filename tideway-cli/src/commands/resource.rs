@@ -75,6 +75,7 @@ struct ResourceGenerationContext {
     shared_saas_actor: bool,
     saas_owned_scope: bool,
     saas_admin_guard: bool,
+    library_modules: bool,
 }
 
 const NAME_FIELDS: [ResourceFieldSpec; 1] = [ResourceFieldSpec {
@@ -901,6 +902,9 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
     let has_saas_organizations = src_dir.join("entities/organization_member.rs").exists();
     let has_saas_admin = src_dir.join("admin/mod.rs").exists();
     let has_shared_saas_actor = src_dir.join("auth/actor.rs").exists();
+    let library_modules = fs::read_to_string(src_dir.join("lib.rs")).is_ok_and(|contents| {
+        contents.contains("pub mod auth;") && contents.contains("pub mod billing;")
+    });
     let full_stack = args.db && args.repo && args.service;
 
     ResourceGenerationContext {
@@ -913,6 +917,7 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
             && matches!(args.profile, ResourceProfile::Admin)
             && has_saas_auth
             && has_saas_admin,
+        library_modules,
     }
 }
 
@@ -945,6 +950,9 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
     let generation_context = detect_generation_context(&project_dir, &args);
 
     let cargo_path = project_dir.join("Cargo.toml");
+    let library_crate = generation_context
+        .library_modules
+        .then(|| project_name_from_cargo(&cargo_path, &project_dir));
     let cargo_doc = read_cargo_manifest(&cargo_path);
     let has_openapi = manifest_has_tideway_feature(cargo_doc.as_ref(), "openapi");
     let has_database = manifest_has_tideway_feature(cargo_doc.as_ref(), "database");
@@ -997,8 +1005,13 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
 
     if args.wire {
         wire_routes_mod(&routes_dir, &resource_name)?;
-        wire_routes_in_main(&src_dir)?;
-        wire_main_rs(&src_dir, &resource_name, &resource_pascal)?;
+        wire_routes_module(&src_dir, generation_context.library_modules)?;
+        wire_main_rs(
+            &src_dir,
+            &resource_name,
+            &resource_pascal,
+            library_crate.as_deref(),
+        )?;
         if has_openapi {
             wire_openapi_docs(&src_dir, &resource_name, &resource_plural)?;
         }
@@ -1063,12 +1076,12 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
 
         if args.wire {
             wire_database_in_main(&project_dir)?;
-            wire_entities_in_main(&src_dir)?;
+            wire_entities_module(&src_dir, generation_context.library_modules)?;
             if args.repo {
-                wire_repositories_in_main(&src_dir)?;
+                wire_repositories_module(&src_dir, generation_context.library_modules)?;
             }
             if args.service {
-                wire_services_in_main(&src_dir)?;
+                wire_services_module(&src_dir, generation_context.library_modules)?;
             }
         } else {
             print_info(&format!(
@@ -2710,41 +2723,52 @@ fn wire_openapi_docs(src_dir: &Path, resource_name: &str, resource_plural: &str)
     Ok(())
 }
 
-fn wire_entities_in_main(src_dir: &Path) -> Result<()> {
-    wire_module_in_main(src_dir, "entities")
+fn wire_entities_module(src_dir: &Path, into_library: bool) -> Result<()> {
+    wire_module(src_dir, "entities", into_library)
 }
 
-fn wire_routes_in_main(src_dir: &Path) -> Result<()> {
-    wire_module_in_main(src_dir, "routes")
+fn wire_routes_module(src_dir: &Path, into_library: bool) -> Result<()> {
+    wire_module(src_dir, "routes", into_library)
 }
 
-fn wire_repositories_in_main(src_dir: &Path) -> Result<()> {
-    wire_module_in_main(src_dir, "repositories")
+fn wire_repositories_module(src_dir: &Path, into_library: bool) -> Result<()> {
+    wire_module(src_dir, "repositories", into_library)
 }
 
-fn wire_services_in_main(src_dir: &Path) -> Result<()> {
-    wire_module_in_main(src_dir, "services")
+fn wire_services_module(src_dir: &Path, into_library: bool) -> Result<()> {
+    wire_module(src_dir, "services", into_library)
 }
 
-fn wire_module_in_main(src_dir: &Path, module_name: &str) -> Result<()> {
-    let main_path = src_dir.join("main.rs");
-    if !main_path.exists() {
+fn wire_module(src_dir: &Path, module_name: &str, into_library: bool) -> Result<()> {
+    let file_name = if into_library { "lib.rs" } else { "main.rs" };
+    let module_path = src_dir.join(file_name);
+    if !module_path.exists() {
         print_warning(&format!(
-            "src/main.rs not found; skipping {module_name} wiring"
+            "src/{file_name} not found; skipping {module_name} wiring"
         ));
         return Ok(());
     }
 
-    let contents = fs::read_to_string(&main_path)
-        .with_context(|| format!("Failed to read {}", main_path.display()))?;
-    let updated_contents = ensure_module_decl(&contents, module_name);
+    let contents = fs::read_to_string(&module_path)
+        .with_context(|| format!("Failed to read {}", module_path.display()))?;
+    let public_decl = format!("pub mod {module_name};");
+    let updated_contents = if into_library && contents.contains(&public_decl) {
+        contents.clone()
+    } else {
+        let updated = ensure_module_decl(&contents, module_name);
+        if into_library {
+            updated.replacen(&format!("mod {module_name};"), &public_decl, 1)
+        } else {
+            updated
+        }
+    };
     if updated_contents == contents {
         return Ok(());
     }
 
-    write_file(&main_path, &updated_contents)
-        .with_context(|| format!("Failed to write {}", main_path.display()))?;
-    print_success(&format!("Added mod {module_name} to src/main.rs"));
+    write_file(&module_path, &updated_contents)
+        .with_context(|| format!("Failed to write {}", module_path.display()))?;
+    print_success(&format!("Added mod {module_name} to src/{file_name}"));
     Ok(())
 }
 
@@ -3960,7 +3984,12 @@ async fn repository_crud_smoke() -> Result<()> {
     .replace("{list_call}", &list_call)
 }
 
-fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> Result<()> {
+fn wire_main_rs(
+    src_dir: &Path,
+    resource_name: &str,
+    resource_pascal: &str,
+    library_crate: Option<&str>,
+) -> Result<()> {
     let main_path = src_dir.join("main.rs");
     if !main_path.exists() {
         print_warning("src/main.rs not found; skipping auto wiring");
@@ -3970,8 +3999,11 @@ fn wire_main_rs(src_dir: &Path, resource_name: &str, resource_pascal: &str) -> R
     let mut contents = fs::read_to_string(&main_path)
         .with_context(|| format!("Failed to read {}", main_path.display()))?;
 
+    let routes_path = library_crate
+        .map(|crate_name| format!("{crate_name}::routes"))
+        .unwrap_or_else(|| "routes".to_string());
     let register_line = format!(
-        ".register_module(routes::{}::{}Module)",
+        ".register_module({routes_path}::{}::{}Module)",
         resource_name, resource_pascal
     );
     if contents.contains(&register_line) {

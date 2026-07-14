@@ -164,6 +164,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     let needs_arc = has_auth_feature || has_database_feature;
     let context = BackendTemplateContext {
         project_name: project_name.clone(),
+        project_crate: project_name.clone(),
         project_name_pascal,
         has_organizations: false,
         database: starter_database.to_string(),
@@ -1218,6 +1219,7 @@ fn backend_template_engine(
 ) -> Result<BackendTemplateEngine> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
+        project_crate: project_name.replace('-', "_"),
         project_name_pascal: to_pascal_case(project_name),
         has_organizations,
         database: "postgres".to_string(),

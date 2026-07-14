@@ -298,6 +298,7 @@ fn scaffold_auth(
 ) -> Result<()> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
+        project_crate: project_name.replace('-', "_"),
         project_name_pascal: project_name_pascal.to_string(),
         has_organizations: false,
         database: "postgres".to_string(),
@@ -558,6 +559,7 @@ fn scaffold_organizations(
 ) -> Result<()> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
+        project_crate: project_name.replace('-', "_"),
         project_name_pascal: project_name_pascal.to_string(),
         has_organizations: true,
         database: "postgres".to_string(),

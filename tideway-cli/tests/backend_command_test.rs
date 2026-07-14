@@ -78,6 +78,8 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert_success(&output, "tideway backend b2b");
 
     let main_rs = fs::read_to_string(output_dir.join("main.rs")).expect("read main.rs");
+    assert!(main_rs.contains("use my_app::auth::AuthModule;"));
+    assert!(!main_rs.contains("mod auth;"));
     assert!(main_rs.contains(".nest(\"/billing/public\", public_billing_routes())"));
     assert!(main_rs.contains(".nest(\"/billing\", authenticated_billing_routes())"));
     assert!(main_rs.contains(".nest(\"/billing/webhook\", billing_webhook_routes())"));

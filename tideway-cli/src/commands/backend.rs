@@ -103,6 +103,7 @@ pub(crate) fn scaffold(
     // Create template context
     let context = BackendTemplateContext {
         project_name: args.name.clone(),
+        project_crate: args.name.trim().replace('-', "_"),
         project_name_pascal: to_pascal_case(&args.name),
         has_organizations,
         database: args.database.clone(),

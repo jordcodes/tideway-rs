@@ -125,6 +125,8 @@ impl Serialize for Style {
 pub struct BackendTemplateContext {
     /// Project name in snake_case (e.g., "my_app")
     pub project_name: String,
+    /// Rust library crate identifier (package hyphens normalized to underscores)
+    pub project_crate: String,
     /// Project name in PascalCase (e.g., "MyApp")
     pub project_name_pascal: String,
     /// Whether the preset includes organizations (B2B)

@@ -1819,7 +1819,12 @@ fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold()
     tideway_cli::commands::resource::run(resource_args).expect("run tideway resource");
 
     assert!(project_dir.join("src/routes/mod.rs").exists());
-    assert_file_contains(&project_dir.join("src/main.rs"), "mod routes;");
+    assert_file_contains(&project_dir.join("src/lib.rs"), "pub mod routes;");
+    assert_file_not_contains(&project_dir.join("src/main.rs"), "mod routes;");
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".register_module(my_app::routes::subscription::SubscriptionModule)",
+    );
 
     patch_scaffold_to_workspace(&project_dir);
     run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);

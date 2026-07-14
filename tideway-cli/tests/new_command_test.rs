@@ -742,7 +742,7 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project_with_denied_warnings(temp_dir.path(), &project_dir, &["check"]);
 }
 
 #[test]
@@ -822,12 +822,29 @@ fn patch_scaffold_to_workspace(project_dir: &Path) {
 }
 
 fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
-    let output = Command::new("cargo")
+    run_cargo_in_project_inner(temp_root, project_dir, args, false);
+}
+
+fn run_cargo_in_project_with_denied_warnings(temp_root: &Path, project_dir: &Path, args: &[&str]) {
+    run_cargo_in_project_inner(temp_root, project_dir, args, true);
+}
+
+fn run_cargo_in_project_inner(
+    temp_root: &Path,
+    project_dir: &Path,
+    args: &[&str],
+    deny_warnings: bool,
+) {
+    let mut command = Command::new("cargo");
+    command
         .args(args)
         .current_dir(project_dir)
-        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
-        .output()
-        .expect("run cargo");
+        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"));
+    if deny_warnings {
+        command.env("RUSTFLAGS", "-Dwarnings");
+    }
+
+    let output = command.output().expect("run cargo");
 
     if !output.status.success() {
         panic!(

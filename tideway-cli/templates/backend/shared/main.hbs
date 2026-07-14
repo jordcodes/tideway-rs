@@ -14,26 +14,17 @@ use tideway::billing::{
 };
 use tracing::info;
 
-mod auth;
-mod billing;
-mod entities;
+use {{project_crate}}::auth::AuthModule;
+use {{project_crate}}::billing::{
+    admin_billing_routes, authenticated_billing_routes, billing_webhook_routes,
+    public_billing_routes,
+};
 {{#if has_organizations}}
-mod organizations;
+use {{project_crate}}::organizations::OrganizationModule;
 {{/if}}
-mod admin;
-
-use crate::auth::AuthModule;
-use crate::billing::{admin_billing_routes, authenticated_billing_routes, billing_webhook_routes, public_billing_routes};
-{{#if has_organizations}}
-use crate::organizations::OrganizationModule;
-{{/if}}
-use crate::admin::AdminModule;
-
-pub mod config;
-pub mod error;
-
-use config::AppConfig;
-use error::BillingState;
+use {{project_crate}}::admin::AdminModule;
+use {{project_crate}}::config::AppConfig;
+use {{project_crate}}::error::BillingState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

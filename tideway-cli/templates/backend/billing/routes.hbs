@@ -17,7 +17,7 @@ use tideway::billing::{
     PlanStore, PortalManager, StoredPlan, WebhookHandler, WebhookOutcome,
     validate_plan, validate_plan_with_stripe,
 };
-use tideway::{Result, TidewayError};
+use tideway::Result;
 
 {{#if has_organizations}}
 use crate::entities::organization;
@@ -362,7 +362,7 @@ async fn authorize_billing_member(
     {{else}}
     let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
     if actor.user.id.to_string() != billable_id {
-        return Err(TidewayError::Forbidden("Billing resource access denied".into()));
+        return Err(tideway::TidewayError::Forbidden("Billing resource access denied".into()));
     }
     {{/if}}
     Ok(())
@@ -379,7 +379,7 @@ async fn authorize_billing_owner(
     {{else}}
     let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
     if actor.user.id.to_string() != billable_id {
-        return Err(TidewayError::Forbidden("Billing resource access denied".into()));
+        return Err(tideway::TidewayError::Forbidden("Billing resource access denied".into()));
     }
     {{/if}}
     Ok(())
