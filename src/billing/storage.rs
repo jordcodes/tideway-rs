@@ -58,7 +58,7 @@ pub trait BillingStore: Send + Sync {
     ///
     /// ```sql
     /// UPDATE subscriptions
-    /// SET ..., updated_at = NOW()
+    /// SET ..., updated_at = $new_version
     /// WHERE billable_id = $1 AND updated_at = $2
     /// RETURNING billable_id
     /// ```
@@ -92,7 +92,9 @@ pub trait BillingStore: Send + Sync {
         {
             return Ok(false);
         }
-        self.save_subscription(billable_id, subscription).await?;
+        let mut updated = subscription.clone();
+        updated.updated_at = updated.updated_at.max(expected_version.saturating_add(1));
+        self.save_subscription(billable_id, &updated).await?;
         Ok(true)
     }
 
@@ -178,7 +180,10 @@ pub struct StoredSubscription {
     pub base_item_id: Option<String>,
     /// Stripe subscription item ID for extra seats.
     pub seat_item_id: Option<String>,
-    /// Last updated timestamp.
+    /// Opaque optimistic-lock version.
+    ///
+    /// Stores may use a timestamp, integer revision, or another monotonically increasing value,
+    /// but each successful compare-and-save must persist a value different from the expected one.
     pub updated_at: u64,
 }
 
@@ -690,8 +695,10 @@ pub mod test {
                 return Ok(false);
             }
 
-            // Version matches (or no existing record), save the new subscription
-            subs.insert(billable_id.to_string(), subscription.clone());
+            // Version matches (or no existing record), save with an advanced version.
+            let mut updated = subscription.clone();
+            updated.updated_at = updated.updated_at.max(expected_version.saturating_add(1));
+            subs.insert(billable_id.to_string(), updated);
             Ok(true)
         }
 

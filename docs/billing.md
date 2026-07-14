@@ -1156,6 +1156,30 @@ impl BillingStore for MyDatabase {
 }
 ```
 
+### Production storage guarantees
+
+Custom production stores must override the trait's compatibility defaults for concurrent billing
+operations:
+
+- `claim_event` must atomically insert an event claim and return `false` when the event already
+  exists. `release_event_claim` must remove a failed claim so Stripe can retry it.
+- `compare_and_save_subscription` must perform the version comparison and update in one atomic
+  database operation. Return `false` when the expected version no longer matches.
+- A successful compare-and-save must persist a version different from `expected_version`. Treat
+  `StoredSubscription::updated_at` as an opaque optimistic-lock token; it may be a timestamp or an
+  integer revision, but it must advance even when two writes share a wall-clock tick.
+
+For SQL stores, the subscription update should follow this shape:
+
+```sql
+UPDATE billing_subscriptions
+SET extra_seats = $1, updated_at = $2
+WHERE billable_id = $3 AND updated_at = $4;
+```
+
+Test both contracts against the real database engine: race two webhook claims for one event ID and
+two subscription updates with one expected version. Each test must have exactly one winner.
+
 For SeaORM users, enable the `billing-seaorm` feature for a ready-to-use implementation.
 
 ## Billable Entity

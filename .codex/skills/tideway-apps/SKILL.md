@@ -68,6 +68,7 @@ Help agents build and maintain downstream APIs that use Tideway, not the Tideway
 - Replace protected-route access checks with:
   - `verify_access_token(token).await`
 - For billing apps, check custom `BillingStore` implementations for `claim_event` and `release_event_claim`.
+- Also require custom production stores to implement `compare_and_save_subscription` as one atomic conditional update with an advancing version.
 - Built-in `SeaOrmBillingStore` apps require `billing_processed_events.event_id` to be a primary
   key. Do not treat the generic `webhook_processed_events` table as a substitute.
 

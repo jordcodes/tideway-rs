@@ -278,6 +278,10 @@ fn build_subscription_update(
     subscription: &StoredSubscription,
     expected_version: u64,
 ) -> sea_orm::UpdateMany<billing_subscription::Entity> {
+    let new_version = subscription
+        .updated_at
+        .max(expected_version.saturating_add(1));
+
     billing_subscription::Entity::update_many()
         .col_expr(
             billing_subscription::Column::StripeSubscriptionId,
@@ -325,7 +329,7 @@ fn build_subscription_update(
         )
         .col_expr(
             billing_subscription::Column::UpdatedAt,
-            Expr::value(u64_to_i64(subscription.updated_at)),
+            Expr::value(u64_to_i64(new_version)),
         )
         .filter(billing_subscription::Column::BillableId.eq(billable_id))
         .filter(billing_subscription::Column::UpdatedAt.eq(u64_to_i64(expected_version)))
@@ -978,6 +982,37 @@ mod tests {
         db
     }
 
+    async fn setup_billing_subscriptions_db() -> DatabaseConnection {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("sqlite in-memory db should connect");
+
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            "CREATE TABLE billing_subscriptions (
+                billable_id TEXT PRIMARY KEY NOT NULL,
+                stripe_subscription_id TEXT UNIQUE NOT NULL,
+                stripe_customer_id TEXT NOT NULL,
+                plan_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                current_period_start INTEGER NOT NULL,
+                current_period_end INTEGER NOT NULL,
+                extra_seats INTEGER NOT NULL,
+                trial_end INTEGER,
+                cancel_at_period_end INTEGER NOT NULL,
+                base_item_id TEXT,
+                seat_item_id TEXT,
+                updated_at INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )"
+            .to_string(),
+        ))
+        .await
+        .expect("should create billing_subscriptions table");
+
+        db
+    }
+
     #[tokio::test]
     async fn claim_event_allows_exactly_one_concurrent_winner() {
         let store = SeaOrmBillingStore::new(setup_billing_events_db().await);
@@ -994,6 +1029,54 @@ mod tests {
 
         assert_eq!(claims.into_iter().filter(|claimed| *claimed).count(), 1);
         assert!(store.is_event_processed("evt_concurrent").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn compare_and_save_allows_exactly_one_concurrent_winner() {
+        let store = SeaOrmBillingStore::new(setup_billing_subscriptions_db().await);
+        let initial = StoredSubscription {
+            stripe_subscription_id: "sub_concurrent".to_string(),
+            stripe_customer_id: "cus_concurrent".to_string(),
+            plan_id: "starter".to_string(),
+            status: SubscriptionStatus::Active,
+            current_period_start: 1_700_000_000,
+            current_period_end: 1_702_592_000,
+            extra_seats: 1,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: Some("si_base".to_string()),
+            seat_item_id: Some("si_seat".to_string()),
+            updated_at: 100,
+        };
+        store
+            .save_subscription("org_concurrent", &initial)
+            .await
+            .expect("save initial subscription");
+
+        let mut first_update = initial.clone();
+        first_update.extra_seats = 2;
+        first_update.updated_at = 100;
+        let mut second_update = initial.clone();
+        second_update.extra_seats = 3;
+        second_update.updated_at = 100;
+
+        let (first, second) = tokio::join!(
+            store.compare_and_save_subscription("org_concurrent", &first_update, 100),
+            store.compare_and_save_subscription("org_concurrent", &second_update, 100),
+        );
+        let winners = [
+            first.expect("first update should not fail"),
+            second.expect("second update should not fail"),
+        ];
+
+        assert_eq!(winners.into_iter().filter(|saved| *saved).count(), 1);
+        let saved = store
+            .get_subscription("org_concurrent")
+            .await
+            .expect("load subscription")
+            .expect("subscription should exist");
+        assert!(matches!(saved.extra_seats, 2 | 3));
+        assert_eq!(saved.updated_at, 101);
     }
 
     #[test]

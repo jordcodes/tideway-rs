@@ -142,12 +142,74 @@ tideway = {{ version = "{}", features = ["billing-seaorm"] }}
         report
             .findings()
             .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-SUBSCRIPTION-CAS") })
+    );
+    assert!(
+        report
+            .findings()
+            .iter()
             .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-MIGRATION-MISSING") })
     );
 }
 
 #[test]
 fn test_doctor_upgrade_accepts_custom_billing_store_with_atomic_claim() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["billing"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/billing_store.rs"),
+        r#"impl BillingStore for CustomBillingStore {
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        self.atomic_insert_or_ignore(event_id).await
+    }
+
+    async fn release_event_claim(&self, event_id: &str) -> Result<()> {
+        self.delete_claim(event_id).await
+    }
+
+    async fn compare_and_save_subscription(
+        &self,
+        billable_id: &str,
+        subscription: &StoredSubscription,
+        expected_version: u64,
+    ) -> Result<bool> {
+        self.atomic_conditional_update(billable_id, subscription, expected_version).await
+    }
+}
+"#,
+    )
+    .expect("write billing store");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+
+    assert!(
+        !report
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("Custom BillingStore implementation")),
+        "did not expect custom billing store warning, got {:?}",
+        report.warnings()
+    );
+}
+
+#[test]
+fn test_doctor_upgrade_warns_for_custom_billing_store_without_subscription_cas() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();
     fs::create_dir_all(project_dir.join("src")).expect("create src");
@@ -183,13 +245,15 @@ tideway = {{ version = "{}", features = ["billing"] }}
 
     let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
 
+    assert!(report.findings().iter().any(|finding| {
+        finding.code == Some("TW-UPGRADE-BILLING-SUBSCRIPTION-CAS")
+            && finding.message.contains("one atomic conditional update")
+    }));
     assert!(
         !report
-            .warnings()
+            .findings()
             .iter()
-            .any(|warning| warning.contains("Custom BillingStore implementation")),
-        "did not expect custom billing store warning, got {:?}",
-        report.warnings()
+            .any(|finding| finding.code == Some("TW-UPGRADE-BILLING-CLAIM-LIFECYCLE"))
     );
 }
 

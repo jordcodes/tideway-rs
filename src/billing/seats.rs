@@ -16,6 +16,14 @@ fn current_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
+fn next_subscription_version_at(current_version: u64, wall_clock: u64) -> u64 {
+    wall_clock.max(current_version.saturating_add(1))
+}
+
+fn next_subscription_version(current_version: u64) -> u64 {
+    next_subscription_version_at(current_version, current_timestamp())
+}
+
 /// Seat management operations.
 ///
 /// Handles adding/removing seats with Stripe proration.
@@ -50,7 +58,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
     ) -> Result<SeatChangeResult> {
         let mut updated_sub = sub.clone();
         updated_sub.extra_seats = updated_extra_seats;
-        updated_sub.updated_at = current_timestamp();
+        updated_sub.updated_at = next_subscription_version(original_version);
 
         let saved = self
             .store
@@ -640,5 +648,13 @@ mod tests {
         // Verify the update was not saved
         let loaded = store.get_subscription("org_cas").await.unwrap().unwrap();
         assert_eq!(loaded.extra_seats, 5); // Still 5, not 10
+    }
+
+    #[test]
+    fn subscription_version_advances_when_updates_share_a_clock_tick() {
+        assert_eq!(
+            next_subscription_version_at(1_700_000_000, 1_700_000_000),
+            1_700_000_001
+        );
     }
 }

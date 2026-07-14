@@ -529,6 +529,13 @@ fn check_upgrade_readiness(
             ),
         );
     }
+    if billing_enabled && custom_billing_store_missing_subscription_cas(&src_dir) {
+        report.push_upgrade_warning(
+            "TW-UPGRADE-BILLING-SUBSCRIPTION-CAS",
+            "src/",
+            "Custom BillingStore implementation found without a compare_and_save_subscription override; implement it as one atomic conditional update so concurrent Stripe seat changes cannot overwrite newer subscription state",
+        );
+    }
     if any_rs_file_contains(&src_dir, "JwtIssuerConfig::with_secret(") {
         report.push_upgrade_warning(
             "TW-UPGRADE-JWT-ISSUER-SECRET",
@@ -579,6 +586,13 @@ fn custom_billing_store_missing_claim_methods(src_dir: &Path) -> Vec<&'static st
         missing.push("release_event_claim");
     }
     missing
+}
+
+fn custom_billing_store_missing_subscription_cas(src_dir: &Path) -> bool {
+    any_rs_file_matches(src_dir, |contents| {
+        uncommented_line_contains(contents, "BillingStore for")
+            && !uncommented_line_contains(contents, "fn compare_and_save_subscription")
+    })
 }
 
 fn uncommented_line_contains(contents: &str, needle: &str) -> bool {

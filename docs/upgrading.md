@@ -67,6 +67,17 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## Unreleased
+
+Custom stores that support seat changes must override `compare_and_save_subscription`. The
+default trait implementation performs its read and write separately and is intended only for
+development compatibility. Production implementations must use one conditional database operation,
+such as `UPDATE ... WHERE billable_id = ? AND updated_at = ?`, and return `false` when no row matched.
+The saved version must differ from the expected version, including when two updates occur during the
+same wall-clock tick. Add a database-backed concurrency test that starts two updates with the same
+expected version and asserts exactly one succeeds. The next Tideway CLI release will report custom
+stores without this override through `tideway doctor --upgrade`.
+
 ## 0.7.23 to 0.7.24
 
 Tideway 0.7.24 corrects duplicate-event handling in the built-in `SeaOrmBillingStore`. Applications
@@ -120,6 +131,7 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-VALIDATOR-MISMATCH` | A direct Validator dependency is incompatible. |
 | `TW-UPGRADE-STRIPE-TLS-CONFLICT` | Direct async-stripe TLS features conflict with Tideway. |
 | `TW-UPGRADE-BILLING-CLAIM-LIFECYCLE` | A custom billing store lacks claim or release overrides. |
+| `TW-UPGRADE-BILLING-SUBSCRIPTION-CAS` | A custom billing store lacks an atomic subscription compare-and-save override. |
 | `TW-UPGRADE-BILLING-MIGRATION-MISSING` | The built-in billing store's event migration is absent. |
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |
