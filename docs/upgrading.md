@@ -67,7 +67,7 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
-## Unreleased
+## 0.7.24 to 0.7.25
 
 Custom stores that support seat changes must override `compare_and_save_subscription`. The
 default trait implementation performs its read and write separately and is intended only for
@@ -75,8 +75,8 @@ development compatibility. Production implementations must use one conditional d
 such as `UPDATE ... WHERE billable_id = ? AND updated_at = ?`, and return `false` when no row matched.
 The saved version must differ from the expected version, including when two updates occur during the
 same wall-clock tick. Add a database-backed concurrency test that starts two updates with the same
-expected version and asserts exactly one succeeds. The next Tideway CLI release will report custom
-stores without this override through `tideway doctor --upgrade`.
+expected version and asserts exactly one succeeds. Tideway CLI 0.1.39 reports custom stores without
+this override through `tideway doctor --upgrade`.
 
 `WebhookHandler::with_event_sink` is an additive hook for application billing lifecycle work. New
 SaaS scaffolds include an application-owned sink; existing applications can continue using

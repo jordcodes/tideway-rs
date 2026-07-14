@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [tideway-cli 0.1.39] - 2026-07-14
+
+### Added
+
+- New SaaS backends include an application-owned `BillingEventSink` for provisioning, email, analytics, dunning, and durable job dispatch without changing Tideway's core billing state machine.
+- `tideway doctor --upgrade` warns when a custom production billing store relies on the non-atomic compatibility implementation of `compare_and_save_subscription`.
+
+### DX Gate
+
+- The complete CLI suite passes, including clean generated minimal, API, auth/MFA, and SaaS projects compiled against Tideway 0.7.25.
+- CLI packaging and repository documentation, filesystem-write, and public-API guardrails pass.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.39`; generated projects use Tideway 0.7.25.
+- Existing generated applications remain application-owned and are not overwritten. They may opt into lifecycle hooks with `WebhookHandler::with_event_sink`.
+
+## [0.7.25] - 2026-07-14
+
+### Added
+
+- `BillingEventSink` provides typed, application-owned hooks after checkout, subscription, and invoice webhook processing, with a backward-compatible no-op default.
+
+### Fixed
+
+- Subscription compare-and-save operations now advance their optimistic-lock version, and the built-in SeaORM store performs subscription updates atomically so concurrent seat changes cannot silently overwrite each other.
+- Billing lifecycle sink failures release the webhook claim for provider retry while retaining Tideway's successfully synchronized core subscription state.
+
+### DX Gate
+
+- The 641-test auth and billing feature suite, full workspace suite, formatting, and Cargo packaging verification pass.
+
+### Migration Notes
+
+- Custom production billing stores that support seat changes must implement atomic `compare_and_save_subscription` and advance the stored version after every successful write.
+- Lifecycle event sinks must make side effects idempotent using the Stripe event ID and should enqueue slow work rather than performing it in the webhook request.
+
 ## [tideway-cli 0.1.38] - 2026-07-14
 
 ### Added
