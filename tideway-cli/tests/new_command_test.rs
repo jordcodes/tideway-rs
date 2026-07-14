@@ -680,6 +680,11 @@ fn test_new_command_with_preset_saas() {
     assert!(project_dir.join("src/auth/actor.rs").exists());
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert!(project_dir.join("src/billing/mod.rs").exists());
+    assert!(project_dir.join("src/billing/events.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/billing/routes.rs"),
+        ".with_event_sink(AppBillingEventSink)",
+    );
     assert!(project_dir.join("src/organizations/mod.rs").exists());
     assert!(project_dir.join("src/admin/mod.rs").exists());
     assert!(project_dir.join("src/lib.rs").exists());

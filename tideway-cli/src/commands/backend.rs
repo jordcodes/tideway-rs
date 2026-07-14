@@ -392,6 +392,7 @@ fn generate_billing(
     ensure_dir(&billing_path)?;
 
     let templates = [
+        ("events.rs", "billing/events"),
         ("mod.rs", "billing/mod"),
         ("routes.rs", "billing/routes"),
         ("store.rs", "billing/store"),

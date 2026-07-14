@@ -1066,14 +1066,28 @@ println!("Limits: {:?}", entitlements.limits);
 
 ## Webhooks
 
-Handle Stripe webhook events:
+Handle Stripe webhook events and attach optional application lifecycle hooks:
 
 ```rust
-use tideway::billing::{WebhookHandler, WebhookEvent};
+use async_trait::async_trait;
 use axum::{extract::State, http::HeaderMap, body::Bytes};
+use tideway::billing::{BillingEvent, BillingEventSink, WebhookHandler, WebhookOutcome};
+
+#[derive(Clone)]
+struct AppBillingEvents;
+
+#[async_trait]
+impl BillingEventSink for AppBillingEvents {
+    async fn handle(&self, event: &BillingEvent) -> tideway::Result<()> {
+        // Enqueue email, provisioning, analytics, or dunning work here.
+        // Use event.event_id() as the idempotency key.
+        tracing::info!(event_id = event.event_id(), kind = event.kind());
+        Ok(())
+    }
+}
 
 async fn stripe_webhook(
-    State(handler): State<WebhookHandler>,
+    State(handler): State<WebhookHandler<MyBillingStore, AppBillingEvents>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(), ApiError> {
@@ -1082,15 +1096,30 @@ async fn stripe_webhook(
         .and_then(|v| v.to_str().ok())
         .ok_or(ApiError::BadRequest)?;
 
-    let event = handler.verify_and_parse(&body, signature)?;
+    let event = handler.verify_signature(&body, signature)?;
 
-    match handler.handle(event).await? {
+    match handler.handle_event(event).await? {
         WebhookOutcome::Processed => Ok(()),
         WebhookOutcome::Ignored => Ok(()),
-        WebhookOutcome::Failed(e) => Err(e.into()),
+        WebhookOutcome::AlreadyProcessed => Ok(()),
     }
 }
 ```
+
+Construct the handler with `.with_event_sink(AppBillingEvents)`. Without that call Tideway uses
+`NoOpBillingEventSink`, so applications that do not need hooks require no additional configuration.
+Tideway currently emits typed events for subscription-mode checkout completion, subscription
+creation/update/deletion, paid invoices, and failed invoice payments.
+
+The sink runs after Tideway's core subscription-state mutation. If it returns an error, Tideway
+releases the webhook claim so Stripe can retry; the core mutation and sink may consequently run
+again. Sink implementations must therefore make side effects idempotent using
+`BillingEvent::event_id`. Prefer enqueueing a durable background job rather than performing slow
+network calls inside the webhook request.
+
+The built-in `billing_processed_events` table belongs to one Tideway billing webhook consumer. If
+an application also processes Stripe Connect or another independent Stripe webhook stream, give
+that consumer a separate idempotency table or use a store keyed by both consumer name and event ID.
 
 ## Live Stripe Client
 

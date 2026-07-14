@@ -9,6 +9,7 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 use super::error::BillingError;
+use super::events::{BillingEvent, BillingEventContext, BillingEventSink, NoOpBillingEventSink};
 use super::plans::Plans;
 use super::storage::BillingStore;
 use super::subscription::{StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata};
@@ -19,13 +20,14 @@ use super::subscription::{StripeSubscriptionData, SubscriptionManager, Subscript
 ///
 /// The webhook secret is stored using [`SecretString`] to prevent accidental
 /// exposure in logs or debug output.
-pub struct WebhookHandler<S: BillingStore> {
+pub struct WebhookHandler<S: BillingStore, E: BillingEventSink = NoOpBillingEventSink> {
     store: S,
     webhook_secret: SecretString,
     plans: Plans,
+    event_sink: E,
 }
 
-impl<S: BillingStore + Clone> WebhookHandler<S> {
+impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
     /// Create a new webhook handler.
     ///
     /// The webhook secret is stored securely and won't be exposed in debug output.
@@ -35,6 +37,20 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
             store,
             webhook_secret: webhook_secret.into(),
             plans,
+            event_sink: NoOpBillingEventSink,
+        }
+    }
+}
+
+impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
+    /// Attach an application-owned billing lifecycle event sink.
+    #[must_use]
+    pub fn with_event_sink<E2: BillingEventSink>(self, event_sink: E2) -> WebhookHandler<S, E2> {
+        WebhookHandler {
+            store: self.store,
+            webhook_secret: self.webhook_secret,
+            plans: self.plans,
+            event_sink,
         }
     }
 
@@ -150,20 +166,38 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         })?;
 
         // Get subscription ID from the completed checkout
-        let subscription_id = session.get("subscription").and_then(|v| v.as_str());
-
-        if subscription_id.is_none() {
+        let Some(subscription_id) = value_id(session.get("subscription")) else {
             // Not a subscription checkout (maybe one-time payment)
             return Ok(WebhookOutcome::Ignored);
-        }
+        };
 
         // The subscription.created webhook will handle syncing the actual subscription
+        self.event_sink
+            .handle(&BillingEvent::CheckoutCompleted {
+                context: event_context(event),
+                subscription_id,
+                customer_id: value_id(session.get("customer")),
+                billable_id: metadata_value(session, "billable_id"),
+            })
+            .await?;
+
         Ok(WebhookOutcome::Processed)
     }
 
     /// Handle subscription created/updated events.
     async fn handle_subscription_updated(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
         let sub_data = self.parse_subscription_data(&event.data.object)?;
+        let lifecycle_event = match event.event_type.as_str() {
+            "customer.subscription.created" => BillingEvent::SubscriptionCreated {
+                context: event_context(event),
+                subscription: sub_data.clone(),
+            },
+            "customer.subscription.updated" => BillingEvent::SubscriptionUpdated {
+                context: event_context(event),
+                subscription: sub_data.clone(),
+            },
+            _ => unreachable!("only subscription create/update events use this handler"),
+        };
 
         // Update local state
         let sub_manager = SubscriptionManager::new(
@@ -172,6 +206,7 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
             self.plans.clone(),
         );
         sub_manager.sync_from_stripe(sub_data).await?;
+        self.event_sink.handle(&lifecycle_event).await?;
 
         Ok(WebhookOutcome::Processed)
     }
@@ -187,12 +222,24 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
                 crate::error::TidewayError::BadRequest("Missing subscription ID".to_string())
             })?;
 
+        let lifecycle_event = BillingEvent::SubscriptionDeleted {
+            context: event_context(event),
+            subscription_id: subscription_id.to_string(),
+            customer_id: value_id(event.data.object.get("customer")),
+            billable_id: event
+                .data
+                .object
+                .as_object()
+                .and_then(|object| metadata_value(object, "billable_id")),
+        };
+
         let sub_manager = SubscriptionManager::new(
             self.store.clone(),
             NullSubscriptionClient,
             self.plans.clone(),
         );
         sub_manager.delete_subscription(subscription_id).await?;
+        self.event_sink.handle(&lifecycle_event).await?;
 
         Ok(WebhookOutcome::Processed)
     }
@@ -203,13 +250,15 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         // The subscription.updated webhook will handle the actual update
         // This is mainly for triggering any custom logic on successful payment
 
-        let _subscription_id = event
-            .data
-            .object
-            .get("subscription")
-            .and_then(|v| v.as_str());
+        self.event_sink
+            .handle(&BillingEvent::InvoicePaid {
+                context: event_context(event),
+                invoice_id: value_id(event.data.object.get("id")),
+                subscription_id: value_id(event.data.object.get("subscription")),
+                customer_id: value_id(event.data.object.get("customer")),
+            })
+            .await?;
 
-        // Could emit custom event here for app-specific logic
         Ok(WebhookOutcome::Processed)
     }
 
@@ -218,13 +267,15 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
         // Payment failed - the subscription.updated webhook will mark it past_due
         // This is mainly for triggering notifications
 
-        let _subscription_id = event
-            .data
-            .object
-            .get("subscription")
-            .and_then(|v| v.as_str());
+        self.event_sink
+            .handle(&BillingEvent::InvoicePaymentFailed {
+                context: event_context(event),
+                invoice_id: value_id(event.data.object.get("id")),
+                subscription_id: value_id(event.data.object.get("subscription")),
+                customer_id: value_id(event.data.object.get("customer")),
+            })
+            .await?;
 
-        // Could emit custom event here for app-specific notification logic
         Ok(WebhookOutcome::Processed)
     }
 
@@ -383,6 +434,34 @@ impl<S: BillingStore + Clone> WebhookHandler<S> {
     }
 }
 
+fn event_context(event: &WebhookEvent) -> BillingEventContext {
+    BillingEventContext {
+        event_id: event.id.clone(),
+        created: event.created,
+    }
+}
+
+fn value_id(value: Option<&serde_json::Value>) -> Option<String> {
+    value.and_then(|value| {
+        value
+            .as_str()
+            .or_else(|| value.get("id").and_then(serde_json::Value::as_str))
+            .map(String::from)
+    })
+}
+
+fn metadata_value(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
+    object
+        .get("metadata")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|metadata| metadata.get(key))
+        .and_then(serde_json::Value::as_str)
+        .map(String::from)
+}
+
 /// Parsed webhook event.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct WebhookEvent {
@@ -534,6 +613,32 @@ mod tests {
     use super::*;
     use crate::billing::Plans;
     use crate::billing::storage::test::InMemoryBillingStore;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct RecordingEventSink {
+        events: Arc<Mutex<Vec<BillingEvent>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl BillingEventSink for RecordingEventSink {
+        async fn handle(&self, event: &BillingEvent) -> Result<()> {
+            self.events.lock().unwrap().push(event.clone());
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct FailingEventSink;
+
+    #[async_trait::async_trait]
+    impl BillingEventSink for FailingEventSink {
+        async fn handle(&self, _event: &BillingEvent) -> Result<()> {
+            Err(crate::error::TidewayError::Internal(
+                "event sink unavailable".to_string(),
+            ))
+        }
+    }
 
     fn create_test_plans() -> Plans {
         Plans::builder()
@@ -648,6 +753,98 @@ mod tests {
         // Second call returns already processed
         let result = handler.handle_event(event).await.unwrap();
         assert_eq!(result, WebhookOutcome::AlreadyProcessed);
+    }
+
+    #[tokio::test]
+    async fn test_invoice_event_is_delivered_once_with_typed_identifiers() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let event = WebhookEvent {
+            id: "evt_invoice_paid".to_string(),
+            event_type: "invoice.paid".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "in_123",
+                    "subscription": {"id": "sub_123"},
+                    "customer": "cus_123"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert_eq!(
+            handler.handle_event(event.clone()).await.unwrap(),
+            WebhookOutcome::Processed
+        );
+        assert_eq!(
+            handler.handle_event(event).await.unwrap(),
+            WebhookOutcome::AlreadyProcessed
+        );
+
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_id(), "evt_invoice_paid");
+        assert_eq!(events[0].kind(), "invoice_paid");
+        assert_eq!(events[0].created(), 1_700_000_000);
+        assert!(matches!(
+            &events[0],
+            BillingEvent::InvoicePaid {
+                invoice_id: Some(invoice_id),
+                subscription_id: Some(subscription_id),
+                customer_id: Some(customer_id),
+                ..
+            } if invoice_id == "in_123"
+                && subscription_id == "sub_123"
+                && customer_id == "cus_123"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_event_sink_failure_releases_claim_after_core_state_sync() {
+        let store = InMemoryBillingStore::new();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans())
+            .with_event_sink(FailingEventSink);
+        let event = WebhookEvent {
+            id: "evt_sink_retry".to_string(),
+            event_type: "customer.subscription.updated".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "sub_sink_retry",
+                    "customer": "cus_sink_retry",
+                    "status": "active",
+                    "current_period_start": 1700000000u64,
+                    "current_period_end": 1702592000u64,
+                    "items": {
+                        "data": [{
+                            "id": "si_base",
+                            "price": {"id": "price_starter"},
+                            "quantity": 1
+                        }]
+                    },
+                    "metadata": {
+                        "billable_id": "org_sink_retry",
+                        "billable_type": "organization"
+                    }
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert!(handler.handle_event(event).await.is_err());
+        assert!(
+            store
+                .get_subscription("org_sink_retry")
+                .await
+                .unwrap()
+                .is_some(),
+            "core subscription state should be synchronized before the application hook"
+        );
+        assert!(
+            store.get_processed_events().is_empty(),
+            "sink failures should release the claim so Stripe can retry"
+        );
     }
 
     #[tokio::test]

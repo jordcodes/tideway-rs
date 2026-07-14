@@ -86,6 +86,8 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
 
     let billing_routes =
         fs::read_to_string(output_dir.join("billing/routes.rs")).expect("read billing routes");
+    let billing_events =
+        fs::read_to_string(output_dir.join("billing/events.rs")).expect("read billing events");
     assert!(billing_routes.contains("pub fn public_billing_routes()"));
     assert!(billing_routes.contains("pub fn authenticated_billing_routes()"));
     assert!(billing_routes.contains("pub fn billing_webhook_routes()"));
@@ -96,6 +98,9 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert!(billing_routes.contains("billing_store.claim_event(&event.id)"));
     assert!(billing_routes.contains("billing_store.release_event_claim(&event.id)"));
     assert!(billing_routes.contains("deactivate_plans_with_price(state, price_id).await?"));
+    assert!(billing_routes.contains(".with_event_sink(AppBillingEventSink)"));
+    assert!(billing_events.contains("impl BillingEventSink for AppBillingEventSink"));
+    assert!(billing_events.contains("event.event_id()"));
 }
 
 #[test]

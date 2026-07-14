@@ -78,6 +78,11 @@ same wall-clock tick. Add a database-backed concurrency test that starts two upd
 expected version and asserts exactly one succeeds. The next Tideway CLI release will report custom
 stores without this override through `tideway doctor --upgrade`.
 
+`WebhookHandler::with_event_sink` is an additive hook for application billing lifecycle work. New
+SaaS scaffolds include an application-owned sink; existing applications can continue using
+`WebhookHandler::new` unchanged and receive the no-op default. Event sinks run after core state
+updates and must be idempotent by Stripe event ID because a sink error releases the claim for retry.
+
 ## 0.7.23 to 0.7.24
 
 Tideway 0.7.24 corrects duplicate-event handling in the built-in `SeaOrmBillingStore`. Applications

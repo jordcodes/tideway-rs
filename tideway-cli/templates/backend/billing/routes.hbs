@@ -23,6 +23,7 @@ use tideway::{Result, TidewayError};
 use crate::entities::organization;
 {{/if}}
 use crate::auth::RequestActor;
+use crate::billing::AppBillingEventSink;
 use crate::error::BillingState;
 
 /// Public billing routes for pricing-safe data.
@@ -400,7 +401,8 @@ async fn handle_webhook(
         state.billing_store.clone(),
         state.webhook_secret.clone(),
         state.plans.clone(),
-    );
+    )
+    .with_event_sink(AppBillingEventSink);
 
     let event = webhook_handler
         .verify_signature(&body, signature)

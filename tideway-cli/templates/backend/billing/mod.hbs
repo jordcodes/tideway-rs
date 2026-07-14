@@ -1,7 +1,9 @@
 //! Billing module for Stripe integration.
 
+mod events;
 mod routes;
 
+pub use events::AppBillingEventSink;
 pub use routes::{
     admin_billing_routes, admin_plan_routes, authenticated_billing_routes, billing_routes,
     billing_webhook_routes, public_billing_routes,

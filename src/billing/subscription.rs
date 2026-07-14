@@ -601,7 +601,7 @@ impl Subscription {
 }
 
 /// Stripe subscription data (from webhook or API).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StripeSubscriptionData {
     /// Stripe subscription ID.
     pub id: String,
@@ -630,7 +630,7 @@ pub struct StripeSubscriptionData {
 }
 
 /// Metadata attached to Stripe subscriptions.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SubscriptionMetadata {
     /// The billable entity ID.
     pub billable_id: Option<String>,

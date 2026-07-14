@@ -1,0 +1,26 @@
+//! Application-owned billing lifecycle hooks.
+
+use async_trait::async_trait;
+use tideway::Result;
+use tideway::billing::{BillingEvent, BillingEventSink};
+
+/// Extend this sink with application-specific billing work such as transactional email,
+/// provisioning, analytics, or durable background jobs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AppBillingEventSink;
+
+#[async_trait]
+impl BillingEventSink for AppBillingEventSink {
+    async fn handle(&self, event: &BillingEvent) -> Result<()> {
+        // Stripe retries failed webhook deliveries. Any side effects added here must therefore be
+        // idempotent by event.event_id(); enqueueing a durable job is usually preferable to doing
+        // slow network work in the webhook request.
+        tracing::info!(
+            stripe_event_id = event.event_id(),
+            billing_event = event.kind(),
+            "Billing lifecycle event processed"
+        );
+
+        Ok(())
+    }
+}

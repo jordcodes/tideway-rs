@@ -55,6 +55,7 @@ pub mod client;
 pub mod customer;
 pub mod entitlements;
 pub mod error;
+pub mod events;
 pub mod invoice;
 pub mod live_client;
 pub mod payment;
@@ -109,6 +110,9 @@ pub use portal::{
 
 // Webhook exports
 pub use webhook::{WebhookEvent, WebhookEventData, WebhookHandler, WebhookOutcome};
+
+// Billing lifecycle event exports
+pub use events::{BillingEvent, BillingEventContext, BillingEventSink, NoOpBillingEventSink};
 
 // Invoice exports
 pub use invoice::{
