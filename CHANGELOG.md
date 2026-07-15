@@ -9,16 +9,18 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.41] - 2026-07-15
+
 ### Added
 
+- Fresh API and SaaS scaffolds include provider-neutral transactional email delivery with console,
+  SMTP, and Resend configuration. Generated verification, password-reset, and invitation flows send
+  working application-owned email templates.
 - Greenfield SaaS and B2B scaffolds include application-owned organization invitation routes,
   persistence, migrations, email delivery, and an authenticated Vue acceptance flow. Invitations
   remain optional through `--without-invitations`.
 - Organization administrators can resend a pending invitation through an organization-scoped,
   rate-limited endpoint that rotates the bearer token and refreshes its expiry.
-- `InvitationRateLimitProvider` lets generated applications replace the zero-configuration,
-  process-local invitation limiter with an application-owned shared provider before deploying
-  multiple API replicas.
 
 ### Security
 
@@ -30,15 +32,50 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Fixed
 
-- Invitation quotas now replenish the configured allowance evenly across the window instead of
-  replenishing only one permit per complete window after the initial burst.
 - Generated B2C checkout sessions use the authenticated database user's ID and email instead of an
   empty Stripe customer email placeholder.
 
+### DX Gate
+
+- The complete CLI suite passes, including warning-free generated minimal, API, auth/MFA, and SaaS
+  applications compiled and tested against Tideway 0.7.26.
+- Strict workspace Clippy, formatting, generated-app behavioral tests, and repository guardrails
+  pass.
+
 ### Migration Notes
 
+- Install with `cargo install tideway-cli --version 0.1.41`; newly generated projects use Tideway
+  0.7.26.
 - Existing generated applications remain application-owned and are not modified by upgrade checks.
   Adopt the invitation security checklist in `docs/organizations.md` with schema-compatible edits.
+- Existing email templates and delivery wiring remain application-owned; use `docs/email.md` to opt
+  into Resend or the provider-neutral generated configuration without overwriting custom designs.
+
+## [0.7.26] - 2026-07-15
+
+### Added
+
+- `ResendMailer` and `ResendConfig` provide a first-party HTTPS adapter with bounded request
+  timeouts, redacted configuration output, and provider-neutral `Mailer` integration.
+- `InvitationRateLimitProvider` lets applications replace the zero-configuration, process-local
+  invitation limiter with an application-owned shared provider before deploying multiple replicas.
+
+### Fixed
+
+- Invitation quotas replenish the configured allowance evenly across the window instead of
+  replenishing only one permit per complete window after the initial burst.
+
+### DX Gate
+
+- Auth, billing, SeaORM billing, email, and invitation rate-limit feature tests pass alongside the
+  default framework suite.
+- Strict workspace Clippy, formatting, documentation drift, filesystem-write, and public-API
+  guardrails pass.
+
+### Migration Notes
+
+- This is an additive framework update with no required database migration. Existing `Mailer`
+  implementations and `SmtpMailer` integrations remain compatible.
 - The in-memory limiter remains the default and requires no Redis configuration. Applications using
   multiple API replicas should provide a shared `InvitationRateLimitProvider`.
 

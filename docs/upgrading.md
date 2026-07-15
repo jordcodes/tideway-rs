@@ -74,6 +74,21 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## 0.7.25 to 0.7.26
+
+This is an additive framework update with no required database migration. `ResendMailer` is
+available as a first-party HTTPS email provider; existing `Mailer` implementations and SMTP
+configuration continue to work unchanged.
+
+Fresh Tideway CLI 0.1.41 SaaS projects can include secure organization invitations. Generated files
+remain application-owned, so existing applications should not rerun broad scaffolds over custom
+code. Adopt only the relevant schema-compatible patterns from `docs/organizations.md`, including
+token digests, atomic claims, organization scoping, seat checks, and delivery rate limits.
+
+The invitation limiter remains process-local by default. Single-replica deployments require no
+additional configuration; multi-replica deployments should provide a shared
+`InvitationRateLimitProvider` so all replicas enforce one quota.
+
 ## 0.7.24 to 0.7.25
 
 Custom stores that support seat changes must override `compare_and_save_subscription`. The

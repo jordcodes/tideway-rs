@@ -5314,7 +5314,7 @@ dependencies = [
 
 [[package]]
 name = "tideway"
-version = "0.7.25"
+version = "0.7.26"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5371,7 +5371,7 @@ dependencies = [
 
 [[package]]
 name = "tideway-cli"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
