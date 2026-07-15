@@ -32,6 +32,8 @@ SMTP_PASSWORD=
 SMTP_STARTTLS=true
 
 # Billing
-STRIPE_SECRET_KEY=sk_test_replace_me
+# Syntactically valid local-only key so the generated app can boot without contacting Stripe.
+# Replace it before enabling real billing or deploying outside local development.
+STRIPE_SECRET_KEY=sk_test_tideway_local_only_000000
 STRIPE_WEBHOOK_SECRET=whsec_replace_me
 STRIPE_PRICE_ID=price_replace_me

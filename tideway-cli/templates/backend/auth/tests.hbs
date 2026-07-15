@@ -1,0 +1,104 @@
+use std::{net::SocketAddr, sync::Arc};
+
+use axum::{
+    body::{to_bytes, Body},
+    extract::ConnectInfo,
+    http::{header, Method, Request, StatusCode},
+    Router,
+};
+use migration::{Migrator, MigratorTrait};
+use sea_orm::Database;
+use serde_json::{json, Value};
+use tideway::{
+    auth::{JwtIssuer, JwtIssuerConfig},
+    App,
+};
+use tower::ServiceExt;
+
+use super::AuthModule;
+
+const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
+
+async fn test_app() -> Router {
+    let db = Database::connect("sqlite::memory:")
+        .await
+        .expect("connect to in-memory sqlite");
+    Migrator::up(&db, None).await.expect("run migrations");
+    let db = Arc::new(db);
+    let issuer = Arc::new(
+        JwtIssuer::new(
+            JwtIssuerConfig::with_secure_secret(JWT_SECRET, env!("CARGO_PKG_NAME"))
+                .expect("valid secret")
+                .audience(env!("CARGO_PKG_NAME")),
+        )
+        .expect("create issuer"),
+    );
+    let auth = AuthModule::new(
+        db,
+        issuer,
+        JWT_SECRET.to_owned(),
+        env!("CARGO_PKG_NAME").to_owned(),
+    );
+
+    App::new().register_module(auth).into_router()
+}
+
+async fn request(app: &Router, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("build request");
+    request.extensions_mut().insert(ConnectInfo(
+        "127.0.0.1:40000"
+            .parse::<SocketAddr>()
+            .expect("socket address"),
+    ));
+
+    let response = app.clone().oneshot(request).await.expect("route response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("read response body");
+    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    (status, body)
+}
+
+#[tokio::test]
+async fn registration_and_login_work_with_generated_migrations() {
+    let app = test_app().await;
+    let email = "developer@example.com";
+    let password = "correct horse battery staple";
+    let registration = json!({
+        "email": email,
+        "password": password,
+        "name": "Developer"
+        {{#if has_organizations}}
+        , "organization_name": "Example Organization"
+        {{/if}}
+    });
+
+    let (status, registered) = request(&app, Method::POST, "/auth/register", registration).await;
+    assert_eq!(status, StatusCode::OK, "registration response: {registered}");
+    assert_eq!(registered["success"], true);
+    assert!(registered["user_id"].is_string());
+    {{#if has_organizations}}
+    assert!(registered["organization_id"].is_string());
+    {{/if}}
+
+    let (status, login) = request(
+        &app,
+        Method::POST,
+        "/auth/login",
+        json!({
+            "email": email,
+            "password": password,
+            "remember_me": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login response: {login}");
+    assert!(login["access_token"].is_string());
+    assert!(login["refresh_token"].is_string());
+}

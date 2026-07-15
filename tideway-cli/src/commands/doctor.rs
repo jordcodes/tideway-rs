@@ -985,7 +985,7 @@ fn env_example_template(
 
     if needs_billing {
         lines.push("# Billing".to_string());
-        lines.push("STRIPE_SECRET_KEY=sk_test_replace_me".to_string());
+        lines.push("STRIPE_SECRET_KEY=sk_test_tideway_local_only_000000".to_string());
         lines.push("STRIPE_WEBHOOK_SECRET=whsec_replace_me".to_string());
         lines.push("STRIPE_PRICE_ID=price_replace_me".to_string());
         lines.push(String::new());
@@ -1295,7 +1295,9 @@ fn check_migration_execution_hint(
         || env_example_vars.contains_key("DATABASE_AUTO_MIGRATE");
     let has_migration_call = main_contents
         .map(|contents| {
-            contents.contains("run_migrations(") || contents.contains("run_migrations_now(")
+            contents.contains("run_migrations(")
+                || contents.contains("run_migrations_now(")
+                || contents.contains("Migrator::up(")
         })
         .unwrap_or(false);
 

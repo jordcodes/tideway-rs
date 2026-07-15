@@ -9,6 +9,39 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.42] - 2026-07-15
+
+### Fixed
+
+- Generated SaaS auth tests are compiled and run, use the current auth API, and exercise
+  registration and login against the generated migrations on SQLite.
+- Billing plan JSON is emitted as typed JSON values and generated migration crates enable
+  SeaORM's JSON support, so PostgreSQL accepts the seeded `jsonb` columns.
+- Organization admin columns are added and removed in separate statements for SQLite
+  compatibility.
+- Fresh SaaS projects use a syntactically valid local-only Stripe test key, while generated
+  applications reject that placeholder outside development and test environments.
+- `tideway doctor` recognizes direct `Migrator::up` calls instead of reporting that generated
+  migrations are not run automatically.
+- Database-backed projects are Cargo workspaces, so the application and migration crate share one
+  root lockfile.
+- Generated Compose files no longer use the obsolete top-level `version` field.
+
+### DX Gate
+
+- The complete CLI suite passes, including a warning-free generated SaaS application compiled and
+  tested across all targets against Tideway 0.7.26.
+- The generated SaaS auth lifecycle runs every migration on SQLite and verifies registration and
+  login, preventing orphaned or stale scaffold tests from passing silently.
+- Strict workspace formatting, Clippy, and repository guardrails pass.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.42`; newly generated projects continue to
+  use Tideway 0.7.26.
+- Existing applications are not rewritten. They may adopt the workspace, migration dependency,
+  SQLite migration, and local Stripe placeholder changes selectively where relevant.
+
 ## [tideway-cli 0.1.41] - 2026-07-15
 
 ### Added

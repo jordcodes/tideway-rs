@@ -1,6 +1,7 @@
 //! Create billing_plans table for storing subscription plans.
 
 use sea_orm_migration::prelude::*;
+use serde_json::json;
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -27,8 +28,8 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(BillingPlans::Currency).string().not_null().default("usd"))
                     .col(ColumnDef::new(BillingPlans::Interval).string().not_null().default("monthly"))
                     .col(ColumnDef::new(BillingPlans::IncludedSeats).integer().not_null().default(1))
-                    .col(ColumnDef::new(BillingPlans::Features).json_binary().not_null().default("{}"))
-                    .col(ColumnDef::new(BillingPlans::Limits).json_binary().not_null().default("{}"))
+                    .col(ColumnDef::new(BillingPlans::Features).json_binary().not_null().default(json!({})))
+                    .col(ColumnDef::new(BillingPlans::Limits).json_binary().not_null().default(json!({})))
                     .col(ColumnDef::new(BillingPlans::TrialDays).integer())
                     .col(ColumnDef::new(BillingPlans::IsActive).boolean().not_null().default(true))
                     .col(ColumnDef::new(BillingPlans::SortOrder).integer().not_null().default(0))
@@ -98,8 +99,8 @@ impl MigrationTrait for Migration {
                 "usd".into(),
                 "monthly".into(),
                 1i32.into(),
-                r#"{"basic_features": true}"#.into(),
-                r#"{"projects": 3, "storage_mb": 100}"#.into(),
+                json!({"basic_features": true}).into(),
+                json!({"projects": 3, "storage_mb": 100}).into(),
                 Option::<i32>::None.into(),
                 true.into(),
                 0i32.into(),
@@ -113,8 +114,8 @@ impl MigrationTrait for Migration {
                 "usd".into(),
                 "monthly".into(),
                 3i32.into(),
-                r#"{"basic_features": true, "api_access": true}"#.into(),
-                r#"{"projects": 10, "storage_mb": 1000}"#.into(),
+                json!({"basic_features": true, "api_access": true}).into(),
+                json!({"projects": 10, "storage_mb": 1000}).into(),
                 14i32.into(),
                 true.into(),
                 1i32.into(),
@@ -128,8 +129,8 @@ impl MigrationTrait for Migration {
                 "usd".into(),
                 "monthly".into(),
                 5i32.into(),
-                r#"{"basic_features": true, "api_access": true, "priority_support": true, "advanced_analytics": true}"#.into(),
-                r#"{"projects": 50, "storage_mb": 10000}"#.into(),
+                json!({"basic_features": true, "api_access": true, "priority_support": true, "advanced_analytics": true}).into(),
+                json!({"projects": 50, "storage_mb": 10000}).into(),
                 14i32.into(),
                 true.into(),
                 2i32.into(),
@@ -143,8 +144,8 @@ impl MigrationTrait for Migration {
                 "usd".into(),
                 "monthly".into(),
                 10i32.into(),
-                r#"{"basic_features": true, "api_access": true, "priority_support": true, "advanced_analytics": true, "sso": true, "custom_integrations": true}"#.into(),
-                r#"{}"#.into(), // Unlimited
+                json!({"basic_features": true, "api_access": true, "priority_support": true, "advanced_analytics": true, "sso": true, "custom_integrations": true}).into(),
+                json!({}).into(), // Unlimited
                 Option::<i32>::None.into(),
                 true.into(),
                 3i32.into(),

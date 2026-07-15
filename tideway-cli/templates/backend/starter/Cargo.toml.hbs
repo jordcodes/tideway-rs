@@ -3,6 +3,12 @@ name = "{{project_name}}"
 version = "0.1.0"
 edition = "2021"
 
+{{#if has_database_feature}}
+[workspace]
+members = ["migration"]
+resolver = "2"
+{{/if}}
+
 [dependencies]
 tideway = { version = "{{tideway_version}}", default-features = false{{#if has_tideway_features}}, features = [{{#each tideway_features}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]{{/if}} }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
@@ -14,7 +20,7 @@ serde_json = "1.0"
 tracing = "0.1"
 {{/if}}
 {{#if has_database_feature}}
-sea-orm = { version = "1.1", features = ["{{#if is_sqlite_database}}sqlx-sqlite{{else}}sqlx-postgres{{/if}}", "runtime-tokio-rustls"{{#if has_auth_feature}}, "with-chrono", "with-uuid"{{/if}}] }
+sea-orm = { version = "1.1", features = ["{{#if is_sqlite_database}}sqlx-sqlite{{else}}sqlx-postgres{{#if has_auth_feature}}", "sqlx-sqlite{{/if}}{{/if}}", "runtime-tokio-rustls"{{#if has_auth_feature}}, "with-chrono", "with-uuid"{{/if}}] }
 migration = { path = "migration" }
 {{#if has_auth_feature}}
 chrono = { version = "0.4", features = ["serde"] }
@@ -24,10 +30,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 {{#if has_openapi_feature}}
 utoipa = { version = "5", features = ["axum_extras"] }
 {{/if}}
-{{#if is_sqlite_database}}
 {{#if has_auth_feature}}
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
-{{/if}}
 {{/if}}

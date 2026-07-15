@@ -888,7 +888,7 @@ tideway = { version = "0.7", features = ["billing"] }
         env_example
     );
     assert!(
-        env_example.contains("STRIPE_SECRET_KEY=sk_test_replace_me"),
+        env_example.contains("STRIPE_SECRET_KEY=sk_test_tideway_local_only_000000"),
         "expected STRIPE_SECRET_KEY to be added, got:\n{}",
         env_example
     );
@@ -1458,6 +1458,49 @@ async fn main() {
             .iter()
             .any(|line| line.contains("Migrations detected")),
         "expected migration hint, got {:?}",
+        report.info()
+    );
+}
+
+#[test]
+fn test_doctor_recognizes_direct_seaorm_migration_autorun() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+
+    std::fs::create_dir_all(project_dir.join("src")).expect("create src");
+    std::fs::create_dir_all(project_dir.join("migration/src")).expect("create migration");
+    std::fs::write(project_dir.join("migration/src/lib.rs"), "// migration lib")
+        .expect("write lib");
+
+    let cargo = r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#;
+    std::fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+
+    let main_rs = r#"
+use migration::{Migrator, MigratorTrait};
+
+#[tokio::main]
+async fn main() {
+    Migrator::up(&database, None).await.unwrap();
+}
+"#;
+    std::fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let report = analyze_project(project_dir, false).expect("analyze project");
+    assert!(
+        report
+            .info()
+            .iter()
+            .all(|line| !line.contains("Migrations detected")),
+        "expected direct Migrator::up call to be recognized, got {:?}",
         report.info()
     );
 }

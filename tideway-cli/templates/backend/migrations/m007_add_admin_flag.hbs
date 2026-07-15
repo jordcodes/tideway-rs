@@ -18,30 +18,42 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(false),
                     )
-                    {{#if has_organizations}}
-                    .add_column(
-                        ColumnDef::new(Users::OrganizationId)
-                            .string()
-                            .null(),
-                    )
-                    {{/if}}
                     .to_owned(),
             )
-            .await
+            .await?;
+        {{#if has_organizations}}
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Users::Table)
+                    .add_column(ColumnDef::new(Users::OrganizationId).string().null())
+                    .to_owned(),
+            )
+            .await?;
+        {{/if}}
+        Ok(())
     }
 
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        {{#if has_organizations}}
+        manager
+            .alter_table(
+                Table::alter()
+                    .table(Users::Table)
+                    .drop_column(Users::OrganizationId)
+                    .to_owned(),
+            )
+            .await?;
+        {{/if}}
         manager
             .alter_table(
                 Table::alter()
                     .table(Users::Table)
                     .drop_column(Users::IsPlatformAdmin)
-                    {{#if has_organizations}}
-                    .drop_column(Users::OrganizationId)
-                    {{/if}}
                     .to_owned(),
             )
-            .await
+            .await?;
+        Ok(())
     }
 }
 

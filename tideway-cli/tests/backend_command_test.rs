@@ -40,6 +40,18 @@ fn test_backend_generates_webhook_idempotency_migrations() {
     assert!(billing_events.contains("BillingProcessedEvents::EventId"));
     assert!(billing_events.contains("primary_key()"));
 
+    let billing_plans = fs::read_to_string(migrations_dir.join("m008_create_billing_plans.rs"))
+        .expect("read billing plans migration");
+    assert!(billing_plans.contains("use serde_json::json;"));
+    assert!(billing_plans.contains("json!({"));
+    assert!(!billing_plans.contains(".default(\"{}\")"));
+
+    let auth_mod = fs::read_to_string(output_dir.join("auth/mod.rs")).expect("read auth mod");
+    assert!(auth_mod.contains("mod tests;"));
+    let auth_tests = fs::read_to_string(output_dir.join("auth/tests.rs")).expect("read auth tests");
+    assert!(auth_tests.contains("Migrator::up"));
+    assert!(!auth_tests.contains("SimpleAuthProvider"));
+
     let lib_rs = fs::read_to_string(migrations_dir.join("lib.rs")).expect("read migration lib");
     assert!(
         lib_rs.contains("mod m009_create_webhook_processed_events;"),

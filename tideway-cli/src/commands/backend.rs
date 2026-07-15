@@ -393,6 +393,7 @@ fn generate_auth(
         ("mod.rs", "auth/mod"),
         ("routes.rs", "auth/routes"),
         ("store.rs", "auth/store"),
+        ("tests.rs", "auth/tests"),
     ];
 
     for (filename, template_name) in templates {

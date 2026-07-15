@@ -697,6 +697,9 @@ fn test_new_command_with_preset_saas() {
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert!(project_dir.join("src/auth/actor.rs").exists());
     assert!(project_dir.join("src/auth/mod.rs").exists());
+    assert!(project_dir.join("src/auth/tests.rs").exists());
+    assert_file_contains(&project_dir.join("src/auth/mod.rs"), "mod tests;");
+    assert_file_not_contains(&project_dir.join("src/auth/tests.rs"), "SimpleAuthProvider");
     assert!(project_dir.join("src/billing/mod.rs").exists());
     assert!(project_dir.join("src/billing/events.rs").exists());
     assert_file_contains(
@@ -728,7 +731,7 @@ fn test_new_command_with_preset_saas() {
     assert!(!project_dir.join("src/auth/provider.rs").exists());
     assert_file_contains(
         &project_dir.join(".env.example"),
-        "STRIPE_SECRET_KEY=sk_test_replace_me",
+        "STRIPE_SECRET_KEY=sk_test_tideway_local_only_000000",
     );
     assert_file_contains(
         &project_dir.join(".env.example"),
@@ -750,6 +753,24 @@ fn test_new_command_with_preset_saas() {
     );
     assert_file_contains(&project_dir.join(".env.example"), "RESEND_API_KEY=");
     assert_file_contains(&project_dir.join(".env.example"), "SMTP_HOST=");
+    assert_file_contains(&cargo_toml, "members = [\"migration\"]");
+    assert_file_contains(&cargo_toml, "\"sqlx-sqlite\"");
+    assert_file_contains(&cargo_toml, "tower = { version = \"0.5\"");
+    assert_file_contains(&project_dir.join("migration/Cargo.toml"), "\"with-json\"");
+    assert_file_contains(&project_dir.join("migration/Cargo.toml"), "\"sqlx-sqlite\"");
+    assert_file_contains(
+        &project_dir.join("migration/src/m008_create_billing_plans.rs"),
+        "json!({",
+    );
+    assert_file_not_contains(
+        &project_dir.join("migration/src/m008_create_billing_plans.rs"),
+        ".default(\"{}\")",
+    );
+    assert_file_not_contains(&project_dir.join("docker-compose.yml"), "version:");
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        "Replace the local-only STRIPE_SECRET_KEY before running outside development",
+    );
     assert_file_contains(
         &project_dir.join(".env.example"),
         "TIDEWAY_CORS_ALLOWED_ORIGINS=http://localhost:5173",
@@ -907,7 +928,16 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project_with_denied_warnings(temp_dir.path(), &project_dir, &["test", "--lib"]);
+    run_cargo_in_project_with_denied_warnings(
+        temp_dir.path(),
+        &project_dir,
+        &["test", "--all-targets"],
+    );
+    assert!(project_dir.join("Cargo.lock").exists());
+    assert!(
+        !project_dir.join("migration/Cargo.lock").exists(),
+        "workspace members should share the root Cargo.lock"
+    );
 }
 
 #[test]

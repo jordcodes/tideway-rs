@@ -13,5 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 async-trait = "0.1"
-sea-orm-migration = { version = "1.1", features = ["{{#if is_sqlite_database}}sqlx-sqlite{{else}}sqlx-postgres{{/if}}", "runtime-tokio-rustls"] }
+sea-orm-migration = { version = "1.1", features = ["{{#if is_sqlite_database}}sqlx-sqlite{{else}}sqlx-postgres{{#if has_auth_feature}}", "sqlx-sqlite{{/if}}{{/if}}", "runtime-tokio-rustls", "with-json"] }
+serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

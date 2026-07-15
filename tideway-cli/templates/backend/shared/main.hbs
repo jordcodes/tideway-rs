@@ -91,6 +91,16 @@ async fn main() -> anyhow::Result<()> {
         jwt_issuer.clone(),
     );
 
+    let is_development = matches!(
+        app_config.environment.to_ascii_lowercase().as_str(),
+        "development" | "dev" | "local" | "test"
+    );
+    if !is_development
+        && app_config.stripe_secret_key == "sk_test_tideway_local_only_000000"
+    {
+        anyhow::bail!("Replace the local-only STRIPE_SECRET_KEY before running outside development");
+    }
+
     // Create Stripe client
     let stripe_client = LiveStripeClient::new(
         app_config.stripe_secret_key.clone(),
@@ -133,11 +143,6 @@ async fn main() -> anyhow::Result<()> {
     let app_host = app_uri
         .host()
         .ok_or_else(|| anyhow::anyhow!("APP_URL must include a host"))?;
-    let is_development = matches!(
-        app_config.environment.to_ascii_lowercase().as_str(),
-        "development" | "dev" | "local" | "test"
-    );
-
     // Create billing configs
     let (checkout_config, portal_config) = if is_development {
         (
