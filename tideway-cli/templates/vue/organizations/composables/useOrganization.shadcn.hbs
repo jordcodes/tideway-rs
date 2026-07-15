@@ -199,6 +199,31 @@ export function useOrganization() {
     }
   }
 
+  async function resendInvitation(
+    orgId: string,
+    invitationId: string
+  ): Promise<Invitation | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      const response = await api.post<Invitation>(
+        `/organizations/${orgId}/invitations/${invitationId}/resend`,
+        {}
+      )
+      const index = invitations.value.findIndex(i => i.id === invitationId)
+      if (index >= 0) {
+        invitations.value[index] = response
+      }
+      return response
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to resend invitation'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   async function acceptInvitation(token: string): Promise<AcceptInvitationResponse | null> {
     isLoading.value = true
     error.value = null
@@ -234,6 +259,7 @@ export function useOrganization() {
     inviteMember,
     fetchInvitations,
     cancelInvitation,
+    resendInvitation,
     acceptInvitation,
   }
 }

@@ -24,6 +24,7 @@ use crate::email::EmailService;
 use crate::entities::{organization, organization_invitation, organization_member, user};
 
 const INVITATION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+const INVITATION_RESEND_COOLDOWN: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct OrganizationInvitationsState {
@@ -78,6 +79,7 @@ impl RouteModule for OrganizationInvitationsModule {
         Router::new()
             .route("/organizations/{org_id}/invitations", post(send_invitation).get(list_invitations))
             .route("/organizations/{org_id}/invitations/{invitation_id}", delete(revoke_invitation))
+            .route("/organizations/{org_id}/invitations/{invitation_id}/resend", post(resend_invitation))
             .route("/invitations/accept", post(accept_invitation))
             .layer(Extension(self.state.clone()))
     }
@@ -201,6 +203,23 @@ async fn ensure_seat_available(
     }
 }
 
+async fn enforce_invitation_rate_limit(
+    state: &OrganizationInvitationsState,
+    org_id: &str,
+    actor_id: &str,
+) -> Result<()> {
+    state
+        .rate_limiter
+        .check_invitation_rate(org_id, actor_id)
+        .await
+        .map_err(|rejection| {
+            TidewayError::TooManyRequests(format!(
+                "Invitation rate limit exceeded; retry in {} seconds",
+                rejection.retry_after_seconds
+            ))
+        })
+}
+
 async fn send_invitation(
     Extension(state): Extension<OrganizationInvitationsState>,
     headers: axum::http::HeaderMap,
@@ -216,16 +235,7 @@ async fn send_invitation(
     .await?;
     actor.require_org_role(&["owner", "admin"])?;
 
-    state
-        .rate_limiter
-        .check_invitation_rate(&org_id, &actor.user.id.to_string())
-        .await
-        .map_err(|rejection| {
-            TidewayError::TooManyRequests(format!(
-                "Invitation rate limit exceeded; retry in {} seconds",
-                rejection.retry_after_seconds
-            ))
-        })?;
+    enforce_invitation_rate_limit(&state, &org_id, &actor.user.id.to_string()).await?;
 
     let email = normalize_email(&body.email)?;
     let role = validate_role(body.role.trim())?.to_string();
@@ -410,6 +420,189 @@ async fn revoke_invitation(
     Ok(MessageResponse::success("Invitation revoked"))
 }
 
+async fn resend_invitation(
+    Extension(state): Extension<OrganizationInvitationsState>,
+    headers: axum::http::HeaderMap,
+    Path((org_id, invitation_id)): Path<(String, String)>,
+) -> Result<Json<InvitationResponse>> {
+    let actor = RequestActor::for_organization_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+        &org_id,
+    )
+    .await?;
+    actor.require_org_role(&["owner", "admin"])?;
+    enforce_invitation_rate_limit(&state, &org_id, &actor.user.id.to_string()).await?;
+
+    let timestamp = now();
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    let invitation = organization_invitation::Entity::find()
+        .filter(organization_invitation::Column::Id.eq(&invitation_id))
+        .filter(organization_invitation::Column::OrganizationId.eq(&org_id))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .lock_exclusive()
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Invitation not found".into()))?;
+
+    // Every successful delivery refreshes the fixed invitation expiry, so the
+    // previous delivery time can be recovered without repurposing created_at.
+    let last_sent_at = invitation
+        .expires_at
+        .saturating_sub(INVITATION_TTL.as_secs() as i64);
+    let elapsed = timestamp.saturating_sub(last_sent_at).max(0) as u64;
+    if elapsed < INVITATION_RESEND_COOLDOWN.as_secs() {
+        return Err(TidewayError::TooManyRequests(format!(
+            "Invitation was sent recently; retry in {} seconds",
+            INVITATION_RESEND_COOLDOWN.as_secs() - elapsed
+        )));
+    }
+
+    // Lock the organization after the invitation, matching the acceptance lock
+    // order. An expired invitation becomes a new seat reservation when resent.
+    let organization = organization::Entity::find_by_id(&org_id)
+        .lock_exclusive()
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+    if invitation.expires_at <= timestamp {
+        let newer_active_invitation = organization_invitation::Entity::find()
+            .filter(organization_invitation::Column::OrganizationId.eq(&org_id))
+            .filter(organization_invitation::Column::Email.eq(&invitation.email))
+            .filter(organization_invitation::Column::Status.eq("pending"))
+            .filter(organization_invitation::Column::ExpiresAt.gt(timestamp))
+            .filter(organization_invitation::Column::Id.ne(&invitation_id))
+            .one(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        if newer_active_invitation.is_some() {
+            return Err(TidewayError::Conflict(
+                "A newer pending invitation already exists for this email".into(),
+            ));
+        }
+
+        let member_count = organization_member::Entity::find()
+            .filter(organization_member::Column::OrganizationId.eq(&org_id))
+            .count(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        let pending_count = organization_invitation::Entity::find()
+            .filter(organization_invitation::Column::OrganizationId.eq(&org_id))
+            .filter(organization_invitation::Column::Status.eq("pending"))
+            .filter(organization_invitation::Column::ExpiresAt.gt(timestamp))
+            .count(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        let reserved_or_used = member_count
+            .saturating_add(pending_count)
+            .try_into()
+            .unwrap_or(u32::MAX);
+        ensure_seat_available(state.seat_checker.as_ref(), &org_id, reserved_or_used).await?;
+    }
+
+    let old_token = invitation.token.clone();
+    let old_expires_at = invitation.expires_at;
+    let old_invited_by = invitation.invited_by;
+    let raw_token = new_token();
+    let token_digest = hash_token(&raw_token);
+    let expires_at = timestamp + INVITATION_TTL.as_secs() as i64;
+    let rotated = organization_invitation::Entity::update_many()
+        .col_expr(
+            organization_invitation::Column::Token,
+            sea_orm::sea_query::Expr::value(token_digest.clone()),
+        )
+        .col_expr(
+            organization_invitation::Column::ExpiresAt,
+            sea_orm::sea_query::Expr::value(expires_at),
+        )
+        .col_expr(
+            organization_invitation::Column::InvitedBy,
+            sea_orm::sea_query::Expr::value(actor.user.id),
+        )
+        .filter(organization_invitation::Column::Id.eq(&invitation_id))
+        .filter(organization_invitation::Column::OrganizationId.eq(&org_id))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .filter(organization_invitation::Column::Token.eq(&old_token))
+        .exec(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    if rotated.rows_affected != 1 {
+        return Err(TidewayError::Conflict(
+            "Invitation changed while it was being resent".into(),
+        ));
+    }
+    let updated = organization_invitation::Entity::find_by_id(&invitation_id)
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Invitation not found".into()))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+    if let Err(delivery_error) = state
+        .email
+        .send_organization_invitation(
+            &updated.email,
+            &organization.name,
+            &raw_token,
+            INVITATION_TTL,
+        )
+        .await
+    {
+        // A failed or ambiguous delivery must not leave the undisclosed rotated
+        // token active. Restore the previous invitation only if this resend is
+        // still the current version.
+        let cleanup = organization_invitation::Entity::update_many()
+            .col_expr(
+                organization_invitation::Column::Token,
+                sea_orm::sea_query::Expr::value(old_token),
+            )
+            .col_expr(
+                organization_invitation::Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(old_expires_at),
+            )
+            .col_expr(
+                organization_invitation::Column::InvitedBy,
+                sea_orm::sea_query::Expr::value(old_invited_by),
+            )
+            .filter(organization_invitation::Column::Id.eq(&invitation_id))
+            .filter(organization_invitation::Column::OrganizationId.eq(&org_id))
+            .filter(organization_invitation::Column::Status.eq("pending"))
+            .filter(organization_invitation::Column::Token.eq(&token_digest))
+            .exec(state.db.as_ref())
+            .await;
+        match cleanup {
+            Ok(result) if result.rows_affected == 1 => return Err(delivery_error),
+            Ok(_) => {
+                return Err(TidewayError::Internal(
+                    "Invitation resend failed and its token could not be restored".into(),
+                ));
+            }
+            Err(cleanup_error) => {
+                tracing::error!(
+                    invitation_id = %invitation_id,
+                    error = %cleanup_error,
+                    "Invitation resend failed and token restoration also failed"
+                );
+                return Err(TidewayError::Internal(
+                    "Invitation resend failed and cleanup requires attention".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(Json(updated.into()))
+}
+
 async fn accept_invitation(
     Extension(state): Extension<OrganizationInvitationsState>,
     headers: axum::http::HeaderMap,
@@ -431,8 +624,9 @@ async fn accept_invitation(
         .await
         .map_err(|error| TidewayError::Database(error.to_string()))?;
     let timestamp = now();
+    let token_digest = hash_token(body.token.trim());
     let invitation = organization_invitation::Entity::find()
-        .filter(organization_invitation::Column::Token.eq(hash_token(body.token.trim())))
+        .filter(organization_invitation::Column::Token.eq(&token_digest))
         .filter(organization_invitation::Column::Status.eq("pending"))
         .filter(organization_invitation::Column::ExpiresAt.gt(timestamp))
         .one(&transaction)
@@ -444,6 +638,7 @@ async fn accept_invitation(
         .col_expr(organization_invitation::Column::Status, sea_orm::sea_query::Expr::value("processing"))
         .filter(organization_invitation::Column::Id.eq(&invitation.id))
         .filter(organization_invitation::Column::Status.eq("pending"))
+        .filter(organization_invitation::Column::Token.eq(token_digest))
         .exec(&transaction)
         .await
         .map_err(|error| TidewayError::Database(error.to_string()))?;
@@ -533,12 +728,43 @@ mod tests {
     use axum::http::{header, HeaderMap, HeaderValue};
     use chrono::Utc;
     use sea_orm::{ConnectionTrait, Database, Schema};
+    use std::sync::Mutex;
     use tideway::auth::{JwtIssuer, JwtIssuerConfig, TokenSubject};
-    use tideway::ConsoleMailer;
+    use tideway::{ConsoleMailer, Email, Mailer};
 
     const JWT_SECRET: &str = "test-invitation-secret-at-least-32-bytes";
 
     struct FixedSeats(u32);
+
+    #[derive(Clone, Default)]
+    struct RecordingMailer {
+        messages: Arc<Mutex<Vec<Email>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Mailer for RecordingMailer {
+        async fn send(&self, email: &Email) -> Result<()> {
+            self.messages.lock().expect("recording mailer lock").push(email.clone());
+            Ok(())
+        }
+
+        fn is_healthy(&self) -> bool {
+            true
+        }
+    }
+
+    struct FailingMailer;
+
+    #[async_trait::async_trait]
+    impl Mailer for FailingMailer {
+        async fn send(&self, _email: &Email) -> Result<()> {
+            Err(TidewayError::Internal("simulated delivery failure".into()))
+        }
+
+        fn is_healthy(&self) -> bool {
+            false
+        }
+    }
 
     #[async_trait::async_trait]
     impl SeatChecker for FixedSeats {
@@ -552,6 +778,13 @@ mod tests {
     }
 
     async fn test_state(seat_limit: u32) -> OrganizationInvitationsState {
+        test_state_with_mailer(seat_limit, Arc::new(ConsoleMailer::new())).await
+    }
+
+    async fn test_state_with_mailer(
+        seat_limit: u32,
+        mailer: Arc<dyn Mailer>,
+    ) -> OrganizationInvitationsState {
         let db = Database::connect("sqlite::memory:")
             .await
             .expect("connect sqlite");
@@ -569,7 +802,7 @@ mod tests {
         }
         let email = Arc::new(
             EmailService::new(
-                Arc::new(ConsoleMailer::new()),
+                mailer,
                 "noreply@example.com",
                 "Test App",
                 "http://localhost:5173",
@@ -652,7 +885,7 @@ mod tests {
             invited_by: Set(invited_by),
             token: Set(hash_token(raw_token)),
             status: Set("pending".to_string()),
-            expires_at: Set(timestamp + 3600),
+            expires_at: Set(timestamp + INVITATION_TTL.as_secs() as i64),
             created_at: Set(timestamp),
         }
         .insert(state.db.as_ref())
@@ -788,11 +1021,12 @@ mod tests {
         let first_org = insert_organization(&state, &owner).await;
         let second_owner = insert_user(&state, "second-owner@example.com").await;
         let second_org = insert_organization(&state, &second_owner).await;
+        let invitee = insert_user(&state, "invitee@example.com").await;
         let invitation = insert_invitation(
             &state,
             &second_org.id,
             second_owner.id,
-            "invitee@example.com",
+            &invitee.email,
             "cross-org-token",
         )
         .await;
@@ -810,6 +1044,243 @@ mod tests {
             .expect("reload invitation")
             .expect("invitation exists");
         assert_eq!(stored.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn resend_rotates_token_and_cannot_cross_organization_boundary() {
+        let mailer = RecordingMailer::default();
+        let state = test_state_with_mailer(5, Arc::new(mailer.clone())).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let first_org = insert_organization(&state, &owner).await;
+        let second_owner = insert_user(&state, "second-owner@example.com").await;
+        let second_org = insert_organization(&state, &second_owner).await;
+        let invitee = insert_user(&state, "resent-invitee@example.com").await;
+        let invitation = insert_invitation(
+            &state,
+            &second_org.id,
+            second_owner.id,
+            &invitee.email,
+            "old-resend-token",
+        )
+        .await;
+        let aged_expires_at = now() + INVITATION_TTL.as_secs() as i64
+            - INVITATION_RESEND_COOLDOWN.as_secs() as i64
+            - 1;
+        organization_invitation::Entity::update_many()
+            .col_expr(
+                organization_invitation::Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(aged_expires_at),
+            )
+            .filter(organization_invitation::Column::Id.eq(&invitation.id))
+            .exec(state.db.as_ref())
+            .await
+            .expect("age invitation");
+
+        let cross_org = resend_invitation(
+            Extension(state.clone()),
+            auth_headers(&owner),
+            Path((first_org.id, invitation.id.clone())),
+        )
+        .await;
+        assert!(matches!(cross_org, Err(TidewayError::NotFound(_))));
+
+        let resent = resend_invitation(
+            Extension(state.clone()),
+            auth_headers(&second_owner),
+            Path((second_org.id, invitation.id.clone())),
+        )
+        .await
+        .expect("resend invitation")
+        .0;
+        let stored = organization_invitation::Entity::find_by_id(&invitation.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload invitation")
+            .expect("invitation exists");
+        assert_ne!(stored.token, invitation.token);
+        assert!(stored.expires_at > aged_expires_at);
+        assert_eq!(stored.created_at, invitation.created_at);
+        assert_eq!(resent.id, invitation.id);
+        assert_eq!(mailer.messages.lock().expect("messages lock").len(), 1);
+
+        let old_token = accept_invitation(
+            Extension(state),
+            auth_headers(&invitee),
+            Json(AcceptInvitationBody {
+                token: "old-resend-token".to_string(),
+            }),
+        )
+        .await;
+        assert!(matches!(old_token, Err(TidewayError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn resend_delivery_failure_restores_previous_token() {
+        let state = test_state_with_mailer(5, Arc::new(FailingMailer)).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let invitation = insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            "invitee@example.com",
+            "restorable-token",
+        )
+        .await;
+        let old_created_at = invitation.created_at;
+        let old_expires_at = now() + INVITATION_TTL.as_secs() as i64
+            - INVITATION_RESEND_COOLDOWN.as_secs() as i64
+            - 1;
+        organization_invitation::Entity::update_many()
+            .col_expr(
+                organization_invitation::Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(old_expires_at),
+            )
+            .filter(organization_invitation::Column::Id.eq(&invitation.id))
+            .exec(state.db.as_ref())
+            .await
+            .expect("age invitation");
+
+        let result = resend_invitation(
+            Extension(state.clone()),
+            auth_headers(&owner),
+            Path((organization.id, invitation.id.clone())),
+        )
+        .await;
+        assert!(matches!(result, Err(TidewayError::Internal(_))));
+
+        let stored = organization_invitation::Entity::find_by_id(&invitation.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload invitation")
+            .expect("invitation exists");
+        assert_eq!(stored.token, invitation.token);
+        assert_eq!(stored.expires_at, old_expires_at);
+        assert_eq!(stored.created_at, old_created_at);
+        assert_eq!(stored.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn resend_enforces_delivery_cooldown() {
+        let mailer = RecordingMailer::default();
+        let state = test_state_with_mailer(5, Arc::new(mailer.clone())).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let invitation = insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            "invitee@example.com",
+            "recent-token",
+        )
+        .await;
+
+        let result = resend_invitation(
+            Extension(state),
+            auth_headers(&owner),
+            Path((organization.id, invitation.id)),
+        )
+        .await;
+        assert!(matches!(result, Err(TidewayError::TooManyRequests(_))));
+        assert!(mailer.messages.lock().expect("messages lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn expired_invitation_resend_rechecks_seat_capacity() {
+        let mailer = RecordingMailer::default();
+        let state = test_state_with_mailer(1, Arc::new(mailer.clone())).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let invitation = insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            "invitee@example.com",
+            "expired-token",
+        )
+        .await;
+        organization_invitation::Entity::update_many()
+            .col_expr(
+                organization_invitation::Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(now() - 1),
+            )
+            .filter(organization_invitation::Column::Id.eq(&invitation.id))
+            .exec(state.db.as_ref())
+            .await
+            .expect("expire invitation");
+
+        let result = resend_invitation(
+            Extension(state.clone()),
+            auth_headers(&owner),
+            Path((organization.id, invitation.id.clone())),
+        )
+        .await;
+        assert!(matches!(result, Err(TidewayError::Conflict(_))));
+        assert!(mailer.messages.lock().expect("messages lock").is_empty());
+
+        let stored = organization_invitation::Entity::find_by_id(&invitation.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload invitation")
+            .expect("invitation exists");
+        assert_eq!(stored.token, invitation.token);
+    }
+
+    #[tokio::test]
+    async fn expired_invitation_cannot_replace_a_newer_active_invitation() {
+        let mailer = RecordingMailer::default();
+        let state = test_state_with_mailer(5, Arc::new(mailer.clone())).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let expired = insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            "invitee@example.com",
+            "expired-duplicate-token",
+        )
+        .await;
+        organization_invitation::Entity::update_many()
+            .col_expr(
+                organization_invitation::Column::ExpiresAt,
+                sea_orm::sea_query::Expr::value(now() - 1),
+            )
+            .filter(organization_invitation::Column::Id.eq(&expired.id))
+            .exec(state.db.as_ref())
+            .await
+            .expect("expire old invitation");
+        let active = insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            "invitee@example.com",
+            "newer-active-token",
+        )
+        .await;
+
+        let result = resend_invitation(
+            Extension(state.clone()),
+            auth_headers(&owner),
+            Path((organization.id, expired.id.clone())),
+        )
+        .await;
+        assert!(matches!(result, Err(TidewayError::Conflict(_))));
+        assert!(mailer.messages.lock().expect("messages lock").is_empty());
+
+        let stored_expired = organization_invitation::Entity::find_by_id(&expired.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload expired invitation")
+            .expect("expired invitation exists");
+        let stored_active = organization_invitation::Entity::find_by_id(&active.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload active invitation")
+            .expect("active invitation exists");
+        assert_eq!(stored_expired.token, expired.token);
+        assert!(stored_expired.expires_at <= now());
+        assert_eq!(stored_active.token, active.token);
+        assert!(stored_active.expires_at > now());
     }
 
     #[tokio::test]

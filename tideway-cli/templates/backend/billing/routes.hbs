@@ -211,12 +211,13 @@ async fn create_checkout(
 
     let session = checkout_manager.create_checkout_session(&org, request).await?;
     {{else}}
-    authorize_billing_owner(&headers, &state, &body.user_id).await?;
+    let actor = authorize_billing_owner(&headers, &state, &body.user_id).await?;
 
-    // For B2C, create a simple billable entity
+    // Derive Stripe customer identity from the authenticated database user.
+    // The request user_id is authorization input only and is never trusted for email.
     let billable = SimpleBillable {
-        id: body.user_id.clone(),
-        email: "".to_string(), // Would be fetched from user
+        id: actor.user.id.to_string(),
+        email: actor.user.email.clone(),
     };
 
     let checkout_manager = CheckoutManager::new(
@@ -372,7 +373,7 @@ async fn authorize_billing_owner(
     headers: &HeaderMap,
     state: &Arc<BillingState>,
     billable_id: &str,
-) -> Result<()> {
+) -> Result<RequestActor> {
     {{#if has_organizations}}
     let actor = RequestActor::for_organization(headers, state.db.as_ref(), billable_id).await?;
     actor.require_org_role(&["owner", "admin"])?;
@@ -382,7 +383,7 @@ async fn authorize_billing_owner(
         return Err(tideway::TidewayError::Forbidden("Billing resource access denied".into()));
     }
     {{/if}}
-    Ok(())
+    Ok(actor)
 }
 
 async fn handle_webhook(

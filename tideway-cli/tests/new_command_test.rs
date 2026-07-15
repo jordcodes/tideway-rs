@@ -813,6 +813,10 @@ fn test_new_command_with_preset_saas() {
         &project_dir.join("src/organizations/invitations.rs"),
         "revocation_cannot_cross_organization_boundary",
     );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "resend_delivery_failure_restores_previous_token",
+    );
     assert_file_not_contains(
         &project_dir.join("src/entities/organization_invitation.rs"),
         "raw_token",

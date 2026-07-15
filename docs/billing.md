@@ -373,6 +373,11 @@ GET /billing/invoices        → List invoices (authenticated)
 POST /billing/portal         → Create billing portal session (authenticated)
 ```
 
+For generated B2C backends, checkout derives both the billable ID and Stripe customer email from
+the authenticated database user after checking the request's user ID. It does not accept customer
+email from the request body. Generated B2B backends use the authorized organization's billing
+identity and contact email.
+
 #### Admin Routes (protected)
 
 ```

@@ -78,6 +78,16 @@ The generated backend reserves billing seats for pending invitations and recheck
 acceptance. Issuance and membership creation lock the organization row, preventing concurrent
 requests from creating duplicate active invitations or consuming the same final seat.
 
+Owners and admins can resend a pending invitation with
+`POST /organizations/{org_id}/invitations/{invitation_id}/resend`. Resending is organization-scoped
+and uses the same per-organization and per-actor rate limits as initial delivery, plus a short
+delivery cooldown. It rotates the bearer token, invalidates the previous link, and refreshes the
+expiry. Resending an expired invitation rechecks billing seat capacity because it creates a new
+active seat reservation, and it is rejected when a newer active invitation already exists for the
+same email. If delivery fails, the generated handler conditionally restores the previous token and
+expiry rather than leaving an undisclosed replacement token active. The original `created_at`
+timestamp is preserved across resends.
+
 ### Acceptance workflow
 
 The emailed link opens `${APP_URL}/invitations/accept?token=...`. If you generate the optional Vue
@@ -140,6 +150,7 @@ For a custom persistent `InvitationStore`:
 - make membership uniqueness a database constraint on organization and user;
 - compare the authenticated account's normalized email with the invitation email;
 - scope list/revoke operations by organization and return not-found for cross-organization IDs;
+- rotate tokens on resend, rate limit delivery, and recheck seats when reactivating an expired invite;
 - never grant the owner role through a normal invitation;
 - avoid returning or logging token digests in API responses.
 

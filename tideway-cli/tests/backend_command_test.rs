@@ -83,6 +83,10 @@ fn test_b2b_backend_generates_hardened_invitations_without_affecting_b2c() {
     assert!(invitations.contains("Arc<dyn InvitationRateLimitProvider>"));
     assert!(invitations.contains("with_rate_limit_provider"));
     assert!(invitations.contains(".check_invitation_rate"));
+    assert!(invitations.contains("/invitations/{invitation_id}/resend"));
+    assert!(invitations.contains("resend_delivery_failure_restores_previous_token"));
+    assert!(invitations.contains("expired_invitation_resend_rechecks_seat_capacity"));
+    assert!(invitations.contains("expired_invitation_cannot_replace_a_newer_active_invitation"));
     assert!(
         b2b_migrations
             .join("m011_create_organization_invitations.rs")
@@ -161,12 +165,44 @@ fn test_organization_frontend_matches_invitation_api_contract() {
             .expect("read organization composable");
     assert!(composable.contains("async function acceptInvitation(token: string)"));
     assert!(composable.contains("'/invitations/accept', { token }"));
+    assert!(composable.contains("async function resendInvitation("));
+    assert!(composable.contains("/invitations/${invitationId}/resend"));
 
     let types = fs::read_to_string(output_dir.join("types/index.ts")).expect("read types");
     assert!(types.contains("organization_id: string"));
     assert!(types.contains("invited_by: string"));
     assert!(types.contains("'revoked'"));
     assert!(!types.contains("org_id: string"));
+}
+
+#[test]
+fn test_b2c_checkout_uses_authenticated_user_email() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("src");
+    let migrations_dir = temp_dir.path().join("migration/src");
+
+    let output = run_tideway(&[
+        "backend",
+        "b2c",
+        "--name",
+        "my_app",
+        "--output",
+        output_dir.to_str().expect("output dir utf8"),
+        "--migrations-output",
+        migrations_dir.to_str().expect("migrations dir utf8"),
+    ]);
+    assert_success(&output, "tideway backend b2c");
+
+    let routes =
+        fs::read_to_string(output_dir.join("billing/routes.rs")).expect("read B2C billing routes");
+    assert!(
+        routes.contains(
+            "let actor = authorize_billing_owner(&headers, &state, &body.user_id).await?;"
+        )
+    );
+    assert!(routes.contains("id: actor.user.id.to_string()"));
+    assert!(routes.contains("email: actor.user.email.clone()"));
+    assert!(!routes.contains("email: \"\".to_string()"));
 }
 
 #[test]

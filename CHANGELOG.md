@@ -14,6 +14,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - Greenfield SaaS and B2B scaffolds include application-owned organization invitation routes,
   persistence, migrations, email delivery, and an authenticated Vue acceptance flow. Invitations
   remain optional through `--without-invitations`.
+- Organization administrators can resend a pending invitation through an organization-scoped,
+  rate-limited endpoint that rotates the bearer token and refreshes its expiry.
 - `InvitationRateLimitProvider` lets generated applications replace the zero-configuration,
   process-local invitation limiter with an application-owned shared provider before deploying
   multiple API replicas.
@@ -30,6 +32,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 - Invitation quotas now replenish the configured allowance evenly across the window instead of
   replenishing only one permit per complete window after the initial burst.
+- Generated B2C checkout sessions use the authenticated database user's ID and email instead of an
+  empty Stripe customer email placeholder.
 
 ### Migration Notes
 
