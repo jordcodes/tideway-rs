@@ -199,6 +199,40 @@ impl EmailService {
             .html(html);
         self.mailer.send(&email).await
     }
+
+    {{#if has_invitations}}
+    pub async fn send_organization_invitation(
+        &self,
+        recipient: &str,
+        organization_name: &str,
+        token: &str,
+        expires_in: Duration,
+    ) -> Result<()> {
+        let link = format!("{}/invitations/accept?token={}", self.app_url, token);
+        let hours = expires_in.as_secs().div_ceil(3600);
+        let text = format!(
+            "You have been invited to join {} on {}.\n\nAccept the invitation:\n{}\n\nThis link expires in {} hour(s). If you were not expecting this invitation, ignore this email.",
+            organization_name, self.app_name, link, hours,
+        );
+        let html = transactional_email_html(
+            &self.app_name,
+            &format!("Join {organization_name}"),
+            &format!("You have been invited to join {organization_name}."),
+            "Accept invitation",
+            &link,
+            &format!("This link expires in {hours} hour(s)."),
+            "If you were not expecting this invitation, you can safely ignore this email.",
+        );
+        let email = Email::new(
+            &self.from,
+            recipient,
+            format!("Join {organization_name} on {}", self.app_name),
+        )
+        .text(text)
+        .html(html);
+        self.mailer.send(&email).await
+    }
+    {{/if}}
 }
 
 #[cfg(test)]

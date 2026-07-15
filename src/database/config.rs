@@ -6,7 +6,7 @@ use std::fmt;
 /// # Security Note
 ///
 /// Both `Debug` and `Serialize` implementations for this struct redact the database URL
-/// to prevent accidental logging of credentials. Use [`redacted_url()`]
+/// to prevent accidental logging of credentials. Use [`DatabaseConfig::redacted_url`]
 /// to get a safe-to-log version of the URL.
 ///
 /// **Important**: The raw URL is only accessible via the `url` field directly.
@@ -17,7 +17,7 @@ pub struct DatabaseConfig {
     /// Format: postgres://user:password@host:port/database
     ///
     /// **Security Warning**: This field contains credentials.
-    /// Never log this value directly. Use [`redacted_url()`] instead.
+    /// Never log this value directly. Use [`DatabaseConfig::redacted_url`] instead.
     pub url: String,
 
     /// Maximum number of connections in the pool

@@ -508,14 +508,12 @@ fn create_test_app(user_store: InMemoryUserStore) -> (Router, AppState) {
         user_store,
     };
 
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/auth/register", post(register_handler))
         .route("/auth/login", post(login_handler));
 
     #[cfg(feature = "auth-mfa")]
-    {
-        router = router.route("/auth/mfa/verify", post(verify_mfa_handler));
-    }
+    let router = router.route("/auth/mfa/verify", post(verify_mfa_handler));
 
     let router = router.with_state(state.clone());
 

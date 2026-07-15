@@ -1,6 +1,6 @@
 import { ref, readonly, computed } from 'vue'
 import { useApi } from '../../composables/useApi'
-import type { Organization, Member, Invitation } from '../../types'
+import type { Organization, Member, Invitation, AcceptInvitationResponse } from '../../types'
 
 const organizations = ref<Organization[]>([])
 const currentOrganizationId = ref<string | null>(null)
@@ -199,6 +199,20 @@ export function useOrganization() {
     }
   }
 
+  async function acceptInvitation(token: string): Promise<AcceptInvitationResponse | null> {
+    isLoading.value = true
+    error.value = null
+
+    try {
+      return await api.post<AcceptInvitationResponse>('/invitations/accept', { token })
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to accept invitation'
+      return null
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   return {
     // State
     organizations: readonly(organizations),
@@ -220,5 +234,6 @@ export function useOrganization() {
     inviteMember,
     fetchInvitations,
     cancelInvitation,
+    acceptInvitation,
   }
 }

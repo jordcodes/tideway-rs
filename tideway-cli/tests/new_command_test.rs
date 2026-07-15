@@ -18,6 +18,7 @@ fn test_new_command_generates_starter_files() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -47,6 +48,7 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -99,6 +101,7 @@ fn test_new_command_includes_features_and_env() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -146,6 +149,7 @@ fn test_new_command_compiles_with_features_smoke() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -179,6 +183,7 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -249,6 +254,7 @@ fn test_new_command_auth_mfa_scaffold_is_secure_and_compiles() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -303,6 +309,7 @@ fn test_new_command_mfa_alias_generates_auth_mfa_scaffold() {
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -334,6 +341,7 @@ fn test_new_command_minimal_compiles_against_workspace_source() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -360,6 +368,7 @@ fn test_new_command_with_config() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -386,6 +395,7 @@ fn test_new_command_with_docker() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -410,6 +420,7 @@ fn test_new_command_with_ci() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -434,6 +445,7 @@ fn test_new_command_prints_summary() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -463,6 +475,7 @@ fn test_new_command_with_env() {
         no_prompt: true,
         summary: true,
         with_env: true,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -487,6 +500,7 @@ fn test_new_command_with_preset_api() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -614,6 +628,7 @@ fn test_new_command_with_preset_api_and_docker_keeps_postgres_path() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -640,6 +655,7 @@ fn test_new_command_with_preset_list() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: None,
         force: false,
     };
@@ -662,6 +678,7 @@ fn test_new_command_with_preset_saas() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -743,7 +760,66 @@ fn test_new_command_with_preset_saas() {
     );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
-        ".with_email_delivery(email_service)",
+        ".with_email_delivery(email_service.clone())",
+    );
+    assert!(
+        project_dir
+            .join("src/entities/organization_invitation.rs")
+            .exists()
+    );
+    assert!(
+        project_dir
+            .join("src/organizations/invitations.rs")
+            .exists()
+    );
+    assert!(
+        project_dir
+            .join("migration/src/m011_create_organization_invitations.rs")
+            .exists()
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "Sha256::digest(token.as_bytes())",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "Column::Status.eq(\"pending\")",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "claim.rows_affected != 1",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        ".lock_exclusive()",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "ensure_seat_available",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "Arc<dyn InvitationRateLimitProvider>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "with_rate_limit_provider",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "concurrent_redemption_creates_one_membership",
+    );
+    assert_file_contains(
+        &project_dir.join("src/organizations/invitations.rs"),
+        "revocation_cannot_cross_organization_boundary",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/entities/organization_invitation.rs"),
+        "raw_token",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/entities/organization_invitation.rs"),
+        "Serialize",
     );
     assert_file_contains(
         &project_dir.join("src/auth/routes.rs"),
@@ -766,6 +842,44 @@ fn test_new_command_with_preset_saas() {
 }
 
 #[test]
+fn test_new_saas_can_omit_optional_invitations() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        without_invitations: true,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("run new command");
+    assert!(
+        !project_dir
+            .join("src/organizations/invitations.rs")
+            .exists()
+    );
+    assert!(
+        !project_dir
+            .join("src/entities/organization_invitation.rs")
+            .exists()
+    );
+    assert!(
+        !project_dir
+            .join("migration/src/m011_create_organization_invitations.rs")
+            .exists()
+    );
+    assert_file_not_contains(&project_dir.join("Cargo.toml"), "sha2");
+}
+
+#[test]
 fn test_new_command_saas_preset_compiles_against_workspace_source() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -780,6 +894,7 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -806,6 +921,7 @@ fn test_new_command_with_preset_worker() {
         no_prompt: true,
         summary: true,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };

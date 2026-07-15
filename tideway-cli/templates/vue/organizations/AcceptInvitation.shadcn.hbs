@@ -1,0 +1,48 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useOrganization } from './composables/useOrganization'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Button } from '@/components/ui/button'
+
+const { acceptInvitation, isLoading, error } = useOrganization()
+const acceptedOrganizationId = ref<string | null>(null)
+
+const token = computed(() => {
+  if (typeof window === 'undefined') return ''
+  return new URLSearchParams(window.location.search).get('token')?.trim() ?? ''
+})
+
+async function accept() {
+  if (!token.value) return
+  const result = await acceptInvitation(token.value)
+  acceptedOrganizationId.value = result?.organization_id ?? null
+}
+
+onMounted(accept)
+</script>
+
+<template>
+  <div class="mx-auto max-w-lg py-16">
+    <Alert v-if="!token" variant="destructive">
+      <AlertTitle>Invalid invitation</AlertTitle>
+      <AlertDescription>This invitation link is missing its token.</AlertDescription>
+    </Alert>
+
+    <Alert v-else-if="acceptedOrganizationId">
+      <AlertTitle>Invitation accepted</AlertTitle>
+      <AlertDescription>You can now switch to the organization.</AlertDescription>
+    </Alert>
+
+    <Alert v-else-if="error" variant="destructive">
+      <AlertTitle>Could not accept invitation</AlertTitle>
+      <AlertDescription>
+        Sign in with the email address that received the invitation, then retry this page.
+      </AlertDescription>
+    </Alert>
+
+    <div v-else class="space-y-4 text-center">
+      <p>\{{ isLoading ? 'Accepting invitation…' : 'Ready to accept your invitation.' }}</p>
+      <Button v-if="!isLoading" type="button" @click="accept">Accept invitation</Button>
+    </div>
+  </div>
+</template>

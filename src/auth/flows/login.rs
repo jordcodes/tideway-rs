@@ -247,7 +247,7 @@ where
 {
     /// Primary login endpoint - handles email/password and optional MFA.
     ///
-    /// This method does not perform IP-based rate limiting. Use [`login_with_ip`]
+    /// This method does not perform IP-based rate limiting. Use [`Self::login_with_ip`]
     /// if you have configured a rate limiter.
     #[cfg(feature = "auth")]
     pub async fn login(&self, req: LoginRequest) -> Result<LoginResponse> {

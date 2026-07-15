@@ -301,6 +301,7 @@ fn scaffold_auth(
         project_crate: project_name.replace('-', "_"),
         project_name_pascal: project_name_pascal.to_string(),
         has_organizations: false,
+        has_invitations: false,
         database: "postgres".to_string(),
         database_url: format!(
             "postgres://postgres:postgres@localhost:5432/{}",
@@ -562,6 +563,7 @@ fn scaffold_organizations(
         project_crate: project_name.replace('-', "_"),
         project_name_pascal: project_name_pascal.to_string(),
         has_organizations: true,
+        has_invitations: false,
         database: "postgres".to_string(),
         database_url: format!(
             "postgres://postgres:postgres@localhost:5432/{}",

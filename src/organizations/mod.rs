@@ -79,7 +79,8 @@ pub use storage::{OptionalAuditStore, OrgAuditStore, WithAuditStore};
 
 // Rate limiting exports
 pub use rate_limit::{
-    InvitationRateLimitConfig, InvitationRateLimiter, OptionalInvitationRateLimiter,
+    InvitationRateLimitConfig, InvitationRateLimitExceeded, InvitationRateLimitProvider,
+    InvitationRateLimitScope, InvitationRateLimiter, OptionalInvitationRateLimiter,
     WithInvitationRateLimiter,
 };
 

@@ -8,7 +8,7 @@ pub struct CorsConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
 
-    /// Allowed origins (e.g., ["http://localhost:3000", "https://example.com"])
+    /// Allowed origins (e.g., ["<http://localhost:3000>", "<https://example.com>"])
     /// Use ["*"] to allow all origins (not recommended for production)
     #[serde(default)]
     pub allowed_origins: Vec<String>,

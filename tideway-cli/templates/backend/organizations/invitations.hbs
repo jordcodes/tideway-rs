@@ -1,0 +1,923 @@
+//! Secure, application-owned organization invitation routes.
+
+use axum::{
+    extract::{Extension, Path},
+    routing::{delete, post},
+    Json, Router,
+};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set, TransactionTrait,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::{sync::Arc, time::Duration};
+use tideway::auth::{AccessTokenClaims, JwtVerifier};
+use tideway::organizations::{
+    InvitationRateLimitConfig, InvitationRateLimitProvider, InvitationRateLimiter, SeatChecker,
+};
+use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
+use uuid::Uuid;
+
+use crate::auth::RequestActor;
+use crate::email::EmailService;
+use crate::entities::{organization, organization_invitation, organization_member, user};
+
+const INVITATION_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+#[derive(Clone)]
+pub struct OrganizationInvitationsState {
+    db: Arc<DatabaseConnection>,
+    jwt_verifier: JwtVerifier<AccessTokenClaims>,
+    email: Arc<EmailService>,
+    rate_limiter: Arc<dyn InvitationRateLimitProvider>,
+    seat_checker: Arc<dyn SeatChecker>,
+}
+
+pub struct OrganizationInvitationsModule {
+    state: OrganizationInvitationsState,
+}
+
+impl OrganizationInvitationsModule {
+    pub fn new(
+        db: Arc<DatabaseConnection>,
+        jwt_secret: String,
+        email: Arc<EmailService>,
+        seat_checker: Arc<dyn SeatChecker>,
+    ) -> Self {
+        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(jwt_secret.as_bytes())
+            .expect("JWT_SECRET must be at least 32 bytes")
+            .with_issuer(env!("CARGO_PKG_NAME"))
+            .with_audience(env!("CARGO_PKG_NAME"));
+        Self {
+            state: OrganizationInvitationsState {
+                db,
+                jwt_verifier,
+                email,
+                rate_limiter: Arc::new(InvitationRateLimiter::new(
+                    InvitationRateLimitConfig::default(),
+                )),
+                seat_checker,
+            },
+        }
+    }
+
+    /// Replace the process-local default with a shared provider such as Redis.
+    #[must_use]
+    pub fn with_rate_limit_provider(
+        mut self,
+        rate_limiter: Arc<dyn InvitationRateLimitProvider>,
+    ) -> Self {
+        self.state.rate_limiter = rate_limiter;
+        self
+    }
+}
+
+impl RouteModule for OrganizationInvitationsModule {
+    fn routes(&self) -> Router<AppContext> {
+        Router::new()
+            .route("/organizations/{org_id}/invitations", post(send_invitation).get(list_invitations))
+            .route("/organizations/{org_id}/invitations/{invitation_id}", delete(revoke_invitation))
+            .route("/invitations/accept", post(accept_invitation))
+            .layer(Extension(self.state.clone()))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SendInvitationBody {
+    pub email: String,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AcceptInvitationBody {
+    pub token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvitationResponse {
+    pub id: String,
+    pub organization_id: String,
+    pub email: String,
+    pub role: String,
+    pub invited_by: String,
+    pub status: String,
+    pub expires_at: i64,
+    pub created_at: i64,
+}
+
+impl From<organization_invitation::Model> for InvitationResponse {
+    fn from(value: organization_invitation::Model) -> Self {
+        Self {
+            id: value.id,
+            organization_id: value.organization_id,
+            email: value.email,
+            role: value.role,
+            invited_by: value.invited_by.to_string(),
+            status: value.status,
+            expires_at: value.expires_at,
+            created_at: value.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvitationsListResponse {
+    pub invitations: Vec<InvitationResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AcceptInvitationResponse {
+    pub organization_id: String,
+    pub role: String,
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn normalize_email(value: &str) -> Result<String> {
+    let email = value.trim().to_ascii_lowercase();
+    let mut parts = email.split('@');
+    let local = parts.next().unwrap_or_default();
+    let domain = parts.next().unwrap_or_default();
+    if email.len() > 254
+        || local.is_empty()
+        || domain.is_empty()
+        || !domain.contains('.')
+        || parts.next().is_some()
+    {
+        return Err(TidewayError::BadRequest("Invalid email address".into()));
+    }
+    Ok(email)
+}
+
+fn validate_role(role: &str) -> Result<&str> {
+    match role {
+        "member" | "admin" => Ok(role),
+        _ => Err(TidewayError::BadRequest(
+            "Invitation role must be member or admin".into(),
+        )),
+    }
+}
+
+fn hash_token(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+fn new_token() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+
+fn invalid_invitation() -> TidewayError {
+    TidewayError::NotFound("Invalid or expired invitation".into())
+}
+
+fn ensure_invitee_matches(invited_email: &str, actor_email: &str) -> Result<()> {
+    if invited_email == actor_email.trim().to_ascii_lowercase() {
+        Ok(())
+    } else {
+        Err(invalid_invitation())
+    }
+}
+
+async fn ensure_seat_available(
+    seat_checker: &dyn SeatChecker,
+    org_id: &str,
+    reserved_or_used: u32,
+) -> Result<()> {
+    if seat_checker
+        .has_seat_available(org_id, reserved_or_used)
+        .await?
+    {
+        Ok(())
+    } else {
+        Err(TidewayError::Conflict(
+            "Organization has reached its seat limit".into(),
+        ))
+    }
+}
+
+async fn send_invitation(
+    Extension(state): Extension<OrganizationInvitationsState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+    Json(body): Json<SendInvitationBody>,
+) -> Result<Json<InvitationResponse>> {
+    let actor = RequestActor::for_organization_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+        &org_id,
+    )
+    .await?;
+    actor.require_org_role(&["owner", "admin"])?;
+
+    state
+        .rate_limiter
+        .check_invitation_rate(&org_id, &actor.user.id.to_string())
+        .await
+        .map_err(|rejection| {
+            TidewayError::TooManyRequests(format!(
+                "Invitation rate limit exceeded; retry in {} seconds",
+                rejection.retry_after_seconds
+            ))
+        })?;
+
+    let email = normalize_email(&body.email)?;
+    let role = validate_role(body.role.trim())?.to_string();
+    let timestamp = now();
+
+    // Lock the organization row so concurrent requests cannot over-reserve seats
+    // or create duplicate active invitations.
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    let organization = organization::Entity::find_by_id(&org_id)
+        .lock_exclusive()
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
+
+    let invited_user = user::Entity::find()
+        .filter(user::Column::Email.eq(&email))
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    let is_member = if let Some(invited_user) = invited_user {
+        organization_member::Entity::find()
+            .filter(organization_member::Column::OrganizationId.eq(&org_id))
+            .filter(organization_member::Column::UserId.eq(invited_user.id))
+            .one(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?
+            .is_some()
+    } else {
+        false
+    };
+    if is_member {
+        return Err(TidewayError::Conflict("User is already a member".into()));
+    }
+
+    let existing = organization_invitation::Entity::find()
+        .filter(organization_invitation::Column::OrganizationId.eq(&org_id))
+        .filter(organization_invitation::Column::Email.eq(&email))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .filter(organization_invitation::Column::ExpiresAt.gt(timestamp))
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    if existing.is_some() {
+        return Err(TidewayError::Conflict(
+            "A pending invitation already exists for this email".into(),
+        ));
+    }
+
+    let member_count = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&org_id))
+        .count(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    let pending_count = organization_invitation::Entity::find()
+        .filter(organization_invitation::Column::OrganizationId.eq(&org_id))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .filter(organization_invitation::Column::ExpiresAt.gt(timestamp))
+        .count(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    let reserved_or_used = member_count
+        .saturating_add(pending_count)
+        .try_into()
+        .unwrap_or(u32::MAX);
+    ensure_seat_available(state.seat_checker.as_ref(), &org_id, reserved_or_used).await?;
+
+    let raw_token = new_token();
+    let invitation = organization_invitation::ActiveModel {
+        id: Set(Uuid::new_v4().to_string()),
+        organization_id: Set(org_id),
+        email: Set(email.clone()),
+        role: Set(role),
+        invited_by: Set(actor.user.id),
+        token: Set(hash_token(&raw_token)),
+        status: Set("pending".to_string()),
+        expires_at: Set(timestamp + INVITATION_TTL.as_secs() as i64),
+        created_at: Set(timestamp),
+    }
+    .insert(&transaction)
+    .await
+    .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+    if let Err(error) = state
+        .email
+        .send_organization_invitation(&email, &organization.name, &raw_token, INVITATION_TTL)
+        .await
+    {
+        let cleanup = organization_invitation::Entity::update_many()
+            .col_expr(organization_invitation::Column::Status, sea_orm::sea_query::Expr::value("revoked"))
+            .filter(organization_invitation::Column::Id.eq(&invitation.id))
+            .filter(organization_invitation::Column::Status.eq("pending"))
+            .exec(state.db.as_ref())
+            .await;
+        match cleanup {
+            Ok(result) if result.rows_affected == 1 => {}
+            Ok(_) => {
+                return Err(TidewayError::Internal(
+                    "Invitation delivery failed and its claim could not be revoked".into(),
+                ));
+            }
+            Err(cleanup_error) => {
+                tracing::error!(
+                    invitation_id = %invitation.id,
+                    error = %cleanup_error,
+                    "Invitation delivery failed and revocation also failed"
+                );
+                return Err(TidewayError::Internal(
+                    "Invitation delivery failed and cleanup requires attention".into(),
+                ));
+            }
+        }
+        return Err(error);
+    }
+
+    Ok(Json(invitation.into()))
+}
+
+async fn list_invitations(
+    Extension(state): Extension<OrganizationInvitationsState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<InvitationsListResponse>> {
+    let actor = RequestActor::for_organization_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+        &org_id,
+    )
+    .await?;
+    actor.require_org_role(&["owner", "admin"])?;
+
+    let invitations = organization_invitation::Entity::find()
+        .filter(organization_invitation::Column::OrganizationId.eq(org_id))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .filter(organization_invitation::Column::ExpiresAt.gt(now()))
+        .order_by_desc(organization_invitation::Column::CreatedAt)
+        .all(state.db.as_ref())
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .into_iter()
+        .map(InvitationResponse::from)
+        .collect();
+
+    Ok(Json(InvitationsListResponse { invitations }))
+}
+
+async fn revoke_invitation(
+    Extension(state): Extension<OrganizationInvitationsState>,
+    headers: axum::http::HeaderMap,
+    Path((org_id, invitation_id)): Path<(String, String)>,
+) -> Result<MessageResponse> {
+    let actor = RequestActor::for_organization_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+        &org_id,
+    )
+    .await?;
+    actor.require_org_role(&["owner", "admin"])?;
+
+    let result = organization_invitation::Entity::update_many()
+        .col_expr(organization_invitation::Column::Status, sea_orm::sea_query::Expr::value("revoked"))
+        .filter(organization_invitation::Column::Id.eq(invitation_id))
+        .filter(organization_invitation::Column::OrganizationId.eq(org_id))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .exec(state.db.as_ref())
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    if result.rows_affected != 1 {
+        return Err(TidewayError::NotFound("Invitation not found".into()));
+    }
+    Ok(MessageResponse::success("Invitation revoked"))
+}
+
+async fn accept_invitation(
+    Extension(state): Extension<OrganizationInvitationsState>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<AcceptInvitationBody>,
+) -> Result<Json<AcceptInvitationResponse>> {
+    let actor = RequestActor::from_headers_with_verifier(
+        &headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    )
+    .await?;
+    if body.token.trim().is_empty() {
+        return Err(invalid_invitation());
+    }
+
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    let timestamp = now();
+    let invitation = organization_invitation::Entity::find()
+        .filter(organization_invitation::Column::Token.eq(hash_token(body.token.trim())))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .filter(organization_invitation::Column::ExpiresAt.gt(timestamp))
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(invalid_invitation)?;
+
+    let claim = organization_invitation::Entity::update_many()
+        .col_expr(organization_invitation::Column::Status, sea_orm::sea_query::Expr::value("processing"))
+        .filter(organization_invitation::Column::Id.eq(&invitation.id))
+        .filter(organization_invitation::Column::Status.eq("pending"))
+        .exec(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    if claim.rows_affected != 1 {
+        transaction.rollback().await.ok();
+        return Err(invalid_invitation());
+    }
+
+    if ensure_invitee_matches(&invitation.email, &actor.user.email).is_err() {
+        transaction.rollback().await.ok();
+        return Err(invalid_invitation());
+    }
+
+    // Serialize membership creation for this organization so two different
+    // invitations cannot consume the same final seat concurrently.
+    organization::Entity::find_by_id(&invitation.organization_id)
+        .lock_exclusive()
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?
+        .ok_or_else(invalid_invitation)?;
+
+    let existing = organization_member::Entity::find()
+        .filter(organization_member::Column::OrganizationId.eq(&invitation.organization_id))
+        .filter(organization_member::Column::UserId.eq(actor.user.id))
+        .one(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+    let effective_role = existing
+        .as_ref()
+        .map(|membership| membership.role.clone())
+        .unwrap_or_else(|| invitation.role.clone());
+    if existing.is_none() {
+        let member_count = organization_member::Entity::find()
+            .filter(
+                organization_member::Column::OrganizationId.eq(&invitation.organization_id),
+            )
+            .count(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?
+            .try_into()
+            .unwrap_or(u32::MAX);
+        ensure_seat_available(
+            state.seat_checker.as_ref(),
+            &invitation.organization_id,
+            member_count,
+        )
+        .await?;
+
+        organization_member::ActiveModel {
+            organization_id: Set(invitation.organization_id.clone()),
+            user_id: Set(actor.user.id),
+            role: Set(invitation.role.clone()),
+            joined_at: Set(timestamp),
+        }
+        .insert(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    }
+
+    let accepted = organization_invitation::Entity::update_many()
+        .col_expr(organization_invitation::Column::Status, sea_orm::sea_query::Expr::value("accepted"))
+        .filter(organization_invitation::Column::Id.eq(&invitation.id))
+        .filter(organization_invitation::Column::Status.eq("processing"))
+        .exec(&transaction)
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    if accepted.rows_affected != 1 {
+        transaction.rollback().await.ok();
+        return Err(invalid_invitation());
+    }
+
+    transaction
+        .commit()
+        .await
+        .map_err(|error| TidewayError::Database(error.to_string()))?;
+    Ok(Json(AcceptInvitationResponse {
+        organization_id: invitation.organization_id,
+        role: effective_role,
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{header, HeaderMap, HeaderValue};
+    use chrono::Utc;
+    use sea_orm::{ConnectionTrait, Database, Schema};
+    use tideway::auth::{JwtIssuer, JwtIssuerConfig, TokenSubject};
+    use tideway::ConsoleMailer;
+
+    const JWT_SECRET: &str = "test-invitation-secret-at-least-32-bytes";
+
+    struct FixedSeats(u32);
+
+    #[async_trait::async_trait]
+    impl SeatChecker for FixedSeats {
+        async fn has_seat_available(&self, _org_id: &str, current_count: u32) -> Result<bool> {
+            Ok(current_count < self.0)
+        }
+
+        async fn get_seat_limit(&self, _org_id: &str) -> Result<Option<u32>> {
+            Ok(Some(self.0))
+        }
+    }
+
+    async fn test_state(seat_limit: u32) -> OrganizationInvitationsState {
+        let db = Database::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        let backend = db.get_database_backend();
+        let schema = Schema::new(backend);
+        for statement in [
+            schema.create_table_from_entity(user::Entity),
+            schema.create_table_from_entity(organization::Entity),
+            schema.create_table_from_entity(organization_member::Entity),
+            schema.create_table_from_entity(organization_invitation::Entity),
+        ] {
+            db.execute(backend.build(&statement))
+                .await
+                .expect("create test table");
+        }
+        let email = Arc::new(
+            EmailService::new(
+                Arc::new(ConsoleMailer::new()),
+                "noreply@example.com",
+                "Test App",
+                "http://localhost:5173",
+            )
+            .expect("email service"),
+        );
+        OrganizationInvitationsModule::new(
+            Arc::new(db),
+            JWT_SECRET.to_string(),
+            email,
+            Arc::new(FixedSeats(seat_limit)),
+        )
+        .state
+    }
+
+    async fn insert_user(state: &OrganizationInvitationsState, email: &str) -> user::Model {
+        let timestamp = Utc::now();
+        user::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            email: Set(email.to_ascii_lowercase()),
+            password_hash: Set("test-hash".to_string()),
+            name: Set(None),
+            organization_id: Set(None),
+            email_verified_at: Set(Some(timestamp.into())),
+            locked_until: Set(None),
+            failed_attempts: Set(0),
+            failed_mfa_attempts: Set(0),
+            is_platform_admin: Set(false),
+            created_at: Set(timestamp.into()),
+            updated_at: Set(timestamp.into()),
+        }
+        .insert(state.db.as_ref())
+        .await
+        .expect("insert user")
+    }
+
+    async fn insert_organization(
+        state: &OrganizationInvitationsState,
+        owner: &user::Model,
+    ) -> organization::Model {
+        let timestamp = now();
+        let id = Uuid::new_v4().to_string();
+        let organization = organization::ActiveModel {
+            id: Set(id.clone()),
+            name: Set("Test Organization".to_string()),
+            slug: Set(format!("org-{}", Uuid::new_v4().simple())),
+            owner_id: Set(owner.id),
+            contact_email: Set(owner.email.clone()),
+            created_at: Set(timestamp),
+            updated_at: Set(timestamp),
+        }
+        .insert(state.db.as_ref())
+        .await
+        .expect("insert organization");
+        organization_member::ActiveModel {
+            organization_id: Set(id),
+            user_id: Set(owner.id),
+            role: Set("owner".to_string()),
+            joined_at: Set(timestamp),
+        }
+        .insert(state.db.as_ref())
+        .await
+        .expect("insert owner membership");
+        organization
+    }
+
+    async fn insert_invitation(
+        state: &OrganizationInvitationsState,
+        organization_id: &str,
+        invited_by: Uuid,
+        email: &str,
+        raw_token: &str,
+    ) -> organization_invitation::Model {
+        let timestamp = now();
+        organization_invitation::ActiveModel {
+            id: Set(Uuid::new_v4().to_string()),
+            organization_id: Set(organization_id.to_string()),
+            email: Set(email.to_ascii_lowercase()),
+            role: Set("member".to_string()),
+            invited_by: Set(invited_by),
+            token: Set(hash_token(raw_token)),
+            status: Set("pending".to_string()),
+            expires_at: Set(timestamp + 3600),
+            created_at: Set(timestamp),
+        }
+        .insert(state.db.as_ref())
+        .await
+        .expect("insert invitation")
+    }
+
+    fn auth_headers(user: &user::Model) -> HeaderMap {
+        let issuer = JwtIssuer::new(
+            JwtIssuerConfig::with_secure_secret(JWT_SECRET, env!("CARGO_PKG_NAME"))
+                .expect("jwt config")
+                .audience(env!("CARGO_PKG_NAME")),
+        )
+        .expect("jwt issuer");
+        let user_id = user.id.to_string();
+        let (token, _) = issuer
+            .issue_access_token(TokenSubject::new(&user_id).with_email(&user.email))
+            .expect("issue token");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {token}")).expect("authorization header"),
+        );
+        headers
+    }
+
+    #[test]
+    fn bearer_tokens_are_not_stored_verbatim() {
+        let raw = "a-secret-invitation-token";
+        assert_ne!(hash_token(raw), raw);
+        assert_eq!(hash_token(raw).len(), 64);
+    }
+
+    #[test]
+    fn owner_role_cannot_be_granted_by_invitation() {
+        assert!(validate_role("owner").is_err());
+        assert!(validate_role("admin").is_ok());
+        assert!(validate_role("member").is_ok());
+    }
+
+    #[test]
+    fn invitee_email_must_match_authenticated_account() {
+        assert!(ensure_invitee_matches("member@example.com", "MEMBER@example.com").is_ok());
+        assert!(ensure_invitee_matches("member@example.com", "other@example.com").is_err());
+    }
+
+    #[tokio::test]
+    async fn seat_policy_blocks_membership_beyond_the_subscription_limit() {
+        let seats = FixedSeats(1);
+        assert!(ensure_seat_available(&seats, "org_1", 0).await.is_ok());
+        assert!(ensure_seat_available(&seats, "org_1", 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn wrong_account_cannot_redeem_and_claim_is_released() {
+        let state = test_state(5).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let intended = insert_user(&state, "intended@example.com").await;
+        let attacker = insert_user(&state, "attacker@example.com").await;
+        let invitation = insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            &intended.email,
+            "identity-token",
+        )
+        .await;
+
+        let result = accept_invitation(
+            Extension(state.clone()),
+            auth_headers(&attacker),
+            Json(AcceptInvitationBody {
+                token: "identity-token".to_string(),
+            }),
+        )
+        .await;
+        assert!(matches!(result, Err(TidewayError::NotFound(_))));
+        let stored = organization_invitation::Entity::find_by_id(&invitation.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload invitation")
+            .expect("invitation exists");
+        assert_eq!(stored.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn concurrent_redemption_creates_one_membership() {
+        let state = test_state(5).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let invitee = insert_user(&state, "invitee@example.com").await;
+        insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            &invitee.email,
+            "single-use-token",
+        )
+        .await;
+        let headers = auth_headers(&invitee);
+
+        let first = accept_invitation(
+            Extension(state.clone()),
+            headers.clone(),
+            Json(AcceptInvitationBody {
+                token: "single-use-token".to_string(),
+            }),
+        );
+        let second = accept_invitation(
+            Extension(state.clone()),
+            headers,
+            Json(AcceptInvitationBody {
+                token: "single-use-token".to_string(),
+            }),
+        );
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+
+        let memberships = organization_member::Entity::find()
+            .filter(organization_member::Column::OrganizationId.eq(&organization.id))
+            .filter(organization_member::Column::UserId.eq(invitee.id))
+            .count(state.db.as_ref())
+            .await
+            .expect("count memberships");
+        assert_eq!(memberships, 1);
+    }
+
+    #[tokio::test]
+    async fn revocation_cannot_cross_organization_boundary() {
+        let state = test_state(5).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let first_org = insert_organization(&state, &owner).await;
+        let second_owner = insert_user(&state, "second-owner@example.com").await;
+        let second_org = insert_organization(&state, &second_owner).await;
+        let invitation = insert_invitation(
+            &state,
+            &second_org.id,
+            second_owner.id,
+            "invitee@example.com",
+            "cross-org-token",
+        )
+        .await;
+
+        let result = revoke_invitation(
+            Extension(state.clone()),
+            auth_headers(&owner),
+            Path((first_org.id, invitation.id.clone())),
+        )
+        .await;
+        assert!(matches!(result, Err(TidewayError::NotFound(_))));
+        let stored = organization_invitation::Entity::find_by_id(&invitation.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload invitation")
+            .expect("invitation exists");
+        assert_eq!(stored.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn seat_rejection_rolls_claim_back_to_pending() {
+        let state = test_state(1).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let invitee = insert_user(&state, "invitee@example.com").await;
+        let invitation = insert_invitation(
+            &state,
+            &organization.id,
+            owner.id,
+            &invitee.email,
+            "no-seat-token",
+        )
+        .await;
+
+        let result = accept_invitation(
+            Extension(state.clone()),
+            auth_headers(&invitee),
+            Json(AcceptInvitationBody {
+                token: "no-seat-token".to_string(),
+            }),
+        )
+        .await;
+        assert!(matches!(result, Err(TidewayError::Conflict(_))));
+        let stored = organization_invitation::Entity::find_by_id(&invitation.id)
+            .one(state.db.as_ref())
+            .await
+            .expect("reload invitation")
+            .expect("invitation exists");
+        assert_eq!(stored.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn concurrent_duplicate_issuance_creates_one_pending_invitation() {
+        let state = test_state(10).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let headers = auth_headers(&owner);
+
+        let first = send_invitation(
+            Extension(state.clone()),
+            headers.clone(),
+            Path(organization.id.clone()),
+            Json(SendInvitationBody {
+                email: "invitee@example.com".to_string(),
+                role: "member".to_string(),
+            }),
+        );
+        let second = send_invitation(
+            Extension(state.clone()),
+            headers,
+            Path(organization.id.clone()),
+            Json(SendInvitationBody {
+                email: "invitee@example.com".to_string(),
+                role: "member".to_string(),
+            }),
+        );
+        let (first, second) = tokio::join!(first, second);
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+
+        let pending = organization_invitation::Entity::find()
+            .filter(organization_invitation::Column::OrganizationId.eq(&organization.id))
+            .filter(organization_invitation::Column::Email.eq("invitee@example.com"))
+            .filter(organization_invitation::Column::Status.eq("pending"))
+            .count(state.db.as_ref())
+            .await
+            .expect("count pending invitations");
+        assert_eq!(pending, 1);
+    }
+
+    #[tokio::test]
+    async fn issuance_enforces_seats_and_rejects_owner_role() {
+        let state = test_state(1).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let headers = auth_headers(&owner);
+
+        let no_seat = send_invitation(
+            Extension(state.clone()),
+            headers.clone(),
+            Path(organization.id.clone()),
+            Json(SendInvitationBody {
+                email: "invitee@example.com".to_string(),
+                role: "member".to_string(),
+            }),
+        )
+        .await;
+        assert!(matches!(no_seat, Err(TidewayError::Conflict(_))));
+
+        let owner_role = send_invitation(
+            Extension(state.clone()),
+            headers,
+            Path(organization.id.clone()),
+            Json(SendInvitationBody {
+                email: "invitee@example.com".to_string(),
+                role: "owner".to_string(),
+            }),
+        )
+        .await;
+        assert!(matches!(owner_role, Err(TidewayError::BadRequest(_))));
+
+        let invitations = organization_invitation::Entity::find()
+            .filter(organization_invitation::Column::OrganizationId.eq(organization.id))
+            .count(state.db.as_ref())
+            .await
+            .expect("count invitations");
+        assert_eq!(invitations, 0);
+    }
+}

@@ -1,0 +1,46 @@
+//! Organization invitation entity.
+
+use sea_orm::entity::prelude::*;
+
+#[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+#[sea_orm(table_name = "organization_invitations")]
+pub struct Model {
+    #[sea_orm(primary_key, auto_increment = false)]
+    pub id: String,
+    pub organization_id: String,
+    pub email: String,
+    pub role: String,
+    pub invited_by: Uuid,
+    /// SHA-256 digest of the bearer token. Raw tokens must never be persisted.
+    #[sea_orm(unique)]
+    pub token: String,
+    pub status: String,
+    pub expires_at: i64,
+    pub created_at: i64,
+}
+
+#[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+pub enum Relation {
+    #[sea_orm(
+        belongs_to = "super::organization::Entity",
+        from = "Column::OrganizationId",
+        to = "super::organization::Column::Id"
+    )]
+    Organization,
+    #[sea_orm(
+        belongs_to = "super::user::Entity",
+        from = "Column::InvitedBy",
+        to = "super::user::Column::Id"
+    )]
+    InvitedBy,
+}
+
+impl Related<super::organization::Entity> for Entity {
+    fn to() -> RelationDef { Relation::Organization.def() }
+}
+
+impl Related<super::user::Entity> for Entity {
+    fn to() -> RelationDef { Relation::InvitedBy.def() }
+}
+
+impl ActiveModelBehavior for ActiveModel {}

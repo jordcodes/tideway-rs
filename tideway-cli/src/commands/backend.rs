@@ -49,6 +49,7 @@ pub(crate) fn scaffold(
     runtime.install();
     let plan_mode = runtime.plan_mode();
     let has_organizations = args.preset == BackendPreset::B2b;
+    let has_invitations = has_organizations && !args.without_invitations;
     let preset_name = match args.preset {
         BackendPreset::B2c => "B2C (Auth + Billing + Admin)",
         BackendPreset::B2b => "B2B (Auth + Billing + Organizations + Admin)",
@@ -106,6 +107,7 @@ pub(crate) fn scaffold(
         project_crate: args.name.trim().replace('-', "_"),
         project_name_pascal: to_pascal_case(&args.name),
         has_organizations,
+        has_invitations,
         database: args.database.clone(),
         database_url: match args.database.as_str() {
             "sqlite" => format!("sqlite:./{}.db?mode=rwc", args.name),
@@ -189,6 +191,9 @@ pub(crate) fn scaffold(
         println!("     async-trait = \"0.1\"");
         println!("     chrono = {{ version = \"0.4\", features = [\"serde\"] }}");
         println!("     uuid = {{ version = \"1\", features = [\"v4\", \"serde\"] }}");
+        if has_invitations {
+            println!("     sha2 = \"0.10\"");
+        }
         println!("     migration = {{ path = \"migration\" }}");
         println!();
         println!("  2. Run migrations:");
@@ -357,6 +362,18 @@ fn generate_entities(
                 report_generated(emit_progress, &format!("entities/{}", filename));
             }
         }
+
+        if !args.without_invitations && engine.has_template("entities/organization_invitation") {
+            let content = engine.render("entities/organization_invitation")?;
+            let file_path = entities_path.join("organization_invitation.rs");
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
+            )?;
+            report_generated(emit_progress, "entities/organization_invitation.rs");
+        }
     }
 
     Ok(())
@@ -455,6 +472,18 @@ fn generate_organizations(
             )?;
             report_generated(emit_progress, &format!("organizations/{}", filename));
         }
+    }
+
+    if !args.without_invitations && engine.has_template("organizations/invitations") {
+        let content = engine.render("organizations/invitations")?;
+        let file_path = orgs_path.join("invitations.rs");
+        write_file_with_force_with_message(
+            &file_path,
+            &content,
+            args.force,
+            BACKEND_FORCE_OVERWRITE_MESSAGE,
+        )?;
+        report_generated(emit_progress, "organizations/invitations.rs");
     }
 
     Ok(())
@@ -577,6 +606,23 @@ fn generate_migrations(
                 )?;
                 report_generated(emit_progress, &format!("migration/src/{}", filename));
             }
+        }
+
+        if !args.without_invitations
+            && engine.has_template("migrations/m011_create_organization_invitations")
+        {
+            let content = engine.render("migrations/m011_create_organization_invitations")?;
+            let file_path = migrations_path.join("m011_create_organization_invitations.rs");
+            write_file_with_force_with_message(
+                &file_path,
+                &content,
+                args.force,
+                BACKEND_FORCE_OVERWRITE_MESSAGE,
+            )?;
+            report_generated(
+                emit_progress,
+                "migration/src/m011_create_organization_invitations.rs",
+            );
         }
     } else {
         // B2C admin flag migration (different numbering)

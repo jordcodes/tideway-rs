@@ -156,7 +156,7 @@ export interface Organization {
 
 export interface Member {
   user_id: string
-  org_id: string
+  organization_id: string
   email: string
   name?: string
   role: 'owner' | 'admin' | 'member'
@@ -165,13 +165,18 @@ export interface Member {
 
 export interface Invitation {
   id: string
-  org_id: string
+  organization_id: string
   email: string
   role: string
   invited_by: string
   created_at: number
   expires_at: number
-  status: 'pending' | 'accepted' | 'expired' | 'canceled'
+  status: 'pending' | 'processing' | 'accepted' | 'revoked'
+}
+
+export interface AcceptInvitationResponse {
+  organization_id: string
+  role: string
 }
 
 export interface CreateOrganizationRequest {

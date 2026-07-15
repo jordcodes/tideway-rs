@@ -167,6 +167,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         project_crate: project_name.clone(),
         project_name_pascal,
         has_organizations: false,
+        has_invitations: false,
         database: starter_database.to_string(),
         database_url: starter_database_url(&project_name, starter_database),
         is_sqlite_database: starter_database == "sqlite",
@@ -195,8 +196,17 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         scaffold_api_preset(&target_dir, runtime)?;
     }
     if let Some(backend_preset) = backend_preset.clone() {
-        scaffold_backend_preset(&target_dir, &project_name, backend_preset, runtime)?;
-        ensure_backend_dependencies(&target_dir.join("Cargo.toml"))?;
+        scaffold_backend_preset(
+            &target_dir,
+            &project_name,
+            backend_preset.clone(),
+            args.without_invitations,
+            runtime,
+        )?;
+        ensure_backend_dependencies(
+            &target_dir.join("Cargo.toml"),
+            backend_preset == BackendPreset::B2b && !args.without_invitations,
+        )?;
     }
     if let Some(resource) = wizard.resource {
         scaffold_wizard_resource(&target_dir, resource, runtime)?;
@@ -473,6 +483,13 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
 
     if let Some(backend_preset) = backend_preset {
         files.extend(backend_preset_expected_files(backend_preset));
+        if *backend_preset == BackendPreset::B2b && !args.without_invitations {
+            files.extend([
+                "src/entities/organization_invitation.rs".to_string(),
+                "src/organizations/invitations.rs".to_string(),
+                "migration/src/m011_create_organization_invitations.rs".to_string(),
+            ]);
+        }
     } else {
         files.push("src/main.rs".to_string());
         files.push("src/routes/mod.rs".to_string());
@@ -757,6 +774,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         files.push("migration/src/m005_create_organizations.rs".to_string());
         files.push("migration/src/m006_create_organization_members.rs".to_string());
         files.push("migration/src/m007_add_admin_flag.rs".to_string());
+        // Invitation files are appended by `planned_files_for` when enabled.
     } else {
         files.push("migration/src/m005_add_admin_flag.rs".to_string());
     }
@@ -881,7 +899,7 @@ mod tests {
         )
         .expect("write manifest");
 
-        let error = ensure_backend_dependencies(&path)
+        let error = ensure_backend_dependencies(&path, false)
             .expect_err("invalid dependencies should be rejected");
         assert!(
             error
@@ -922,6 +940,7 @@ mod tests {
             no_prompt: false,
             summary: true,
             with_env: false,
+            without_invitations: false,
             path: None,
             force: false,
         };
@@ -953,6 +972,7 @@ mod tests {
             no_prompt: false,
             summary: true,
             with_env: false,
+            without_invitations: false,
             path: None,
             force: false,
         };
@@ -980,6 +1000,7 @@ mod tests {
             no_prompt: false,
             summary: true,
             with_env: false,
+            without_invitations: false,
             path: None,
             force: false,
         };
@@ -1002,6 +1023,7 @@ mod tests {
             no_prompt: false,
             summary: true,
             with_env: false,
+            without_invitations: false,
             path: None,
             force: false,
         };
@@ -1187,6 +1209,7 @@ fn scaffold_backend_preset(
     target_dir: &Path,
     project_name: &str,
     preset: BackendPreset,
+    without_invitations: bool,
     runtime: CommandRuntime,
 ) -> Result<()> {
     let has_organizations = matches!(preset, BackendPreset::B2b);
@@ -1200,6 +1223,7 @@ fn scaffold_backend_preset(
             .to_string(),
         force: true,
         database: "postgres".to_string(),
+        without_invitations,
     };
 
     crate::commands::backend::scaffold(
@@ -1208,7 +1232,11 @@ fn scaffold_backend_preset(
         runtime,
     )?;
 
-    let engine = backend_template_engine(project_name, has_organizations)?;
+    let engine = backend_template_engine(
+        project_name,
+        has_organizations,
+        has_organizations && !without_invitations,
+    )?;
     write_file_with_force_or_error_default(
         &target_dir.join("migration/Cargo.toml"),
         &engine.render("starter/migration/Cargo.toml")?,
@@ -1225,12 +1253,14 @@ fn scaffold_backend_preset(
 fn backend_template_engine(
     project_name: &str,
     has_organizations: bool,
+    has_invitations: bool,
 ) -> Result<BackendTemplateEngine> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
         project_crate: project_name.replace('-', "_"),
         project_name_pascal: to_pascal_case(project_name),
         has_organizations,
+        has_invitations,
         database: "postgres".to_string(),
         database_url: starter_database_url(project_name, "postgres"),
         is_sqlite_database: false,
@@ -1275,7 +1305,7 @@ fn scaffold_wizard_resource(
     Ok(())
 }
 
-fn ensure_backend_dependencies(cargo_path: &Path) -> Result<()> {
+fn ensure_backend_dependencies(cargo_path: &Path, has_invitations: bool) -> Result<()> {
     let contents = fs::read_to_string(cargo_path)
         .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
     let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
@@ -1291,6 +1321,9 @@ fn ensure_backend_dependencies(cargo_path: &Path) -> Result<()> {
     ensure_dependency_path(deps_table, "migration", "migration");
     ensure_dependency_inline(deps_table, "uuid", "1", &["v4", "serde"]);
     ensure_dependency_inline(deps_table, "chrono", "0.4", &["serde"]);
+    if has_invitations {
+        ensure_dependency_value(deps_table, "sha2", Value::from("0.10"));
+    }
 
     write_file(cargo_path, &doc.to_string())
         .with_context(|| format!("Failed to write {}", cargo_path.display()))?;

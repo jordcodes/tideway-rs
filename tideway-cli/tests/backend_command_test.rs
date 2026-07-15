@@ -60,6 +60,116 @@ fn test_backend_migration_lib_matches_generated_files_for_b2c_and_b2b() {
 }
 
 #[test]
+fn test_b2b_backend_generates_hardened_invitations_without_affecting_b2c() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let b2b_src = temp_dir.path().join("b2b/src");
+    let b2b_migrations = temp_dir.path().join("b2b/migration/src");
+    let output = run_tideway(&[
+        "backend",
+        "b2b",
+        "--output",
+        b2b_src.to_str().expect("output dir utf8"),
+        "--migrations-output",
+        b2b_migrations.to_str().expect("migration dir utf8"),
+    ]);
+    assert_success(&output, "tideway backend b2b");
+
+    let invitations = fs::read_to_string(b2b_src.join("organizations/invitations.rs"))
+        .expect("read invitation routes");
+    assert!(invitations.contains("Sha256::digest(token.as_bytes())"));
+    assert!(invitations.contains("claim.rows_affected != 1"));
+    assert!(invitations.contains("ensure_invitee_matches(&invitation.email, &actor.user.email)"));
+    assert!(invitations.contains("InvitationRateLimiter"));
+    assert!(invitations.contains("Arc<dyn InvitationRateLimitProvider>"));
+    assert!(invitations.contains("with_rate_limit_provider"));
+    assert!(invitations.contains(".check_invitation_rate"));
+    assert!(
+        b2b_migrations
+            .join("m011_create_organization_invitations.rs")
+            .exists()
+    );
+
+    let b2c_src = temp_dir.path().join("b2c/src");
+    let b2c_migrations = temp_dir.path().join("b2c/migration/src");
+    let output = run_tideway(&[
+        "backend",
+        "b2c",
+        "--output",
+        b2c_src.to_str().expect("output dir utf8"),
+        "--migrations-output",
+        b2c_migrations.to_str().expect("migration dir utf8"),
+    ]);
+    assert_success(&output, "tideway backend b2c");
+    assert!(!b2c_src.join("organizations/invitations.rs").exists());
+    assert!(
+        !b2c_migrations
+            .join("m011_create_organization_invitations.rs")
+            .exists()
+    );
+}
+
+#[test]
+fn test_b2b_backend_can_omit_optional_invitations() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("src");
+    let migrations_dir = temp_dir.path().join("migration/src");
+    let output = run_tideway(&[
+        "backend",
+        "b2b",
+        "--without-invitations",
+        "--output",
+        output_dir.to_str().expect("output dir utf8"),
+        "--migrations-output",
+        migrations_dir.to_str().expect("migration dir utf8"),
+    ]);
+    assert_success(&output, "tideway backend b2b --without-invitations");
+
+    assert!(!output_dir.join("organizations/invitations.rs").exists());
+    assert!(
+        !output_dir
+            .join("entities/organization_invitation.rs")
+            .exists()
+    );
+    assert!(
+        !migrations_dir
+            .join("m011_create_organization_invitations.rs")
+            .exists()
+    );
+    let main = fs::read_to_string(output_dir.join("main.rs")).expect("read main");
+    assert!(!main.contains("OrganizationInvitationsModule"));
+}
+
+#[test]
+fn test_organization_frontend_matches_invitation_api_contract() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("components");
+    let output = run_tideway(&[
+        "generate",
+        "organizations",
+        "--output",
+        output_dir.to_str().expect("output dir utf8"),
+    ]);
+    assert_success(&output, "tideway generate organizations");
+
+    assert!(
+        output_dir
+            .join("organizations/AcceptInvitation.vue")
+            .exists()
+    );
+    let composable =
+        fs::read_to_string(output_dir.join("organizations/composables/useOrganization.ts"))
+            .expect("read organization composable");
+    assert!(composable.contains("async function acceptInvitation(token: string)"));
+    assert!(composable.contains("'/invitations/accept', { token }"));
+
+    let types = fs::read_to_string(output_dir.join("types/index.ts")).expect("read types");
+    assert!(types.contains("organization_id: string"));
+    assert!(types.contains("invited_by: string"));
+    assert!(types.contains("'revoked'"));
+    assert!(!types.contains("org_id: string"));
+}
+
+#[test]
 fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let output_dir = temp_dir.path().join("src");

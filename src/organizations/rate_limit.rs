@@ -7,6 +7,7 @@
 //! - `orgs.invitation.rate_limited` - Invitation blocked due to rate limiting
 
 use super::error::{OrganizationError, Result};
+use async_trait::async_trait;
 use governor::{
     Quota, RateLimiter, clock::DefaultClock, middleware::NoOpMiddleware,
     state::keyed::DashMapStateStore,
@@ -24,14 +25,53 @@ use std::{
 const SHRINK_INTERVAL: u64 = 1000;
 
 /// Configuration for invitation rate limiting.
+///
+/// The limiter is a token bucket: each allowance is also the maximum immediate
+/// burst, and permits replenish evenly across `window_seconds`. The default
+/// permits a burst of 50 invitations per organization and 20 per actor, with
+/// both quotas replenished across one hour.
 #[derive(Clone, Debug)]
 pub struct InvitationRateLimitConfig {
-    /// Maximum invitations per organization per window.
+    /// Organization burst allowance, replenished evenly across the window.
     pub max_per_org: u32,
-    /// Maximum invitations per actor (user) per window.
+    /// Actor burst allowance, replenished evenly across the window.
     pub max_per_actor: u32,
     /// Time window in seconds.
     pub window_seconds: u64,
+}
+
+/// The quota that rejected an invitation request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InvitationRateLimitScope {
+    /// The organization-wide invitation quota was exhausted.
+    Organization,
+    /// The individual actor's invitation quota was exhausted.
+    Actor,
+}
+
+/// A provider-independent rate-limit rejection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvitationRateLimitExceeded {
+    /// Which quota rejected the request.
+    pub scope: InvitationRateLimitScope,
+    /// How long the caller should wait before retrying.
+    pub retry_after_seconds: u64,
+}
+
+/// Asynchronous invitation rate-limit provider.
+///
+/// [`InvitationRateLimiter`] implements this trait and is the recommended
+/// zero-configuration default. Multi-process deployments can implement this
+/// contract with a shared backend such as Redis without changing invitation
+/// handlers.
+#[async_trait]
+pub trait InvitationRateLimitProvider: Send + Sync {
+    /// Check the organization and actor quotas for an invitation request.
+    async fn check_invitation_rate(
+        &self,
+        org_id: &str,
+        actor_id: &str,
+    ) -> std::result::Result<(), InvitationRateLimitExceeded>;
 }
 
 impl Default for InvitationRateLimitConfig {
@@ -47,7 +87,8 @@ impl Default for InvitationRateLimitConfig {
 }
 
 impl InvitationRateLimitConfig {
-    /// Create a new configuration with specified limits.
+    /// Create a token-bucket configuration with the specified burst allowances
+    /// and replenishment window.
     pub fn new(max_per_org: u32, max_per_actor: u32, window_seconds: u64) -> Self {
         Self {
             max_per_org,
@@ -88,6 +129,12 @@ type KeyedLimiter = RateLimiter<String, DashMapStateStore<String>, DefaultClock,
 /// - Per organization: prevents bulk invitation spam to any single org
 /// - Per actor: prevents a single user from sending too many invitations
 ///
+/// State is stored in the current process. This is the zero-configuration
+/// default for single-process applications, development, and tests. Counters
+/// reset on restart and are not shared between replicas. Generated invitation
+/// routes accept an [`InvitationRateLimitProvider`] when a deployment needs a
+/// shared backend such as Redis.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -114,13 +161,11 @@ impl InvitationRateLimiter {
 
         let window = Duration::from_secs(config.window_seconds.max(1));
 
-        let org_quota = Quota::with_period(window)
-            .unwrap_or_else(|| Quota::per_second(max_per_org))
-            .allow_burst(max_per_org);
-
-        let actor_quota = Quota::with_period(window)
-            .unwrap_or_else(|| Quota::per_second(max_per_actor))
-            .allow_burst(max_per_actor);
+        // Governor's period is the time to replenish one permit, not the
+        // complete quota window. Dividing the window by the allowance gives
+        // the configured average rate while retaining a one-window burst.
+        let org_quota = quota_for_window(max_per_org, window);
+        let actor_quota = quota_for_window(max_per_actor, window);
 
         Self {
             org_limiter: Arc::new(RateLimiter::keyed(org_quota)),
@@ -161,6 +206,32 @@ impl InvitationRateLimiter {
     /// Get the configuration.
     pub fn config(&self) -> &InvitationRateLimitConfig {
         &self.config
+    }
+}
+
+fn quota_for_window(allowance: NonZeroU32, window: Duration) -> Quota {
+    let replenish_interval = (window / allowance.get()).max(Duration::from_nanos(1));
+    Quota::with_period(replenish_interval)
+        .expect("a non-zero invitation quota period")
+        .allow_burst(allowance)
+}
+
+#[async_trait]
+impl InvitationRateLimitProvider for InvitationRateLimiter {
+    async fn check_invitation_rate(
+        &self,
+        org_id: &str,
+        actor_id: &str,
+    ) -> std::result::Result<(), InvitationRateLimitExceeded> {
+        self.check(org_id, actor_id)
+            .map_err(|(scope, retry_after_seconds)| InvitationRateLimitExceeded {
+                scope: if scope == "organization" {
+                    InvitationRateLimitScope::Organization
+                } else {
+                    InvitationRateLimitScope::Actor
+                },
+                retry_after_seconds,
+            })
     }
 }
 
@@ -255,6 +326,38 @@ mod tests {
         if let Err((limit_type, _)) = result {
             assert_eq!(limit_type, "organization");
         }
+    }
+
+    #[test]
+    fn test_rate_limit_replenishes_allowance_across_configured_window() {
+        let limiter = InvitationRateLimiter::new(InvitationRateLimitConfig::new(2, 10, 60));
+
+        limiter.check("org_1", "actor_1").unwrap();
+        limiter.check("org_1", "actor_2").unwrap();
+
+        let (_, retry_after) = limiter.check("org_1", "actor_3").unwrap_err();
+        assert!(
+            retry_after <= 30,
+            "two permits per minute should replenish one permit within 30 seconds"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_limiter_implements_async_provider_contract() {
+        let provider: &dyn InvitationRateLimitProvider =
+            &InvitationRateLimiter::new(InvitationRateLimitConfig::new(1, 10, 60));
+
+        provider
+            .check_invitation_rate("org_1", "actor_1")
+            .await
+            .unwrap();
+        let error = provider
+            .check_invitation_rate("org_1", "actor_2")
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.scope, InvitationRateLimitScope::Organization);
+        assert!(error.retry_after_seconds > 0);
     }
 
     #[test]

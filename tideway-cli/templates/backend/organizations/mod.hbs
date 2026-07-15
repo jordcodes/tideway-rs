@@ -1,5 +1,11 @@
 //! Organization management module.
 
 mod routes;
+{{#if has_invitations}}
+mod invitations;
+{{/if}}
 
 pub use routes::OrganizationModule;
+{{#if has_invitations}}
+pub use invitations::OrganizationInvitationsModule;
+{{/if}}

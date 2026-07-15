@@ -47,13 +47,15 @@ In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unl
 For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
 The API preset seeds a sample `todo` resource wired through entity, repository, and service layers, with `limit`, `offset`, and `q` support on the list endpoint. Generated list queries default to 20 rows and cap `limit` at 100.
 The API preset also generates database-backed registration, login, refresh rotation, logout, password-reset storage, and `GET /auth/me`; its delivery hooks remain application-owned. The SaaS preset goes further with working password-reset and email-verification flows plus provider-neutral Resend, SMTP, development console, and custom `Mailer` options. Keep `REQUIRE_EMAIL_VERIFICATION=false` until a production provider and verified sender are configured.
-The SaaS preset generates the B2B auth/billing/organizations/admin backend scaffold with Postgres Docker, CI, env defaults, and a public `GET /billing/public/plans` smoke endpoint.
+The SaaS preset generates the B2B auth/billing/organizations/admin backend scaffold with Postgres Docker, CI, env defaults, secure email-delivered organization invitations, and a public `GET /billing/public/plans` smoke endpoint. Invitation files are generated only on this greenfield path; upgrades never overwrite an application's organization model.
+Invitations are included by default and can be omitted with `--without-invitations`.
 
 Use a preset to apply common defaults:
 
 ```bash
 tideway new my_app --preset api
 tideway new my_app --preset saas
+tideway new my_app --preset saas --without-invitations
 tideway new my_app --preset worker
 ```
 
@@ -98,7 +100,7 @@ tideway new my_app --with-env
 Available presets:
 - `minimal` - basic starter
 - `api` - auth + database + openapi + validation, plus config, CI, env, and a sample `todo` resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add `--with-docker` for Postgres)
-- `saas` - b2b backend scaffold with auth, billing, organizations, admin, docker, CI, env, and billing-ready defaults
+- `saas` - b2b backend scaffold with auth, billing, organizations, secure invitations, admin, docker, CI, env, and billing-ready defaults
 - `worker` - jobs-first scaffold (database + jobs + redis + metrics) with config, docker, CI, env
 
 ### `tideway init` (advanced)
@@ -228,7 +230,13 @@ For greenfield SaaS apps, prefer `tideway new my_app --preset saas`; use `backen
 ```bash
 tideway backend b2c --name my_app
 tideway backend b2b --name my_app
+tideway backend b2b --name my_app --without-invitations
 ```
+
+B2B backends include secure organization invitations by default. Use `--without-invitations` when
+membership onboarding is owned by another service or an existing application-specific workflow.
+The flag omits the invitation routes, entity, migration, email hook, and associated dependency; it
+does not remove the rest of the organizations module.
 
 Compatibility note:
 - Current B2B scaffolds generate `organization_members` (entity/module: `organization_member`).

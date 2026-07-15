@@ -96,6 +96,10 @@ pub struct NewArgs {
     #[arg(long, default_value = "false")]
     pub with_env: bool,
 
+    /// Omit organization invitations from SaaS/B2B scaffolds
+    #[arg(long, default_value = "false")]
+    pub without_invitations: bool,
+
     /// Output directory (defaults to the project name)
     #[arg(short, long)]
     pub path: Option<String>,
@@ -404,6 +408,10 @@ pub struct BackendArgs {
     /// Database type
     #[arg(long, default_value = "postgres", value_parser = ["postgres", "sqlite"])]
     pub database: String,
+
+    /// Omit organization invitation routes, entity, and migration
+    #[arg(long, default_value = "false")]
+    pub without_invitations: bool,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]

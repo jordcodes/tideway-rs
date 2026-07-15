@@ -308,6 +308,7 @@ fn generate_organizations(
         ("OrgSettings.vue", "organizations/OrgSettings"),
         ("MemberList.vue", "organizations/MemberList"),
         ("InviteMember.vue", "organizations/InviteMember"),
+        ("AcceptInvitation.vue", "organizations/AcceptInvitation"),
     ];
 
     for (filename, template_name) in components {

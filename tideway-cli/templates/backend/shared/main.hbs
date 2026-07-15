@@ -22,6 +22,11 @@ use {{project_crate}}::billing::{
 {{#if has_organizations}}
 use {{project_crate}}::organizations::OrganizationModule;
 {{/if}}
+{{#if has_invitations}}
+use {{project_crate}}::organizations::OrganizationInvitationsModule;
+use tideway::billing::SeatManager;
+use tideway::organizations::BillingSeatChecker;
+{{/if}}
 use {{project_crate}}::admin::AdminModule;
 use {{project_crate}}::config::AppConfig;
 use {{project_crate}}::error::BillingState;
@@ -70,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_issuer.clone(),
         app_config.jwt_secret.clone(),
         app_config.app_name.clone(),
-    ).with_email_delivery(email_service);
+    ).with_email_delivery(email_service.clone());
 
     {{#if has_organizations}}
     // Create organization module
@@ -78,7 +83,6 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(db.clone()),
         app_config.jwt_secret.clone(),
     );
-
     {{/if}}
     // Create admin module
     let admin_module = AdminModule::new(
@@ -109,6 +113,21 @@ async fn main() -> anyhow::Result<()> {
             .features(["full_access"])
             .done()?
         .build()?;
+
+    {{#if has_invitations}}
+    // Invitations reserve and consume the same seat allowance exposed by billing.
+    let invitation_seat_checker = Arc::new(BillingSeatChecker::new(SeatManager::new(
+        billing_store.clone(),
+        stripe_client.clone(),
+        plans.clone(),
+    )));
+    let organization_invitations_module = OrganizationInvitationsModule::new(
+        Arc::new(db.clone()),
+        app_config.jwt_secret.clone(),
+        email_service,
+        invitation_seat_checker,
+    );
+    {{/if}}
 
     let app_uri: axum::http::Uri = app_config.app_url.parse()?;
     let app_host = app_uri
@@ -183,6 +202,9 @@ async fn main() -> anyhow::Result<()> {
         .register_module(auth_module)
         {{#if has_organizations}}
         .register_module(organization_module)
+        {{/if}}
+        {{#if has_invitations}}
+        .register_module(organization_invitations_module)
         {{/if}}
         .register_module(admin_module)
         .merge_router(public_billing_router)

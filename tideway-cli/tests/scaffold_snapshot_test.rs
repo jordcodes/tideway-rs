@@ -19,6 +19,7 @@ fn test_new_minimal_scaffold_snapshots() {
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
@@ -57,6 +58,7 @@ fn test_resource_wire_scaffold_snapshots() {
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };

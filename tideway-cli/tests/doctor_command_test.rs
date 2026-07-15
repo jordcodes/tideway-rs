@@ -96,6 +96,43 @@ stripe = {{ package = "async-stripe", version = "0.41", default-features = false
 }
 
 #[test]
+fn test_doctor_upgrade_does_not_require_greenfield_invitation_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/organizations")).expect("create organizations");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "custom_org_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth", "organizations"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/organizations/mod.rs"),
+        "// Application-owned organization model with no invitation scaffold.\n",
+    )
+    .expect("write organizations module");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(
+        report
+            .warnings()
+            .iter()
+            .all(|warning| !warning.to_ascii_lowercase().contains("invitation")),
+        "greenfield invitation files must not become an upgrade requirement: {:?}",
+        report.warnings()
+    );
+}
+
+#[test]
 fn test_doctor_upgrade_warns_for_custom_billing_store_without_claim_lifecycle_overrides() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();
@@ -732,6 +769,7 @@ fn test_doctor_warns_when_saas_billing_env_missing() {
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     })
@@ -1050,6 +1088,7 @@ fn test_doctor_no_openapi_warning_for_api_preset_scaffold() {
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     })
@@ -1085,6 +1124,7 @@ fn test_doctor_no_openapi_warning_for_saas_preset_scaffold() {
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     })
@@ -1120,6 +1160,7 @@ fn test_doctor_fix_recreates_sqlite_env_for_api_preset_scaffold() {
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     })

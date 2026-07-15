@@ -9,6 +9,13 @@ regenerates or overwrites them, and an upgrade should not rerun `new`, `backend`
 other broad scaffolding commands over an existing project. Apply reported changes as focused edits
 that follow the application's existing structure and business rules.
 
+New CLI capabilities are not automatically upgrade requirements. For example, newer B2B/SaaS
+scaffolds include secure organization invitations, but an existing app is not warned merely for
+lacking those generated files. Apps with custom organization or invitation models should use the
+adoption checklist in [Organizations](organizations.md#existing-and-custom-organization-models)
+and add only schema-compatible migrations. This avoids replacing application roles, route
+contracts, authorization rules, or table layouts.
+
 ## Recommended Workflow
 
 1. Update the CLI so its checks target the current framework release:

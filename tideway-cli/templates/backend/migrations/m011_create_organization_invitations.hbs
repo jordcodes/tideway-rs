@@ -1,0 +1,74 @@
+//! Create secure organization invitations.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(OrganizationInvitations::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(OrganizationInvitations::Id).string().not_null().primary_key())
+                    .col(ColumnDef::new(OrganizationInvitations::OrganizationId).string().not_null())
+                    .col(ColumnDef::new(OrganizationInvitations::Email).string().not_null())
+                    .col(ColumnDef::new(OrganizationInvitations::Role).string().not_null())
+                    .col(ColumnDef::new(OrganizationInvitations::InvitedBy).uuid().not_null())
+                    // Stores a SHA-256 digest, never the raw bearer token.
+                    .col(ColumnDef::new(OrganizationInvitations::Token).string_len(64).not_null().unique_key())
+                    .col(ColumnDef::new(OrganizationInvitations::Status).string().not_null().default("pending"))
+                    .col(ColumnDef::new(OrganizationInvitations::ExpiresAt).big_integer().not_null())
+                    .col(ColumnDef::new(OrganizationInvitations::CreatedAt).big_integer().not_null())
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(OrganizationInvitations::Table, OrganizationInvitations::OrganizationId)
+                            .to(super::m005_create_organizations::Organizations::Table, super::m005_create_organizations::Organizations::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(OrganizationInvitations::Table, OrganizationInvitations::InvitedBy)
+                            .to(super::m001_create_users::Users::Table, super::m001_create_users::Users::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_org_invitations_pending_email")
+                    .table(OrganizationInvitations::Table)
+                    .col(OrganizationInvitations::OrganizationId)
+                    .col(OrganizationInvitations::Email)
+                    .col(OrganizationInvitations::Status)
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(OrganizationInvitations::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum OrganizationInvitations {
+    Table,
+    Id,
+    OrganizationId,
+    Email,
+    Role,
+    InvitedBy,
+    Token,
+    Status,
+    ExpiresAt,
+    CreatedAt,
+}

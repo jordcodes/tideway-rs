@@ -16,6 +16,9 @@ mod m005_add_admin_flag;
 mod m008_create_billing_plans;
 mod m009_create_webhook_processed_events;
 mod m010_create_billing_processed_events;
+{{#if has_invitations}}
+mod m011_create_organization_invitations;
+{{/if}}
 
 pub struct Migrator;
 
@@ -37,6 +40,9 @@ impl MigratorTrait for Migrator {
             Box::new(m008_create_billing_plans::Migration),
             Box::new(m009_create_webhook_processed_events::Migration),
             Box::new(m010_create_billing_processed_events::Migration),
+            {{#if has_invitations}}
+            Box::new(m011_create_organization_invitations::Migration),
+            {{/if}}
         ]
     }
 }

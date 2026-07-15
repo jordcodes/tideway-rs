@@ -38,6 +38,7 @@ pub fn run_with_runtime(runtime: CommandRuntime) -> Result<()> {
     println!("  - OrgSettings.vue      Edit organization details");
     println!("  - MemberList.vue       List members with roles");
     println!("  - InviteMember.vue     Send email invitations");
+    println!("  - AcceptInvitation.vue Accept an emailed invitation");
     println!("  - useOrganization.ts   Organization composable");
 
     println!("\n{}", "Shared:".yellow());

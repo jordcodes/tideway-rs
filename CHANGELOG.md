@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [Unreleased]
+
+### Added
+
+- Greenfield SaaS and B2B scaffolds include application-owned organization invitation routes,
+  persistence, migrations, email delivery, and an authenticated Vue acceptance flow. Invitations
+  remain optional through `--without-invitations`.
+- `InvitationRateLimitProvider` lets generated applications replace the zero-configuration,
+  process-local invitation limiter with an application-owned shared provider before deploying
+  multiple API replicas.
+
+### Security
+
+- Generated invitations store token digests, verify the accepting account's email, enforce
+  organization-scoped administration, reject owner-role grants, claim tokens atomically, and clean
+  up failed email delivery safely.
+- Invitation issuance and acceptance serialize organization membership changes and enforce billing
+  seat availability, including concurrent requests for the final seat.
+
+### Fixed
+
+- Invitation quotas now replenish the configured allowance evenly across the window instead of
+  replenishing only one permit per complete window after the initial burst.
+
+### Migration Notes
+
+- Existing generated applications remain application-owned and are not modified by upgrade checks.
+  Adopt the invitation security checklist in `docs/organizations.md` with schema-compatible edits.
+- The in-memory limiter remains the default and requires no Redis configuration. Applications using
+  multiple API replicas should provide a shared `InvitationRateLimitProvider`.
+
 ## [tideway-cli 0.1.40] - 2026-07-14
 
 ### Fixed

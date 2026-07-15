@@ -35,4 +35,13 @@ pub use super::organization_member::{
     Entity as OrganizationMemberEntity,
     Model as OrganizationMemberModel,
 };
+
+{{#if has_invitations}}
+pub use super::organization_invitation::{
+    ActiveModel as OrganizationInvitationActiveModel,
+    Column as OrganizationInvitationColumn,
+    Entity as OrganizationInvitationEntity,
+    Model as OrganizationInvitationModel,
+};
+{{/if}}
 {{/if}}

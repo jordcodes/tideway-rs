@@ -125,7 +125,7 @@ impl JwkSet {
 /// # Security Note
 ///
 /// For production use, always configure both issuer and audience validation
-/// using [`set_issuer`] and [`set_audience`]. Without these checks, tokens
+/// using [`JwtVerifier::set_issuer`] and [`JwtVerifier::set_audience`]. Without these checks, tokens
 /// from any issuer could be accepted if they have a valid signature.
 #[derive(Clone)]
 pub struct JwtVerifier<C> {
@@ -155,7 +155,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     /// # Security Warning
     ///
     /// After creating a verifier, you should configure issuer and audience
-    /// validation using [`set_issuer`] and [`set_audience`] before use in production.
+    /// validation using [`Self::set_issuer`] and [`Self::set_audience`] before use in production.
     pub async fn from_jwks_url(url: impl Into<String>, algorithm: Algorithm) -> Result<Self> {
         Self::from_jwks_url_with_client(url, algorithm, JwksClient::new()?).await
     }
@@ -192,7 +192,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     /// # Security Warning
     ///
     /// After creating a verifier, you should configure issuer and audience
-    /// validation using [`set_issuer`] and [`set_audience`] before use in production.
+    /// validation using [`Self::set_issuer`] and [`Self::set_audience`] before use in production.
     #[deprecated(
         since = "0.7.21",
         note = "use JwtVerifier::from_secret_checked to enforce a safe minimum secret"
@@ -235,7 +235,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     /// # Security Warning
     ///
     /// After creating a verifier, you should configure issuer and audience
-    /// validation using [`set_issuer`] and [`set_audience`] before use in production.
+    /// validation using [`Self::set_issuer`] and [`Self::set_audience`] before use in production.
     pub fn from_rsa_pem(pem: &[u8]) -> Result<Self> {
         let decoding_key = DecodingKey::from_rsa_pem(pem)
             .map_err(|e| TidewayError::internal(format!("Invalid RSA PEM: {}", e)))?;
@@ -309,7 +309,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     /// # Security Warning
     ///
     /// If issuer or audience validation is not configured, a warning will be logged once.
-    /// For production use, always configure both using [`set_issuer`] and [`set_audience`].
+    /// For production use, always configure both using [`Self::set_issuer`] and [`Self::set_audience`].
     pub async fn verify(&self, token: &str) -> Result<TokenData<C>> {
         // Warn ONCE if issuer/audience validation is not configured
         // Uses OnceLock to prevent log spam in high-traffic applications

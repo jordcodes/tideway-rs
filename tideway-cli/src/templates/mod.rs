@@ -131,6 +131,8 @@ pub struct BackendTemplateContext {
     pub project_name_pascal: String,
     /// Whether the preset includes organizations (B2B)
     pub has_organizations: bool,
+    /// Whether the generated B2B app includes organization invitations
+    pub has_invitations: bool,
     /// Database type ("postgres" or "sqlite")
     pub database: String,
     /// Example DATABASE_URL for starter templates

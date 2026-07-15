@@ -6,4 +6,7 @@ pub mod verification_token;
 {{#if has_organizations}}
 pub mod organization;
 pub mod organization_member;
+{{#if has_invitations}}
+pub mod organization_invitation;
+{{/if}}
 {{/if}}

@@ -1795,6 +1795,7 @@ fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold()
         no_prompt: true,
         summary: false,
         with_env: false,
+        without_invitations: false,
         path: Some(project_dir.to_string_lossy().to_string()),
         force: false,
     };
