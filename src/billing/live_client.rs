@@ -895,13 +895,14 @@ impl StripeCheckoutClient for LiveStripeClient {
         );
         meta.insert(META_PLAN_ID.to_string(), request.metadata.plan_id.clone());
 
-        // Set subscription data with metadata (and trial period if provided)
-        // Metadata must be on subscription_data for Stripe to copy it to the subscription
-        params.subscription_data = Some(stripe::CreateCheckoutSessionSubscriptionData {
-            trial_period_days: request.trial_period_days,
-            metadata: Some(meta.clone()),
-            ..Default::default()
-        });
+        // Stripe rejects subscription_data for one-time Payment and Setup sessions.
+        if request.mode == CheckoutMode::Subscription {
+            params.subscription_data = Some(stripe::CreateCheckoutSessionSubscriptionData {
+                trial_period_days: request.trial_period_days,
+                metadata: Some(meta.clone()),
+                ..Default::default()
+            });
+        }
 
         // Also set on session for reference
         params.metadata = Some(meta);

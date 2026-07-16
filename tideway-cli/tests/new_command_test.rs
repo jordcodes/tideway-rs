@@ -133,6 +133,41 @@ fn test_new_command_includes_features_and_env() {
 }
 
 #[test]
+fn test_new_credits_seaorm_includes_database_and_ledger_schema() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: None,
+        features: vec!["credits-seaorm".to_string()],
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+
+    tideway_cli::commands::new::run(args).expect("create credits app");
+
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"credits\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"credits-seaorm\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"database\"");
+    assert_file_contains(&project_dir.join("migration/Cargo.toml"), "with-json");
+    assert_file_contains(
+        &project_dir.join("migration/src/m013_create_credit_ledger.rs"),
+        "credit_buckets",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m013_create_credit_ledger::Migration)",
+    );
+}
+
+#[test]
 fn test_new_command_compiles_with_features_smoke() {
     if std::env::var("TIDEWAY_CLI_SMOKE").is_err() {
         return;

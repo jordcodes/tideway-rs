@@ -74,6 +74,33 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## 0.7.27 to 0.7.28: optional credits and allowances
+
+The credits module is opt-in. Upgrading Tideway does not create tables, change billing behavior, or
+require existing applications to adopt it. Applications that want allowances or prepaid product
+units should first complete the normal framework upgrade above, then make adoption a separate,
+reviewable change:
+
+1. From a clean application worktree, run `tideway add credits`. The command adds the `credits` and
+   `credits-seaorm` features, enables SeaORM's `with-json` migration support, and creates a ledger
+   migration using the next available migration number.
+2. Review the `Cargo.toml`, `migration/Cargo.toml`, generated migration, and migration registration.
+   The command never renames, renumbers, or overwrites existing application migrations. Rerunning it
+   detects an existing credits migration rather than creating another one.
+3. Apply the migration through the application's normal deployment workflow before deploying code
+   that constructs `SeaOrmCreditStore`.
+4. Wire `CreditManager` only at application-owned usage boundaries. Derive `account_id` from the
+   authenticated actor; do not trust a tenant identifier supplied directly by a client.
+5. If prepaid Stripe top-ups are needed, enable `credits-stripe`, define immutable server-side pack
+   IDs, and attach `CreditTopUpEventSink` to the existing billing webhook handler.
+6. Run `tideway doctor --deny-warnings` and the application's migration, authorization, billing, and
+   concurrency tests before committing.
+
+Rollback is additive: application code can stop using the module while retaining the ledger tables.
+Do not drop the tables during an emergency application rollback because they contain balances,
+reservations, idempotency records, and audit history. See [Credits and allowances](credits.md) for
+the full reserve/commit workflow and operational guidance.
+
 ## CLI 0.1.42 to 0.1.43: stable JWT identity
 
 This CLI update changes newly generated auth code and does not rewrite existing application-owned

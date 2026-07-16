@@ -11,6 +11,7 @@
 //! - **Health Checks**: Built-in health check system
 //! - **OpenAPI**: Automatic API documentation with utoipa
 //! - **Webhooks**: Webhook handling with verification and idempotency
+//! - **Credits**: Optional atomic allowances and prepaid product-credit ledger
 //! - **Testing**: Alba-style HTTP testing utilities
 //!
 //! # Quick Start
@@ -57,6 +58,15 @@ pub mod billing {
 #[cfg(all(not(feature = "billing"), feature = "feature-gate-warnings"))]
 #[deprecated(note = "Enable the `billing` feature to use tideway::billing")]
 pub mod billing {}
+#[cfg(feature = "credits")]
+pub mod credits;
+#[cfg(all(not(feature = "credits"), feature = "feature-gate-errors"))]
+pub mod credits {
+    compile_error!("Enable the `credits` feature to use tideway::credits");
+}
+#[cfg(all(not(feature = "credits"), feature = "feature-gate-warnings"))]
+#[deprecated(note = "Enable the `credits` feature to use tideway::credits")]
+pub mod credits {}
 #[cfg(feature = "organizations")]
 pub mod organizations;
 #[cfg(all(not(feature = "organizations"), feature = "feature-gate-errors"))]

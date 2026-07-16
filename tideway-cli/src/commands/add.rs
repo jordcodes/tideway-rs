@@ -47,6 +47,10 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
     if args.feature == AddFeature::Organizations {
         validate_organizations_preconditions(&project_dir, args.db)?;
     }
+    if args.feature == AddFeature::Credits {
+        validate_credits_preconditions(&project_dir)?;
+        ensure_migration_json_feature(&project_dir.join("migration/Cargo.toml"))?;
+    }
 
     update_cargo_toml(&cargo_path, &cargo_contents, args.feature)?;
     update_env_example(&project_dir, args.feature, &project_name)?;
@@ -92,6 +96,22 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
             wire_organizations_in_main(&project_dir)?;
         } else {
             print_info("Next steps: wire OrganizationModule in main.rs");
+        }
+    }
+
+    if args.feature == AddFeature::Credits {
+        let migration = scaffold_credits(&project_dir, &project_name, &project_name_pascal)?;
+        print_info(&format!(
+            "Credits ledger migration ready: migration/src/{migration}.rs"
+        ));
+        if args.wire {
+            print_info(
+                "Credits has no global router to wire; construct CreditManager where your application handles billable usage.",
+            );
+        } else {
+            print_info(
+                "Next step: run migrations, then construct CreditManager<SeaOrmCreditStore>",
+            );
         }
     }
 
@@ -221,8 +241,203 @@ fn tideway_features_for_add(feature: AddFeature) -> Vec<String> {
             "organizations".to_string(),
             "organizations-seaorm".to_string(),
         ],
+        AddFeature::Credits => vec![
+            "database".to_string(),
+            "credits".to_string(),
+            "credits-seaorm".to_string(),
+        ],
         _ => vec![feature.to_string()],
     }
+}
+
+fn validate_credits_preconditions(project_dir: &Path) -> Result<()> {
+    let migration_lib = project_dir.join("migration/src/lib.rs");
+    let migration_cargo = project_dir.join("migration/Cargo.toml");
+    if !migration_lib.exists() || !migration_cargo.exists() {
+        return Err(anyhow::anyhow!(error_contract(
+            "Credits requires an existing SeaORM migration crate",
+            "The durable credit store needs its four ledger tables.",
+            "Add Tideway database support first, then run `tideway add credits` again.",
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_migration_json_feature(path: &Path) -> Result<()> {
+    let contents =
+        fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let dependency = doc
+        .get_mut("dependencies")
+        .and_then(toml_edit::Item::as_table_mut)
+        .and_then(|dependencies| dependencies.get_mut("sea-orm-migration"))
+        .ok_or_else(|| {
+            anyhow::anyhow!(error_contract(
+                "migration/Cargo.toml does not depend on sea-orm-migration",
+                "The credits migration uses SeaORM JSON column definitions.",
+                "Add sea-orm-migration to the migration crate, then rerun `tideway add credits`.",
+            ))
+        })?;
+
+    if dependency.is_str() {
+        let version = dependency
+            .as_str()
+            .expect("string dependency checked above")
+            .to_string();
+        let mut table = toml_edit::InlineTable::new();
+        table.get_or_insert("version", version);
+        table.get_or_insert("features", array_value(&["with-json"]));
+        *dependency = toml_edit::Item::Value(toml_edit::Value::InlineTable(table));
+    } else {
+        let features = dependency["features"]
+            .or_insert(toml_edit::Item::Value(toml_edit::Value::Array(
+                toml_edit::Array::new(),
+            )))
+            .as_array_mut()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Invalid migration/Cargo.toml: sea-orm-migration.features must be an array"
+                )
+            })?;
+        if !features
+            .iter()
+            .any(|feature| feature.as_str() == Some("with-json"))
+        {
+            features.push("with-json");
+        }
+    }
+
+    write_file(path, &doc.to_string())
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
+fn scaffold_credits(
+    project_dir: &Path,
+    project_name: &str,
+    project_name_pascal: &str,
+) -> Result<String> {
+    let context = BackendTemplateContext {
+        project_name: project_name.to_string(),
+        project_crate: project_name.replace('-', "_"),
+        project_name_pascal: project_name_pascal.to_string(),
+        has_organizations: false,
+        has_invitations: false,
+        database: "postgres".to_string(),
+        database_url: format!(
+            "postgres://postgres:postgres@localhost:5432/{}",
+            project_name
+        ),
+        is_sqlite_database: false,
+        tideway_version: TIDEWAY_VERSION.to_string(),
+        tideway_features: vec![
+            "database".to_string(),
+            "credits".to_string(),
+            "credits-seaorm".to_string(),
+        ],
+        has_tideway_features: true,
+        has_auth_feature: false,
+        has_auth_mfa_feature: false,
+        has_database_feature: true,
+        has_billing_feature: false,
+        has_openapi_feature: false,
+        needs_arc: false,
+        has_config: false,
+    };
+    let engine = BackendTemplateEngine::new(context)?;
+    let migrations_dir = project_dir.join("migration/src");
+    let migration = if let Some(existing) = find_credits_migration(&migrations_dir)? {
+        existing
+    } else {
+        let migration = next_credits_migration(&migrations_dir)?;
+        let migration_path = migrations_dir.join(format!("{migration}.rs"));
+        write_file(
+            &migration_path,
+            &engine.render("migrations/m013_create_credit_ledger")?,
+        )?;
+        migration
+    };
+    ensure_migration_registered(&migrations_dir.join("lib.rs"), &migration)?;
+    Ok(migration)
+}
+
+fn find_credits_migration(migrations_dir: &Path) -> Result<Option<String>> {
+    for entry in fs::read_dir(migrations_dir)
+        .with_context(|| format!("Failed to read {}", migrations_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !is_numbered_migration_module(module) {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let generated_schema = [
+            "CreditBuckets",
+            "CreditReservations",
+            "CreditReservationAllocations",
+            "CreditTransactions",
+        ]
+        .iter()
+        .all(|identifier| contents.contains(identifier));
+        let raw_sql_schema = [
+            "credit_buckets",
+            "credit_reservations",
+            "credit_reservation_allocations",
+            "credit_transactions",
+        ]
+        .iter()
+        .all(|table| contents.contains(table));
+        if generated_schema || raw_sql_schema {
+            return Ok(Some(module.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn next_credits_migration(migrations_dir: &Path) -> Result<String> {
+    let mut max_number = 12u64;
+    let mut width = 3usize;
+    for entry in fs::read_dir(migrations_dir)
+        .with_context(|| format!("Failed to read {}", migrations_dir.display()))?
+    {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(stem) = name.strip_suffix(".rs") else {
+            continue;
+        };
+        let Some((number, number_width)) = migration_prefix(stem) else {
+            continue;
+        };
+        max_number = max_number.max(number);
+        width = width.max(number_width);
+    }
+    let next = max_number
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("Migration number overflow"))?;
+    Ok(format!(
+        "m{next:0width$}_create_credit_ledger",
+        width = width
+    ))
+}
+
+fn is_numbered_migration_module(module: &str) -> bool {
+    migration_prefix(module).is_some()
+}
+
+fn migration_prefix(module: &str) -> Option<(u64, usize)> {
+    let digits = module.strip_prefix('m')?.split('_').next()?;
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some((digits.parse().ok()?, digits.len()))
 }
 
 fn update_env_example(project_dir: &Path, feature: AddFeature, project_name: &str) -> Result<()> {
@@ -677,7 +892,7 @@ fn ensure_entities_mod_decl(path: &Path, module: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_migration_registered(path: &Path, migration: &str) -> Result<()> {
+pub(crate) fn ensure_migration_registered(path: &Path, migration: &str) -> Result<()> {
     let mut contents = if path.exists() {
         fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?
     } else {

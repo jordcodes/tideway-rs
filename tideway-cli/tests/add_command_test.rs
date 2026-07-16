@@ -70,6 +70,125 @@ tideway = "0.7"
 }
 
 #[test]
+fn test_add_credits_is_additive_and_registers_ledger_migration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    write_migration_cargo(&project_dir, false);
+
+    tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    })
+    .expect("add credits");
+
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"credits\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"credits-seaorm\"");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"database\"");
+    let migration = project_dir.join("migration/src/m013_create_credit_ledger.rs");
+    assert!(migration.exists());
+    assert_file_contains(&migration, "credit_buckets");
+    assert_file_contains(&migration, "credit_reservations");
+    assert_file_contains(&migration, "credit_transactions");
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m013_create_credit_ledger::Migration)",
+    );
+    assert_file_contains(&project_dir.join("migration/Cargo.toml"), "with-json");
+}
+
+#[test]
+fn test_add_credits_uses_next_number_without_overwriting_an_existing_migration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, true);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    let migration = project_dir.join("migration/src/m013_create_credit_ledger.rs");
+    fs::write(&migration, "// application-owned migration\n").expect("write sentinel");
+
+    tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: true,
+        wire: false,
+        db: false,
+    })
+    .expect("add credits after existing m013");
+
+    assert_eq!(
+        fs::read_to_string(&migration).expect("read sentinel"),
+        "// application-owned migration\n"
+    );
+    let credits_migration = project_dir.join("migration/src/m014_create_credit_ledger.rs");
+    assert_file_contains(&credits_migration, "credit_buckets");
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m014_create_credit_ledger::Migration)",
+    );
+}
+
+#[test]
+fn test_add_credits_is_idempotent_with_a_dynamically_numbered_migration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, true);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    fs::write(
+        project_dir.join("migration/src/m027_application_change.rs"),
+        "// application-owned migration\n",
+    )
+    .expect("write existing migration");
+
+    let args = || AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    };
+    tideway_cli::commands::add::run(args()).expect("first add");
+    tideway_cli::commands::add::run(args()).expect("second add");
+
+    let migration = project_dir.join("migration/src/m028_create_credit_ledger.rs");
+    assert_file_contains(&migration, "credit_transactions");
+    assert!(
+        !project_dir
+            .join("migration/src/m029_create_credit_ledger.rs")
+            .exists()
+    );
+    let migration_lib =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    assert_eq!(
+        migration_lib
+            .matches("Box::new(m028_create_credit_ledger::Migration)")
+            .count(),
+        1
+    );
+}
+
+#[test]
 fn test_add_organizations_scaffolds_without_billing_or_admin() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -1343,6 +1462,24 @@ edition = "2021"
 tideway = { version = "0.7", features = ["auth", "database"] }
 "#;
     fs::write(project_dir.join("Cargo.toml"), cargo).expect("write Cargo.toml");
+}
+
+fn write_migration_cargo(project_dir: &Path, with_json: bool) {
+    let feature = if with_json { ", \"with-json\"" } else { "" };
+    fs::write(
+        project_dir.join("migration/Cargo.toml"),
+        format!(
+            r#"[package]
+name = "migration"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sea-orm-migration = {{ version = "1.1", features = ["sqlx-postgres"{feature}] }}
+"#
+        ),
+    )
+    .expect("write migration Cargo.toml");
 }
 
 fn write_org_aware_contract_files(project_dir: &Path) {

@@ -30,6 +30,23 @@ pub enum BillingEvent {
         /// Application billable ID from Stripe metadata, when present.
         billable_id: Option<String>,
     },
+    /// A one-time payment Checkout Session completed or later succeeded.
+    OneTimeCheckoutCompleted {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Stripe Checkout Session ID.
+        checkout_session_id: String,
+        /// Stripe customer ID, when included in the event.
+        customer_id: Option<String>,
+        /// Application billable ID from Stripe metadata, when present.
+        billable_id: Option<String>,
+        /// Application billable type from Stripe metadata, when present.
+        billable_type: Option<String>,
+        /// Server-defined product or pack ID from Stripe metadata, when present.
+        plan_id: Option<String>,
+        /// Stripe payment status, such as `paid` or `unpaid`.
+        payment_status: Option<String>,
+    },
     /// Stripe created a subscription and Tideway synchronized it locally.
     SubscriptionCreated {
         /// Shared Stripe event metadata.
@@ -97,6 +114,7 @@ impl BillingEvent {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::CheckoutCompleted { .. } => "checkout_completed",
+            Self::OneTimeCheckoutCompleted { .. } => "one_time_checkout_completed",
             Self::SubscriptionCreated { .. } => "subscription_created",
             Self::SubscriptionUpdated { .. } => "subscription_updated",
             Self::SubscriptionDeleted { .. } => "subscription_deleted",
@@ -108,6 +126,7 @@ impl BillingEvent {
     fn context(&self) -> &BillingEventContext {
         match self {
             Self::CheckoutCompleted { context, .. }
+            | Self::OneTimeCheckoutCompleted { context, .. }
             | Self::SubscriptionCreated { context, .. }
             | Self::SubscriptionUpdated { context, .. }
             | Self::SubscriptionDeleted { context, .. }

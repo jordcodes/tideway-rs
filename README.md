@@ -50,6 +50,9 @@ Feature flags are opt-in unless marked Default.
 | `test-auth-bypass` | `auth` | `docs/auth.md` | `tests/auth_integration_test.rs` | Tests only |
 | `billing` | `billing` | `docs/billing.md` | — | — |
 | `billing-seaorm` | `billing` | `docs/billing.md` | — | — |
+| `credits` | `credits` | `docs/credits.md` | — | Provider-neutral in-memory/reference ledger |
+| `credits-seaorm` | `credits` | `docs/credits.md` | — | Atomic persistent ledger |
+| `credits-stripe` | `credits` | `docs/credits.md` | — | Optional Stripe top-up adapter |
 | `test-billing` | `billing` | `docs/billing.md` | `tests/` | Tests only |
 | `organizations` | `organizations` | `docs/organizations.md` | — | — |
 | `organizations-seaorm` | `organizations` | `docs/organizations.md` | — | — |
@@ -144,7 +147,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.27"
+tideway = "0.7.28"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 ```
 

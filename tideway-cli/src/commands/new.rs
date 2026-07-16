@@ -57,6 +57,9 @@ const SUPPORTED_TIDEWAY_FEATURES: &[&str] = &[
     "auth-mfa",
     "billing",
     "billing-seaorm",
+    "credits",
+    "credits-seaorm",
+    "credits-stripe",
     "cache",
     "cache-redis",
     "database",
@@ -288,6 +291,7 @@ fn scaffold_files(
     let has_auth_mfa_feature = normalized_features.contains("auth-mfa");
     let has_database_feature = normalized_features.contains("database");
     let has_database_auth = has_auth_feature && normalized_features.contains("database");
+    let has_credits_store = normalized_features.contains("credits-seaorm");
 
     write_file_with_force_or_error_default(
         &target_dir.join("Cargo.toml"),
@@ -450,6 +454,18 @@ fn scaffold_files(
                 }
             }
         }
+
+        if has_credits_store {
+            write_file_with_force_or_error_default(
+                &target_dir.join("migration/src/m013_create_credit_ledger.rs"),
+                &engine.render("migrations/m013_create_credit_ledger")?,
+                args.force,
+            )?;
+            crate::commands::add::ensure_migration_registered(
+                &target_dir.join("migration/src/lib.rs"),
+                "m013_create_credit_ledger",
+            )?;
+        }
     }
 
     Ok(())
@@ -528,6 +544,9 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
         files.push("migration/src/lib.rs".to_string());
         files.push("migration/src/main.rs".to_string());
         files.push("src/entities/mod.rs".to_string());
+        if normalized_features.contains("credits-seaorm") {
+            files.push("migration/src/m013_create_credit_ledger.rs".to_string());
+        }
     }
 
     if backend_preset.is_none() && has_database_auth {
@@ -803,6 +822,10 @@ fn normalize_features(features: &[String]) -> BTreeSet<String> {
             other => other,
         };
         normalized.insert(mapped.to_string());
+    }
+    if normalized.contains("credits-seaorm") {
+        normalized.insert("credits".to_string());
+        normalized.insert("database".to_string());
     }
     normalized
 }

@@ -127,6 +127,7 @@ tideway add auth --wire
 tideway add database
 tideway add database --wire
 tideway add organizations --wire --db
+tideway add credits
 tideway add openapi
 tideway add openapi --wire
 ```
@@ -134,6 +135,11 @@ tideway add openapi --wire
 When adding OpenAPI, the CLI creates `src/openapi_docs.rs` if it does not exist.
 `tideway add organizations --wire --db` is a focused backend add path: it generates organization routes, entities, and migrations without billing/admin scaffolding.
 It currently expects an existing org-aware DB-backed auth/user contract (`RequestActor` organization helpers, `user.organization_id`, and registered user migrations). If you only need an organization-shaped CRUD resource, use `tideway resource organization --profile tenant`.
+
+`tideway add credits` is additive: it enables the persistent credits features and registers a new
+ledger migration using the next available migration number, without generating or replacing
+application handlers or migration history. See `docs/credits.md` for the reserve/commit workflow
+and optional Stripe top-ups.
 
 ### `tideway resource`
 

@@ -1,0 +1,247 @@
+//! Create the optional credits and allowances ledger.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(CreditBuckets::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(CreditBuckets::Id).string().not_null().primary_key())
+                    .col(ColumnDef::new(CreditBuckets::AccountId).string().not_null())
+                    .col(ColumnDef::new(CreditBuckets::CreditType).string().not_null())
+                    .col(ColumnDef::new(CreditBuckets::Source).string().not_null())
+                    .col(ColumnDef::new(CreditBuckets::OriginalAmount).big_integer().not_null())
+                    .col(ColumnDef::new(CreditBuckets::RemainingAmount).big_integer().not_null())
+                    .col(ColumnDef::new(CreditBuckets::ExpiresAt).big_integer())
+                    .col(ColumnDef::new(CreditBuckets::IdempotencyKey).string().not_null())
+                    .col(ColumnDef::new(CreditBuckets::Metadata).json_binary().not_null())
+                    .col(ColumnDef::new(CreditBuckets::CreatedAt).big_integer().not_null())
+                    .index(
+                        Index::create()
+                            .name("uq_credit_buckets_operation")
+                            .col(CreditBuckets::AccountId)
+                            .col(CreditBuckets::CreditType)
+                            .col(CreditBuckets::IdempotencyKey)
+                            .unique(),
+                    )
+                    .check(Expr::col(CreditBuckets::OriginalAmount).gt(0))
+                    .check(Expr::col(CreditBuckets::RemainingAmount).gte(0))
+                    .check(
+                        Expr::col(CreditBuckets::RemainingAmount)
+                            .lte(Expr::col(CreditBuckets::OriginalAmount)),
+                    )
+                    .check(
+                        Expr::col(CreditBuckets::Source)
+                            .is_in(["allowance", "purchased", "promotional"]),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(CreditReservations::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(CreditReservations::Id).string().not_null().primary_key())
+                    .col(ColumnDef::new(CreditReservations::AccountId).string().not_null())
+                    .col(ColumnDef::new(CreditReservations::CreditType).string().not_null())
+                    .col(ColumnDef::new(CreditReservations::Amount).big_integer().not_null())
+                    .col(ColumnDef::new(CreditReservations::Status).string().not_null())
+                    .col(ColumnDef::new(CreditReservations::IdempotencyKey).string().not_null())
+                    .col(ColumnDef::new(CreditReservations::ConsumptionOrder).string().not_null())
+                    .col(ColumnDef::new(CreditReservations::ExpiresAt).big_integer().not_null())
+                    .col(ColumnDef::new(CreditReservations::CreatedAt).big_integer().not_null())
+                    .col(ColumnDef::new(CreditReservations::UpdatedAt).big_integer().not_null())
+                    .col(ColumnDef::new(CreditReservations::Metadata).json_binary().not_null())
+                    .index(
+                        Index::create()
+                            .name("uq_credit_reservations_operation")
+                            .col(CreditReservations::AccountId)
+                            .col(CreditReservations::CreditType)
+                            .col(CreditReservations::IdempotencyKey)
+                            .unique(),
+                    )
+                    .check(Expr::col(CreditReservations::Amount).gt(0))
+                    .check(
+                        Expr::col(CreditReservations::Status)
+                            .is_in(["reserved", "committed", "released"]),
+                    )
+                    .check(
+                        Expr::col(CreditReservations::ConsumptionOrder)
+                            .is_in(["allowance_first", "earliest_expiry"]),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(CreditReservationAllocations::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(CreditReservationAllocations::ReservationId).string().not_null())
+                    .col(ColumnDef::new(CreditReservationAllocations::BucketId).string().not_null())
+                    .col(ColumnDef::new(CreditReservationAllocations::Amount).big_integer().not_null())
+                    .primary_key(
+                        Index::create()
+                            .col(CreditReservationAllocations::ReservationId)
+                            .col(CreditReservationAllocations::BucketId),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(
+                                CreditReservationAllocations::Table,
+                                CreditReservationAllocations::ReservationId,
+                            )
+                            .to(CreditReservations::Table, CreditReservations::Id)
+                            .on_delete(ForeignKeyAction::Cascade),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .from(
+                                CreditReservationAllocations::Table,
+                                CreditReservationAllocations::BucketId,
+                            )
+                            .to(CreditBuckets::Table, CreditBuckets::Id)
+                            .on_delete(ForeignKeyAction::Restrict),
+                    )
+                    .check(Expr::col(CreditReservationAllocations::Amount).gt(0))
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(CreditTransactions::Table)
+                    .if_not_exists()
+                    .col(ColumnDef::new(CreditTransactions::Id).string().not_null().primary_key())
+                    .col(ColumnDef::new(CreditTransactions::AccountId).string().not_null())
+                    .col(ColumnDef::new(CreditTransactions::CreditType).string().not_null())
+                    .col(ColumnDef::new(CreditTransactions::Kind).string().not_null())
+                    .col(ColumnDef::new(CreditTransactions::Amount).big_integer().not_null())
+                    .col(ColumnDef::new(CreditTransactions::BucketId).string())
+                    .col(ColumnDef::new(CreditTransactions::ReservationId).string())
+                    .col(ColumnDef::new(CreditTransactions::IdempotencyKey).string().not_null())
+                    .col(ColumnDef::new(CreditTransactions::CreatedAt).big_integer().not_null())
+                    .col(ColumnDef::new(CreditTransactions::Metadata).json_binary().not_null())
+                    .check(Expr::col(CreditTransactions::Amount).gt(0))
+                    .check(
+                        Expr::col(CreditTransactions::Kind)
+                            .is_in(["grant", "reserve", "commit", "release"]),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_credit_buckets_balance")
+                    .table(CreditBuckets::Table)
+                    .col(CreditBuckets::AccountId)
+                    .col(CreditBuckets::CreditType)
+                    .col(CreditBuckets::ExpiresAt)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_credit_reservations_expiry")
+                    .table(CreditReservations::Table)
+                    .col(CreditReservations::Status)
+                    .col(CreditReservations::ExpiresAt)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_credit_transactions_history")
+                    .table(CreditTransactions::Table)
+                    .col(CreditTransactions::AccountId)
+                    .col(CreditTransactions::CreditType)
+                    .col(CreditTransactions::CreatedAt)
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(CreditTransactions::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(CreditReservationAllocations::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(CreditReservations::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(CreditBuckets::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum CreditBuckets {
+    Table,
+    Id,
+    AccountId,
+    CreditType,
+    Source,
+    OriginalAmount,
+    RemainingAmount,
+    ExpiresAt,
+    IdempotencyKey,
+    Metadata,
+    CreatedAt,
+}
+
+#[derive(DeriveIden)]
+enum CreditReservations {
+    Table,
+    Id,
+    AccountId,
+    CreditType,
+    Amount,
+    Status,
+    IdempotencyKey,
+    ConsumptionOrder,
+    ExpiresAt,
+    CreatedAt,
+    UpdatedAt,
+    Metadata,
+}
+
+#[derive(DeriveIden)]
+enum CreditReservationAllocations {
+    Table,
+    ReservationId,
+    BucketId,
+    Amount,
+}
+
+#[derive(DeriveIden)]
+enum CreditTransactions {
+    Table,
+    Id,
+    AccountId,
+    CreditType,
+    Kind,
+    Amount,
+    BucketId,
+    ReservationId,
+    IdempotencyKey,
+    CreatedAt,
+    Metadata,
+}

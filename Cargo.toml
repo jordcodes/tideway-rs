@@ -4,7 +4,7 @@ exclude = ["load-tests/app"]
 
 [package]
 name = "tideway"
-version = "0.7.27"
+version = "0.7.28"
 edition = "2024"
 authors = ["JD"]
 description = "A batteries-included Rust web framework built on Axum for building SaaS applications quickly"
@@ -159,6 +159,12 @@ auth-breach = ["sha1"]
 billing = ["hex", "secrecy", "async-stripe"]
 # SeaORM-backed billing storage
 billing-seaorm = ["billing", "database"]
+# Provider-neutral allowances and prepaid credits
+credits = []
+# SeaORM-backed credit ledger
+credits-seaorm = ["credits", "database"]
+# Stripe Checkout top-ups and webhook fulfilment
+credits-stripe = ["credits", "billing"]
 # Testing helper for billing (in-memory store)
 test-billing = []
 # Organizations module

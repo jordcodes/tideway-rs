@@ -142,7 +142,9 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
         };
 
         let outcome = match event.event_type.as_str() {
-            "checkout.session.completed" => self.handle_checkout_completed(&event).await,
+            "checkout.session.completed" | "checkout.session.async_payment_succeeded" => {
+                self.handle_checkout_completed(&event).await
+            }
             "customer.subscription.created" | "customer.subscription.updated" => {
                 self.handle_subscription_updated(&event).await
             }
@@ -179,8 +181,27 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
 
         // Get subscription ID from the completed checkout
         let Some(subscription_id) = value_id(session.get("subscription")) else {
-            // Not a subscription checkout (maybe one-time payment)
-            return Ok(WebhookOutcome::Ignored);
+            if session.get("mode").and_then(serde_json::Value::as_str) != Some("payment") {
+                return Ok(WebhookOutcome::Ignored);
+            }
+            let checkout_session_id = value_id(session.get("id")).ok_or_else(|| {
+                crate::error::TidewayError::BadRequest("Missing Checkout Session ID".to_string())
+            })?;
+            self.event_sink
+                .handle(&BillingEvent::OneTimeCheckoutCompleted {
+                    context: event_context(event),
+                    checkout_session_id,
+                    customer_id: value_id(session.get("customer")),
+                    billable_id: metadata_value(session, "billable_id"),
+                    billable_type: metadata_value(session, "billable_type"),
+                    plan_id: metadata_value(session, "plan_id"),
+                    payment_status: session
+                        .get("payment_status")
+                        .and_then(serde_json::Value::as_str)
+                        .map(String::from),
+                })
+                .await?;
+            return Ok(WebhookOutcome::Processed);
         };
 
         // The subscription.created webhook will handle syncing the actual subscription
@@ -516,6 +537,7 @@ fn is_supported_event_type(event_type: &str) -> bool {
     matches!(
         event_type,
         "checkout.session.completed"
+            | "checkout.session.async_payment_succeeded"
             | "customer.subscription.created"
             | "customer.subscription.updated"
             | "customer.subscription.deleted"
@@ -811,6 +833,84 @@ mod tests {
                 && subscription_id == "sub_123"
                 && customer_id == "cus_123"
         ));
+    }
+
+    #[tokio::test]
+    async fn one_time_checkout_is_delivered_with_trusted_metadata() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let event = WebhookEvent {
+            id: "evt_topup".to_string(),
+            event_type: "checkout.session.completed".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "cs_topup",
+                    "mode": "payment",
+                    "customer": "cus_123",
+                    "payment_status": "paid",
+                    "metadata": {
+                        "billable_id": "org-1",
+                        "billable_type": "credit_top_up",
+                        "plan_id": "sms_100"
+                    }
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert_eq!(
+            handler.handle_event(event).await.unwrap(),
+            WebhookOutcome::Processed
+        );
+        let events = sink.events.lock().unwrap();
+        assert!(matches!(
+            &events[0],
+            BillingEvent::OneTimeCheckoutCompleted {
+                checkout_session_id,
+                billable_id: Some(billable_id),
+                billable_type: Some(billable_type),
+                plan_id: Some(plan_id),
+                payment_status: Some(payment_status),
+                ..
+            } if checkout_session_id == "cs_topup"
+                && billable_id == "org-1"
+                && billable_type == "credit_top_up"
+                && plan_id == "sms_100"
+                && payment_status == "paid"
+        ));
+    }
+
+    #[tokio::test]
+    async fn setup_checkout_cannot_emit_a_paid_top_up_event() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let event = WebhookEvent {
+            id: "evt_setup".to_string(),
+            event_type: "checkout.session.completed".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "cs_setup",
+                    "mode": "setup",
+                    "payment_status": "no_payment_required",
+                    "metadata": {
+                        "billable_id": "org-1",
+                        "billable_type": "credit_top_up",
+                        "plan_id": "sms_100"
+                    }
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert_eq!(
+            handler.handle_event(event).await.unwrap(),
+            WebhookOutcome::Ignored
+        );
+        assert!(sink.events.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

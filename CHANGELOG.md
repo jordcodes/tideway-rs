@@ -9,6 +9,77 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.44] - 2026-07-16
+
+### Added
+
+- `tideway add credits` enables the persistent credits module and creates an application-owned
+  ledger migration without generating public routes or replacing application business logic.
+- New custom projects selecting `credits-seaorm` include and register the ledger schema.
+
+### Fixed
+
+- Existing applications receive the next available migration number, starting at `m013`; Tideway
+  never renames, renumbers, or overwrites existing migration history, including with `--force`.
+- Repeated `tideway add credits` runs detect the existing ledger migration and remain idempotent.
+- Older migration crates gain SeaORM's required `with-json` feature without losing their existing
+  database features.
+
+### DX Gate
+
+- Collision, dynamic numbering, migration-width preservation, idempotent rerun, and fresh-project
+  schema tests pass.
+- The complete CLI suite passes, including generated minimal, API, auth/MFA, and SaaS application
+  compilation, alongside strict Clippy and repository guardrails.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.44`; newly generated projects use Tideway
+  0.7.28.
+- Existing applications are unchanged unless they opt in. Upgrade Tideway first, then run
+  `tideway add credits`, inspect the additive migration, apply it before deploying credits-backed
+  code, and follow `docs/upgrading.md` for authorization, testing, and rollback guidance.
+
+## [0.7.28] - 2026-07-16
+
+### Added
+
+- Provider-neutral `credits` and `credits-seaorm` modules provide integer allowances, persistent
+  top-ups, atomic reservations, idempotent grants and consumption, release/refund handling,
+  bounded history, and account-scoped balances.
+- The optional `credits-stripe` adapter creates payment-mode Checkout Sessions from immutable,
+  server-owned pack definitions and fulfils paid top-ups through idempotent billing events.
+- Billing lifecycle hooks expose completed one-time payment Checkout Sessions, including delayed
+  payment success, through the existing non-exhaustive `BillingEvent` API.
+
+### Security
+
+- Credit operations require explicit account IDs, fail closed across tenant boundaries, validate
+  amounts, identifiers, metadata size, reservation TTLs, and idempotency reuse, and never generate
+  unauthorised public balance or history routes.
+- Stripe fulfilment accepts only signed payment-mode events with paid or no-payment-required
+  status and resolves both price and granted quantity from the server-owned pack catalog.
+- Expired reservation cleanup is bounded and scoped to one account and credit type in request paths;
+  explicit maintenance handles larger backlogs without sweeping unrelated tenants.
+
+### DX Gate
+
+- Memory, SQLite SeaORM, and real PostgreSQL concurrency regressions confirm that concurrent
+  reservations cannot overspend and that idempotent retry, expiry, commit, and release semantics
+  remain consistent.
+- All-feature framework tests, the default workspace suite, strict Clippy, public API, docs, and
+  filesystem-write guardrails pass.
+
+### Migration Notes
+
+- This release is additive. Existing applications do not create tables or change billing behavior
+  unless they enable a credits feature.
+- Applications adopting `credits-seaorm` must apply the four-table ledger migration before
+  constructing `SeaOrmCreditStore`. Retain ledger tables during application rollback because they
+  contain balances, reservations, idempotency records, and audit history.
+- Stripe pack IDs are immutable versions. Create a new ID when changing a price, credit type, or
+  amount, and retain old definitions while webhook deliveries may still be retried.
+
 ## [tideway-cli 0.1.43] - 2026-07-16
 
 ### Fixed
