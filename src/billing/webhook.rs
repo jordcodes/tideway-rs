@@ -127,10 +127,19 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             return Ok(WebhookOutcome::Ignored);
         }
 
-        // Atomically claim idempotency before any handler side effects.
-        if !self.store.claim_event(&event.id).await? {
-            return Ok(WebhookOutcome::AlreadyProcessed);
-        }
+        // Atomically acquire an owned lease before any handler side effects.
+        let claim = match self.store.acquire_event_claim(&event.id).await? {
+            crate::webhooks::ClaimOutcome::Acquired(claim) => claim,
+            crate::webhooks::ClaimOutcome::AlreadyProcessed => {
+                return Ok(WebhookOutcome::AlreadyProcessed);
+            }
+            crate::webhooks::ClaimOutcome::InProgress { retry_after } => {
+                return Err(crate::error::TidewayError::service_unavailable(format!(
+                    "Webhook event is already being processed; retry in {} seconds",
+                    retry_after.as_secs().max(1)
+                )));
+            }
+        };
 
         let outcome = match event.event_type.as_str() {
             "checkout.session.completed" => self.handle_checkout_completed(&event).await,
@@ -144,9 +153,12 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
         };
 
         match outcome {
-            Ok(outcome) => Ok(outcome),
+            Ok(outcome) => {
+                self.store.complete_event_claim(&claim).await?;
+                Ok(outcome)
+            }
             Err(error) => {
-                if let Err(release_error) = self.store.release_event_claim(&event.id).await {
+                if let Err(release_error) = self.store.release_owned_event_claim(&claim).await {
                     tracing::warn!(
                         event_id = %event.id,
                         error = %release_error,

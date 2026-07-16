@@ -438,17 +438,31 @@ async fn handle_webhook(
 
     // Handle price events for plan sync
     if event.event_type.starts_with("price.") {
-        match state.billing_store.claim_event(&event.id).await {
-            Ok(false) => return Ok(StatusCode::OK),
-            Ok(true) => {}
+        let claim = match state.billing_store.acquire_event_claim(&event.id).await {
+            Ok(tideway::webhooks::ClaimOutcome::AlreadyProcessed) => {
+                return Ok(StatusCode::OK);
+            }
+            Ok(tideway::webhooks::ClaimOutcome::InProgress { retry_after }) => {
+                tracing::warn!(
+                    event_id = %event.id,
+                    retry_after_seconds = retry_after.as_secs().max(1),
+                    "Price webhook is already being processed"
+                );
+                return Err((StatusCode::SERVICE_UNAVAILABLE, "Retry later".to_string()));
+            }
+            Ok(tideway::webhooks::ClaimOutcome::Acquired(claim)) => claim,
             Err(e) => {
                 tracing::error!(error = %e, "Failed to claim price webhook");
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, "Processing failed".to_string()));
             }
-        }
+        };
 
         if let Err(e) = handle_price_webhook(&state, &event).await {
-            if let Err(release_error) = state.billing_store.release_event_claim(&event.id).await {
+            if let Err(release_error) = state
+                .billing_store
+                .release_owned_event_claim(&claim)
+                .await
+            {
                 tracing::error!(
                     error = %release_error,
                     event_id = %event.id,
@@ -456,6 +470,15 @@ async fn handle_webhook(
                 );
             }
             tracing::error!(error = %e, "Failed to process price webhook");
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Processing failed".to_string()));
+        }
+
+        if let Err(e) = state.billing_store.complete_event_claim(&claim).await {
+            tracing::error!(
+                error = %e,
+                event_id = %event.id,
+                "Failed to complete price webhook claim"
+            );
             return Err((StatusCode::INTERNAL_SERVER_ERROR, "Processing failed".to_string()));
         }
 

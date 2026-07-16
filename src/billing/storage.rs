@@ -3,6 +3,7 @@
 //! Implement these traits to persist billing state to your database.
 
 use crate::error::Result;
+use crate::webhooks::{ClaimOutcome, EventClaim};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -108,6 +109,29 @@ pub trait BillingStore: Send + Sync {
     ) -> Result<Option<(String, StoredSubscription)>>;
 
     // Webhook idempotency
+
+    /// Acquire an owned, recoverable processing lease.
+    ///
+    /// The compatibility default preserves existing custom stores, but cannot distinguish an
+    /// active legacy claim from completed work. Production stores should override this together
+    /// with `complete_event_claim` and `release_owned_event_claim`.
+    async fn acquire_event_claim(&self, event_id: &str) -> Result<ClaimOutcome> {
+        if self.claim_event(event_id).await? {
+            Ok(ClaimOutcome::Acquired(EventClaim::new(event_id)))
+        } else {
+            Ok(ClaimOutcome::AlreadyProcessed)
+        }
+    }
+
+    /// Complete an event only when this caller still owns its processing lease.
+    async fn complete_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        self.mark_event_processed(claim.event_id()).await
+    }
+
+    /// Release an event only when this caller still owns its processing lease.
+    async fn release_owned_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        self.release_event_claim(claim.event_id()).await
+    }
 
     /// Check if a webhook event has already been processed.
     async fn is_event_processed(&self, event_id: &str) -> Result<bool>;
@@ -519,6 +543,7 @@ pub mod test {
         customers: RwLock<HashMap<String, CustomerRecord>>,
         subscriptions: RwLock<HashMap<String, StoredSubscription>>,
         processed_events: RwLock<HashMap<String, u64>>,
+        event_claims: RwLock<HashMap<String, (String, std::time::SystemTime)>>,
         plans: RwLock<HashMap<String, StoredPlan>>,
     }
 
@@ -733,19 +758,82 @@ pub mod test {
                 .contains_key(event_id))
         }
 
-        async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        async fn acquire_event_claim(&self, event_id: &str) -> Result<ClaimOutcome> {
+            if self
+                .inner
+                .processed_events
+                .read()
+                .unwrap()
+                .contains_key(event_id)
+            {
+                return Ok(ClaimOutcome::AlreadyProcessed);
+            }
+
+            let now = std::time::SystemTime::now();
+            let mut claims = self.inner.event_claims.write().unwrap();
+            // Completion records `processed` while holding this lock. Recheck after acquiring it
+            // so a delivery racing with completion cannot claim the event between states.
+            if self
+                .inner
+                .processed_events
+                .read()
+                .unwrap()
+                .contains_key(event_id)
+            {
+                return Ok(ClaimOutcome::AlreadyProcessed);
+            }
+            if let Some((_, claimed_at)) = claims.get(event_id) {
+                let age = now.duration_since(*claimed_at).unwrap_or_default();
+                if age < crate::webhooks::DEFAULT_CLAIM_TTL {
+                    return Ok(ClaimOutcome::InProgress {
+                        retry_after: crate::webhooks::DEFAULT_CLAIM_TTL.saturating_sub(age),
+                    });
+                }
+            }
+            let claim = EventClaim::new(event_id);
+            claims.insert(event_id.to_string(), (claim.token().to_string(), now));
+            Ok(ClaimOutcome::Acquired(claim))
+        }
+
+        async fn complete_event_claim(&self, claim: &EventClaim) -> Result<()> {
+            let mut claims = self.inner.event_claims.write().unwrap();
+            if claims
+                .get(claim.event_id())
+                .is_none_or(|(token, _)| token != claim.token())
+            {
+                return Err(crate::TidewayError::internal(
+                    "Billing webhook event claim is no longer owned by this worker",
+                ));
+            }
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
+                .map(|duration| duration.as_secs())
                 .unwrap_or(0);
-
-            Ok(self
-                .inner
+            self.inner
                 .processed_events
                 .write()
                 .unwrap()
-                .insert(event_id.to_string(), now)
-                .is_none())
+                .insert(claim.event_id().to_string(), now);
+            claims.remove(claim.event_id());
+            Ok(())
+        }
+
+        async fn release_owned_event_claim(&self, claim: &EventClaim) -> Result<()> {
+            let mut claims = self.inner.event_claims.write().unwrap();
+            if claims
+                .get(claim.event_id())
+                .is_some_and(|(token, _)| token == claim.token())
+            {
+                claims.remove(claim.event_id());
+            }
+            Ok(())
+        }
+
+        async fn claim_event(&self, event_id: &str) -> Result<bool> {
+            Ok(matches!(
+                self.acquire_event_claim(event_id).await?,
+                ClaimOutcome::Acquired(_)
+            ))
         }
 
         async fn mark_event_processed(&self, event_id: &str) -> Result<()> {
@@ -754,6 +842,7 @@ pub mod test {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
+            self.inner.event_claims.write().unwrap().remove(event_id);
             self.inner
                 .processed_events
                 .write()
@@ -763,11 +852,7 @@ pub mod test {
         }
 
         async fn release_event_claim(&self, event_id: &str) -> Result<()> {
-            self.inner
-                .processed_events
-                .write()
-                .unwrap()
-                .remove(event_id);
+            self.inner.event_claims.write().unwrap().remove(event_id);
             Ok(())
         }
 

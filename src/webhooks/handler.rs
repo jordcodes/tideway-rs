@@ -115,21 +115,37 @@ impl WebhookRouter {
         }
 
         // Atomically claim event processing in the backing store.
-        let claimed = idempotency_store.claim_event(&event_id).await?;
-        if !claimed {
-            if let Ok(mut in_flight) = self.in_flight.lock() {
-                in_flight.remove(&event_id);
+        let claim = match idempotency_store.acquire_claim(&event_id).await {
+            Ok(crate::webhooks::ClaimOutcome::Acquired(claim)) => claim,
+            Ok(crate::webhooks::ClaimOutcome::AlreadyProcessed) => {
+                if let Ok(mut in_flight) = self.in_flight.lock() {
+                    in_flight.remove(&event_id);
+                }
+                tracing::debug!(
+                    event_id = event.event_id(),
+                    "Skipping processed webhook event"
+                );
+                return Ok(());
             }
-            tracing::debug!(
-                event_id = event.event_id(),
-                "Skipping already processed/claimed event"
-            );
-            return Ok(());
-        }
-
+            Ok(crate::webhooks::ClaimOutcome::InProgress { retry_after }) => {
+                if let Ok(mut in_flight) = self.in_flight.lock() {
+                    in_flight.remove(&event_id);
+                }
+                return Err(crate::error::TidewayError::service_unavailable(format!(
+                    "Webhook event is already being processed; retry in {} seconds",
+                    retry_after.as_secs().max(1)
+                )));
+            }
+            Err(error) => {
+                if let Ok(mut in_flight) = self.in_flight.lock() {
+                    in_flight.remove(&event_id);
+                }
+                return Err(error);
+            }
+        };
         // Validate event
         if let Err(e) = handler.validate(event).await {
-            if let Err(release_err) = idempotency_store.release_claim(&event_id).await {
+            if let Err(release_err) = idempotency_store.release_owned_claim(&claim).await {
                 tracing::warn!(
                     event_id = event.event_id(),
                     error = %release_err,
@@ -145,6 +161,12 @@ impl WebhookRouter {
         // Handle event
         match handler.handle(event).await {
             Ok(()) => {
+                if let Err(error) = idempotency_store.complete_claim(&claim).await {
+                    if let Ok(mut in_flight) = self.in_flight.lock() {
+                        in_flight.remove(&event_id);
+                    }
+                    return Err(error);
+                }
                 if let Ok(mut in_flight) = self.in_flight.lock() {
                     in_flight.remove(&event_id);
                 }
@@ -158,7 +180,7 @@ impl WebhookRouter {
                 Ok(())
             }
             Err(e) => {
-                if let Err(release_err) = idempotency_store.release_claim(&event_id).await {
+                if let Err(release_err) = idempotency_store.release_owned_claim(&claim).await {
                     tracing::warn!(
                         event_id = event.event_id(),
                         error = %release_err,

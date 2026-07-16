@@ -8,5 +8,5 @@ pub mod idempotency;
 pub mod verification;
 
 pub use handler::{WebhookEvent, WebhookHandler};
-pub use idempotency::IdempotencyStore;
+pub use idempotency::{ClaimOutcome, DEFAULT_CLAIM_TTL, EventClaim, IdempotencyStore};
 pub use verification::WebhookVerifier;

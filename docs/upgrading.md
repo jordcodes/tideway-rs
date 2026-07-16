@@ -147,11 +147,17 @@ an equivalent migration unless they already have that table and constraint. The 
 replace the billing store's table. Use the next available migration number in applications that
 already have an `m010` migration, and register it without rewriting existing migrations.
 
-Applications with a custom `BillingStore` must override `claim_event` with an atomic
-insert-or-ignore operation. It must return `true` only for the caller that inserted the event and
-`false` when the event was already claimed. Also implement `release_event_claim` so a failed handler
-removes its claim and permits the provider to retry the event. `tideway doctor --upgrade` warns when
-it finds a custom billing store without either required override.
+For Tideway 0.7.27, add an application-owned migration that adds `status` (default `processed`),
+nullable `claim_token`, and nullable `claimed_at` columns to both processed-event tables. Existing
+rows remain completed. Fresh CLI projects include `m012_add_webhook_claim_lifecycle`; do not replace
+or renumber application migrations that have already run.
+
+Applications with a custom `BillingStore` should override `acquire_event_claim`,
+`complete_event_claim`, and `release_owned_event_claim`. Acquisition must atomically create or
+reclaim a stale lease. Completion and release must condition on both event ID and the opaque claim
+token, so an expired worker cannot mutate a newer worker's claim. `AlreadyProcessed` is only for
+completed work; an active claim must remain retryable. Compatibility defaults keep existing stores
+compiling, and `tideway doctor --upgrade` warns until they adopt recoverable claims.
 
 The essential SeaORM result handling is:
 
@@ -172,9 +178,9 @@ match processed_event::Entity::insert(event)
 }
 ```
 
-`release_event_claim` should delete only that event's claim. Add a database-backed concurrency test
-that launches two claims for the same event ID and asserts exactly one returns `true`, then verify a
-released claim can be acquired again.
+Keep side effects idempotent by Stripe event ID. A lease closes the process-crash loss window, but
+no database claim can guarantee exactly-once execution of an external side effect after lease
+expiry.
 
 ## Machine-readable findings
 
@@ -187,7 +193,8 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-VERSION-MISMATCH` | The application and installed CLI target different Tideway versions. |
 | `TW-UPGRADE-VALIDATOR-MISMATCH` | A direct Validator dependency is incompatible. |
 | `TW-UPGRADE-STRIPE-TLS-CONFLICT` | Direct async-stripe TLS features conflict with Tideway. |
-| `TW-UPGRADE-BILLING-CLAIM-LIFECYCLE` | A custom billing store lacks claim or release overrides. |
+| `TW-UPGRADE-BILLING-CLAIM-LIFECYCLE` | A custom billing store lacks owned acquire, complete, or release overrides. |
+| `TW-UPGRADE-BILLING-RECOVERABLE-CLAIMS` | Billing processed-event tables lack lease lifecycle columns. |
 | `TW-UPGRADE-BILLING-SUBSCRIPTION-CAS` | A custom billing store lacks an atomic subscription compare-and-save override. |
 | `TW-UPGRADE-BILLING-MIGRATION-MISSING` | The built-in billing store's event migration is absent. |
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |

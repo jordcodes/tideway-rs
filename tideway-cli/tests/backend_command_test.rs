@@ -39,6 +39,11 @@ fn test_backend_generates_webhook_idempotency_migrations() {
     assert!(billing_events.contains("billing_processed_events"));
     assert!(billing_events.contains("BillingProcessedEvents::EventId"));
     assert!(billing_events.contains("primary_key()"));
+    let lifecycle = fs::read_to_string(migrations_dir.join("m012_add_webhook_claim_lifecycle.rs"))
+        .expect("read webhook claim lifecycle migration");
+    assert!(lifecycle.contains("ClaimToken"));
+    assert!(lifecycle.contains("ClaimedAt"));
+    assert!(lifecycle.contains("Status"));
 
     let billing_plans = fs::read_to_string(migrations_dir.join("m008_create_billing_plans.rs"))
         .expect("read billing plans migration");
@@ -281,8 +286,9 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert!(billing_routes.contains("authorize_billing_owner"));
     assert!(billing_routes.contains("authorize_billing_member"));
     assert!(billing_routes.contains("require_platform_admin"));
-    assert!(billing_routes.contains("billing_store.claim_event(&event.id)"));
-    assert!(billing_routes.contains("billing_store.release_event_claim(&event.id)"));
+    assert!(billing_routes.contains("billing_store.acquire_event_claim(&event.id)"));
+    assert!(billing_routes.contains("billing_store.complete_event_claim(&claim)"));
+    assert!(billing_routes.contains(".release_owned_event_claim(&claim)"));
     assert!(billing_routes.contains("deactivate_plans_with_price(state, price_id).await?"));
     assert!(billing_routes.contains(".with_event_sink(AppBillingEventSink)"));
     assert!(billing_events.contains("impl BillingEventSink for AppBillingEventSink"));

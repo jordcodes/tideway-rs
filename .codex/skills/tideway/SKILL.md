@@ -40,7 +40,9 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
 - Access-token authentication paths should call:
   - `verify_access_token(token).await`
 - Keep raw `verify(token).await` only for generic/custom claims flows where the caller performs its own purpose validation.
-- For apps using billing webhooks, update to a version with `BillingStore::claim_event` / `release_event_claim` and prefer atomic insert-or-ignore implementations in production stores.
+- For apps using billing webhooks, use `acquire_event_claim`, `complete_event_claim`, and
+  `release_owned_event_claim`. Production stores should use token-owned expiring claims with
+  atomic stale recovery; run the additive processed-event lifecycle migration before deployment.
 - For custom production billing stores, require an atomic `compare_and_save_subscription` override whose successful write advances the optimistic-lock version.
 - Keep billing lifecycle hooks application-owned through `BillingEventSink`; handlers must use the Stripe event ID for idempotency and should enqueue slow side effects.
 - Use `tideway --json doctor --upgrade --deny-warnings` as the post-remediation agent/CI gate.
@@ -77,7 +79,8 @@ Help agents work effectively in the Tideway repo and use the CLI scaffolds corre
 - Run feature-enabled tests for affected optional modules; default `cargo test` may not compile auth or billing modules.
 - Prefer additive APIs and safer generated defaults over breaking existing generic APIs unless a breaking change is necessary to close the issue.
 - For access-token auth, protected-route verification must reject refresh tokens. Use `verify_access_token(token).await` for access paths.
-- For webhook idempotency, claim events before side effects and release claims on retryable handler errors.
+- For webhook idempotency, acquire an owned claim before side effects, complete it only after
+  success, and release that same ownership token on retryable handler errors.
 
 ## Generated App Validation
 - After changing CLI templates, run `cargo test -p tideway-cli`.

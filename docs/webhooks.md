@@ -144,7 +144,7 @@ let verifier = NoVerification;
 Webhook providers may retry failed deliveries, causing duplicate processing. Use idempotency to handle this:
 
 ```rust
-use tideway::webhooks::{IdempotencyStore, MemoryIdempotencyStore};
+use tideway::webhooks::{ClaimOutcome, IdempotencyStore, MemoryIdempotencyStore};
 
 let store = MemoryIdempotencyStore::new();
 
@@ -153,23 +153,21 @@ async fn handle_webhook(
     event_id: &str,
     payload: &[u8],
 ) -> Result<()> {
-    // Atomically claim this event for processing.
-    // If false, another worker already claimed/processed it.
-    if !store.claim_event(event_id).await? {
-        tracing::info!("Webhook {} already claimed/processed, skipping", event_id);
-        return Ok(());
-    }
+    let claim = match store.acquire_claim(event_id).await? {
+        ClaimOutcome::Acquired(claim) => claim,
+        ClaimOutcome::AlreadyProcessed => return Ok(()),
+        ClaimOutcome::InProgress { .. } => return Err(TidewayError::service_unavailable(
+            "Webhook is already being processed",
+        )),
+    };
 
     // Process the webhook...
     if let Err(e) = process_event(payload).await {
         // Release claim so provider retries can be processed later.
-        store.release_claim(event_id).await?;
+        store.release_owned_claim(&claim).await?;
         return Err(e);
     }
-
-    // Success path: keep claim as processed marker.
-
-    Ok(())
+    store.complete_claim(&claim).await
 }
 ```
 
@@ -216,7 +214,7 @@ CREATE TABLE IF NOT EXISTS webhook_processed_events (
 Implement `IdempotencyStore` for custom backends (Redis, etc.):
 
 ```rust
-use tideway::webhooks::IdempotencyStore;
+use tideway::webhooks::{ClaimOutcome, EventClaim, IdempotencyStore};
 use async_trait::async_trait;
 
 struct RedisIdempotencyStore {
@@ -226,8 +224,18 @@ struct RedisIdempotencyStore {
 
 #[async_trait]
 impl IdempotencyStore for RedisIdempotencyStore {
-    async fn claim_event(&self, event_id: &str) -> Result<bool> {
-        // Atomic SETNX with TTL (or Lua script) to claim processing
+    async fn acquire_claim(&self, event_id: &str) -> Result<ClaimOutcome> {
+        // Atomically create EventClaim::new(event_id), or reclaim a stale processing lease.
+        todo!()
+    }
+
+    async fn complete_claim(&self, claim: &EventClaim) -> Result<()> {
+        // Atomically mark processed only when event ID and claim.token() both match.
+        todo!()
+    }
+
+    async fn release_owned_claim(&self, claim: &EventClaim) -> Result<()> {
+        // Delete processing state only when event ID and claim.token() both match.
         todo!()
     }
 
@@ -265,7 +273,7 @@ use axum::{
     Extension,
 };
 use tideway::{
-    webhooks::{HmacSha256Verifier, IdempotencyStore, WebhookVerifier},
+    webhooks::{ClaimOutcome, HmacSha256Verifier, IdempotencyStore, WebhookVerifier},
     Result, TidewayError,
 };
 use std::sync::Arc;
@@ -292,11 +300,14 @@ async fn webhook_handler(
     let event: WebhookEvent = serde_json::from_slice(&body)
         .map_err(|e| TidewayError::bad_request(format!("Invalid JSON: {}", e)))?;
 
-    // 4. Atomically claim event processing
-    if !idempotency.claim_event(&event.id).await? {
-        tracing::info!("Webhook {} already claimed/processed", event.id);
-        return Ok(StatusCode::OK);
-    }
+    // 4. Atomically acquire an owned processing lease.
+    let claim = match idempotency.acquire_claim(&event.id).await? {
+        ClaimOutcome::Acquired(claim) => claim,
+        ClaimOutcome::AlreadyProcessed => return Ok(StatusCode::OK),
+        ClaimOutcome::InProgress { .. } => return Err(TidewayError::service_unavailable(
+            "Webhook is already being processed",
+        )),
+    };
 
     // 5. Process event (release claim if processing fails)
     let processing_result = match event.event_type.as_str() {
@@ -308,10 +319,11 @@ async fn webhook_handler(
         }
     };
     if let Err(e) = processing_result {
-        idempotency.release_claim(&event.id).await?;
+        idempotency.release_owned_claim(&claim).await?;
         return Err(e);
     }
 
+    idempotency.complete_claim(&claim).await?;
     Ok(StatusCode::OK)
 }
 

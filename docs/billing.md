@@ -1195,13 +1195,19 @@ impl BillingStore for MyDatabase {
 Custom production stores must override the trait's compatibility defaults for concurrent billing
 operations:
 
-- `claim_event` must atomically insert an event claim and return `false` when the event already
-  exists. `release_event_claim` must remove a failed claim so Stripe can retry it.
+- `acquire_event_claim`, `complete_event_claim`, and `release_owned_event_claim` must implement an
+  atomic, token-owned processing lease. Fresh claims block concurrent work; stale claims are
+  recoverable; completion and release must match both event ID and claim token.
 - `compare_and_save_subscription` must perform the version comparison and update in one atomic
   database operation. Return `false` when the expected version no longer matches.
 - A successful compare-and-save must persist a version different from `expected_version`. Treat
   `StoredSubscription::updated_at` as an opaque optimistic-lock token; it may be a timestamp or an
-  integer revision, but it must advance even when two writes share a wall-clock tick.
+integer revision, but it must advance even when two writes share a wall-clock tick.
+
+The built-in SeaORM store uses a five-minute claim lease by default. Configure
+`with_event_claim_ttl` longer than the slowest expected handler. Webhook side effects must still be
+idempotent by provider event ID: lease expiry permits crash recovery, so a stalled worker can
+overlap a retry after its lease expires.
 
 For SQL stores, the subscription update should follow this shape:
 

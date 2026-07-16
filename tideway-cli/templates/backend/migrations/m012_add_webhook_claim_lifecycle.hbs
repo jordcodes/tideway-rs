@@ -1,0 +1,132 @@
+//! Add recoverable, owner-token webhook processing leases.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        add_claim_columns(manager, WebhookProcessedEvents::Table).await?;
+        add_claim_columns(manager, BillingProcessedEvents::Table).await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_webhook_processed_events_claim")
+                    .table(WebhookProcessedEvents::Table)
+                    .col(WebhookProcessedEvents::Status)
+                    .col(WebhookProcessedEvents::ClaimedAt)
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_billing_processed_events_claim")
+                    .table(BillingProcessedEvents::Table)
+                    .col(BillingProcessedEvents::Status)
+                    .col(BillingProcessedEvents::ClaimedAt)
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_index(Index::drop().name("idx_billing_processed_events_claim").to_owned())
+            .await?;
+        manager
+            .drop_index(Index::drop().name("idx_webhook_processed_events_claim").to_owned())
+            .await?;
+        drop_claim_columns(manager, BillingProcessedEvents::Table).await?;
+        drop_claim_columns(manager, WebhookProcessedEvents::Table).await
+    }
+}
+
+async fn add_claim_columns<T: Iden + 'static + Copy>(
+    manager: &SchemaManager<'_>,
+    table: T,
+) -> Result<(), DbErr> {
+    manager
+        .alter_table(
+            Table::alter()
+                .table(table)
+                .add_column(
+                    ColumnDef::new(CommonColumns::Status)
+                        .string()
+                        .not_null()
+                        .default("processed"),
+                )
+                .to_owned(),
+        )
+        .await?;
+    manager
+        .alter_table(
+            Table::alter()
+                .table(table)
+                .add_column(ColumnDef::new(CommonColumns::ClaimToken).string())
+                .to_owned(),
+        )
+        .await?;
+    manager
+        .alter_table(
+            Table::alter()
+                .table(table)
+                .add_column(ColumnDef::new(CommonColumns::ClaimedAt).timestamp_with_time_zone())
+                .to_owned(),
+        )
+        .await
+}
+
+async fn drop_claim_columns<T: Iden + 'static + Copy>(
+    manager: &SchemaManager<'_>,
+    table: T,
+) -> Result<(), DbErr> {
+    manager
+        .alter_table(
+            Table::alter()
+                .table(table)
+                .drop_column(CommonColumns::ClaimedAt)
+                .to_owned(),
+        )
+        .await?;
+    manager
+        .alter_table(
+            Table::alter()
+                .table(table)
+                .drop_column(CommonColumns::ClaimToken)
+                .to_owned(),
+        )
+        .await?;
+    manager
+        .alter_table(
+            Table::alter()
+                .table(table)
+                .drop_column(CommonColumns::Status)
+                .to_owned(),
+        )
+        .await
+}
+
+#[derive(DeriveIden)]
+enum CommonColumns {
+    Status,
+    ClaimToken,
+    ClaimedAt,
+}
+
+#[derive(Copy, Clone, DeriveIden)]
+enum WebhookProcessedEvents {
+    Table,
+    Status,
+    ClaimedAt,
+}
+
+#[derive(Copy, Clone, DeriveIden)]
+enum BillingProcessedEvents {
+    Table,
+    Status,
+    ClaimedAt,
+}

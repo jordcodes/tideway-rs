@@ -25,6 +25,8 @@ use super::storage::{
 };
 use crate::TidewayError;
 use crate::error::Result;
+use crate::webhooks::{ClaimOutcome, DEFAULT_CLAIM_TTL, EventClaim};
+use std::time::Duration;
 
 // =============================================================================
 // SeaORM Entities
@@ -137,6 +139,9 @@ mod entity {
         pub struct Model {
             #[sea_orm(primary_key, auto_increment = false)]
             pub event_id: String,
+            pub status: String,
+            pub claim_token: Option<String>,
+            pub claimed_at: Option<DateTimeWithTimeZone>,
             pub processed_at: DateTimeWithTimeZone,
         }
 
@@ -359,6 +364,7 @@ fn build_subscription_update(
 #[derive(Clone, Debug)]
 pub struct SeaOrmBillingStore {
     db: DatabaseConnection,
+    claim_ttl: Duration,
 }
 
 impl SeaOrmBillingStore {
@@ -369,7 +375,17 @@ impl SeaOrmBillingStore {
     /// * `db` - A SeaORM database connection
     #[must_use]
     pub fn new(db: DatabaseConnection) -> Self {
-        Self { db }
+        Self {
+            db,
+            claim_ttl: DEFAULT_CLAIM_TTL,
+        }
+    }
+
+    /// Configure abandoned-claim recovery. Keep this longer than normal handler execution.
+    #[must_use]
+    pub fn with_event_claim_ttl(mut self, claim_ttl: Duration) -> Self {
+        self.claim_ttl = claim_ttl;
+        self
     }
 
     /// Get a reference to the underlying database connection.
@@ -617,20 +633,23 @@ impl BillingStore for SeaOrmBillingStore {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-        Ok(event.is_some())
+        Ok(event.is_some_and(|event| event.status == "processed"))
     }
 
-    async fn claim_event(&self, event_id: &str) -> Result<bool> {
-        tracing::debug!(event_id = %event_id, "claiming event for processing");
+    async fn acquire_event_claim(&self, event_id: &str) -> Result<ClaimOutcome> {
+        use sea_orm::sea_query::Expr;
 
+        let claim = EventClaim::new(event_id);
         let now = chrono::Utc::now().fixed_offset();
-
         let event = billing_processed_event::ActiveModel {
             event_id: Set(event_id.to_string()),
+            status: Set("processing".to_string()),
+            claim_token: Set(Some(claim.token().to_string())),
+            claimed_at: Set(Some(now)),
             processed_at: Set(now),
         };
 
-        let result = billing_processed_event::Entity::insert(event)
+        let inserted = billing_processed_event::Entity::insert(event)
             .on_conflict(
                 OnConflict::column(billing_processed_event::Column::EventId)
                     .do_nothing()
@@ -640,24 +659,139 @@ impl BillingStore for SeaOrmBillingStore {
             .exec(&self.db)
             .await;
 
-        match result {
-            Ok(TryInsertResult::Inserted(_)) => Ok(true),
-            Ok(TryInsertResult::Conflicted) => Ok(false),
-            Ok(TryInsertResult::Empty) => Err(TidewayError::internal(
-                "Billing webhook event claim produced an empty insert",
-            )),
-            Err(sea_orm::DbErr::RecordNotInserted) => Ok(false),
-            Err(e) => Err(TidewayError::Database(e.to_string())),
+        match inserted {
+            Ok(TryInsertResult::Inserted(_)) => return Ok(ClaimOutcome::Acquired(claim)),
+            Ok(TryInsertResult::Conflicted) | Err(sea_orm::DbErr::RecordNotInserted) => {}
+            Ok(TryInsertResult::Empty) => {
+                return Err(TidewayError::internal(
+                    "Billing webhook event claim produced an empty insert",
+                ));
+            }
+            Err(error) => return Err(TidewayError::Database(error.to_string())),
         }
+
+        let ttl = chrono::Duration::from_std(self.claim_ttl)
+            .map_err(|_| TidewayError::internal("Billing webhook claim TTL is too large"))?;
+        let reclaimed = billing_processed_event::Entity::update_many()
+            .col_expr(
+                billing_processed_event::Column::ClaimToken,
+                Expr::value(Some(claim.token().to_string())),
+            )
+            .col_expr(
+                billing_processed_event::Column::ClaimedAt,
+                Expr::value(Some(now)),
+            )
+            .filter(billing_processed_event::Column::EventId.eq(event_id))
+            .filter(billing_processed_event::Column::Status.eq("processing"))
+            .filter(billing_processed_event::Column::ClaimedAt.lte(now - ttl))
+            .exec(&self.db)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+        if reclaimed.rows_affected == 1 {
+            return Ok(ClaimOutcome::Acquired(claim));
+        }
+
+        let current = billing_processed_event::Entity::find_by_id(event_id)
+            .one(&self.db)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?
+            .ok_or_else(|| TidewayError::internal("Billing webhook claim disappeared"))?;
+        if current.status == "processed" {
+            return Ok(ClaimOutcome::AlreadyProcessed);
+        }
+        let age = current
+            .claimed_at
+            .and_then(|claimed_at| (now - claimed_at).to_std().ok())
+            .unwrap_or_default();
+        Ok(ClaimOutcome::InProgress {
+            retry_after: self.claim_ttl.saturating_sub(age),
+        })
+    }
+
+    async fn complete_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        use sea_orm::sea_query::Expr;
+
+        let result = billing_processed_event::Entity::update_many()
+            .col_expr(
+                billing_processed_event::Column::Status,
+                Expr::value("processed"),
+            )
+            .col_expr(
+                billing_processed_event::Column::ClaimToken,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                billing_processed_event::Column::ProcessedAt,
+                Expr::value(chrono::Utc::now().fixed_offset()),
+            )
+            .filter(billing_processed_event::Column::EventId.eq(claim.event_id()))
+            .filter(billing_processed_event::Column::Status.eq("processing"))
+            .filter(billing_processed_event::Column::ClaimToken.eq(claim.token()))
+            .exec(&self.db)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+        if result.rows_affected != 1 {
+            return Err(TidewayError::internal(
+                "Billing webhook event claim is no longer owned by this worker",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn release_owned_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        billing_processed_event::Entity::delete_many()
+            .filter(billing_processed_event::Column::EventId.eq(claim.event_id()))
+            .filter(billing_processed_event::Column::Status.eq("processing"))
+            .filter(billing_processed_event::Column::ClaimToken.eq(claim.token()))
+            .exec(&self.db)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn claim_event(&self, event_id: &str) -> Result<bool> {
+        Ok(matches!(
+            self.acquire_event_claim(event_id).await?,
+            ClaimOutcome::Acquired(_)
+        ))
     }
 
     async fn mark_event_processed(&self, event_id: &str) -> Result<()> {
+        use sea_orm::sea_query::Expr;
+
         tracing::debug!(event_id = %event_id, "marking event as processed");
 
         let now = chrono::Utc::now().fixed_offset();
 
+        let updated = billing_processed_event::Entity::update_many()
+            .col_expr(
+                billing_processed_event::Column::Status,
+                Expr::value("processed"),
+            )
+            .col_expr(
+                billing_processed_event::Column::ClaimToken,
+                Expr::value(Option::<String>::None),
+            )
+            .col_expr(
+                billing_processed_event::Column::ProcessedAt,
+                Expr::value(now),
+            )
+            .filter(billing_processed_event::Column::EventId.eq(event_id))
+            .filter(billing_processed_event::Column::Status.eq("processing"))
+            .exec(&self.db)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        if updated.rows_affected == 1 {
+            return Ok(());
+        }
+
         let event = billing_processed_event::ActiveModel {
             event_id: Set(event_id.to_string()),
+            status: Set("processed".to_string()),
+            claim_token: Set(None),
+            claimed_at: Set(None),
             processed_at: Set(now),
         };
 
@@ -680,7 +814,9 @@ impl BillingStore for SeaOrmBillingStore {
     async fn release_event_claim(&self, event_id: &str) -> Result<()> {
         tracing::debug!(event_id = %event_id, "releasing event processing claim");
 
-        billing_processed_event::Entity::delete_by_id(event_id.to_string())
+        billing_processed_event::Entity::delete_many()
+            .filter(billing_processed_event::Column::EventId.eq(event_id))
+            .filter(billing_processed_event::Column::Status.eq("processing"))
             .exec(&self.db)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
@@ -897,6 +1033,7 @@ impl SeaOrmBillingStore {
             None => {
                 // Unbatched: delete all at once
                 let result = billing_processed_event::Entity::delete_many()
+                    .filter(billing_processed_event::Column::Status.eq("processed"))
                     .filter(billing_processed_event::Column::ProcessedAt.lt(cutoff_tz))
                     .exec(&self.db)
                     .await
@@ -913,6 +1050,7 @@ impl SeaOrmBillingStore {
         loop {
             // Find batch of event IDs to delete
             let events_to_delete: Vec<String> = billing_processed_event::Entity::find()
+                .filter(billing_processed_event::Column::Status.eq("processed"))
                 .filter(billing_processed_event::Column::ProcessedAt.lt(cutoff_tz))
                 .limit(u64::from(batch_size))
                 .all(&self.db)
@@ -930,6 +1068,7 @@ impl SeaOrmBillingStore {
 
             // Delete this batch
             billing_processed_event::Entity::delete_many()
+                .filter(billing_processed_event::Column::Status.eq("processed"))
                 .filter(billing_processed_event::Column::EventId.is_in(events_to_delete))
                 .exec(&self.db)
                 .await
@@ -972,6 +1111,9 @@ mod tests {
             sea_orm::DatabaseBackend::Sqlite,
             "CREATE TABLE billing_processed_events (
                 event_id TEXT PRIMARY KEY NOT NULL,
+                status TEXT NOT NULL DEFAULT 'processed',
+                claim_token TEXT NULL,
+                claimed_at TEXT NULL,
                 processed_at TEXT NOT NULL
             )"
             .to_string(),
@@ -1018,17 +1160,100 @@ mod tests {
         let store = SeaOrmBillingStore::new(setup_billing_events_db().await);
 
         let (first, second) = tokio::join!(
-            store.claim_event("evt_concurrent"),
-            store.claim_event("evt_concurrent")
+            store.acquire_event_claim("evt_concurrent"),
+            store.acquire_event_claim("evt_concurrent")
         );
 
-        let claims = [
+        let outcomes = [
             first.expect("first claim should not fail"),
             second.expect("second claim should not fail"),
         ];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, ClaimOutcome::Acquired(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, ClaimOutcome::InProgress { .. }))
+                .count(),
+            1
+        );
+        assert!(!store.is_event_processed("evt_concurrent").await.unwrap());
 
-        assert_eq!(claims.into_iter().filter(|claimed| *claimed).count(), 1);
+        let claim = outcomes
+            .into_iter()
+            .find_map(|outcome| match outcome {
+                ClaimOutcome::Acquired(claim) => Some(claim),
+                _ => None,
+            })
+            .unwrap();
+        store.complete_event_claim(&claim).await.unwrap();
         assert!(store.is_event_processed("evt_concurrent").await.unwrap());
+        assert!(matches!(
+            store.acquire_event_claim("evt_concurrent").await.unwrap(),
+            ClaimOutcome::AlreadyProcessed
+        ));
+    }
+
+    #[tokio::test]
+    async fn stale_claim_is_recovered_once_and_old_owner_cannot_mutate_it() {
+        use sea_orm::sea_query::Expr;
+
+        let store = SeaOrmBillingStore::new(setup_billing_events_db().await);
+        let old_claim = match store.acquire_event_claim("evt_stale").await.unwrap() {
+            ClaimOutcome::Acquired(claim) => claim,
+            outcome => panic!("unexpected claim outcome: {outcome:?}"),
+        };
+        let stale_at = chrono::Utc::now().fixed_offset() - chrono::Duration::minutes(10);
+        billing_processed_event::Entity::update_many()
+            .col_expr(
+                billing_processed_event::Column::ClaimedAt,
+                Expr::value(Some(stale_at)),
+            )
+            .filter(billing_processed_event::Column::EventId.eq("evt_stale"))
+            .exec(store.connection())
+            .await
+            .unwrap();
+
+        let (first, second) = tokio::join!(
+            store.acquire_event_claim("evt_stale"),
+            store.acquire_event_claim("evt_stale")
+        );
+        let outcomes = [first.unwrap(), second.unwrap()];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, ClaimOutcome::Acquired(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, ClaimOutcome::InProgress { .. }))
+                .count(),
+            1
+        );
+        let current_claim = outcomes
+            .into_iter()
+            .find_map(|outcome| match outcome {
+                ClaimOutcome::Acquired(claim) => Some(claim),
+                _ => None,
+            })
+            .unwrap();
+
+        store.release_owned_event_claim(&old_claim).await.unwrap();
+        assert!(store.complete_event_claim(&old_claim).await.is_err());
+        store.complete_event_claim(&current_claim).await.unwrap();
+        store
+            .release_owned_event_claim(&current_claim)
+            .await
+            .unwrap();
+        assert!(store.is_event_processed("evt_stale").await.unwrap());
     }
 
     #[tokio::test]

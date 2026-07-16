@@ -9,9 +9,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
-## [tideway-cli 0.1.43] - 2026-07-15
+## [tideway-cli 0.1.43] - 2026-07-16
 
 ### Fixed
+
+- Generated billing and generic webhook stores now use explicit `processing` and `processed`
+  states, so a process termination after claiming no longer leaves an event permanently skipped.
+- Generated Stripe price handlers complete successful claims and return a retryable error while a
+  fresh claim is owned by another worker.
 
 - Generated API and SaaS applications use explicit `JWT_ISSUER` and `JWT_AUDIENCE` settings instead
   of coupling token identity to a display-facing application name.
@@ -21,6 +26,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   name deliberately different from the JWT issuer.
 
 ### Added
+
+- Fresh projects include an additive webhook-claim lifecycle migration with ownership tokens and
+  claim timestamps; upgrade diagnostics identify applications that still have the old table shape.
 
 - `tideway doctor --upgrade` reports `TW-UPGRADE-JWT-IDENTITY-DRIFT` when older generated code
   issues tokens with the application name but verifies against the Cargo package name.
@@ -39,8 +47,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - Existing application-owned files are not rewritten. Preserve established production issuer and
   audience values, configure issuance and verification together, and expect incompatible tokens to
   require reauthentication if those values change.
+- Before using Tideway 0.7.27's built-in database webhook stores, add and run an application-owned
+  migration equivalent to generated `m012_add_webhook_claim_lifecycle`.
 
-## [0.7.27] - 2026-07-15
+## [0.7.27] - 2026-07-16
 
 ### Added
 
@@ -52,6 +62,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 - The paired JWT API prevents issuer, audience, algorithm, and key drift between token issuance and
   verification, validates that RS256 keys form a working pair, and retains fail-closed behaviour.
+- Webhook claim completion and release are conditional on an opaque ownership token; stale workers
+  cannot mutate a newer lease, and abandoned processing can be retried after the configured TTL.
 
 ### DX Gate
 

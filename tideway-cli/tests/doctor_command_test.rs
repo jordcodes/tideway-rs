@@ -208,9 +208,12 @@ tideway = {{ version = "{}", features = ["billing-seaorm"] }}
     let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
 
     assert!(
-        report.warnings().iter().any(|warning| warning
-            .contains("without claim_event and release_event_claim")
-            && warning.contains("atomic insert-or-ignore")),
+        report
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains(
+                "without acquire_event_claim, complete_event_claim, release_owned_event_claim"
+            ) && warning.contains("token-owned, expiring claims")),
         "expected custom billing store atomic-claim warning, got {:?}",
         report.warnings()
     );
@@ -235,7 +238,7 @@ tideway = {{ version = "{}", features = ["billing-seaorm"] }}
 }
 
 #[test]
-fn test_doctor_upgrade_accepts_custom_billing_store_with_atomic_claim() {
+fn test_doctor_upgrade_accepts_custom_billing_store_with_recoverable_claims() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();
     fs::create_dir_all(project_dir.join("src")).expect("create src");
@@ -257,12 +260,16 @@ tideway = {{ version = "{}", features = ["billing"] }}
     fs::write(
         project_dir.join("src/billing_store.rs"),
         r#"impl BillingStore for CustomBillingStore {
-    async fn claim_event(&self, event_id: &str) -> Result<bool> {
-        self.atomic_insert_or_ignore(event_id).await
+    async fn acquire_event_claim(&self, event_id: &str) -> Result<ClaimOutcome> {
+        self.atomic_acquire_or_reclaim(event_id).await
     }
 
-    async fn release_event_claim(&self, event_id: &str) -> Result<()> {
-        self.delete_claim(event_id).await
+    async fn complete_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        self.complete_if_owned(claim).await
+    }
+
+    async fn release_owned_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        self.release_if_owned(claim).await
     }
 
     async fn compare_and_save_subscription(
@@ -313,12 +320,16 @@ tideway = {{ version = "{}", features = ["billing"] }}
     fs::write(
         project_dir.join("src/billing_store.rs"),
         r#"impl BillingStore for CustomBillingStore {
-    async fn claim_event(&self, event_id: &str) -> Result<bool> {
-        self.atomic_insert_or_ignore(event_id).await
+    async fn acquire_event_claim(&self, event_id: &str) -> Result<ClaimOutcome> {
+        self.atomic_acquire_or_reclaim(event_id).await
     }
 
-    async fn release_event_claim(&self, event_id: &str) -> Result<()> {
-        self.delete_claim(event_id).await
+    async fn complete_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        self.complete_if_owned(claim).await
+    }
+
+    async fn release_owned_event_claim(&self, claim: &EventClaim) -> Result<()> {
+        self.release_if_owned(claim).await
     }
 }
 "#,
@@ -1683,6 +1694,11 @@ fn build(db: sea_orm::DatabaseConnection) -> DatabaseIdempotencyStore {
         "// creates webhook_processed_events table",
     )
     .expect("write migration");
+    std::fs::write(
+        project_dir.join("migration/src/m012_add_webhook_claim_lifecycle.rs"),
+        "// webhook_processed_events: status, claim_token, claimed_at",
+    )
+    .expect("write claim lifecycle migration");
 
     let report = analyze_project(project_dir, false).expect("analyze project");
     assert!(

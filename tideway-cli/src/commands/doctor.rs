@@ -516,6 +516,13 @@ fn check_upgrade_readiness(
                 "A billing_processed_events migration was found, but doctor could not confirm event_id is its primary key; duplicate webhook claims are only atomic when the database enforces uniqueness",
             ),
         }
+        if !billing_event_claim_lifecycle_ready(project_dir) {
+            report.push_upgrade_warning(
+                "TW-UPGRADE-BILLING-RECOVERABLE-CLAIMS",
+                "migration/src/",
+                "SeaOrmBillingStore requires status, claim_token, and claimed_at columns on billing_processed_events; add and run an application-owned additive migration before deploying this Tideway version",
+            );
+        }
     }
 
     let missing_claim_methods = custom_billing_store_missing_claim_methods(&src_dir);
@@ -524,8 +531,8 @@ fn check_upgrade_readiness(
             "TW-UPGRADE-BILLING-CLAIM-LIFECYCLE",
             "src/",
             format!(
-                "Custom BillingStore implementation found without {} override(s); implement claim_event as an atomic insert-or-ignore operation and release_event_claim so concurrent webhook deliveries cannot both run side effects and failed deliveries can be retried",
-                missing_claim_methods.join(" and ")
+                "Custom BillingStore implementation found without {} override(s); implement token-owned, expiring claims so abandoned work is retryable and an old worker cannot complete or release a newer claim",
+                missing_claim_methods.join(", ")
             ),
         );
     }
@@ -583,23 +590,38 @@ fn tideway_features_enable_billing(features: &BTreeSet<String>) -> bool {
 }
 
 fn custom_billing_store_missing_claim_methods(src_dir: &Path) -> Vec<&'static str> {
-    let missing_claim = any_rs_file_matches(src_dir, |contents| {
+    let missing_acquire = any_rs_file_matches(src_dir, |contents| {
         uncommented_line_contains(contents, "BillingStore for")
-            && !uncommented_line_contains(contents, "fn claim_event")
+            && !uncommented_line_contains(contents, "fn acquire_event_claim")
+    });
+    let missing_complete = any_rs_file_matches(src_dir, |contents| {
+        uncommented_line_contains(contents, "BillingStore for")
+            && !uncommented_line_contains(contents, "fn complete_event_claim")
     });
     let missing_release = any_rs_file_matches(src_dir, |contents| {
         uncommented_line_contains(contents, "BillingStore for")
-            && !uncommented_line_contains(contents, "fn release_event_claim")
+            && !uncommented_line_contains(contents, "fn release_owned_event_claim")
     });
 
     let mut missing = Vec::new();
-    if missing_claim {
-        missing.push("claim_event");
+    if missing_acquire {
+        missing.push("acquire_event_claim");
+    }
+    if missing_complete {
+        missing.push("complete_event_claim");
     }
     if missing_release {
-        missing.push("release_event_claim");
+        missing.push("release_owned_event_claim");
     }
     missing
+}
+
+fn billing_event_claim_lifecycle_ready(project_dir: &Path) -> bool {
+    migration_sources_contain(
+        project_dir,
+        "billing_processed_events",
+        "BillingProcessedEvents",
+    )
 }
 
 fn custom_billing_store_missing_subscription_cas(src_dir: &Path) -> bool {
@@ -1343,6 +1365,12 @@ fn check_webhook_idempotency_setup(
             "Webhook DB idempotency detected and migration marker found (webhook_processed_events)"
                 .to_string(),
         );
+        if !webhook_claim_lifecycle_ready(project_dir) {
+            report.push_warning(
+                "DatabaseIdempotencyStore requires status, claim_token, and claimed_at columns on webhook_processed_events; add and run an application-owned additive migration before deploying"
+                    .to_string(),
+            );
+        }
         return;
     }
 
@@ -1380,6 +1408,29 @@ fn has_webhook_idempotency_migration(project_dir: &Path) -> bool {
     }
 
     any_rs_file_contains(&migration_src, migration_marker)
+}
+
+fn webhook_claim_lifecycle_ready(project_dir: &Path) -> bool {
+    migration_sources_contain(
+        project_dir,
+        "webhook_processed_events",
+        "WebhookProcessedEvents",
+    )
+}
+
+fn migration_sources_contain(project_dir: &Path, raw_table: &str, iden_table: &str) -> bool {
+    let migration_src = project_dir.join("migration").join("src");
+    let Ok(entries) = fs::read_dir(migration_src) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        fs::read_to_string(entry.path()).is_ok_and(|contents| {
+            (contents.contains(raw_table) || contents.contains(iden_table))
+                && (contents.contains("claim_token") || contents.contains("ClaimToken"))
+                && (contents.contains("claimed_at") || contents.contains("ClaimedAt"))
+                && (contents.contains("status") || contents.contains("Status"))
+        })
+    })
 }
 
 fn any_rs_file_contains(root: &Path, needle: &str) -> bool {
