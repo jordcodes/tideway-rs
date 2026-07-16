@@ -518,16 +518,23 @@ async fn register(req: RegisterRequest) -> Result<()> {
 ## JWT Configuration
 
 ```rust
-use tideway::auth::{AccessTokenClaims, JwtIssuer, JwtIssuerConfig, JwtVerifier};
+use std::time::Duration;
+use tideway::auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig, TokenSubject};
+
+let jwt_issuer_id = "my-api";
+let jwt_audience = "my-api";
 
 // HMAC-SHA256 (symmetric)
-let config = JwtIssuerConfig::with_secure_secret("a-random-secret-of-at-least-32-bytes", "my-app")?
-    .audience("my-app")
+let secret = "a-random-secret-of-at-least-32-bytes";
+let config = JwtAuthConfig::with_secure_secret(secret, jwt_issuer_id)?
+    .audience(jwt_audience)
     .access_token_ttl(Duration::from_secs(900))      // 15 minutes
     .refresh_token_ttl(Duration::from_secs(604800))  // 7 days
     .remember_me_ttl(Duration::from_secs(2592000)); // 30 days
 
-let issuer = JwtIssuer::new(config)?;
+let jwt = JwtAuth::new(config)?;
+let issuer = jwt.issuer();
+let verifier = jwt.verifier::<AccessTokenClaims>()?;
 
 // Issue tokens
 let subject = TokenSubject::new("user-123")
@@ -538,18 +545,18 @@ let subject = TokenSubject::new("user-123")
 let tokens = issuer.issue(subject, false)?; // false = don't remember me
 ```
 
-Configure verifiers with the same issuer and audience. Audience validation prevents a token
-issued for one service from being accepted by another service that shares signing infrastructure:
+The returned verifier inherits the algorithm, verification key, issuer, and audience. Pass
+`verifier.clone()` to protected modules. Audience validation prevents a token issued for one
+service from being accepted by another service that shares signing infrastructure.
+For RS256, `JwtAuthConfig::with_rsa_key_pair` validates both PEM values and confirms that the
+public key verifies signatures from the private key before startup succeeds.
 
-```rust
-let verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())?
-    .with_issuer("my-app")
-    .with_audience("my-app");
-```
-
-New CLI scaffolds set both claims to the Cargo package name. Existing applications that add an
-audience will invalidate previously issued audience-less tokens, so deploy issuance and
-verification together and expect users to authenticate again.
+New CLI scaffolds expose `JWT_ISSUER` and `JWT_AUDIENCE`, default both to the Cargo package name,
+and construct a paired `JwtAuth` issuer and access-token verifier at startup. Keep these
+security identifiers separate from a human-readable `APP_NAME` and pass the configured verifier to
+protected modules instead of reconstructing it from the raw secret. Existing applications that add
+or change issuer/audience validation will invalidate incompatible tokens, so preserve established
+production values and deploy issuance and verification together.
 
 ## Auth Extractors
 

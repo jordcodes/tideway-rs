@@ -74,6 +74,36 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## CLI 0.1.42 to 0.1.43: stable JWT identity
+
+This CLI update changes newly generated auth code and does not rewrite existing application-owned
+files. New projects use Tideway 0.7.27's paired `JwtAuth` API. Existing projects can either upgrade
+to that additive API or apply the same single-source-of-truth pattern with their current
+`JwtIssuer` and `JwtVerifier` types.
+
+Some older SaaS scaffolds issued tokens with the display-facing `APP_NAME` as `iss`, while protected
+routes independently expected the Cargo package name. Those applications could successfully
+register and log in but receive `InvalidIssuer` from protected routes when the two names differed.
+Verification failed closed, so this was an availability and correctness problem rather than an
+authentication bypass.
+
+Existing applications should first run `tideway doctor --upgrade`. If it reports
+`TW-UPGRADE-JWT-IDENTITY-DRIFT`, make a focused application-owned change:
+
+1. Add stable `JWT_ISSUER` and `JWT_AUDIENCE` settings. Do not derive them from a human-readable
+   product name.
+2. Prefer Tideway 0.7.27's `JwtAuthConfig` and `JwtAuth` to construct the issuer and access-token
+   verifier from those values at startup. If remaining on an older Tideway release, configure the
+   existing `JwtIssuer` and `JwtVerifier` together from the same values.
+3. Pass the configured verifier to protected modules instead of giving each module the raw secret
+   and allowing it to reconstruct policy independently.
+4. Add an integration test that logs in and uses the returned access token on at least one protected
+   application route. Use an `APP_NAME` deliberately different from `JWT_ISSUER` in that test.
+
+Changing issuer or audience invalidates tokens created under the old identity. If production
+issuance and verification already agree, preserve those existing values in the new settings and
+deploy both sides together. Do not rotate the signing secret merely to adopt the explicit settings.
+
 ## 0.7.25 to 0.7.26
 
 This is an additive framework update with no required database migration. `ResendMailer` is
@@ -163,6 +193,7 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |
 | `TW-UPGRADE-JWT-VERIFIER-SECRET` | The deprecated unchecked JWT verifier constructor is present. |
+| `TW-UPGRADE-JWT-IDENTITY-DRIFT` | JWT issuance uses a display name while verification expects the Cargo package name. |
 | `TW-UPGRADE-APP-CONTEXT-DATABASE` | Application code accesses the old database field directly. |
 
 ## 0.7.13 to 0.7.23

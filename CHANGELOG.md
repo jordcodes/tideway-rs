@@ -9,6 +9,62 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.43] - 2026-07-15
+
+### Fixed
+
+- Generated API and SaaS applications use explicit `JWT_ISSUER` and `JWT_AUDIENCE` settings instead
+  of coupling token identity to a display-facing application name.
+- Built-in protected modules in new API and SaaS projects receive verifiers derived from one
+  startup-created `JwtAuth` configuration instead of reconstructing policy from a raw secret.
+- Generated auth tests now complete login and call a protected route with an application display
+  name deliberately different from the JWT issuer.
+
+### Added
+
+- `tideway doctor --upgrade` reports `TW-UPGRADE-JWT-IDENTITY-DRIFT` when older generated code
+  issues tokens with the application name but verifies against the Cargo package name.
+
+### DX Gate
+
+- Generated API and SaaS projects compile and test with a display name distinct from their stable
+  JWT identity, and the SaaS auth test exercises a protected organization route.
+- Strict workspace formatting, Clippy, the complete CLI suite, downstream upgrade contract, and
+  repository guardrails pass.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.43`; newly generated projects use Tideway
+  0.7.27.
+- Existing application-owned files are not rewritten. Preserve established production issuer and
+  audience values, configure issuance and verification together, and expect incompatible tokens to
+  require reauthentication if those values change.
+
+## [0.7.27] - 2026-07-15
+
+### Added
+
+- `JwtAuthConfig` and `JwtAuth` create compatible JWT issuers and verifiers from one source of
+  truth. Audience validation is required, HS256 secrets retain minimum-strength checks, and RS256
+  requires explicit private signing and public verification keys.
+
+### Security
+
+- The paired JWT API prevents issuer, audience, algorithm, and key drift between token issuance and
+  verification, validates that RS256 keys form a working pair, and retains fail-closed behaviour.
+
+### DX Gate
+
+- HS256 and RS256 issuance-to-verification, required-audience, invalid-key, and mismatched-RSA-key
+  regressions pass.
+- Existing JWT APIs remain available and the downstream upgrade contract compiles unchanged.
+
+### Migration Notes
+
+- This is additive. Existing `JwtIssuer` and `JwtVerifier` integrations remain supported.
+- Applications can adopt `JwtAuth` without rotating their signing key; preserve existing issuer and
+  audience values to avoid invalidating active tokens.
+
 ## [tideway-cli 0.1.42] - 2026-07-15
 
 ### Fixed

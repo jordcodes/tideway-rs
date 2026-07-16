@@ -5314,7 +5314,7 @@ dependencies = [
 
 [[package]]
 name = "tideway"
-version = "0.7.26"
+version = "0.7.27"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -5341,6 +5341,7 @@ dependencies = [
  "rand 0.8.6",
  "redis",
  "reqwest",
+ "rsa",
  "sea-orm",
  "sea-orm-migration",
  "secrecy",
@@ -5371,7 +5372,7 @@ dependencies = [
 
 [[package]]
 name = "tideway-cli"
-version = "0.1.42"
+version = "0.1.43"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

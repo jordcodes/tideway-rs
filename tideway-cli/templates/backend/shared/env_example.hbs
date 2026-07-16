@@ -12,6 +12,9 @@ DATABASE_URL={{{database_url}}}
 
 # Auth
 JWT_SECRET=replace-with-at-least-32-random-bytes
+# Stable security identifiers. Do not derive these from a display-facing app name.
+JWT_ISSUER={{project_crate}}
+JWT_AUDIENCE={{project_crate}}
 REQUIRE_EMAIL_VERIFICATION=false
 # Comma-separated proxy IPs/CIDRs. Leave empty unless traffic arrives through them.
 TRUSTED_PROXY_IPS=

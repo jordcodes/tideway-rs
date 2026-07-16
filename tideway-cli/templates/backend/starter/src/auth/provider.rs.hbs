@@ -27,23 +27,18 @@ pub struct SimpleAuthProvider {
 
 impl SimpleAuthProvider {
     {{#if has_database_feature}}
-    pub fn from_secret(secret: &str, db: Arc<DatabaseConnection>) -> Self {
+    pub fn new(
+        verifier: JwtVerifier<AccessTokenClaims<serde_json::Value>>,
+        db: Arc<DatabaseConnection>,
+    ) -> Self {
         Self {
-            verifier: JwtVerifier::from_secret_checked(secret.as_bytes())
-                .expect("JWT_SECRET must be at least 32 bytes")
-                .with_issuer(env!("CARGO_PKG_NAME"))
-                .with_audience(env!("CARGO_PKG_NAME")),
+            verifier,
             db,
         }
     }
     {{else}}
-    pub fn from_secret(secret: &str) -> Self {
-        Self {
-            verifier: JwtVerifier::from_secret_checked(secret.as_bytes())
-                .expect("JWT_SECRET must be at least 32 bytes")
-                .with_issuer(env!("CARGO_PKG_NAME"))
-                .with_audience(env!("CARGO_PKG_NAME")),
-        }
+    pub fn new(verifier: JwtVerifier<AccessTokenClaims<serde_json::Value>>) -> Self {
+        Self { verifier }
     }
     {{/if}}
 }

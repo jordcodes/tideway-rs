@@ -10,14 +10,20 @@ use migration::{Migrator, MigratorTrait};
 use sea_orm::Database;
 use serde_json::{json, Value};
 use tideway::{
-    auth::{JwtIssuer, JwtIssuerConfig},
+    auth::{JwtAuth, JwtAuthConfig},
     App,
 };
 use tower::ServiceExt;
 
 use super::AuthModule;
+{{#if has_organizations}}
+use crate::organizations::OrganizationModule;
+{{/if}}
 
 const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
+const DISPLAY_APP_NAME: &str = "Chairful API";
+const JWT_ISSUER: &str = env!("CARGO_PKG_NAME");
+const JWT_AUDIENCE: &str = env!("CARGO_PKG_NAME");
 
 async fn test_app() -> Router {
     let db = Database::connect("sqlite::memory:")
@@ -25,31 +31,49 @@ async fn test_app() -> Router {
         .expect("connect to in-memory sqlite");
     Migrator::up(&db, None).await.expect("run migrations");
     let db = Arc::new(db);
-    let issuer = Arc::new(
-        JwtIssuer::new(
-            JwtIssuerConfig::with_secure_secret(JWT_SECRET, env!("CARGO_PKG_NAME"))
-                .expect("valid secret")
-                .audience(env!("CARGO_PKG_NAME")),
-        )
-        .expect("create issuer"),
-    );
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(JWT_SECRET, JWT_ISSUER)
+            .expect("valid secret")
+            .audience(JWT_AUDIENCE),
+    )
+    .expect("create paired auth");
+    let issuer = jwt.issuer();
     let auth = AuthModule::new(
-        db,
+        db.clone(),
         issuer,
         JWT_SECRET.to_owned(),
-        env!("CARGO_PKG_NAME").to_owned(),
+        DISPLAY_APP_NAME.to_owned(),
     );
 
-    App::new().register_module(auth).into_router()
+    let app = App::new().register_module(auth);
+    {{#if has_organizations}}
+    let app = app.register_module(OrganizationModule::new(
+        db,
+        jwt.verifier().expect("create verifier"),
+    ));
+    {{/if}}
+    app.into_router()
 }
 
 async fn request(app: &Router, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
+    request_with_token(app, method, path, body, None).await
+}
+
+async fn request_with_token(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: Value,
+    token: Option<&str>,
+) -> (StatusCode, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(path)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from(body.to_string()))
-        .expect("build request");
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let mut request = request.body(Body::from(body.to_string())).expect("build request");
     request.extensions_mut().insert(ConnectInfo(
         "127.0.0.1:40000"
             .parse::<SocketAddr>()
@@ -101,4 +125,21 @@ async fn registration_and_login_work_with_generated_migrations() {
     assert_eq!(status, StatusCode::OK, "login response: {login}");
     assert!(login["access_token"].is_string());
     assert!(login["refresh_token"].is_string());
+
+    {{#if has_organizations}}
+    let access_token = login["access_token"].as_str().expect("access token");
+    let (status, organizations) = request_with_token(
+        &app,
+        Method::GET, "/organizations",
+        Value::Null,
+        Some(access_token),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "organizations response: {organizations}");
+    {{/if}}
+}
+
+#[test]
+fn display_name_does_not_change_jwt_identity() {
+    assert_ne!(DISPLAY_APP_NAME, JWT_ISSUER);
 }

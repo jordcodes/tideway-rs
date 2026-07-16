@@ -9,7 +9,7 @@ use axum::{
 use migration::{Migrator, MigratorTrait};
 use sea_orm::Database;
 use serde_json::{json, Value};
-use tideway::{auth::{JwtIssuer, JwtIssuerConfig{{#if has_auth_mfa_feature}}, MfaSecretCipher, TotpConfig, TotpManager{{/if}}}, App};
+use tideway::{auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig{{#if has_auth_mfa_feature}}, MfaSecretCipher, TotpConfig, TotpManager{{/if}}}, App};
 use tower::ServiceExt;
 {{#if has_openapi_feature}}
 use utoipa::OpenApi;
@@ -18,6 +18,9 @@ use utoipa::OpenApi;
 use super::{AuthModule, SimpleAuthProvider};
 
 const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
+const DISPLAY_APP_NAME: &str = "Human Readable App";
+const JWT_ISSUER: &str = env!("CARGO_PKG_NAME");
+const JWT_AUDIENCE: &str = env!("CARGO_PKG_NAME");
 
 {{#if has_openapi_feature}}
 #[test]
@@ -73,16 +76,18 @@ async fn test_app() -> Router {
         .expect("connect to in-memory sqlite");
     Migrator::up(&db, None).await.expect("run migrations");
     let db = Arc::new(db);
-    let issuer = Arc::new(
-        JwtIssuer::new(
-            JwtIssuerConfig::with_secure_secret(JWT_SECRET, env!("CARGO_PKG_NAME"))
-                .expect("valid secret")
-                .audience(env!("CARGO_PKG_NAME")),
-        )
-        .expect("create issuer"),
-    );
-    let provider = SimpleAuthProvider::from_secret(JWT_SECRET, db.clone());
-    let auth = AuthModule::new(db, issuer, JWT_SECRET.to_owned(), env!("CARGO_PKG_NAME"))
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(JWT_SECRET, JWT_ISSUER)
+            .expect("valid secret")
+            .audience(JWT_AUDIENCE),
+    )
+    .expect("create paired auth");
+    let issuer = jwt.issuer();
+    let verifier = jwt
+        .verifier::<AccessTokenClaims<serde_json::Value>>()
+        .expect("create verifier");
+    let provider = SimpleAuthProvider::new(verifier, db.clone());
+    let auth = AuthModule::new(db, issuer, JWT_SECRET.to_owned(), DISPLAY_APP_NAME)
         {{#if has_auth_mfa_feature}}
         .with_mfa_cipher(Arc::new(
             MfaSecretCipher::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")

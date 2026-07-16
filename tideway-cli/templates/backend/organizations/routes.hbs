@@ -28,11 +28,10 @@ pub struct OrganizationModule {
 }
 
 impl OrganizationModule {
-    pub fn new(db: Arc<DatabaseConnection>, jwt_secret: String) -> Self {
-        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(jwt_secret.as_bytes())
-            .expect("JWT_SECRET must be at least 32 bytes")
-            .with_issuer(env!("CARGO_PKG_NAME"))
-            .with_audience(env!("CARGO_PKG_NAME"));
+    pub fn new(
+        db: Arc<DatabaseConnection>,
+        jwt_verifier: JwtVerifier<AccessTokenClaims>,
+    ) -> Self {
         Self {
             state: OrganizationState { db, jwt_verifier },
         }

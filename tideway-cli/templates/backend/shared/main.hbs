@@ -7,7 +7,7 @@ use tideway::{
     App, AppContext,
     ConfigBuilder,
 };
-use tideway::auth::{JwtIssuer, JwtIssuerConfig};
+use tideway::auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig};
 use tideway::billing::{
     CheckoutConfig, LiveStripeClient, LiveStripeClientConfig, Plans, PortalConfig,
     SeaOrmBillingStore,
@@ -57,10 +57,12 @@ async fn main() -> anyhow::Result<()> {
     info!("Migrations completed");
 
     // Create JWT issuer
-    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secure_secret(
-        &app_config.jwt_secret,
-        &app_config.app_name,
-    )?.audience(env!("CARGO_PKG_NAME")))?);
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(&app_config.jwt_secret, &app_config.jwt_issuer)?
+            .audience(&app_config.jwt_audience),
+    )?;
+    let jwt_issuer = jwt.issuer();
+    let jwt_verifier = jwt.verifier::<AccessTokenClaims>()?;
 
     // Select the transactional email provider without coupling auth to it.
     let email_service = Arc::new(EmailService::from_env(
@@ -81,13 +83,13 @@ async fn main() -> anyhow::Result<()> {
     // Create organization module
     let organization_module = OrganizationModule::new(
         Arc::new(db.clone()),
-        app_config.jwt_secret.clone(),
+        jwt_verifier.clone(),
     );
     {{/if}}
     // Create admin module
     let admin_module = AdminModule::new(
         Arc::new(db.clone()),
-        app_config.jwt_secret.clone(),
+        jwt_verifier.clone(),
         jwt_issuer.clone(),
     );
 
@@ -133,7 +135,7 @@ async fn main() -> anyhow::Result<()> {
     )));
     let organization_invitations_module = OrganizationInvitationsModule::new(
         Arc::new(db.clone()),
-        app_config.jwt_secret.clone(),
+        jwt_verifier.clone(),
         email_service,
         invitation_seat_checker,
     );
@@ -169,6 +171,7 @@ async fn main() -> anyhow::Result<()> {
         checkout_config,
         portal_config,
         webhook_secret: app_config.stripe_webhook_secret.clone(),
+        jwt_verifier,
     });
 
     // Build billing routers with explicit access boundaries:

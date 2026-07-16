@@ -261,16 +261,38 @@ fn update_env_example(project_dir: &Path, feature: AddFeature, project_name: &st
             }
         }
         AddFeature::Auth => {
+            let needs_auth_env = !existing.contains("JWT_SECRET")
+                || !existing.contains("JWT_ISSUER")
+                || !existing.contains("JWT_AUDIENCE");
             if !existing.contains("JWT_SECRET") {
                 lines.push("# Auth".to_string());
                 lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
+            }
+            if !existing.contains("JWT_ISSUER") {
+                lines.push(format!("JWT_ISSUER={}", project_name));
+            }
+            if !existing.contains("JWT_AUDIENCE") {
+                lines.push(format!("JWT_AUDIENCE={}", project_name));
+            }
+            if needs_auth_env {
                 lines.push(String::new());
             }
         }
         AddFeature::Organizations => {
+            let needs_auth_env = !existing.contains("JWT_SECRET")
+                || !existing.contains("JWT_ISSUER")
+                || !existing.contains("JWT_AUDIENCE");
             if !existing.contains("JWT_SECRET") {
                 lines.push("# Auth".to_string());
                 lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
+            }
+            if !existing.contains("JWT_ISSUER") {
+                lines.push(format!("JWT_ISSUER={}", project_name));
+            }
+            if !existing.contains("JWT_AUDIENCE") {
+                lines.push(format!("JWT_AUDIENCE={}", project_name));
+            }
+            if needs_auth_env {
                 lines.push(String::new());
             }
             if !existing.contains("DATABASE_URL") {
@@ -901,8 +923,17 @@ fn wire_organizations_in_main(project_dir: &Path) -> Result<()> {
 
     if let Some(db_var) = db_var {
         contents = ensure_use_line(contents, "use std::sync::Arc;", "use tideway::");
+        let verifier_setup = if contents.contains("let jwt = tideway::auth::JwtAuth::new")
+            || contents.contains("let jwt = JwtAuth::new")
+        {
+            "    let organization_jwt_verifier = jwt\n        .verifier::<tideway::auth::AccessTokenClaims>()\n        .expect(\"Failed to create organization JWT verifier\");\n"
+                .to_string()
+        } else {
+            "    // Compatibility fallback for application-owned auth wiring that predates JwtAuth.\n    let organization_jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let organization_jwt_issuer = std::env::var(\"JWT_ISSUER\")\n        .unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let organization_jwt_audience = std::env::var(\"JWT_AUDIENCE\")\n        .unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let organization_jwt_verifier = tideway::auth::JwtVerifier::<tideway::auth::AccessTokenClaims>::from_secret_checked(\n        organization_jwt_secret.as_bytes(),\n    )\n    .expect(\"JWT_SECRET must be at least 32 bytes\")\n    .with_issuer(organization_jwt_issuer)\n    .with_audience(organization_jwt_audience);\n"
+                .to_string()
+        };
         let block = format!(
-            "    let organization_module = OrganizationModule::new(\n        Arc::new({db_var}.clone()),\n        std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\"),\n    );\n\n"
+            "{verifier_setup}    let organization_module = OrganizationModule::new(\n        Arc::new({db_var}.clone()),\n        organization_jwt_verifier,\n    );\n\n"
         );
         let Some(updated) = insert_before_any_app_builder(contents, &block)? else {
             print_warning("Could not find app builder; skipping organizations auto-wiring");
@@ -1000,7 +1031,7 @@ fn insert_organization_into_app_builder(mut contents: String) -> Result<(String,
     Ok((contents, false))
 }
 
-fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
+fn wire_auth_in_main(project_dir: &Path, _project_name: &str) -> Result<()> {
     let main_path = project_dir.join("src").join("main.rs");
     if !main_path.exists() {
         print_warning("src/main.rs not found; skipping auto-wiring");
@@ -1019,12 +1050,6 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
         "use tideway::auth",
     );
     contents = ensure_use_line(contents, "use std::sync::Arc;", "use tideway::");
-    contents = ensure_use_line(
-        contents,
-        "use tideway::auth::{JwtIssuer, JwtIssuerConfig};",
-        "use tideway::auth",
-    );
-
     let has_jwt_secret = contents.contains("let jwt_secret");
     let has_jwt_issuer = contents.contains("let jwt_issuer");
     let has_auth_provider = contents.contains("auth_provider");
@@ -1038,14 +1063,11 @@ fn wire_auth_in_main(project_dir: &Path, project_name: &str) -> Result<()> {
                 .find(";\n")
                 .map(|idx| insert_at + idx + 2)
                 .unwrap_or(insert_at);
-            let insert = "    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n".to_string();
+            let insert = "    let jwt_issuer_id = std::env::var(\"JWT_ISSUER\").unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let jwt_audience = std::env::var(\"JWT_AUDIENCE\").unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let jwt = tideway::auth::JwtAuth::new(tideway::auth::JwtAuthConfig::with_secure_secret(&jwt_secret, jwt_issuer_id).expect(\"JWT_SECRET must be at least 32 bytes\").audience(jwt_audience)).expect(\"Failed to create paired JWT authentication\");\n    let jwt_issuer = jwt.issuer();\n    let jwt_verifier = jwt.verifier::<tideway::auth::AccessTokenClaims<serde_json::Value>>().expect(\"Failed to create JWT verifier\");\n    let auth_provider = SimpleAuthProvider::new(jwt_verifier);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n".to_string();
             contents.insert_str(after, &insert);
         }
     } else {
-        let block = format!(
-            "    let jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secure_secret(\n        &jwt_secret,\n        \"{}\",\n    ).expect(\"JWT_SECRET must be at least 32 bytes\").audience(env!(\"CARGO_PKG_NAME\"))).expect(\"Failed to create JWT issuer\"));\n    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n\n",
-            project_name
-        );
+        let block = "    let jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let jwt_issuer_id = std::env::var(\"JWT_ISSUER\").unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let jwt_audience = std::env::var(\"JWT_AUDIENCE\").unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let jwt = tideway::auth::JwtAuth::new(tideway::auth::JwtAuthConfig::with_secure_secret(&jwt_secret, jwt_issuer_id).expect(\"JWT_SECRET must be at least 32 bytes\").audience(jwt_audience)).expect(\"Failed to create paired JWT authentication\");\n    let jwt_issuer = jwt.issuer();\n    let jwt_verifier = jwt.verifier::<tideway::auth::AccessTokenClaims<serde_json::Value>>().expect(\"Failed to create JWT verifier\");\n    let auth_provider = SimpleAuthProvider::new(jwt_verifier);\n    let auth_module = AuthModule::new(jwt_issuer.clone());\n\n".to_string();
         if let Some(updated) = insert_before_app_builder(contents, &block)? {
             contents = updated;
         } else {

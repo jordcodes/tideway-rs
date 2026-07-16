@@ -415,8 +415,10 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     imports.push("use std::sync::Arc;".to_string());
     imports.push("use tideway::App;".to_string());
 
-    if modules.auth || modules.admin {
-        imports.push("use tideway::auth::{JwtIssuer, JwtIssuerConfig};".to_string());
+    if modules.admin || modules.organizations {
+        imports.push("use tideway::auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig};".to_string());
+    } else if modules.auth {
+        imports.push("use tideway::auth::{JwtAuth, JwtAuthConfig};".to_string());
     }
 
     if modules.auth {
@@ -465,10 +467,16 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     }
 
     // JWT issuer
-    if modules.auth || modules.admin {
-        body.push_str("    // Create JWT issuer\n");
-        body.push_str("    let jwt_config = JwtIssuerConfig::with_secure_secret(&config.jwt_secret, &config.app_name)?.audience(env!(\"CARGO_PKG_NAME\"));\n");
-        body.push_str("    let jwt_issuer = Arc::new(JwtIssuer::new(jwt_config)?);\n\n");
+    if modules.auth || modules.admin || modules.organizations {
+        body.push_str("    // Create paired JWT authentication\n");
+        body.push_str("    let jwt = JwtAuth::new(JwtAuthConfig::with_secure_secret(&config.jwt_secret, &config.jwt_issuer)?.audience(&config.jwt_audience))?;\n");
+        if modules.auth || modules.admin {
+            body.push_str("    let jwt_issuer = jwt.issuer();\n");
+        }
+        if modules.admin || modules.organizations {
+            body.push_str("    let jwt_verifier = jwt.verifier::<AccessTokenClaims>()?;\n");
+        }
+        body.push('\n');
     }
 
     // Module instantiation
@@ -486,14 +494,14 @@ fn generate_main_rs(project_name: &str, modules: &DetectedModules, args: &InitAr
     if modules.organizations {
         body.push_str("    let org_module = OrganizationModule::new(\n");
         body.push_str("        db.clone(),\n");
-        body.push_str("        config.jwt_secret.clone(),\n");
+        body.push_str("        jwt_verifier.clone(),\n");
         body.push_str("    );\n\n");
     }
 
     if modules.admin {
         body.push_str("    let admin_module = AdminModule::new(\n");
         body.push_str("        db.clone(),\n");
-        body.push_str("        config.jwt_secret.clone(),\n");
+        body.push_str("        jwt_verifier.clone(),\n");
         body.push_str("        jwt_issuer.clone(),\n");
         body.push_str("    );\n\n");
     }
@@ -609,8 +617,10 @@ fn generate_config_rs(modules: &DetectedModules, args: &InitArgs) -> String {
         fields.push(("database_url", "String", "DATABASE_URL"));
     }
 
-    if modules.auth || modules.admin {
+    if modules.auth || modules.admin || modules.organizations {
         fields.push(("jwt_secret", "String", "JWT_SECRET"));
+        fields.push(("jwt_issuer", "String", "JWT_ISSUER"));
+        fields.push(("jwt_audience", "String", "JWT_AUDIENCE"));
     }
 
     if modules.billing {
@@ -686,9 +696,11 @@ fn generate_env_example(project_name: &str, modules: &DetectedModules, args: &In
         lines.push("".to_string());
     }
 
-    if modules.auth || modules.admin {
+    if modules.auth || modules.admin || modules.organizations {
         lines.push("# Authentication".to_string());
         lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
+        lines.push(format!("JWT_ISSUER={}", project_name));
+        lines.push(format!("JWT_AUDIENCE={}", project_name));
         lines.push("".to_string());
     }
 

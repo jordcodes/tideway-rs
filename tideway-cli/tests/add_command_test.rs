@@ -384,6 +384,7 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
 "#;
     fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
 
@@ -402,6 +403,43 @@ async fn main() -> anyhow::Result<()> {
     assert!(updated.contains("Arc::new(db.clone())"));
     assert!(updated.contains(".register_module(organization_module)"));
     assert!(updated.contains(".serve()"));
+}
+
+#[test]
+fn test_add_organizations_reuses_existing_paired_jwt_configuration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, STANDARD_MIGRATION_LIB);
+
+    let main_rs = r#"
+use tideway::App;
+
+mod auth;
+
+#[tokio::main]
+async fn main() {
+    let database_url = std::env::var("DATABASE_URL").unwrap();
+    let db = sea_orm::Database::connect(&database_url).await.unwrap();
+    let jwt = tideway::auth::JwtAuth::new(todo!()).unwrap();
+    let app = App::new();
+    let _ = app;
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::Organizations,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: true,
+    })
+    .expect("run add command");
+
+    let updated = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main.rs");
+    assert!(updated.contains("organization_jwt_verifier = jwt"));
+    assert!(!updated.contains("organization_jwt_secret"));
+    assert!(updated.contains("register_module(organization_module)"));
 }
 
 #[test]

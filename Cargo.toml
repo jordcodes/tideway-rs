@@ -4,7 +4,7 @@ exclude = ["load-tests/app"]
 
 [package]
 name = "tideway"
-version = "0.7.26"
+version = "0.7.27"
 edition = "2024"
 authors = ["JD"]
 description = "A batteries-included Rust web framework built on Axum for building SaaS applications quickly"
@@ -175,6 +175,7 @@ test-organizations = ["organizations"]
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+rsa = "0.9"
 
 [[bench]]
 name = "overhead"

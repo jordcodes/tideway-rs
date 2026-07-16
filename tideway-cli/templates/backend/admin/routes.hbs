@@ -35,13 +35,9 @@ pub struct AdminModule {
 impl AdminModule {
     pub fn new(
         db: Arc<DatabaseConnection>,
-        jwt_secret: String,
+        jwt_verifier: JwtVerifier<AccessTokenClaims>,
         jwt_issuer: Arc<JwtIssuer>,
     ) -> Self {
-        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(jwt_secret.as_bytes())
-            .expect("JWT_SECRET must be at least 32 bytes")
-            .with_issuer(env!("CARGO_PKG_NAME"))
-            .with_audience(env!("CARGO_PKG_NAME"));
         Self {
             state: AdminState {
                 db,

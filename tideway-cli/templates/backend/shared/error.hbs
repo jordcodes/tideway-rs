@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tideway::billing::{
     CheckoutConfig, LiveStripeClient, Plans, PortalConfig, SeaOrmBillingStore,
 };
+use tideway::auth::{AccessTokenClaims, JwtVerifier};
 
 /// Shared application state for billing routes.
 pub struct BillingState {
@@ -15,4 +16,5 @@ pub struct BillingState {
     pub checkout_config: CheckoutConfig,
     pub portal_config: PortalConfig,
     pub webhook_secret: String,
+    pub jwt_verifier: JwtVerifier<AccessTokenClaims>,
 }

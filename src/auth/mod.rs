@@ -29,6 +29,7 @@
 // Existing modules
 pub mod extractors;
 pub mod jwt;
+pub mod jwt_auth;
 pub mod middleware;
 pub mod provider;
 pub mod token;
@@ -53,6 +54,7 @@ pub mod trusted_device;
 // Existing re-exports
 pub use extractors::{AdminUser, AuthUser, Claims, ClaimsRef, OptionalAuth, RequireAdmin};
 pub use jwt::{JwkSet, JwksClient, JwtVerifier};
+pub use jwt_auth::{JwtAuth, JwtAuthConfig};
 pub use middleware::RequireAuth;
 pub use provider::AuthProvider;
 pub use token::TokenExtractor;

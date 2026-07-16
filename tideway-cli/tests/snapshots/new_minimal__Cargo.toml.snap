@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tideway = { version = "0.7.26", default-features = false }
+tideway = { version = "0.7.27", default-features = false }
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 axum = "0.8"

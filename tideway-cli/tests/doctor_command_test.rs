@@ -58,6 +58,51 @@ stripe = { package = "async-stripe", version = "0.41", default-features = false,
 }
 
 #[test]
+fn test_doctor_upgrade_detects_generated_jwt_identity_drift() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth source");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/main.rs"),
+        r#"let config = JwtIssuerConfig::with_secure_secret(
+    &app_config.jwt_secret,
+    &app_config.app_name,
+)?;
+"#,
+    )
+    .expect("write main.rs");
+    fs::write(
+        project_dir.join("src/auth/actor.rs"),
+        r#"let verifier = JwtVerifier::from_secret_checked(secret.as_bytes())?
+    .with_issuer(env!("CARGO_PKG_NAME"))
+    .with_audience(env!("CARGO_PKG_NAME"));
+"#,
+    )
+    .expect("write actor.rs");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(report.findings().iter().any(|finding| {
+        finding.code == Some("TW-UPGRADE-JWT-IDENTITY-DRIFT")
+            && finding.affected_path.as_deref() == Some("src/")
+    }));
+}
+
+#[test]
 fn test_doctor_upgrade_accepts_aligned_dependencies_and_current_apis() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

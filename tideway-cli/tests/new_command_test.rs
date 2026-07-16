@@ -116,8 +116,10 @@ fn test_new_command_includes_features_and_env() {
     assert_file_contains(&project_dir.join("Cargo.toml"), "sea-orm");
     assert_file_contains(&project_dir.join(".env.example"), "DATABASE_URL=");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_SECRET=");
+    assert_file_contains(&project_dir.join(".env.example"), "JWT_ISSUER=my_app");
+    assert_file_contains(&project_dir.join(".env.example"), "JWT_AUDIENCE=my_app");
     assert_file_contains(&project_dir.join("src/main.rs"), "DATABASE_URL");
-    assert_file_contains(&project_dir.join("src/main.rs"), "JwtIssuer");
+    assert_file_contains(&project_dir.join("src/main.rs"), "JwtAuth");
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert!(project_dir.join("src/auth/routes.rs").exists());
     assert!(project_dir.join("src/auth/provider.rs").exists());
@@ -744,6 +746,34 @@ fn test_new_command_with_preset_saas() {
     assert_file_contains(
         &project_dir.join(".env.example"),
         "APP_URL=http://localhost:5173",
+    );
+    assert_file_contains(&project_dir.join(".env.example"), "JWT_ISSUER=my_app");
+    assert_file_contains(&project_dir.join(".env.example"), "JWT_AUDIENCE=my_app");
+    assert_file_contains(&project_dir.join("src/config.rs"), "pub jwt_issuer: String");
+    assert_file_contains(
+        &project_dir.join("src/config.rs"),
+        "pub jwt_audience: String",
+    );
+    assert_file_contains(&project_dir.join("src/main.rs"), "&app_config.jwt_issuer");
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        "JwtAuthConfig::with_secure_secret(&app_config.jwt_secret, &app_config.jwt_issuer)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".audience(&app_config.jwt_audience)",
+    );
+    assert_file_not_contains(
+        &project_dir.join("src/main.rs"),
+        "&app_config.app_name,\n    )?.audience",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/tests.rs"),
+        "display_name_does_not_change_jwt_identity",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/tests.rs"),
+        "Method::GET, \"/organizations\"",
     );
     assert_file_contains(&project_dir.join(".env.example"), "TIDEWAY_ENV=development");
     assert_file_contains(&project_dir.join(".env.example"), "EMAIL_PROVIDER=console");

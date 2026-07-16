@@ -1379,11 +1379,15 @@ fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
         .get_or_init(|| {
             let secret = std::env::var("JWT_SECRET")
                 .map_err(|_| "JWT auth is not configured".to_string())?;
+            let issuer = std::env::var("JWT_ISSUER")
+                .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
+            let audience = std::env::var("JWT_AUDIENCE")
+                .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
             JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
                 .map(|verifier| {
                     verifier
-                        .with_issuer(env!("CARGO_PKG_NAME"))
-                        .with_audience(env!("CARGO_PKG_NAME"))
+                        .with_issuer(issuer)
+                        .with_audience(audience)
                 })
                 .map_err(|error| error.to_string())
         })
@@ -1483,11 +1487,15 @@ fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
         .get_or_init(|| {
             let secret = std::env::var("JWT_SECRET")
                 .map_err(|_| "JWT auth is not configured".to_string())?;
+            let issuer = std::env::var("JWT_ISSUER")
+                .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
+            let audience = std::env::var("JWT_AUDIENCE")
+                .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
             JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
                 .map(|verifier| {
                     verifier
-                        .with_issuer(env!("CARGO_PKG_NAME"))
-                        .with_audience(env!("CARGO_PKG_NAME"))
+                        .with_issuer(issuer)
+                        .with_audience(audience)
                 })
                 .map_err(|error| error.to_string())
         })

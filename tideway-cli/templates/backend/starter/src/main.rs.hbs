@@ -15,7 +15,7 @@ use tideway::{AppContext, SeaOrmPool};
 {{#if has_auth_feature}}
 use axum::Extension;
 use crate::auth::{AuthModule, SimpleAuthProvider};
-use tideway::auth::{JwtIssuer, JwtIssuerConfig};
+use tideway::auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig};
 {{/if}}
 
 mod routes;
@@ -68,17 +68,28 @@ async fn main() -> Result<(), std::io::Error> {
         .jwt_secret
         .clone()
         .expect("JWT_SECRET is not set");
+    let jwt_issuer_id = config.jwt_issuer.clone();
+    let jwt_audience = config.jwt_audience.clone();
     {{else}}
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is not set");
+    let jwt_issuer_id = std::env::var("JWT_ISSUER")
+        .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
+    let jwt_audience = std::env::var("JWT_AUDIENCE")
+        .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
     {{/if}}
-    let jwt_issuer = Arc::new(JwtIssuer::new(JwtIssuerConfig::with_secure_secret(
-        &jwt_secret,
-        "{{project_name}}",
-    ).expect("JWT_SECRET must be at least 32 bytes").audience(env!("CARGO_PKG_NAME")))
-        .expect("Failed to create JWT issuer"));
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(&jwt_secret, jwt_issuer_id)
+            .expect("JWT_SECRET must be at least 32 bytes")
+            .audience(jwt_audience),
+    )
+    .expect("Failed to create paired JWT authentication");
+    let jwt_issuer = jwt.issuer();
+    let jwt_verifier = jwt
+        .verifier::<AccessTokenClaims<serde_json::Value>>()
+        .expect("Failed to create JWT verifier");
     {{#if has_database_feature}}
     let auth_db = Arc::new(db.clone());
-    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret, auth_db.clone());
+    let auth_provider = SimpleAuthProvider::new(jwt_verifier, auth_db.clone());
     let auth_module = AuthModule::new(
         auth_db,
         jwt_issuer.clone(),
@@ -86,7 +97,7 @@ async fn main() -> Result<(), std::io::Error> {
         "{{project_name}}",
     );
     {{else}}
-    let auth_provider = SimpleAuthProvider::from_secret(&jwt_secret);
+    let auth_provider = SimpleAuthProvider::new(jwt_verifier);
     let auth_module = AuthModule::new(jwt_issuer.clone());
     {{/if}}
 {{/if}}

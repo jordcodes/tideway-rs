@@ -42,14 +42,10 @@ pub struct OrganizationInvitationsModule {
 impl OrganizationInvitationsModule {
     pub fn new(
         db: Arc<DatabaseConnection>,
-        jwt_secret: String,
+        jwt_verifier: JwtVerifier<AccessTokenClaims>,
         email: Arc<EmailService>,
         seat_checker: Arc<dyn SeatChecker>,
     ) -> Self {
-        let jwt_verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(jwt_secret.as_bytes())
-            .expect("JWT_SECRET must be at least 32 bytes")
-            .with_issuer(env!("CARGO_PKG_NAME"))
-            .with_audience(env!("CARGO_PKG_NAME"));
         Self {
             state: OrganizationInvitationsState {
                 db,
@@ -811,7 +807,10 @@ mod tests {
         );
         OrganizationInvitationsModule::new(
             Arc::new(db),
-            JWT_SECRET.to_string(),
+            JwtVerifier::<AccessTokenClaims>::from_secret_checked(JWT_SECRET.as_bytes())
+                .expect("valid test secret")
+                .with_issuer(env!("CARGO_PKG_NAME"))
+                .with_audience(env!("CARGO_PKG_NAME")),
             email,
             Arc::new(FixedSeats(seat_limit)),
         )

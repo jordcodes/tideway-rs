@@ -550,6 +550,20 @@ fn check_upgrade_readiness(
             "Deprecated JwtVerifier::from_secret found; migrate to from_secret_checked(...) and propagate its Result",
         );
     }
+    let display_name_issues_tokens = any_rs_file_matches(&src_dir, |contents| {
+        contents.contains("JwtIssuerConfig::with_secure_secret")
+            && (contents.contains("&app_config.app_name") || contents.contains("&config.app_name"))
+    });
+    let package_name_verifies_tokens = any_rs_file_matches(&src_dir, |contents| {
+        contents.contains(".with_issuer(env!(\"CARGO_PKG_NAME\"))")
+    });
+    if display_name_issues_tokens && package_name_verifies_tokens {
+        report.push_upgrade_warning(
+            "TW-UPGRADE-JWT-IDENTITY-DRIFT",
+            "src/",
+            "JWT issuance uses the display-facing app name while a verifier expects CARGO_PKG_NAME; define stable JWT_ISSUER/JWT_AUDIENCE values, configure issuance and verification from them together, and test login followed by a protected route",
+        );
+    }
     if any_rs_file_contains(&src_dir, ".database.is_some()") {
         report.push_upgrade_warning(
             "TW-UPGRADE-APP-CONTEXT-DATABASE",
@@ -977,6 +991,8 @@ fn env_example_template(
     if needs_auth {
         lines.push("# Auth".to_string());
         lines.push("JWT_SECRET=replace-with-at-least-32-random-bytes".to_string());
+        lines.push(format!("JWT_ISSUER={}", project_name));
+        lines.push(format!("JWT_AUDIENCE={}", project_name));
         if needs_mfa {
             lines.push("MFA_ENCRYPTION_KEY=".to_string());
         }

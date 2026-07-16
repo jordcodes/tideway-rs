@@ -52,6 +52,15 @@ fn test_backend_generates_webhook_idempotency_migrations() {
     assert!(auth_tests.contains("Migrator::up"));
     assert!(!auth_tests.contains("SimpleAuthProvider"));
 
+    let admin_routes =
+        fs::read_to_string(output_dir.join("admin/routes.rs")).expect("read admin routes");
+    let admin_constructor = admin_routes
+        .split("impl RouteModule for AdminModule")
+        .next()
+        .expect("admin constructor section");
+    assert!(admin_constructor.contains("jwt_verifier: JwtVerifier<AccessTokenClaims>"));
+    assert!(!admin_constructor.contains("from_secret_checked"));
+
     let lib_rs = fs::read_to_string(migrations_dir.join("lib.rs")).expect("read migration lib");
     assert!(
         lib_rs.contains("mod m009_create_webhook_processed_events;"),
@@ -99,6 +108,23 @@ fn test_b2b_backend_generates_hardened_invitations_without_affecting_b2c() {
     assert!(invitations.contains("resend_delivery_failure_restores_previous_token"));
     assert!(invitations.contains("expired_invitation_resend_rechecks_seat_capacity"));
     assert!(invitations.contains("expired_invitation_cannot_replace_a_newer_active_invitation"));
+    let invitation_constructor = invitations
+        .split("#[cfg(test)]")
+        .next()
+        .expect("invitation production section");
+    assert!(invitation_constructor.contains("jwt_verifier: JwtVerifier<AccessTokenClaims>"));
+    assert!(!invitation_constructor.contains("from_secret_checked"));
+    let organization_routes =
+        fs::read_to_string(b2b_src.join("organizations/routes.rs")).expect("read org routes");
+    assert!(organization_routes.contains("jwt_verifier: JwtVerifier<AccessTokenClaims>"));
+    assert!(!organization_routes.contains("from_secret_checked"));
+    let billing_routes =
+        fs::read_to_string(b2b_src.join("billing/routes.rs")).expect("read billing routes");
+    assert!(billing_routes.contains("&state.jwt_verifier"));
+    let auth_tests =
+        fs::read_to_string(b2b_src.join("auth/tests.rs")).expect("read B2B auth tests");
+    assert!(auth_tests.contains("display_name_does_not_change_jwt_identity"));
+    assert!(auth_tests.contains("Method::GET, \"/organizations\""));
     assert!(
         b2b_migrations
             .join("m011_create_organization_invitations.rs")

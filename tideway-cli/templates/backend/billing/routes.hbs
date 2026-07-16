@@ -359,9 +359,18 @@ async fn authorize_billing_member(
     billable_id: &str,
 ) -> Result<()> {
     {{#if has_organizations}}
-    let _actor = RequestActor::for_organization(headers, state.db.as_ref(), billable_id).await?;
+    let _actor = RequestActor::for_organization_with_verifier(
+        headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+        billable_id,
+    ).await?;
     {{else}}
-    let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    ).await?;
     if actor.user.id.to_string() != billable_id {
         return Err(tideway::TidewayError::Forbidden("Billing resource access denied".into()));
     }
@@ -375,10 +384,19 @@ async fn authorize_billing_owner(
     billable_id: &str,
 ) -> Result<RequestActor> {
     {{#if has_organizations}}
-    let actor = RequestActor::for_organization(headers, state.db.as_ref(), billable_id).await?;
+    let actor = RequestActor::for_organization_with_verifier(
+        headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+        billable_id,
+    ).await?;
     actor.require_org_role(&["owner", "admin"])?;
     {{else}}
-    let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    ).await?;
     if actor.user.id.to_string() != billable_id {
         return Err(tideway::TidewayError::Forbidden("Billing resource access denied".into()));
     }
@@ -766,7 +784,11 @@ pub struct ImportError {
 // Admin Plan Handlers
 
 async fn require_platform_admin(headers: &HeaderMap, state: &Arc<BillingState>) -> Result<()> {
-    let actor = RequestActor::from_headers(headers, state.db.as_ref()).await?;
+    let actor = RequestActor::from_headers_with_verifier(
+        headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+    ).await?;
     actor.require_admin()
 }
 

@@ -10,6 +10,8 @@ DATABASE_URL={{{database_url}}}
 {{#if has_auth_feature}}
 # Auth
 JWT_SECRET=replace-with-at-least-32-random-bytes
+JWT_ISSUER={{project_crate}}
+JWT_AUDIENCE={{project_crate}}
 {{#if has_auth_mfa_feature}}
 # Generate independently from JWT_SECRET with: openssl rand -base64 32
 MFA_ENCRYPTION_KEY=
