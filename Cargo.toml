@@ -103,7 +103,7 @@ aes-gcm = { version = "0.10", optional = true }
 sha1 = { version = "0.10", optional = true }
 
 # Secure random number generation (used by JWT issuer)
-rand = { version = "0.8", optional = true }
+rand = { version = "0.9", optional = true }
 
 # WebSocket (optional)
 dashmap = { version = "6.1", optional = true }
