@@ -14,6 +14,7 @@ use crate::commands::messaging::{
     DEV_FIX_ENV_COMMAND, GREENFIELD_NEW_APP_PRESET_API, NEW_APP_COMMAND,
     TIDEWAY_ADD_DATABASE_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
 };
+use crate::commands::migration_naming::{MigrationName, next_migration_name};
 use crate::{
     CommandRuntime, ensure_dir, error_contract, print_info, print_success, print_warning,
     write_file,
@@ -971,6 +972,14 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
     } else {
         None
     };
+    let migration_name = match db_backend {
+        Some(DbBackend::SeaOrm) => Some(next_migration_name(
+            &project_dir.join("migration/src"),
+            &format!("create_{resource_plural}"),
+            1,
+        )?),
+        Some(DbBackend::Auto) | None => None,
+    };
 
     if args.db
         && matches!(args.id_type, ResourceIdType::Uuid)
@@ -1029,6 +1038,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                 &resource_plural,
                 args.id_type,
                 args.profile,
+                migration_name.expect("SeaORM migration is planned before mutation"),
             )?,
             DbBackend::Auto => {
                 return Err(anyhow::anyhow!(error_contract(
@@ -2801,6 +2811,7 @@ fn generate_sea_orm_scaffold(
     resource_plural: &str,
     id_type: ResourceIdType,
     profile: ResourceProfile,
+    migration_name: MigrationName,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let entities_dir = src_dir.join("entities");
@@ -2829,7 +2840,8 @@ fn generate_sea_orm_scaffold(
         print_warning("migration/Cargo.toml not found (run `sea-orm-cli migrate init` if needed)");
     }
 
-    let (migration_mod, migration_file) = next_migration_name(&migration_src, resource_plural)?;
+    let migration_mod = migration_name.module;
+    let migration_file = migration_name.file;
     let migration_contents = render_sea_orm_migration(resource_plural, id_type, profile);
     let migration_path = migration_src.join(&migration_file);
     write_file_with_force(&migration_path, &migration_contents, false)?;
@@ -2901,40 +2913,6 @@ impl ActiveModelBehavior for ActiveModel {{}}
         uuid_import = uuid_import,
         entity_fields = entity_fields,
     )
-}
-
-fn next_migration_name(migration_src: &Path, resource_plural: &str) -> Result<(String, String)> {
-    let mut max_num = 0u64;
-    let mut width = 3usize;
-
-    if migration_src.exists() {
-        for entry in fs::read_dir(migration_src)
-            .with_context(|| format!("Failed to read {}", migration_src.display()))?
-        {
-            let entry = entry?;
-            let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
-                continue;
-            };
-            if !name.starts_with('m') || !name.ends_with(".rs") {
-                continue;
-            }
-            let stem = name.trim_end_matches(".rs");
-            let number_part = stem.trim_start_matches('m').split('_').next().unwrap_or("");
-            if number_part.chars().all(|c| c.is_ascii_digit())
-                && !number_part.is_empty()
-                && let Ok(num) = number_part.parse::<u64>()
-            {
-                max_num = max_num.max(num);
-                width = width.max(number_part.len());
-            }
-        }
-    }
-
-    let next = max_num + 1;
-    let prefix = format!("m{:0width$}", next, width = width);
-    let mod_name = format!("{prefix}_create_{resource_plural}");
-    let file_name = format!("{mod_name}.rs");
-    Ok((mod_name, file_name))
 }
 
 fn render_sea_orm_migration(

@@ -16,8 +16,9 @@
 
 use async_trait::async_trait;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder,
-    QuerySelect, Set, TransactionTrait, TryInsertResult, entity::prelude::*, sea_query::OnConflict,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseBackend, DatabaseConnection,
+    EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set, Statement, TransactionTrait,
+    TryInsertResult, entity::prelude::*, sea_query::OnConflict,
 };
 
 use super::storage::{
@@ -393,6 +394,112 @@ impl SeaOrmBillingStore {
     pub fn connection(&self) -> &DatabaseConnection {
         &self.db
     }
+
+    /// Validate that the deployed database contains the schema required by this store.
+    ///
+    /// Applications can call this during startup or from an integration test to fail before a
+    /// billing request reaches Stripe. This method is read-only.
+    pub async fn validate_schema(&self) -> Result<()> {
+        let mut missing = Vec::new();
+        for (table, columns) in [
+            (
+                "billing_customers",
+                &[
+                    "billable_id",
+                    "billable_type",
+                    "stripe_customer_id",
+                    "created_at",
+                    "updated_at",
+                ][..],
+            ),
+            (
+                "billing_subscriptions",
+                &[
+                    "billable_id",
+                    "stripe_subscription_id",
+                    "stripe_customer_id",
+                    "plan_id",
+                    "status",
+                    "current_period_start",
+                    "current_period_end",
+                    "extra_seats",
+                    "trial_end",
+                    "cancel_at_period_end",
+                    "base_item_id",
+                    "seat_item_id",
+                    "updated_at",
+                    "created_at",
+                ][..],
+            ),
+        ] {
+            if !self.schema_object_exists(table, None).await? {
+                missing.push(table.to_string());
+                continue;
+            }
+            for column in columns {
+                if !self.schema_object_exists(table, Some(column)).await? {
+                    missing.push(format!("{table}.{column}"));
+                }
+            }
+        }
+
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(TidewayError::Database(format!(
+                "Tideway billing schema is incompatible; missing {}",
+                missing.join(", ")
+            )))
+        }
+    }
+
+    async fn schema_object_exists(&self, table: &str, column: Option<&str>) -> Result<bool> {
+        let backend = self.db.get_database_backend();
+        let statement = match (backend, column) {
+            (DatabaseBackend::Postgres, None) => Statement::from_sql_and_values(
+                backend,
+                "SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = current_schema() AND table_name = $1 LIMIT 1",
+                [table.to_owned().into()],
+            ),
+            (DatabaseBackend::Postgres, Some(column)) => Statement::from_sql_and_values(
+                backend,
+                "SELECT 1 FROM information_schema.columns \
+                 WHERE table_schema = current_schema() AND table_name = $1 \
+                 AND column_name = $2 LIMIT 1",
+                [table.to_owned().into(), column.to_owned().into()],
+            ),
+            (DatabaseBackend::Sqlite, None) => Statement::from_sql_and_values(
+                backend,
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+                [table.to_owned().into()],
+            ),
+            (DatabaseBackend::Sqlite, Some(column)) => Statement::from_sql_and_values(
+                backend,
+                "SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1",
+                [table.to_owned().into(), column.to_owned().into()],
+            ),
+            (DatabaseBackend::MySql, None) => Statement::from_sql_and_values(
+                backend,
+                "SELECT 1 FROM information_schema.tables \
+                 WHERE table_schema = DATABASE() AND table_name = ? LIMIT 1",
+                [table.to_owned().into()],
+            ),
+            (DatabaseBackend::MySql, Some(column)) => Statement::from_sql_and_values(
+                backend,
+                "SELECT 1 FROM information_schema.columns \
+                 WHERE table_schema = DATABASE() AND table_name = ? \
+                 AND column_name = ? LIMIT 1",
+                [table.to_owned().into(), column.to_owned().into()],
+            ),
+        };
+
+        self.db
+            .query_one(statement)
+            .await
+            .map(|row| row.is_some())
+            .map_err(|error| TidewayError::Database(error.to_string()))
+    }
 }
 
 #[async_trait]
@@ -440,6 +547,7 @@ impl BillingStore for SeaOrmBillingStore {
             .on_conflict(
                 OnConflict::column(billing_customer::Column::BillableId)
                     .update_columns([
+                        billing_customer::Column::BillableType,
                         billing_customer::Column::StripeCustomerId,
                         billing_customer::Column::UpdatedAt,
                     ])
@@ -1153,6 +1261,67 @@ mod tests {
         .expect("should create billing_subscriptions table");
 
         db
+    }
+
+    async fn setup_billing_schema_db(include_customer_contract: bool) -> DatabaseConnection {
+        let db = setup_billing_subscriptions_db().await;
+        let customer_columns = if include_customer_contract {
+            "billable_type TEXT NOT NULL, updated_at TEXT NOT NULL,"
+        } else {
+            ""
+        };
+        db.execute(Statement::from_string(
+            sea_orm::DatabaseBackend::Sqlite,
+            format!(
+                "CREATE TABLE billing_customers (
+                    billable_id TEXT PRIMARY KEY NOT NULL,
+                    {customer_columns}
+                    stripe_customer_id TEXT UNIQUE NOT NULL,
+                    created_at TEXT NOT NULL
+                )"
+            ),
+        ))
+        .await
+        .expect("should create billing_customers table");
+        db
+    }
+
+    #[tokio::test]
+    async fn billing_customer_store_path_matches_validated_schema() {
+        let store = SeaOrmBillingStore::new(setup_billing_schema_db(true).await);
+
+        store
+            .validate_schema()
+            .await
+            .expect("schema should validate");
+        store
+            .set_stripe_customer_id("org_123", "legacy", "cus_123")
+            .await
+            .expect("repaired customer link should persist");
+        store
+            .set_stripe_customer_id("org_123", "organization", "cus_123")
+            .await
+            .expect("customer link should update");
+        assert_eq!(
+            store.get_stripe_customer_id("org_123").await.unwrap(),
+            Some("cus_123".to_string())
+        );
+        let customer = billing_customer::Entity::find_by_id("org_123")
+            .one(store.connection())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(customer.billable_type, "organization");
+    }
+
+    #[tokio::test]
+    async fn schema_validation_reports_missing_customer_contract_columns() {
+        let store = SeaOrmBillingStore::new(setup_billing_schema_db(false).await);
+
+        let error = store.validate_schema().await.unwrap_err().to_string();
+
+        assert!(error.contains("billing_customers.billable_type"));
+        assert!(error.contains("billing_customers.updated_at"));
     }
 
     #[tokio::test]

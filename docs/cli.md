@@ -128,6 +128,7 @@ tideway add database
 tideway add database --wire
 tideway add organizations --wire --db
 tideway add credits
+tideway add billing-schema
 tideway add openapi
 tideway add openapi --wire
 ```
@@ -137,9 +138,16 @@ When adding OpenAPI, the CLI creates `src/openapi_docs.rs` if it does not exist.
 It currently expects an existing org-aware DB-backed auth/user contract (`RequestActor` organization helpers, `user.organization_id`, and registered user migrations). If you only need an organization-shaped CRUD resource, use `tideway resource organization --profile tenant`.
 
 `tideway add credits` is additive: it enables the persistent credits features and registers a new
-ledger migration using the next available migration number, without generating or replacing
-application handlers or migration history. See `docs/credits.md` for the reserve/commit workflow
-and optional Stripe top-ups.
+ledger migration without generating or replacing application handlers or migration history. It
+preserves the application's existing migration convention, including sequential names such as
+`m014_...` and SeaORM timestamp names such as `m20260717_143012_...`. See `docs/credits.md` for the
+reserve/commit workflow and optional Stripe top-ups.
+
+`tideway add billing-schema` is an upgrade repair for applications using
+`SeaOrmBillingStore`. It registers an idempotent additive migration for the current
+`billing_customers` contract unless that forward repair already exists. It does not edit an applied
+migration, application code, dependencies, or environment files. Review the generated legacy-value
+backfill before running `tideway migrate`.
 
 ### `tideway resource`
 
@@ -186,7 +194,11 @@ For the primary workflow, prefer `tideway resource <name>` and let the profile c
 If you pass shape flags explicitly (`--wire`, `--db`, `--repo`, `--service`, `--paginate`, `--search`), Tideway uses those exact flags and does not apply profile defaults.
 
 If the OpenAPI feature is enabled, `--wire` will also update `src/openapi_docs.rs` with the new routes.
-Use `--db` to scaffold a SeaORM entity + migration and switch routes to real DB CRUD. With `--wire`, it also wires the database into `main.rs`.
+Use `--db` to scaffold a SeaORM entity + migration and switch routes to real DB CRUD. With `--wire`,
+it also wires the database into `main.rs`. Generated migrations preserve the convention already in
+the application: sequential (`m015_...`) or SeaORM timestamp (`m20260717_143012_...`). For a mixed
+history, Tideway follows the convention of the last migration registered in
+`Migrator::migrations()`; if that cannot be determined, it stops instead of guessing.
 Use `--repo` to generate a repository layer for DB-backed resources.
 Use `--repo-tests` to generate an ignored CRUD smoke test (defaults to postgres profile).
 Set `TIDEWAY_TEST_DB_BACKEND=postgres_container` to run against a Docker container when

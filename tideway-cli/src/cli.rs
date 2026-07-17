@@ -125,7 +125,7 @@ pub enum NewPreset {
 
 #[derive(Parser, Debug)]
 pub struct AddArgs {
-    /// Feature to add (auth, database, openapi, validation, cache, sessions, jobs, websocket, metrics, email, organizations, credits)
+    /// Feature or additive schema repair to add
     #[arg(value_enum)]
     pub feature: AddFeature,
 
@@ -160,6 +160,7 @@ pub enum AddFeature {
     Email,
     Organizations,
     Credits,
+    BillingSchema,
 }
 
 #[derive(Parser, Debug)]
@@ -547,6 +548,7 @@ impl std::fmt::Display for AddFeature {
             AddFeature::Email => "email",
             AddFeature::Organizations => "organizations",
             AddFeature::Credits => "credits",
+            AddFeature::BillingSchema => "billing-schema",
         };
         write!(f, "{}", name)
     }

@@ -495,6 +495,60 @@ ColumnDef::new(BillingProcessedEvents::EventId);
 }
 
 #[test]
+fn test_doctor_upgrade_reports_billing_customer_schema_compatibility() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["billing-seaorm"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write main");
+    fs::write(
+        project_dir.join("migration/src/m004_create_billing.rs"),
+        "enum BillingCustomers { Table, BillableId, StripeCustomerId, CreatedAt }\n",
+    )
+    .expect("write legacy migration");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(report.findings().iter().any(|finding| {
+        finding.code == Some("TW-UPGRADE-BILLING-CUSTOMER-SCHEMA")
+            && finding.message.contains("tideway add billing-schema")
+    }));
+
+    fs::write(
+        project_dir.join("migration/src/m014_repair_billing_customer_schema.rs"),
+        "BillingCustomers::BillableType; BillingCustomers::UpdatedAt;\n",
+    )
+    .expect("write repair migration");
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("reanalyze upgrade");
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-CUSTOMER-SCHEMA-READY") })
+    );
+    assert!(
+        !report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-BILLING-CUSTOMER-SCHEMA") })
+    );
+}
+
+#[test]
 fn test_doctor_detects_missing_feature() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

@@ -4,6 +4,24 @@ Tideway provides a comprehensive Stripe-based billing system for SaaS applicatio
 
 ## Quick Start
 
+Applications using the built-in SeaORM store should validate its deployed schema during startup
+before registering billing routes:
+
+```rust
+use tideway::billing::SeaOrmBillingStore;
+
+let billing_store = SeaOrmBillingStore::new(db.clone());
+billing_store.validate_schema().await?;
+```
+
+This check is read-only and reports missing tables or columns before a customer reaches Stripe
+Checkout. It checks the actual database, whereas `tideway doctor --upgrade` checks migration source.
+Older applications warned about `billing_customers.billable_type` or `updated_at` should install the
+current CLI, run `tideway add billing-schema`, review the additive migration, and apply it through
+their normal deployment workflow. Do the same if runtime validation fails even when doctor reports
+compatible source: an edited, already-applied migration does not change a deployed database. Never
+edit an already-applied migration to repair production.
+
 ```rust
 use tideway::billing::{
     Plans, CheckoutManager, CheckoutConfig, CheckoutRequest,

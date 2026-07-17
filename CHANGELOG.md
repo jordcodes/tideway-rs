@@ -9,6 +9,66 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.45] - 2026-07-17
+
+### Added
+
+- `tideway add billing-schema` creates an idempotent additive repair unless that forward repair is
+  already registered. It does not trust edits to a historical migration as proof that a deployed
+  database was repaired.
+- Upgrade doctor reports `TW-UPGRADE-BILLING-CUSTOMER-SCHEMA` with the focused remediation command
+  and confirms compatible migration source without connecting to the database.
+
+### Fixed
+
+- Fresh billing scaffolds now include `billing_customers.billable_type` and `updated_at`, matching
+  the framework store contract.
+- CLI-generated resource and credits migrations now preserve each application's established
+  sequential or SeaORM timestamp naming convention. Mixed histories follow the last registered
+  migration when it is unambiguous and fail before modifying project files instead of guessing;
+  commented registrations and examples outside `Migrator::migrations()` are ignored.
+
+### DX Gate
+
+- Sequential, timestamp, mixed-history, idempotency, non-mutation, fresh-scaffold, repair, and
+  doctor remediation regressions pass.
+- The complete CLI suite passes, including generated minimal, API, auth/MFA, and SaaS application
+  compilation, localhost golden paths, strict Clippy, and repository guardrails.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.45`; newly generated projects use Tideway
+  0.7.29.
+- Existing `billing-seaorm` applications should run `tideway doctor --upgrade`, then
+  `tideway add billing-schema` only when warned. Review and apply the additive migration before
+  deploying Tideway 0.7.29; do not edit an already-applied migration.
+
+## [0.7.29] - 2026-07-17
+
+### Added
+
+- `SeaOrmBillingStore::validate_schema` provides a read-only PostgreSQL and SQLite schema
+  contract check with precise missing-table and missing-column diagnostics for startup and CI.
+
+### Fixed
+
+- Customer upserts now refresh `billable_type` as well as the Stripe customer ID and timestamp,
+  allowing rows repaired with the neutral `legacy` value to acquire the application's real type.
+
+### Compatibility
+
+- Custom billing stores and applications without `billing-seaorm` are unchanged.
+- The framework API addition is backwards compatible. The required customer columns were already
+  part of the published SeaORM model; this patch supplies the missing fresh and forward migration
+  paths rather than changing their meaning.
+
+### DX Gate
+
+- Real SeaORM customer persistence and schema mismatch diagnostics pass against SQLite, alongside
+  the existing billing claim and subscription concurrency regressions.
+- Full workspace tests, all-feature strict Clippy, package dry runs, and repository release guards
+  pass before publication.
+
 ## [tideway-cli 0.1.44] - 2026-07-16
 
 ### Added

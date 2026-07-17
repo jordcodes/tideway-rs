@@ -499,6 +499,19 @@ fn check_upgrade_readiness(
     if tideway_features.contains("billing-seaorm")
         || any_rs_file_contains(&src_dir, "SeaOrmBillingStore")
     {
+        if billing_customer_schema_ready(project_dir) {
+            report.push_upgrade_info(
+                "TW-UPGRADE-BILLING-CUSTOMER-SCHEMA-READY",
+                "migration/src/",
+                "billing_customers includes billable_type and updated_at",
+            );
+        } else {
+            report.push_upgrade_warning(
+                "TW-UPGRADE-BILLING-CUSTOMER-SCHEMA",
+                "migration/src/",
+                "SeaOrmBillingStore requires billing_customers.billable_type and billing_customers.updated_at; run `tideway add billing-schema`, review the additive migration, and apply it before deploying",
+            );
+        }
         match billing_event_migration_status(project_dir) {
             BillingEventMigrationStatus::Ready => report.push_upgrade_info(
                 "TW-UPGRADE-BILLING-MIGRATION-READY",
@@ -622,6 +635,39 @@ fn billing_event_claim_lifecycle_ready(project_dir: &Path) -> bool {
         "billing_processed_events",
         "BillingProcessedEvents",
     )
+}
+
+fn billing_customer_schema_ready(project_dir: &Path) -> bool {
+    let root = project_dir.join("migration").join("src");
+    let mut stack = vec![root];
+    while let Some(path) = stack.pop() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
+            if let Ok(entries) = fs::read_dir(&path) {
+                stack.extend(entries.flatten().map(|entry| entry.path()));
+            }
+            continue;
+        }
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let Ok(contents) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let lowercase = contents.to_ascii_lowercase();
+        let targets_customers =
+            contents.contains("BillingCustomers") || lowercase.contains("billing_customers");
+        let has_billable_type = contents.contains("BillingCustomers::BillableType")
+            || lowercase.contains("billable_type");
+        let has_updated_at =
+            contents.contains("BillingCustomers::UpdatedAt") || lowercase.contains("updated_at");
+        if targets_customers && has_billable_type && has_updated_at {
+            return true;
+        }
+    }
+    false
 }
 
 fn custom_billing_store_missing_subscription_cas(src_dir: &Path) -> bool {

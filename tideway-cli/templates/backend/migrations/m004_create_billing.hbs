@@ -20,9 +20,16 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .primary_key(),
                     )
+                    .col(ColumnDef::new(BillingCustomers::BillableType).string().not_null())
                     .col(ColumnDef::new(BillingCustomers::StripeCustomerId).string().not_null().unique_key())
                     .col(
                         ColumnDef::new(BillingCustomers::CreatedAt)
+                            .timestamp_with_time_zone()
+                            .not_null()
+                            .default(Expr::current_timestamp()),
+                    )
+                    .col(
+                        ColumnDef::new(BillingCustomers::UpdatedAt)
                             .timestamp_with_time_zone()
                             .not_null()
                             .default(Expr::current_timestamp()),
@@ -80,8 +87,10 @@ impl MigrationTrait for Migration {
 enum BillingCustomers {
     Table,
     BillableId,
+    BillableType,
     StripeCustomerId,
     CreatedAt,
+    UpdatedAt,
 }
 
 #[derive(DeriveIden)]

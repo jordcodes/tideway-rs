@@ -189,6 +189,199 @@ fn test_add_credits_is_idempotent_with_a_dynamically_numbered_migration() {
 }
 
 #[test]
+fn test_add_credits_preserves_timestamp_migration_convention() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, true);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        r#"use sea_orm_migration::prelude::*;
+mod m20990101_000000_application_change;
+pub struct Migrator;
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        vec![Box::new(m20990101_000000_application_change::Migration)]
+    }
+}
+"#,
+    )
+    .expect("write migration lib");
+    fs::write(
+        project_dir.join("migration/src/m20990101_000000_application_change.rs"),
+        "// application-owned migration\n",
+    )
+    .expect("write existing migration");
+
+    tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    })
+    .expect("add credits");
+
+    let migration = project_dir.join("migration/src/m20990101_000001_create_credit_ledger.rs");
+    assert_file_contains(&migration, "credit_transactions");
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m20990101_000001_create_credit_ledger::Migration)",
+    );
+}
+
+#[test]
+fn test_add_credits_ambiguous_migration_style_is_non_mutating() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, false);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    fs::write(
+        project_dir.join("migration/src/m014_application_change.rs"),
+        "// sequential application migration\n",
+    )
+    .expect("write sequential migration");
+    fs::write(
+        project_dir.join("migration/src/m20260717_120000_application_change.rs"),
+        "// timestamp application migration\n",
+    )
+    .expect("write timestamp migration");
+    let cargo_before = fs::read_to_string(project_dir.join("Cargo.toml")).expect("read Cargo");
+    let migration_cargo_before =
+        fs::read_to_string(project_dir.join("migration/Cargo.toml")).expect("read migration Cargo");
+    let migration_lib_before =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+
+    let error = tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    })
+    .expect_err("ambiguous migration style should fail")
+    .to_string();
+
+    assert!(error.contains("Both sequential and timestamp migration names were found"));
+    assert_eq!(
+        fs::read_to_string(project_dir.join("Cargo.toml")).expect("read Cargo after"),
+        cargo_before
+    );
+    assert_eq!(
+        fs::read_to_string(project_dir.join("migration/Cargo.toml"))
+            .expect("read migration Cargo after"),
+        migration_cargo_before
+    );
+    assert_eq!(
+        fs::read_to_string(project_dir.join("migration/src/lib.rs"))
+            .expect("read migration lib after"),
+        migration_lib_before
+    );
+    assert!(!project_dir.join(".env.example").exists());
+    assert!(
+        !project_dir
+            .join("migration/src/m015_create_credit_ledger.rs")
+            .exists()
+    );
+}
+
+#[test]
+fn test_add_billing_schema_creates_an_additive_idempotent_repair() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, true);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    fs::write(
+        project_dir.join("migration/src/m004_create_billing.rs"),
+        "BillingCustomers::BillableType; BillingSubscriptions::UpdatedAt;\n",
+    )
+    .expect("write legacy billing migration");
+    let cargo_before = fs::read_to_string(project_dir.join("Cargo.toml")).expect("read Cargo");
+
+    let args = || AddArgs {
+        feature: AddFeature::BillingSchema,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    };
+    tideway_cli::commands::add::run(args()).expect("first repair");
+    tideway_cli::commands::add::run(args()).expect("second repair");
+
+    let repair = project_dir.join("migration/src/m013_repair_billing_customer_schema.rs");
+    assert_file_contains(&repair, "BillingCustomers::BillableType");
+    assert_file_contains(&repair, "BillingCustomers::UpdatedAt");
+    assert_file_contains(&repair, ".default(\"legacy\")");
+    assert_eq!(
+        fs::read_to_string(project_dir.join("Cargo.toml")).expect("read Cargo after"),
+        cargo_before,
+        "a schema repair must not rewrite application dependencies"
+    );
+    let migration_lib =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    assert_eq!(
+        migration_lib
+            .matches("Box::new(m013_repair_billing_customer_schema::Migration)")
+            .count(),
+        1
+    );
+    assert!(
+        !project_dir
+            .join("migration/src/m014_repair_billing_customer_schema.rs")
+            .exists()
+    );
+}
+
+#[test]
+fn test_add_billing_schema_still_repairs_an_edited_historical_migration() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, true);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    fs::write(
+        project_dir.join("migration/src/m004_create_billing.rs"),
+        "BillingCustomers::BillableType; BillingCustomers::UpdatedAt;\n",
+    )
+    .expect("write current billing migration");
+
+    tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::BillingSchema,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    })
+    .expect("edited historical source still needs a forward repair");
+
+    assert!(
+        project_dir
+            .join("migration/src/m013_repair_billing_customer_schema.rs")
+            .exists(),
+        "editing an already-applied migration cannot repair a deployed database"
+    );
+}
+
+#[test]
 fn test_add_organizations_scaffolds_without_billing_or_admin() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

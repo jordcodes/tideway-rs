@@ -13,6 +13,7 @@ use crate::commands::app_builder::{
 };
 use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::messaging::GREENFIELD_NEW_APP_FIRST;
+use crate::commands::migration_naming::{MigrationName, is_migration_module, next_migration_name};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success,
@@ -47,13 +48,26 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
     if args.feature == AddFeature::Organizations {
         validate_organizations_preconditions(&project_dir, args.db)?;
     }
-    if args.feature == AddFeature::Credits {
+    let credits_migration = if args.feature == AddFeature::Credits {
         validate_credits_preconditions(&project_dir)?;
+        let migration = plan_credits_migration(&project_dir)?;
         ensure_migration_json_feature(&project_dir.join("migration/Cargo.toml"))?;
-    }
+        Some(migration)
+    } else {
+        None
+    };
 
-    update_cargo_toml(&cargo_path, &cargo_contents, args.feature)?;
-    update_env_example(&project_dir, args.feature, &project_name)?;
+    let billing_schema_migration = if args.feature == AddFeature::BillingSchema {
+        validate_credits_preconditions(&project_dir)?;
+        Some(plan_billing_schema_migration(&project_dir)?)
+    } else {
+        None
+    };
+
+    if args.feature != AddFeature::BillingSchema {
+        update_cargo_toml(&cargo_path, &cargo_contents, args.feature)?;
+        update_env_example(&project_dir, args.feature, &project_name)?;
+    }
 
     if args.feature == AddFeature::Auth {
         scaffold_auth(
@@ -100,7 +114,12 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
     }
 
     if args.feature == AddFeature::Credits {
-        let migration = scaffold_credits(&project_dir, &project_name, &project_name_pascal)?;
+        let migration = scaffold_credits(
+            &project_dir,
+            &project_name,
+            &project_name_pascal,
+            credits_migration.expect("credits migration is planned before mutation"),
+        )?;
         print_info(&format!(
             "Credits ledger migration ready: migration/src/{migration}.rs"
         ));
@@ -112,6 +131,28 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
             print_info(
                 "Next step: run migrations, then construct CreditManager<SeaOrmCreditStore>",
             );
+        }
+    }
+
+    if args.feature == AddFeature::BillingSchema {
+        let created = matches!(&billing_schema_migration, Some(MigrationPlan::Create(_)));
+        let migration = scaffold_billing_schema_repair(
+            &project_dir,
+            &project_name,
+            &project_name_pascal,
+            billing_schema_migration.expect("billing schema migration is planned before mutation"),
+        )?;
+        if created {
+            print_info(&format!(
+                "Billing schema repair ready: migration/src/{migration}.rs"
+            ));
+            print_info(
+                "Next step: review the legacy billable-type backfill, then run `tideway migrate`",
+            );
+        } else {
+            print_info(&format!(
+                "Billing customer schema is already compatible: migration/src/{migration}.rs"
+            ));
         }
     }
 
@@ -246,6 +287,7 @@ fn tideway_features_for_add(feature: AddFeature) -> Vec<String> {
             "credits".to_string(),
             "credits-seaorm".to_string(),
         ],
+        AddFeature::BillingSchema => Vec::new(),
         _ => vec![feature.to_string()],
     }
 }
@@ -315,6 +357,7 @@ fn scaffold_credits(
     project_dir: &Path,
     project_name: &str,
     project_name_pascal: &str,
+    migration_plan: MigrationPlan,
 ) -> Result<String> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
@@ -345,16 +388,121 @@ fn scaffold_credits(
     };
     let engine = BackendTemplateEngine::new(context)?;
     let migrations_dir = project_dir.join("migration/src");
-    let migration = if let Some(existing) = find_credits_migration(&migrations_dir)? {
-        existing
-    } else {
-        let migration = next_credits_migration(&migrations_dir)?;
-        let migration_path = migrations_dir.join(format!("{migration}.rs"));
-        write_file(
-            &migration_path,
-            &engine.render("migrations/m013_create_credit_ledger")?,
-        )?;
-        migration
+    let migration = match migration_plan {
+        MigrationPlan::Existing(existing) => existing,
+        MigrationPlan::Create(migration) => {
+            let migration_path = migrations_dir.join(&migration.file);
+            write_file(
+                &migration_path,
+                &engine.render("migrations/m013_create_credit_ledger")?,
+            )?;
+            migration.module
+        }
+    };
+    ensure_migration_registered(&migrations_dir.join("lib.rs"), &migration)?;
+    Ok(migration)
+}
+
+#[derive(Clone, Debug)]
+enum MigrationPlan {
+    Existing(String),
+    Create(MigrationName),
+}
+
+fn plan_credits_migration(project_dir: &Path) -> Result<MigrationPlan> {
+    let migrations_dir = project_dir.join("migration/src");
+    match find_credits_migration(&migrations_dir)? {
+        Some(existing) => Ok(MigrationPlan::Existing(existing)),
+        None => Ok(MigrationPlan::Create(next_migration_name(
+            &migrations_dir,
+            "create_credit_ledger",
+            13,
+        )?)),
+    }
+}
+
+fn plan_billing_schema_migration(project_dir: &Path) -> Result<MigrationPlan> {
+    let migrations_dir = project_dir.join("migration/src");
+    match find_billing_schema_repair(&migrations_dir)? {
+        Some(existing) => Ok(MigrationPlan::Existing(existing)),
+        None => Ok(MigrationPlan::Create(next_migration_name(
+            &migrations_dir,
+            "repair_billing_customer_schema",
+            13,
+        )?)),
+    }
+}
+
+fn find_billing_schema_repair(migrations_dir: &Path) -> Result<Option<String>> {
+    for entry in fs::read_dir(migrations_dir)
+        .with_context(|| format!("Failed to read {}", migrations_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !is_migration_module(module) {
+            continue;
+        }
+        if !module.contains("repair_billing_customer_schema") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        let has_billable_type = contents.contains("BillingCustomers::BillableType")
+            || contents.to_ascii_lowercase().contains("billable_type");
+        let has_updated_at = contents.contains("BillingCustomers::UpdatedAt")
+            || contents.to_ascii_lowercase().contains("updated_at");
+        let targets_customers = contents.contains("BillingCustomers")
+            || contents.to_ascii_lowercase().contains("billing_customers");
+        if targets_customers && has_billable_type && has_updated_at {
+            return Ok(Some(module.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+fn scaffold_billing_schema_repair(
+    project_dir: &Path,
+    project_name: &str,
+    project_name_pascal: &str,
+    migration_plan: MigrationPlan,
+) -> Result<String> {
+    let context = BackendTemplateContext {
+        project_name: project_name.to_string(),
+        project_crate: project_name.replace('-', "_"),
+        project_name_pascal: project_name_pascal.to_string(),
+        has_organizations: false,
+        has_invitations: false,
+        database: "postgres".to_string(),
+        database_url: String::new(),
+        is_sqlite_database: false,
+        tideway_version: TIDEWAY_VERSION.to_string(),
+        tideway_features: vec!["billing-seaorm".to_string()],
+        has_tideway_features: true,
+        has_auth_feature: false,
+        has_auth_mfa_feature: false,
+        has_database_feature: true,
+        has_billing_feature: true,
+        has_openapi_feature: false,
+        needs_arc: false,
+        has_config: false,
+    };
+    let engine = BackendTemplateEngine::new(context)?;
+    let migrations_dir = project_dir.join("migration/src");
+    let migration = match migration_plan {
+        MigrationPlan::Existing(existing) => existing,
+        MigrationPlan::Create(migration) => {
+            write_file(
+                &migrations_dir.join(&migration.file),
+                &engine.render("migrations/m014_repair_billing_customers")?,
+            )?;
+            migration.module
+        }
     };
     ensure_migration_registered(&migrations_dir.join("lib.rs"), &migration)?;
     Ok(migration)
@@ -372,7 +520,7 @@ fn find_credits_migration(migrations_dir: &Path) -> Result<Option<String>> {
         let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
             continue;
         };
-        if !is_numbered_migration_module(module) {
+        if !is_migration_module(module) {
             continue;
         }
         let contents = fs::read_to_string(&path)
@@ -398,46 +546,6 @@ fn find_credits_migration(migrations_dir: &Path) -> Result<Option<String>> {
         }
     }
     Ok(None)
-}
-
-fn next_credits_migration(migrations_dir: &Path) -> Result<String> {
-    let mut max_number = 12u64;
-    let mut width = 3usize;
-    for entry in fs::read_dir(migrations_dir)
-        .with_context(|| format!("Failed to read {}", migrations_dir.display()))?
-    {
-        let entry = entry?;
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
-            continue;
-        };
-        let Some(stem) = name.strip_suffix(".rs") else {
-            continue;
-        };
-        let Some((number, number_width)) = migration_prefix(stem) else {
-            continue;
-        };
-        max_number = max_number.max(number);
-        width = width.max(number_width);
-    }
-    let next = max_number
-        .checked_add(1)
-        .ok_or_else(|| anyhow::anyhow!("Migration number overflow"))?;
-    Ok(format!(
-        "m{next:0width$}_create_credit_ledger",
-        width = width
-    ))
-}
-
-fn is_numbered_migration_module(module: &str) -> bool {
-    migration_prefix(module).is_some()
-}
-
-fn migration_prefix(module: &str) -> Option<(u64, usize)> {
-    let digits = module.strip_prefix('m')?.split('_').next()?;
-    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    Some((digits.parse().ok()?, digits.len()))
 }
 
 fn update_env_example(project_dir: &Path, feature: AddFeature, project_name: &str) -> Result<()> {

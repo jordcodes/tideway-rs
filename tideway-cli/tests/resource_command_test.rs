@@ -760,6 +760,143 @@ impl MigratorTrait for Migrator {
 }
 
 #[test]
+fn test_resource_command_preserves_timestamp_migration_convention() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migration src");
+    fs::write(
+        project_dir.join("migration/src/m20990101_000000_application_change.rs"),
+        "// application-owned migration\n",
+    )
+    .expect("write existing migration");
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        r#"use sea_orm_migration::prelude::*;
+mod m20990101_000000_application_change;
+pub struct Migrator;
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        vec![
+            Box::new(m20990101_000000_application_change::Migration),
+        ]
+    }
+}
+"#,
+    )
+    .expect("write migration lib");
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: true,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let migration = project_dir.join("migration/src/m20990101_000001_create_users.rs");
+    assert_file_contains(&migration, "create_table");
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m20990101_000001_create_users::Migration)",
+    );
+}
+
+#[test]
+fn test_resource_ambiguous_migration_style_fails_before_writing() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migration src");
+    fs::write(
+        project_dir.join("migration/src/m014_application_change.rs"),
+        "// sequential application migration\n",
+    )
+    .expect("write sequential migration");
+    fs::write(
+        project_dir.join("migration/src/m20260717_120000_application_change.rs"),
+        "// timestamp application migration\n",
+    )
+    .expect("write timestamp migration");
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        r#"use sea_orm_migration::prelude::*;
+pub struct Migrator;
+#[async_trait::async_trait]
+impl MigratorTrait for Migrator {
+    fn migrations() -> Vec<Box<dyn MigrationTrait>> {
+        vec![]
+    }
+}
+"#,
+    )
+    .expect("write migration lib");
+    let cargo_before = fs::read_to_string(project_dir.join("Cargo.toml")).expect("read Cargo");
+    let main_before = fs::read_to_string(project_dir.join("src/main.rs")).expect("read main");
+    let routes_before =
+        fs::read_to_string(project_dir.join("src/routes/mod.rs")).expect("read routes");
+
+    let error = tideway_cli::commands::resource::run(ResourceArgs {
+        name: "user".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: true,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
+    })
+    .expect_err("ambiguous migration style should fail")
+    .to_string();
+
+    assert!(error.contains("Both sequential and timestamp migration names were found"));
+    assert_eq!(
+        fs::read_to_string(project_dir.join("Cargo.toml")).expect("read Cargo after"),
+        cargo_before
+    );
+    assert_eq!(
+        fs::read_to_string(project_dir.join("src/main.rs")).expect("read main after"),
+        main_before
+    );
+    assert_eq!(
+        fs::read_to_string(project_dir.join("src/routes/mod.rs")).expect("read routes after"),
+        routes_before
+    );
+    assert!(!project_dir.join("src/routes/user.rs").exists());
+    assert!(!project_dir.join("src/entities/user.rs").exists());
+}
+
+#[test]
 fn test_resource_command_generates_repository_tests() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

@@ -1,0 +1,66 @@
+//! Repair the billing customer schema required by Tideway's SeaORM billing store.
+//!
+//! Existing rows receive the neutral `legacy` marker. Tideway does not use this field for
+//! authorization; applications may backfill a more specific value such as `user` or
+//! `organization` when their domain model can determine it safely. The fixed historical timestamp
+//! is portable to SQLite and PostgreSQL; normal store writes replace both legacy values.
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        if !manager
+            .has_column("billing_customers", "billable_type")
+            .await?
+        {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(BillingCustomers::Table)
+                        .add_column(
+                            ColumnDef::new(BillingCustomers::BillableType)
+                                .string()
+                                .not_null()
+                                .default("legacy"),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+        }
+
+        if !manager.has_column("billing_customers", "updated_at").await? {
+            manager
+                .alter_table(
+                    Table::alter()
+                        .table(BillingCustomers::Table)
+                        .add_column(
+                            ColumnDef::new(BillingCustomers::UpdatedAt)
+                                .timestamp_with_time_zone()
+                                .not_null()
+                                .default("1970-01-01T00:00:00Z"),
+                        )
+                        .to_owned(),
+                )
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Intentionally retained: every published SeaOrmBillingStore expects these columns, so
+        // removing them would make both the current and historical application code unsafe.
+        Ok(())
+    }
+}
+
+#[derive(DeriveIden)]
+enum BillingCustomers {
+    Table,
+    BillableType,
+    UpdatedAt,
+}

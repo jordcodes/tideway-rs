@@ -52,6 +52,8 @@ contracts, authorization rules, or table layouts.
 
 6. For database-backed applications, review and run pending migrations in the normal deployment
    workflow. Inspect the migration diff before applying it to shared environments.
+   Tideway-generated additive migrations preserve the application's existing sequential or SeaORM
+   timestamp naming convention; they do not introduce a separate framework migration history.
 
 7. Run the application's complete test suite before committing:
 
@@ -73,6 +75,36 @@ tideway --json doctor --upgrade --deny-warnings
 Upgrade doctor checks inspect `Cargo.toml`, application source, and migration source. They do not
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
+
+## 0.7.28 to 0.7.29: billing customer schema contract
+
+This patch aligns fresh billing migrations with the schema already required by
+`SeaOrmBillingStore`. Existing applications using a custom `BillingStore`, or applications without
+`billing-seaorm`, require no migration.
+
+Applications using `SeaOrmBillingStore` should:
+
+1. Install the matching CLI and run `tideway doctor --upgrade`. The
+   `TW-UPGRADE-BILLING-CUSTOMER-SCHEMA` warning means migration source does not contain
+   `billing_customers.billable_type` and `billing_customers.updated_at`. Because doctor is
+   read-only and source-based, an edited historical migration can appear ready while an already
+   deployed database is still incompatible; `validate_schema` is the authoritative runtime check.
+2. Run `tideway add billing-schema`. The command preserves sequential or timestamp migration names,
+   always creates a forward repair unless one is already registered, does not edit the historical
+   billing migration, and does not change application code or dependencies.
+3. Review the new migration before applying it. Existing rows receive `billable_type = "legacy"`
+   because Tideway cannot safely infer an application's user-versus-organization model. The value
+   is not used for authorization. Backfill a domain-specific value only when the application can
+   derive it unambiguously.
+4. Apply the migration before deploying the upgraded framework. Then call
+   `billing_store.validate_schema().await?` during startup or from a database contract test
+   so the deployed schema is checked, not only the migration files.
+5. Exercise a real store-backed customer/Checkout path in application CI. Stripe itself may remain
+   mocked; the database interaction must use `SeaOrmBillingStore`.
+
+The repair is additive and its down migration intentionally retains the required columns. For an
+emergency rollback, roll application code back while leaving the columns in place. Dropping them
+would also break historical Tideway versions whose SeaORM model already expected them.
 
 ## 0.7.27 to 0.7.28: optional credits and allowances
 
@@ -223,6 +255,7 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-BILLING-CLAIM-LIFECYCLE` | A custom billing store lacks owned acquire, complete, or release overrides. |
 | `TW-UPGRADE-BILLING-RECOVERABLE-CLAIMS` | Billing processed-event tables lack lease lifecycle columns. |
 | `TW-UPGRADE-BILLING-SUBSCRIPTION-CAS` | A custom billing store lacks an atomic subscription compare-and-save override. |
+| `TW-UPGRADE-BILLING-CUSTOMER-SCHEMA` | Migration source lacks required built-in billing customer columns. |
 | `TW-UPGRADE-BILLING-MIGRATION-MISSING` | The built-in billing store's event migration is absent. |
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |

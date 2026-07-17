@@ -45,6 +45,11 @@ fn test_backend_generates_webhook_idempotency_migrations() {
     assert!(lifecycle.contains("ClaimedAt"));
     assert!(lifecycle.contains("Status"));
 
+    let billing_customers = fs::read_to_string(migrations_dir.join("m004_create_billing.rs"))
+        .expect("read billing customer migration");
+    assert!(billing_customers.contains("BillingCustomers::BillableType"));
+    assert!(billing_customers.contains("BillingCustomers::UpdatedAt"));
+
     let billing_plans = fs::read_to_string(migrations_dir.join("m008_create_billing_plans.rs"))
         .expect("read billing plans migration");
     assert!(billing_plans.contains("use serde_json::json;"));

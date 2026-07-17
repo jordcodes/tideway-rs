@@ -1,6 +1,6 @@
 [package]
 name = "tideway-cli"
-version = "0.1.44"
+version = "0.1.45"
 edition = "2024"
 build = "build.rs"
 authors = ["JD"]
@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.88"
 
 [package.metadata]
-tideway_version = "0.7.28"
+tideway_version = "0.7.29"
 
 [[bin]]
 name = "tideway"
@@ -37,6 +37,7 @@ url = "2.5"
 base64 = "0.22"
 ctrlc = { version = "3.4", features = ["termination"] }
 notify = "8"
+chrono = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
