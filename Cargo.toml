@@ -180,7 +180,7 @@ organizations-billing = ["organizations", "billing"]
 test-organizations = ["organizations"]
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.7", features = ["html_reports"] }
 rsa = "0.9"
 
 [[bench]]
