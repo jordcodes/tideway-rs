@@ -12,12 +12,23 @@ DATABASE_URL={{{database_url}}}
 JWT_SECRET=replace-with-at-least-32-random-bytes
 JWT_ISSUER={{project_crate}}
 JWT_AUDIENCE={{project_crate}}
+{{#if has_database_feature}}
+# Disabled by default for private and invitation-only products.
+ALLOW_PUBLIC_REGISTRATION=false
+{{/if}}
 {{#if has_auth_mfa_feature}}
 # Generate independently from JWT_SECRET with: openssl rand -base64 32
 MFA_ENCRYPTION_KEY=
 {{/if}}
 # Comma-separated proxy IPs/CIDRs. Leave empty unless traffic arrives through them.
 TRUSTED_PROXY_IPS=
+# General per-IP safety net; auth endpoints also have stricter dedicated limits.
+TIDEWAY_RATE_LIMIT_ENABLED=true
+TIDEWAY_RATE_LIMIT_MAX_REQUESTS=300
+TIDEWAY_RATE_LIMIT_WINDOW_SECONDS=60
+TIDEWAY_RATE_LIMIT_STRATEGY=per_ip
+# Keep this equal to TRUSTED_PROXY_IPS when a trusted proxy is configured.
+TIDEWAY_RATE_LIMIT_TRUSTED_PROXIES=
 REFRESH_TOKEN_RETENTION_DAYS=120
 # Keep false unless a verification-email delivery integration is wired.
 REQUIRE_EMAIL_VERIFICATION=false

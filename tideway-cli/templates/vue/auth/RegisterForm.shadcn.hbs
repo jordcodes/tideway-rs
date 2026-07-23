@@ -9,11 +9,15 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Separator } from '@/components/ui/separator'
 
 const props = defineProps<{
+  registrationEnabled?: boolean
   onSuccess?: (data: { userId: string; organizationId: string }) => void
   onLogin?: () => void
 }>()
 
 const { register, isLoading, error } = useAuth()
+const registrationEnabled = computed(() => (
+  props.registrationEnabled ?? (import.meta.env.VITE_ALLOW_PUBLIC_REGISTRATION === 'true')
+))
 
 const email = ref('')
 const password = ref('')
@@ -65,12 +69,29 @@ async function handleSubmit() {
 <template>
   <Card class="w-full max-w-md">
     <CardHeader class="space-y-1">
-      <CardTitle class="text-2xl font-bold">Create an account</CardTitle>
+      <CardTitle class="text-2xl font-bold">
+        \{{ registrationEnabled ? 'Create an account' : 'Registration unavailable' }}
+      </CardTitle>
       <CardDescription>
-        Enter your details to create your account and organization
+        <template v-if="registrationEnabled">
+          Enter your details to create your account and organization
+        </template>
+        <template v-else>
+          This workspace is private or invitation-only.
+        </template>
       </CardDescription>
     </CardHeader>
-    <form @submit.prevent="handleSubmit">
+    <CardContent v-if="!registrationEnabled" class="space-y-4">
+      <Alert>
+        <AlertDescription>
+          Ask your workspace administrator for an invitation before signing in.
+        </AlertDescription>
+      </Alert>
+      <Button v-if="onLogin" type="button" class="w-full" @click="onLogin">
+        Sign in
+      </Button>
+    </CardContent>
+    <form v-else @submit.prevent="handleSubmit">
       <CardContent class="space-y-4">
         <Alert v-if="error" variant="destructive">
           <AlertDescription>\{{ error }}</AlertDescription>

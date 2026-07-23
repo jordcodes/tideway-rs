@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use serde::Serialize;
 use tideway::auth::{AccessTokenClaims, AuthProvider, JwtVerifier};
-use tideway::{Result, TidewayError};
+use tideway::Result;
 {{#if has_database_feature}}
+use tideway::TidewayError;
 use sea_orm::{DatabaseConnection, EntityTrait};
 use std::sync::Arc;
 use uuid::Uuid;

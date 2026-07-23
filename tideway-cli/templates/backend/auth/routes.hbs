@@ -2,7 +2,8 @@
 
 use axum::{
     extract::{ConnectInfo, Extension},
-    http::HeaderMap,
+    http::{header::RETRY_AFTER, HeaderMap, HeaderValue},
+    response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
@@ -14,10 +15,10 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tideway::auth::{
-    JwtIssuer, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter, LoginRequest,
-    LoginHttpResponse, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest,
-    EmailVerificationFlow, EmailVerifyRequest, RegisterRequest, RegistrationFlow,
-    ResendVerificationRequest, UserStore,
+    AuthRateLimitConfig, AuthRateLimiter, JwtIssuer, LoginFlow, LoginFlowConfig,
+    LoginRateLimitConfig, LoginRateLimiter, LoginRequest, LoginHttpResponse,
+    PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, EmailVerificationFlow,
+    EmailVerifyRequest, RegisterRequest, RegistrationFlow, ResendVerificationRequest, UserStore,
 };
 use tideway::{AppContext, ClientIpResolver, MessageResponse, Result, RouteModule};
 {{#if has_organizations}}
@@ -33,16 +34,21 @@ use crate::entities::{organization, organization_member};
 /// Auth module state.
 #[derive(Clone)]
 pub struct AuthState {
+    // tideway:auth-registration-policy
+    // tideway:auth-endpoint-rate-limits
     pub db: Arc<DatabaseConnection>,
     pub jwt_issuer: Arc<JwtIssuer>,
     pub jwt_secret: String,
     pub app_name: String,
+    allow_public_registration: bool,
     require_email_verification: bool,
     email_delivery_enabled: bool,
     email_service: Option<Arc<EmailService>>,
     client_ip_resolver: Arc<ClientIpResolver>,
     login_rate_limiter: LoginRateLimiter,
-    email_rate_limiter: LoginRateLimiter,
+    registration_rate_limiter: AuthRateLimiter,
+    refresh_rate_limiter: AuthRateLimiter,
+    email_rate_limiter: AuthRateLimiter,
     mfa_tokens: InMemoryMfaTokenStore,
 }
 
@@ -68,6 +74,7 @@ impl AuthModule {
                 jwt_issuer,
                 jwt_secret,
                 app_name,
+                allow_public_registration: false,
                 require_email_verification,
                 email_delivery_enabled: false,
                 email_service: None,
@@ -76,10 +83,32 @@ impl AuthModule {
                         .expect("TRUSTED_PROXY_IPS must contain only non-catch-all IP addresses or CIDR networks"),
                 ),
                 login_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::default()),
-                email_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::new(5, 3600)),
+                registration_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
+                refresh_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(60, 60)),
+                email_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
                 mfa_tokens: InMemoryMfaTokenStore::default(),
             },
         }
+    }
+
+    /// Enable or disable public account registration. Disabled by default.
+    pub fn with_public_registration(mut self, enabled: bool) -> Self {
+        self.state.allow_public_registration = enabled;
+        self
+    }
+
+    /// Override the per-IP registration rate limit.
+    #[allow(dead_code)] // Generated production-policy extension point.
+    pub fn with_registration_rate_limit(mut self, config: AuthRateLimitConfig) -> Self {
+        self.state.registration_rate_limiter = AuthRateLimiter::new(config);
+        self
+    }
+
+    /// Override the per-IP refresh rate limit.
+    #[allow(dead_code)] // Generated production-policy extension point.
+    pub fn with_refresh_rate_limit(mut self, config: AuthRateLimitConfig) -> Self {
+        self.state.refresh_rate_limiter = AuthRateLimiter::new(config);
+        self
     }
 
     /// Mount email-dependent auth routes with any configured provider.
@@ -98,7 +127,6 @@ impl RouteModule for AuthModule {
         );
 
         let router = Router::new()
-            .route("/register", post(register))
             .route("/login", post(login))
             .route("/logout", post(logout))
             .route("/refresh", post(refresh))
@@ -106,6 +134,11 @@ impl RouteModule for AuthModule {
             .route("/mfa/verify", post(verify_mfa))
             {{/if}}
             ;
+        let router = if self.state.allow_public_registration {
+            router.route("/register", post(register))
+        } else {
+            router
+        };
 
         let router = if self.state.email_delivery_enabled {
             router
@@ -212,30 +245,99 @@ fn user_store(state: &AuthState) -> DbUserStore {
     }
 }
 
+enum AuthRouteError {
+    Tideway(tideway::TidewayError),
+    RateLimited { message: String, retry_after: u64 },
+}
+
+impl From<tideway::TidewayError> for AuthRouteError {
+    fn from(error: tideway::TidewayError) -> Self {
+        Self::Tideway(error)
+    }
+}
+
+impl IntoResponse for AuthRouteError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Tideway(error) => error.into_response(),
+            Self::RateLimited {
+                message,
+                retry_after,
+            } => {
+                let mut response = tideway::TidewayError::TooManyRequests(message).into_response();
+                response.headers_mut().insert(
+                    RETRY_AFTER,
+                    HeaderValue::from_str(&retry_after.to_string())
+                        .expect("retry-after seconds are a valid header value"),
+                );
+                response
+            }
+        }
+    }
+}
+
+type AuthRouteResult<T> = std::result::Result<T, AuthRouteError>;
+
 fn check_email_rate_limit(
     state: &AuthState,
     address: SocketAddr,
     headers: &HeaderMap,
     email: &str,
-) -> Result<()> {
+) -> AuthRouteResult<()> {
     let client_ip = state.client_ip_resolver.resolve(address.ip(), headers);
     for key in [
         format!("ip:{client_ip}"),
         format!("email:{}", email.trim().to_ascii_lowercase()),
     ] {
-        if state.email_rate_limiter.check(&key).is_err() {
-            return Err(tideway::TidewayError::TooManyRequests(
-                "Too many email requests; try again later".to_string(),
-            ));
+        if let Err(retry_after) = state.email_rate_limiter.check(&key) {
+            return Err(AuthRouteError::RateLimited {
+                message: "Too many email requests; try again later".to_string(),
+                retry_after,
+            });
         }
     }
     Ok(())
 }
 
+fn enforce_auth_rate_limit(
+    state: &AuthState,
+    limiter: &AuthRateLimiter,
+    endpoint: &'static str,
+    address: SocketAddr,
+    headers: &HeaderMap,
+) -> AuthRouteResult<()> {
+    let client_ip = state.client_ip_resolver.resolve(address.ip(), headers);
+    if let Err(retry_after) = limiter.check(&client_ip.to_string()) {
+        tracing::warn!(
+            target: "auth.endpoint.rate_limited",
+            endpoint,
+            ip = %client_ip,
+            retry_after_secs = retry_after,
+            "Authentication endpoint rate limited"
+        );
+        return Err(AuthRouteError::RateLimited {
+            message: format!(
+                "Too many {endpoint} attempts. Please try again in {retry_after} seconds."
+            ),
+            retry_after,
+        });
+    }
+    Ok(())
+}
+
 async fn register(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<RegisterBody>,
-) -> Result<Json<RegisterResponse>> {
+) -> AuthRouteResult<Json<RegisterResponse>> {
+    enforce_auth_rate_limit(
+        &state,
+        &state.registration_rate_limiter,
+        "registration",
+        address,
+        &headers,
+    )?;
     {{#if has_organizations}}
     let transaction = Arc::new(
         state
@@ -413,9 +515,18 @@ async fn logout(
 }
 
 async fn refresh(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<RefreshBody>,
-) -> Result<Json<RefreshResponse>> {
+) -> AuthRouteResult<Json<RefreshResponse>> {
+    enforce_auth_rate_limit(
+        &state,
+        &state.refresh_rate_limiter,
+        "refresh",
+        address,
+        &headers,
+    )?;
     let token_store = DbRefreshTokenStore::new(state.db.clone());
     let user_store = user_store(&state);
 
@@ -441,7 +552,7 @@ async fn request_password_reset(
     headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<PasswordResetBody>,
-) -> Result<MessageResponse> {
+) -> AuthRouteResult<MessageResponse> {
     check_email_rate_limit(&state, address, &headers, &body.email)?;
     let user_store = user_store(&state);
 
@@ -489,7 +600,7 @@ async fn resend_verification(
     headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<ResendVerificationBody>,
-) -> Result<MessageResponse> {
+) -> AuthRouteResult<MessageResponse> {
     let normalized_email = body.email.trim().to_ascii_lowercase();
     check_email_rate_limit(&state, address, &headers, &normalized_email)?;
     let store = user_store(&state);

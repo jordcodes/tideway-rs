@@ -4,17 +4,15 @@ mod provider;
 mod routes;
 {{#if has_database_feature}}
 mod store;
-{{#if is_sqlite_database}}
 #[cfg(test)]
 mod tests;
-{{/if}}
 {{/if}}
 
 pub use provider::{SimpleAuthProvider, SimpleUser};
 pub use routes::AuthModule;
 {{#if has_openapi_feature}}
 {{#if has_database_feature}}
-pub(crate) use routes::AuthApiDoc;
+pub(crate) use routes::auth_openapi;
 {{/if}}
 {{/if}}
 {{#if has_database_feature}}

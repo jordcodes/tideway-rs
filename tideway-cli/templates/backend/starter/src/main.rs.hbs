@@ -6,7 +6,7 @@ use crate::config::AppConfig;
 {{else}}
 use tideway::{init_tracing, App};
 {{/if}}
-{{#if needs_arc}}
+{{#if has_database_feature}}
 use std::sync::Arc;
 {{/if}}
 {{#if has_database_feature}}
@@ -70,12 +70,19 @@ async fn main() -> Result<(), std::io::Error> {
         .expect("JWT_SECRET is not set");
     let jwt_issuer_id = config.jwt_issuer.clone();
     let jwt_audience = config.jwt_audience.clone();
+    {{#if has_database_feature}}
+    let allow_public_registration = config.allow_public_registration;
+    {{/if}}
     {{else}}
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is not set");
     let jwt_issuer_id = std::env::var("JWT_ISSUER")
         .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
     let jwt_audience = std::env::var("JWT_AUDIENCE")
         .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
+    {{#if has_database_feature}}
+    let allow_public_registration = std::env::var("ALLOW_PUBLIC_REGISTRATION")
+        .is_ok_and(|value| value.eq_ignore_ascii_case("true"));
+    {{/if}}
     {{/if}}
     let jwt = JwtAuth::new(
         JwtAuthConfig::with_secure_secret(&jwt_secret, jwt_issuer_id)
@@ -83,11 +90,11 @@ async fn main() -> Result<(), std::io::Error> {
             .audience(jwt_audience),
     )
     .expect("Failed to create paired JWT authentication");
-    let jwt_issuer = jwt.issuer();
     let jwt_verifier = jwt
         .verifier::<AccessTokenClaims<serde_json::Value>>()
         .expect("Failed to create JWT verifier");
     {{#if has_database_feature}}
+    let jwt_issuer = jwt.issuer();
     let auth_db = Arc::new(db.clone());
     let auth_provider = SimpleAuthProvider::new(jwt_verifier, auth_db.clone());
     let auth_module = AuthModule::new(
@@ -95,10 +102,11 @@ async fn main() -> Result<(), std::io::Error> {
         jwt_issuer.clone(),
         jwt_secret,
         "{{project_name}}",
-    );
+    )
+    .with_public_registration(allow_public_registration);
     {{else}}
     let auth_provider = SimpleAuthProvider::new(jwt_verifier);
-    let auth_module = AuthModule::new(jwt_issuer.clone());
+    let auth_module = AuthModule::new();
     {{/if}}
 {{/if}}
 
@@ -132,7 +140,10 @@ async fn main() -> Result<(), std::io::Error> {
 {{/if}}
 {{#if has_openapi_feature}}
     let app = if {{#if has_config}}config.tideway{{else}}config{{/if}}.openapi.enabled {
-        let openapi = {{#if has_auth_feature}}{{#if has_database_feature}}tideway::openapi_merge!(openapi_docs::ApiDoc, auth::AuthApiDoc){{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}}{{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}};
+        let openapi = {{#if has_auth_feature}}{{#if has_database_feature}}tideway::openapi::merge_openapi(vec![
+            <openapi_docs::ApiDoc as utoipa::OpenApi>::openapi(),
+            auth::auth_openapi(allow_public_registration),
+        ]){{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}}{{else}}tideway::openapi_merge_module!(openapi_docs, ApiDoc){{/if}};
         let openapi_router = tideway::openapi::create_openapi_router(
             openapi,
             &{{#if has_config}}config.tideway{{else}}config{{/if}}.openapi,

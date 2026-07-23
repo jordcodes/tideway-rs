@@ -147,7 +147,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.29"
+tideway = "0.7.30"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -691,6 +691,9 @@ cargo run --example dev_mode
 ```bash
 cargo run --example production_config
 ```
+
+Before deployment, review the [production-readiness checklist](docs/production_readiness.md),
+including registration policy, trusted proxies, endpoint limits, and PostgreSQL security tests.
 
 ### WebSocket Chat
 

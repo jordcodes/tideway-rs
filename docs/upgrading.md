@@ -76,6 +76,211 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## 0.7.29 to 0.7.30 / CLI 0.1.45 to 0.1.46: fail-safe generated authentication
+
+This release makes newly generated authentication safer for private and invitation-only products.
+It also corrects framework rate-limiter recovery semantics. The framework update is additive and
+does not rewrite application-owned routes, configuration, CI, tests, OpenAPI documents, or frontend
+components.
+
+Applications upgrading from 0.7.28 or earlier must also review each intervening section below. In
+particular, applications using `billing-seaorm` must complete the 0.7.28-to-0.7.29 billing customer
+schema check before deploying 0.7.30.
+
+### Install and inspect
+
+From a clean application branch:
+
+```bash
+cargo install tideway-cli --version 0.1.46 --locked
+tideway --json doctor --upgrade
+```
+
+Then set the application dependency to Tideway 0.7.30, preserving every feature the application
+already enables, and update only Tideway:
+
+```toml
+[dependencies]
+tideway = { version = "0.7.30", features = ["auth"] }
+```
+
+```bash
+cargo update -p tideway --precise 0.7.30
+cargo check --locked
+```
+
+The dependency update delivers:
+
+- reusable `AuthRateLimitConfig` and `AuthRateLimiter` types;
+- backwards-compatible `LoginRateLimitConfig` and `LoginRateLimiter` aliases;
+- corrected quota construction so a configured burst is replenished across its documented window.
+
+It does **not** change the application's existing route topology or production policy.
+
+For a read-only comparison with the current generated shape, create a disposable reference project
+outside the application and inspect its auth files. Never run a broad scaffold with `--force` over
+the real application:
+
+```bash
+tideway new tideway-auth-reference --preset api --no-prompt --path /tmp/tideway-auth-reference
+```
+
+### Adopt an explicit registration policy
+
+Historical generated routes mounted `POST /auth/register` unconditionally. Add an
+application-owned setting that defaults to `false`, pass it into the auth module, and mount the
+route only when enabled:
+
+```rust
+let allow_public_registration = std::env::var("ALLOW_PUBLIC_REGISTRATION")
+    .is_ok_and(|value| value.eq_ignore_ascii_case("true"));
+
+let auth_module = AuthModule::new(/* existing dependencies */)
+    .with_public_registration(allow_public_registration);
+```
+
+The module route builder should conditionally add the operation rather than returning a rejection
+from a permanently mounted handler:
+
+```rust
+let router = Router::new()
+    .route("/login", post(login))
+    .route("/refresh", post(refresh))
+    .route("/logout", post(logout));
+
+let router = if state.allow_public_registration {
+    router.route("/register", post(register))
+} else {
+    router
+};
+```
+
+Add the fail-safe default to deployment configuration:
+
+```dotenv
+ALLOW_PUBLIC_REGISTRATION=false
+```
+
+If the application publishes OpenAPI, remove `/auth/register` from the final document whenever the
+route is disabled. Add tests for both policies: the private configuration returns `404`, while the
+explicitly enabled configuration contains the route and OpenAPI operation.
+
+`TW-UPGRADE-AUTH-REGISTRATION-POLICY` remains until doctor can identify either the generated policy
+shape or an audited custom equivalent.
+
+### Protect registration and refresh
+
+Create independent endpoint limiters; do not reuse the login bucket because the costs and expected
+traffic differ:
+
+```rust
+use tideway::auth::{AuthRateLimitConfig, AuthRateLimiter};
+
+let registration_rate_limiter =
+    AuthRateLimiter::new(AuthRateLimitConfig::new(5, 60 * 60));
+let refresh_rate_limiter =
+    AuthRateLimiter::new(AuthRateLimitConfig::new(60, 60));
+```
+
+Before password hashing, token parsing, or database writes:
+
+1. Resolve the client address with `ClientIpResolver` and the application's exact
+   `TRUSTED_PROXY_IPS` allowlist.
+2. Check the limiter using the resolved client IP.
+3. Return `429 Too Many Requests` with an integer `Retry-After` header when blocked.
+4. Keep logout outside ordinary auth throttling so clients can revoke sessions.
+
+Registration and refresh must use separate keys or limiter instances. Password reset and
+verification resend should additionally limit normalized email addresses so rotating source IPs
+cannot create unlimited delivery work.
+
+Generated limiters are process-local. Multi-replica deployments should enforce an equivalent
+shared policy at a trusted gateway or use a distributed limiter.
+
+Add route tests that exhaust each configured quota, assert `429`, and confirm `Retry-After` is
+present. `TW-UPGRADE-AUTH-ENDPOINT-RATE-LIMITS` remains until doctor identifies both generated
+limiters or an audited custom equivalent.
+
+For custom or gateway-backed implementations, review the effective controls before placing these
+markers beside the relevant policy code:
+
+```rust
+// tideway:auth-registration-policy
+// tideway:auth-endpoint-rate-limits
+```
+
+The markers acknowledge an application-owned audit; they do not enable any framework behavior.
+
+### Add PostgreSQL security coverage
+
+Existing applications do not receive new CI or test files from the dependency update. Add a
+PostgreSQL service and a disposable test URL to CI:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    env:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app_test
+    ports:
+      - 5432:5432
+    options: >-
+      --health-cmd "pg_isready -U postgres -d app_test"
+      --health-interval 10s
+      --health-timeout 5s
+      --health-retries 5
+env:
+  TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/app_test
+```
+
+Keep a committed application `Cargo.lock`. A fresh scaffold may generate it once, but CI should not
+replace an existing lockfile.
+
+Use an isolated PostgreSQL schema per test database fixture, run the application's real migrations,
+and cover at least:
+
+- cross-tenant read or mutation denial;
+- member denial for an owner/admin-only operation;
+- concurrent uniqueness, invitation, seat, or idempotency constraints;
+- concurrent refresh-token reuse;
+- clean migration application against a fresh database.
+
+SQLite may remain the fast fallback for tests that do not depend on PostgreSQL transaction,
+locking, type, or constraint behavior.
+
+### Align the generated Vue registration form
+
+The CLI 0.1.46 Vue `RegisterForm` remains hidden unless its `registrationEnabled` prop is `true` or
+the frontend build has:
+
+```dotenv
+VITE_ALLOW_PUBLIC_REGISTRATION=true
+```
+
+Set that frontend value only when the backend also has `ALLOW_PUBLIC_REGISTRATION=true`. The Vite
+value controls presentation and is visible to clients; it is never an authorization boundary.
+Existing custom frontends require no change if they already hide or omit registration.
+
+### Verify and deploy
+
+After the focused application edits:
+
+```bash
+tideway --json doctor --upgrade --deny-warnings
+tideway doctor --deny-warnings
+cargo test --locked
+```
+
+For PostgreSQL applications, run the suite with `TEST_DATABASE_URL` before deployment and apply any
+intervening additive migrations through the normal release process. Tideway 0.7.30 itself requires
+no new database migration.
+
+Rollback is straightforward: application code can return to 0.7.29 without a schema rollback.
+Preserve the explicit registration policy, endpoint protection, and security tests because they do
+not depend on a breaking 0.7.30 API.
+
 ## 0.7.28 to 0.7.29: billing customer schema contract
 
 This patch aligns fresh billing migrations with the schema already required by
@@ -261,7 +466,14 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |
 | `TW-UPGRADE-JWT-VERIFIER-SECRET` | The deprecated unchecked JWT verifier constructor is present. |
 | `TW-UPGRADE-JWT-IDENTITY-DRIFT` | JWT issuance uses a display name while verification expects the Cargo package name. |
+| `TW-UPGRADE-AUTH-REGISTRATION-POLICY` | A generated registration route is mounted without an explicit public-registration policy. |
+| `TW-UPGRADE-AUTH-ENDPOINT-RATE-LIMITS` | Generated registration and refresh routes need endpoint-specific protection. |
 | `TW-UPGRADE-APP-CONTEXT-DATABASE` | Application code accesses the old database field directly. |
+
+For custom auth routing, remediate the two auth findings with equivalent application or gateway
+controls. After reviewing the implementation, place `// tideway:auth-registration-policy` and
+`// tideway:auth-endpoint-rate-limits` beside the relevant policy code so future read-only doctor
+checks can distinguish an audited custom implementation from an unchanged historical scaffold.
 
 ## 0.7.13 to 0.7.23
 

@@ -7,6 +7,9 @@ pub struct AppConfig {
     pub jwt_secret: Option<String>,
     pub jwt_issuer: String,
     pub jwt_audience: String,
+    {{#if has_auth_feature}}{{#if has_database_feature}}
+    pub allow_public_registration: bool,
+    {{/if}}{{/if}}
 }
 
 impl AppConfig {
@@ -22,6 +25,10 @@ impl AppConfig {
             jwt_secret: std::env::var("JWT_SECRET").ok(),
             jwt_issuer: std::env::var("JWT_ISSUER").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into()),
             jwt_audience: std::env::var("JWT_AUDIENCE").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into()),
+            {{#if has_auth_feature}}{{#if has_database_feature}}
+            allow_public_registration: std::env::var("ALLOW_PUBLIC_REGISTRATION")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
+            {{/if}}{{/if}}
         }
     }
 }

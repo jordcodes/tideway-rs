@@ -19,7 +19,7 @@ pub fn run_with_runtime(runtime: CommandRuntime) -> Result<()> {
 
     println!("{}", "Auth Module:".yellow());
     println!("  - LoginForm.vue        Email/password login with MFA support");
-    println!("  - RegisterForm.vue     User + organization registration");
+    println!("  - RegisterForm.vue     Opt-in user + organization registration");
     println!("  - ForgotPassword.vue   Request password reset");
     println!("  - ResetPassword.vue    Complete password reset");
     println!("  - MfaVerify.vue        MFA code verification");

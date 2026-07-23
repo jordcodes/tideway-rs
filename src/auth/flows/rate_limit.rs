@@ -1,8 +1,8 @@
-//! Login-specific rate limiting.
+//! Authentication endpoint rate limiting.
 //!
-//! Provides IP-based rate limiting for login attempts to protect against
-//! brute force attacks. This is separate from the global rate limiting
-//! middleware and specifically designed for authentication endpoints.
+//! Provides keyed rate limiting for authentication endpoints. This is separate from the global
+//! rate limiting middleware and can use client IPs, normalized emails, or another endpoint-safe
+//! key.
 //!
 //! # Tracing Events
 //!
@@ -25,16 +25,16 @@ use std::{
 /// Shrink the state store every N requests to prevent unbounded memory growth.
 const SHRINK_INTERVAL: u64 = 1000;
 
-/// Configuration for login rate limiting.
+/// Configuration for an authentication endpoint rate limiter.
 #[derive(Clone, Debug)]
-pub struct LoginRateLimitConfig {
-    /// Maximum login attempts per window.
+pub struct AuthRateLimitConfig {
+    /// Maximum attempts per window.
     pub max_attempts: u32,
     /// Time window in seconds.
     pub window_seconds: u64,
 }
 
-impl Default for LoginRateLimitConfig {
+impl Default for AuthRateLimitConfig {
     fn default() -> Self {
         Self {
             // 5 login attempts per 15 minutes is a reasonable default
@@ -45,7 +45,7 @@ impl Default for LoginRateLimitConfig {
     }
 }
 
-impl LoginRateLimitConfig {
+impl AuthRateLimitConfig {
     /// Create a new configuration with specified limits.
     pub fn new(max_attempts: u32, window_seconds: u64) -> Self {
         Self {
@@ -78,7 +78,7 @@ impl LoginRateLimitConfig {
 /// Type alias for the keyed rate limiter
 type KeyedLimiter = RateLimiter<String, DashMapStateStore<String>, DefaultClock, NoOpMiddleware>;
 
-/// Rate limiter for login attempts, keyed by IP address.
+/// Rate limiter for authentication endpoint attempts, keyed by an opaque string.
 ///
 /// This provides brute force protection at the IP level, complementing
 /// the per-user lockout mechanism in `UserStore::record_failed_attempt`.
@@ -104,21 +104,16 @@ type KeyedLimiter = RateLimiter<String, DashMapStateStore<String>, DefaultClock,
 /// }
 /// ```
 #[derive(Clone)]
-pub struct LoginRateLimiter {
+pub struct AuthRateLimiter {
     limiter: Arc<KeyedLimiter>,
-    config: LoginRateLimitConfig,
+    config: AuthRateLimitConfig,
     request_count: Arc<AtomicU64>,
 }
 
-impl LoginRateLimiter {
-    /// Create a new login rate limiter with the given configuration.
-    pub fn new(config: LoginRateLimitConfig) -> Self {
-        let max_attempts = NonZeroU32::new(config.max_attempts.max(1)).unwrap_or(NonZeroU32::MIN);
-
-        // Create quota: max_attempts per window_seconds
-        let quota = Quota::with_period(Duration::from_secs(config.window_seconds.max(1)))
-            .unwrap_or_else(|| Quota::per_second(max_attempts))
-            .allow_burst(max_attempts);
+impl AuthRateLimiter {
+    /// Create a new authentication endpoint limiter with the given configuration.
+    pub fn new(config: AuthRateLimitConfig) -> Self {
+        let quota = quota_for_config(&config);
 
         Self {
             limiter: Arc::new(RateLimiter::keyed(quota)),
@@ -127,7 +122,7 @@ impl LoginRateLimiter {
         }
     }
 
-    /// Check if a login attempt from the given IP is allowed.
+    /// Check whether an attempt for the given key is allowed.
     ///
     /// Returns `Ok(())` if allowed, or `Err` with retry-after seconds if blocked.
     pub fn check(&self, ip: &str) -> std::result::Result<(), u64> {
@@ -148,10 +143,27 @@ impl LoginRateLimiter {
     }
 
     /// Get the configuration.
-    pub fn config(&self) -> &LoginRateLimitConfig {
+    pub fn config(&self) -> &AuthRateLimitConfig {
         &self.config
     }
 }
+
+fn quota_for_config(config: &AuthRateLimitConfig) -> Quota {
+    let max_attempts = NonZeroU32::new(config.max_attempts.max(1)).unwrap_or(NonZeroU32::MIN);
+    let window = Duration::from_secs(config.window_seconds.max(1));
+    // Governor's period is the time to restore one cell, not the whole burst. Divide the
+    // configured window so an exhausted max_attempts burst is fully restored within that window.
+    let replenish_one_per = (window / max_attempts.get()).max(Duration::from_nanos(1));
+    Quota::with_period(replenish_one_per)
+        .expect("rate-limit replenishment period is non-zero")
+        .allow_burst(max_attempts)
+}
+
+/// Backwards-compatible login-specific configuration name.
+pub type LoginRateLimitConfig = AuthRateLimitConfig;
+
+/// Backwards-compatible login-specific limiter name.
+pub type LoginRateLimiter = AuthRateLimiter;
 
 /// Trait for optional rate limiter in LoginFlow.
 pub trait OptionalRateLimiter: Send + Sync + Clone {
@@ -259,6 +271,15 @@ mod tests {
             assert!(retry_after > 0, "Should return positive retry_after");
             assert!(retry_after <= 60, "retry_after should be within window");
         }
+    }
+
+    #[test]
+    fn test_quota_replenishes_full_burst_within_configured_window() {
+        let quota = quota_for_config(&AuthRateLimitConfig::new(5, 60));
+
+        assert_eq!(quota.burst_size().get(), 5);
+        assert_eq!(quota.replenish_interval(), Duration::from_secs(12));
+        assert_eq!(quota.burst_size_replenished_in(), Duration::from_secs(60));
     }
 
     #[test]

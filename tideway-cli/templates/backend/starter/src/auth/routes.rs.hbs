@@ -3,14 +3,14 @@
 {{#if has_database_feature}}
 use axum::{
     extract::{ConnectInfo, Extension},
-    http::HeaderMap,
+    http::{header::RETRY_AFTER, HeaderMap, HeaderValue},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 {{#if has_auth_mfa_feature}}
 use axum::{
     http::header::{CACHE_CONTROL, PRAGMA},
-    response::{IntoResponse, Response},
     routing::delete,
 };
 {{/if}}
@@ -18,9 +18,9 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tideway::auth::{
-    AuthUser, JwtIssuer, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter,
-    LoginHttpResponse, LoginRequest, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest,
-    RegisterRequest, RegistrationFlow, TokenRefreshFlow,
+    AuthRateLimitConfig, AuthRateLimiter, AuthUser, JwtIssuer, LoginFlow, LoginFlowConfig,
+    LoginRateLimitConfig, LoginRateLimiter, LoginHttpResponse, LoginRequest, PasswordResetComplete,
+    PasswordResetFlow, PasswordResetRequest, RegisterRequest, RegistrationFlow, TokenRefreshFlow,
 };
 {{#if has_auth_mfa_feature}}
 use tideway::auth::{
@@ -37,14 +37,20 @@ use crate::auth::{
 
 #[derive(Clone)]
 pub struct AuthState {
+    // tideway:auth-registration-policy
+    // tideway:auth-endpoint-rate-limits
     db: Arc<DatabaseConnection>,
     jwt_issuer: Arc<JwtIssuer>,
     jwt_secret: Arc<str>,
     app_name: Arc<str>,
+    allow_public_registration: bool,
     require_email_verification: bool,
     email_delivery_enabled: bool,
     client_ip_resolver: Arc<ClientIpResolver>,
     login_rate_limiter: LoginRateLimiter,
+    registration_rate_limiter: AuthRateLimiter,
+    refresh_rate_limiter: AuthRateLimiter,
+    email_rate_limiter: AuthRateLimiter,
     mfa_tokens: DbMfaTokenStore,
     {{#if has_auth_mfa_feature}}
     mfa_cipher: Option<Arc<MfaSecretCipher>>,
@@ -85,6 +91,7 @@ impl AuthModule {
                 jwt_issuer,
                 jwt_secret: jwt_secret.into(),
                 app_name: app_name.into().into(),
+                allow_public_registration: false,
                 require_email_verification,
                 email_delivery_enabled: false,
                 client_ip_resolver: Arc::new(
@@ -92,12 +99,38 @@ impl AuthModule {
                         .expect("TRUSTED_PROXY_IPS must contain only non-catch-all IP addresses or CIDR networks"),
                 ),
                 login_rate_limiter: LoginRateLimiter::new(LoginRateLimitConfig::default()),
+                registration_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
+                refresh_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(60, 60)),
+                email_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
                 mfa_tokens: DbMfaTokenStore::new(db),
                 {{#if has_auth_mfa_feature}}
                 mfa_cipher,
                 {{/if}}
             },
         }
+    }
+
+    /// Enable or disable the public registration endpoint.
+    ///
+    /// Registration is disabled by default so private and invitation-only applications do not
+    /// accidentally expose account creation.
+    pub fn with_public_registration(mut self, enabled: bool) -> Self {
+        self.state.allow_public_registration = enabled;
+        self
+    }
+
+    /// Override the per-IP registration rate limit.
+    #[allow(dead_code)] // Generated production-policy extension point.
+    pub fn with_registration_rate_limit(mut self, config: AuthRateLimitConfig) -> Self {
+        self.state.registration_rate_limiter = AuthRateLimiter::new(config);
+        self
+    }
+
+    /// Override the per-IP refresh rate limit.
+    #[allow(dead_code)] // Generated production-policy extension point.
+    pub fn with_refresh_rate_limit(mut self, config: AuthRateLimitConfig) -> Self {
+        self.state.refresh_rate_limiter = AuthRateLimiter::new(config);
+        self
     }
 
     /// Mount email-dependent auth routes after implementing the delivery hooks
@@ -132,11 +165,15 @@ impl RouteModule for AuthModule {
         {{/if}}
 
         let router = Router::new()
-            .route("/register", post(register))
             .route("/login", post(login))
             .route("/refresh", post(refresh))
             .route("/logout", post(logout))
             .route("/me", get(me));
+        let router = if self.state.allow_public_registration {
+            router.route("/register", post(register))
+        } else {
+            router
+        };
         {{#if has_auth_mfa_feature}}
         let router = router
             .route("/mfa/setup", post(setup_mfa))
@@ -277,6 +314,65 @@ fn user_store(state: &AuthState) -> DbUserStore {
     )
 }
 
+enum AuthRouteError {
+    Tideway(tideway::TidewayError),
+    RateLimited { message: String, retry_after: u64 },
+}
+
+impl From<tideway::TidewayError> for AuthRouteError {
+    fn from(error: tideway::TidewayError) -> Self {
+        Self::Tideway(error)
+    }
+}
+
+impl IntoResponse for AuthRouteError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Tideway(error) => error.into_response(),
+            Self::RateLimited {
+                message,
+                retry_after,
+            } => {
+                let mut response = tideway::TidewayError::TooManyRequests(message).into_response();
+                response.headers_mut().insert(
+                    RETRY_AFTER,
+                    HeaderValue::from_str(&retry_after.to_string())
+                        .expect("retry-after seconds are a valid header value"),
+                );
+                response
+            }
+        }
+    }
+}
+
+type AuthRouteResult<T> = std::result::Result<T, AuthRouteError>;
+
+fn enforce_auth_rate_limit(
+    state: &AuthState,
+    limiter: &AuthRateLimiter,
+    endpoint: &'static str,
+    address: SocketAddr,
+    headers: &HeaderMap,
+) -> AuthRouteResult<()> {
+    let client_ip = state.client_ip_resolver.resolve(address.ip(), headers);
+    if let Err(retry_after) = limiter.check(&client_ip.to_string()) {
+        tracing::warn!(
+            target: "auth.endpoint.rate_limited",
+            endpoint,
+            ip = %client_ip,
+            retry_after_secs = retry_after,
+            "Authentication endpoint rate limited"
+        );
+        return Err(AuthRouteError::RateLimited {
+            message: format!(
+                "Too many {endpoint} attempts. Please try again in {retry_after} seconds."
+            ),
+            retry_after,
+        });
+    }
+    Ok(())
+}
+
 {{#if has_openapi_feature}}
 #[utoipa::path(
     post,
@@ -291,9 +387,18 @@ fn user_store(state: &AuthState) -> DbUserStore {
 )]
 {{/if}}
 async fn register(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<RegisterBody>,
-) -> Result<Json<RegisterResponse>> {
+) -> AuthRouteResult<Json<RegisterResponse>> {
+    enforce_auth_rate_limit(
+        &state,
+        &state.registration_rate_limiter,
+        "registration",
+        address,
+        &headers,
+    )?;
     let flow = RegistrationFlow::new(user_store(&state));
     let user = flow
         .register(RegisterRequest {
@@ -547,14 +652,24 @@ async fn disable_mfa(
     request_body = RefreshBody,
     responses(
         (status = 200, description = "Token pair rotated", body = RefreshResponse),
-        (status = 401, description = "Invalid or reused refresh token", body = tideway::ErrorResponse)
+        (status = 401, description = "Invalid or reused refresh token", body = tideway::ErrorResponse),
+        (status = 429, description = "Rate limited", body = tideway::ErrorResponse)
     )
 )]
 {{/if}}
 async fn refresh(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<RefreshBody>,
-) -> Result<Json<RefreshResponse>> {
+) -> AuthRouteResult<Json<RefreshResponse>> {
+    enforce_auth_rate_limit(
+        &state,
+        &state.refresh_rate_limiter,
+        "refresh",
+        address,
+        &headers,
+    )?;
     let flow = TokenRefreshFlow::new(
         state.jwt_issuer.as_ref().clone(),
         DbRefreshTokenStore::new(state.db.clone()),
@@ -598,9 +713,25 @@ async fn logout(
 }
 
 async fn request_password_reset(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Extension(state): Extension<AuthState>,
     Json(body): Json<PasswordResetBody>,
-) -> Result<MessageResponse> {
+) -> AuthRouteResult<MessageResponse> {
+    enforce_auth_rate_limit(
+        &state,
+        &state.email_rate_limiter,
+        "password reset",
+        address,
+        &headers,
+    )?;
+    let email_key = format!("email:{}", body.email.trim().to_ascii_lowercase());
+    if let Err(retry_after) = state.email_rate_limiter.check(&email_key) {
+        return Err(AuthRouteError::RateLimited {
+            message: "Too many password reset requests; try again later".to_string(),
+            retry_after,
+        });
+    }
     let flow = PasswordResetFlow::new(user_store(&state));
     // Keep the public response generic to prevent account enumeration, but retain
     // enough operational visibility to diagnose a broken delivery integration.
@@ -690,35 +821,32 @@ tideway::openapi_doc!(
     )),
     modifiers(&BearerSecurity)
 );
+
+pub(crate) fn auth_openapi(allow_public_registration: bool) -> utoipa::openapi::OpenApi {
+    let mut document = <AuthApiDoc as utoipa::OpenApi>::openapi();
+    if !allow_public_registration {
+        document.paths.paths.remove("/auth/register");
+    }
+    document
+}
 {{/if}}
 
 {{else}}
 use axum::{
-    extract::Extension,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tideway::auth::{AuthUser, JwtIssuer, TokenPair};
+use tideway::auth::{AuthUser, TokenPair};
 use tideway::{AppContext, Result, RouteModule, TidewayError};
 
 use crate::auth::{SimpleAuthProvider, SimpleUser};
 
-#[derive(Clone)]
-pub struct AuthState {
-    pub jwt_issuer: Arc<JwtIssuer>,
-}
-
-pub struct AuthModule {
-    state: AuthState,
-}
+pub struct AuthModule;
 
 impl AuthModule {
-    pub fn new(jwt_issuer: Arc<JwtIssuer>) -> Self {
-        Self {
-            state: AuthState { jwt_issuer },
-        }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -727,7 +855,6 @@ impl RouteModule for AuthModule {
         Router::new()
             .route("/login", post(login))
             .route("/me", get(me))
-            .layer(Extension(self.state.clone()))
     }
 
     fn prefix(&self) -> Option<&str> {
@@ -736,6 +863,7 @@ impl RouteModule for AuthModule {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // Placeholder contract until database-backed login is enabled.
 pub struct LoginBody {
     pub email: String,
     pub password: String,
@@ -750,7 +878,6 @@ pub struct LoginResponse {
 }
 
 async fn login(
-    Extension(_state): Extension<AuthState>,
     Json(_body): Json<LoginBody>,
 ) -> Result<Json<LoginResponse>> {
     Err(TidewayError::service_unavailable(

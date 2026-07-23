@@ -26,11 +26,19 @@ EMAIL_PROVIDER=console
 EMAIL_FROM="My SaaS <noreply@example.com>"
 EMAIL_CONSOLE_SHOW_BODY=true
 REQUIRE_EMAIL_VERIFICATION=true
+ALLOW_PUBLIC_REGISTRATION=true
 ```
 
 `EMAIL_CONSOLE_SHOW_BODY=true` exposes reset and verification tokens, so use it
 only on a trusted development machine. It defaults to `false`; production cannot
-use the console provider.
+use the console provider. Public registration is also disabled by default. Enable
+it explicitly only for an intentional self-service flow or while bootstrapping a
+local first owner; invitation-only deployments should leave it disabled.
+
+If you use the generated Vue registration form, also set
+`VITE_ALLOW_PUBLIC_REGISTRATION=true` in the frontend environment (or pass
+`registrationEnabled=true` to the component). This only reveals the form; the API-side
+`ALLOW_PUBLIC_REGISTRATION` policy remains authoritative.
 
 Registering a user sends a verification link. The B2B SaaS preset also requires
 an organization name:

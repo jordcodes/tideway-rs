@@ -591,6 +591,34 @@ fn check_upgrade_readiness(
             "Direct AppContext.database access found; use the public database_opt() accessor",
         );
     }
+    if let Ok(auth_routes) = fs::read_to_string(src_dir.join("auth/routes.rs")) {
+        let has_generated_registration =
+            uncommented_line_contains(&auth_routes, "RegistrationFlow::new")
+                && uncommented_line_contains(&auth_routes, "route(\"/register\"");
+        if has_generated_registration {
+            let policy_ready = uncommented_line_contains(&auth_routes, "allow_public_registration")
+                || auth_routes.contains("// tideway:auth-registration-policy");
+            if !policy_ready {
+                report.push_upgrade_warning(
+                    "TW-UPGRADE-AUTH-REGISTRATION-POLICY",
+                    "src/auth/routes.rs",
+                    "The generated public registration route has no explicit registration policy; make registration opt-in and do not mount /auth/register for private or invitation-only applications. Custom audited implementations can add `// tideway:auth-registration-policy` next to their route policy",
+                );
+            }
+
+            let endpoint_limits_ready =
+                (uncommented_line_contains(&auth_routes, "registration_rate_limiter")
+                    && uncommented_line_contains(&auth_routes, "refresh_rate_limiter"))
+                    || auth_routes.contains("// tideway:auth-endpoint-rate-limits");
+            if !endpoint_limits_ready {
+                report.push_upgrade_warning(
+                    "TW-UPGRADE-AUTH-ENDPOINT-RATE-LIMITS",
+                    "src/auth/routes.rs",
+                    "The generated auth routes do not appear to rate-limit registration and refresh; apply trusted-proxy-aware limits before expensive work. Custom or gateway-backed implementations can add `// tideway:auth-endpoint-rate-limits` next to the audited policy",
+                );
+            }
+        }
+    }
 }
 
 fn tideway_features_enable_billing(features: &BTreeSet<String>) -> bool {

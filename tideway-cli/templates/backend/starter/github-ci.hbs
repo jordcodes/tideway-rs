@@ -9,6 +9,24 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    {{#unless is_sqlite_database}}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: {{project_crate}}_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d {{project_crate}}_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/{{project_crate}}_test
+    {{/unless}}
     permissions:
       contents: read
     steps:
@@ -16,7 +34,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
       - name: Cache cargo
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Generate lockfile for a fresh scaffold
+        run: test -f Cargo.lock || cargo generate-lockfile
       - name: Audit dependencies
         uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked{{#unless is_sqlite_database}} -- --test-threads=1{{/unless}}

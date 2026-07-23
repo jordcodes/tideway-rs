@@ -71,6 +71,14 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
         &project_dir.join(".env.example"),
         "DATABASE_URL=sqlite:./my_app.db?mode=rwc",
     );
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "ALLOW_PUBLIC_REGISTRATION=false",
+    );
+    assert_file_not_contains(
+        &project_dir.join(".github/workflows/ci.yml"),
+        "TEST_DATABASE_URL",
+    );
     assert!(project_dir.join("src/routes/todo.rs").exists());
     assert!(project_dir.join("src/repositories/todo.rs").exists());
     assert!(project_dir.join("src/services/todo.rs").exists());
@@ -237,7 +245,7 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
     );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
-        "openapi_docs::ApiDoc, auth::AuthApiDoc",
+        "auth::auth_openapi(allow_public_registration)",
     );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
@@ -324,7 +332,7 @@ fn test_new_command_auth_mfa_scaffold_is_secure_and_compiles() {
     );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
-        "openapi_docs::ApiDoc, auth::AuthApiDoc",
+        "auth::auth_openapi(allow_public_registration)",
     );
 
     patch_scaffold_to_workspace(&project_dir);
@@ -569,6 +577,18 @@ fn test_new_command_with_preset_api() {
         ".with_rate_limiter(state.login_rate_limiter.clone())",
     );
     assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "if self.state.allow_public_registration",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "registration_rate_limiter",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "refresh_rate_limiter",
+    );
+    assert_file_contains(
         &project_dir.join("src/auth/store.rs"),
         "compare_and_swap_family_generation",
     );
@@ -617,7 +637,11 @@ fn test_new_command_with_preset_api() {
     );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
-        "tideway::openapi_merge!(openapi_docs::ApiDoc, auth::AuthApiDoc)",
+        "auth::auth_openapi(allow_public_registration)",
+    );
+    assert_file_contains(
+        &project_dir.join("src/auth/routes.rs"),
+        "document.paths.paths.remove(\"/auth/register\")",
     );
     assert_file_not_contains(
         &project_dir.join("src/openapi_docs.rs"),
@@ -678,6 +702,18 @@ fn test_new_command_with_preset_api_and_docker_keeps_postgres_path() {
         "DATABASE_URL=postgres://postgres:postgres@localhost:5432/my_app",
     );
     assert_file_contains(&project_dir.join("Cargo.toml"), "\"sqlx-postgres\"");
+    assert_file_contains(
+        &project_dir.join(".github/workflows/ci.yml"),
+        "TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/my_app_test",
+    );
+    assert_file_contains(
+        &project_dir.join(".github/workflows/ci.yml"),
+        "test -f Cargo.lock || cargo generate-lockfile",
+    );
+    assert_file_contains(
+        &project_dir.join(".github/workflows/ci.yml"),
+        "image: postgres:16",
+    );
 }
 
 #[test]
@@ -732,6 +768,14 @@ fn test_new_command_with_preset_saas() {
     assert!(project_dir.join(".env.example").exists());
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
+    assert_file_contains(
+        &project_dir.join(".github/workflows/ci.yml"),
+        "TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/my_app_test",
+    );
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "ALLOW_PUBLIC_REGISTRATION=false",
+    );
     assert!(project_dir.join("src/auth/actor.rs").exists());
     assert!(project_dir.join("src/auth/mod.rs").exists());
     assert!(project_dir.join("src/auth/tests.rs").exists());
@@ -921,7 +965,7 @@ fn test_new_command_with_preset_saas() {
     );
     assert_file_contains(
         &project_dir.join("src/auth/routes.rs"),
-        "email_rate_limiter: LoginRateLimiter",
+        "email_rate_limiter: AuthRateLimiter",
     );
     assert_file_contains(
         &project_dir.join("src/auth/routes.rs"),
@@ -1003,6 +1047,33 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
         !project_dir.join("migration/Cargo.lock").exists(),
         "workspace members should share the root Cargo.lock"
     );
+}
+
+#[test]
+fn test_individual_auth_and_openapi_features_compile_without_warnings() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+
+    for (name, feature) in [("auth_only", "auth"), ("openapi_only", "openapi")] {
+        let project_dir = temp_dir.path().join(name);
+        let args = NewArgs {
+            name: Some(name.to_string()),
+            preset: Some(NewPreset::Minimal),
+            features: vec![feature.to_string()],
+            with_config: false,
+            with_docker: false,
+            with_ci: false,
+            no_prompt: true,
+            summary: false,
+            with_env: false,
+            without_invitations: false,
+            path: Some(project_dir.to_string_lossy().to_string()),
+            force: false,
+        };
+
+        tideway_cli::commands::new::run(args).expect("run new command");
+        patch_scaffold_to_workspace(&project_dir);
+        run_cargo_in_project_with_denied_warnings(temp_dir.path(), &project_dir, &["check"]);
+    }
 }
 
 #[test]

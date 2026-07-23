@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub jwt_secret: String,
     pub jwt_issuer: String,
     pub jwt_audience: String,
+    pub allow_public_registration: bool,
     pub database_url: String,
     pub host: String,
     pub port: u16,
@@ -25,6 +26,8 @@ impl AppConfig {
             jwt_secret: std::env::var("JWT_SECRET").expect("JWT_SECRET must be set"),
             jwt_issuer: std::env::var("JWT_ISSUER").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into()),
             jwt_audience: std::env::var("JWT_AUDIENCE").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into()),
+            allow_public_registration: std::env::var("ALLOW_PUBLIC_REGISTRATION")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("true")),
             database_url: std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             host: std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into()),
             port: std::env::var("PORT")

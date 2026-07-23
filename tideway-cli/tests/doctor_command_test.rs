@@ -103,6 +103,97 @@ tideway = {{ version = "{}", features = ["auth"] }}
 }
 
 #[test]
+fn test_doctor_upgrade_detects_implicit_registration_and_missing_rate_limit() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth source");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/auth/routes.rs"),
+        r#"let router = Router::new().route("/register", post(register));
+let flow = RegistrationFlow::new(store);
+// allow_public_registration registration_rate_limiter refresh_rate_limiter
+"#,
+    )
+    .expect("write auth routes");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    for code in [
+        "TW-UPGRADE-AUTH-REGISTRATION-POLICY",
+        "TW-UPGRADE-AUTH-ENDPOINT-RATE-LIMITS",
+    ] {
+        assert!(
+            report
+                .findings()
+                .iter()
+                .any(|finding| finding.code == Some(code)),
+            "missing {code}: {:?}",
+            report.findings()
+        );
+    }
+}
+
+#[test]
+fn test_doctor_upgrade_accepts_audited_custom_auth_policy_markers() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth source");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/auth/routes.rs"),
+        r#"// tideway:auth-registration-policy
+// tideway:auth-endpoint-rate-limits
+let router = Router::new().route("/register", post(register));
+let flow = RegistrationFlow::new(store);
+"#,
+    )
+    .expect("write auth routes");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    for code in [
+        "TW-UPGRADE-AUTH-REGISTRATION-POLICY",
+        "TW-UPGRADE-AUTH-ENDPOINT-RATE-LIMITS",
+    ] {
+        assert!(
+            report
+                .findings()
+                .iter()
+                .all(|finding| finding.code != Some(code)),
+            "unexpected {code}: {:?}",
+            report.findings()
+        );
+    }
+}
+
+#[test]
 fn test_doctor_upgrade_accepts_aligned_dependencies_and_current_apis() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

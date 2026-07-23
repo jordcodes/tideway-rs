@@ -9,6 +9,73 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.46] - 2026-07-23
+
+### Added
+
+- Fresh API and SaaS scaffolds make public registration opt-in, apply separate trusted-proxy-aware
+  limits to registration and refresh, return `Retry-After` on generated auth throttling responses,
+  and keep the OpenAPI document aligned with the mounted registration route.
+- PostgreSQL scaffolds include a CI service and `TEST_DATABASE_URL`; generated auth and organization
+  tests use isolated schemas and cover role denial, tenant boundaries, and concurrent invitation
+  constraints against the real application migrations.
+- Upgrade doctor reports focused registration-policy and endpoint-limiter findings for historical
+  generated auth routes, with explicit audit markers for equivalent custom or gateway controls.
+- The generated Vue registration form is disabled unless its prop or
+  `VITE_ALLOW_PUBLIC_REGISTRATION` explicitly enables it.
+
+### Fixed
+
+- Auth-only and OpenAPI-only feature selections now compile cleanly with warnings denied.
+- Fresh CI bootstraps a missing `Cargo.lock` without replacing a committed lockfile.
+- Empty OpenAPI documents remain compatible with later `tideway resource` wiring.
+
+### DX Gate
+
+- Generated minimal, API, auth/MFA, SaaS, auth-only, and OpenAPI-only applications compile and test
+  against the workspace framework with strict warnings.
+- A fresh generated SaaS application passes its auth, role, tenant, invitation, and concurrency
+  suite against PostgreSQL 16.
+- The complete CLI suite, strict Clippy, docs drift, filesystem-write, and public-API guardrails
+  pass.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.46 --locked`; newly generated projects use
+  Tideway 0.7.30.
+- Existing generated files remain application-owned and are never overwritten. Run
+  `tideway doctor --upgrade` and follow the `0.7.29 to 0.7.30` section in `docs/upgrading.md` to
+  adopt registration policy, endpoint limits, PostgreSQL CI tests, and the optional Vue setting.
+
+## [0.7.30] - 2026-07-23
+
+### Added
+
+- `AuthRateLimitConfig` and `AuthRateLimiter` provide reusable keyed throttling for registration,
+  refresh, reset, and other authentication endpoints. The existing `LoginRateLimitConfig` and
+  `LoginRateLimiter` names remain backwards-compatible aliases.
+
+### Fixed
+
+- Authentication quota construction now treats the configured window as the time to replenish the
+  full burst. The previous construction replenished only one attempt per complete window after a
+  burst, making recovery much stricter than the documented policy.
+
+### Compatibility
+
+- The framework change is additive and requires no database migration.
+- Existing login limiter source continues to compile through the compatibility aliases.
+- Application route policy, generated CI, tests, and frontend components are application-owned and
+  require the focused adoption steps in `docs/upgrading.md`; a dependency update does not rewrite
+  them.
+
+### DX Gate
+
+- The feature-enabled auth and billing suite passes with 655 tests, including quota recovery,
+  refresh concurrency, and access-token purpose checks.
+- Full workspace tests, strict Clippy, generated-project tests, and repository guardrails pass
+  before publication.
+
 ## [tideway-cli 0.1.45] - 2026-07-17
 
 ### Added

@@ -1103,7 +1103,38 @@ tracing_subscriber::fmt()
     .init();
 ```
 
-## Login Rate Limiting
+## Public Registration Policy
+
+Generated applications treat public account creation as an explicit product decision. The
+`/auth/register` route is not mounted unless `ALLOW_PUBLIC_REGISTRATION=true`. Private B2B and
+invitation-only products should leave it disabled. Self-service products should enable it only
+after configuring endpoint limits, email verification, and abuse monitoring.
+
+Changing the environment value requires an application restart because route topology and the
+OpenAPI document are built at startup.
+
+The generated Vue `RegisterForm` remains hidden unless its `registrationEnabled` prop is `true`
+or the frontend build has `VITE_ALLOW_PUBLIC_REGISTRATION=true`. Set the frontend flag alongside
+the backend flag for an intentional self-service flow. The frontend setting controls presentation
+only; the backend route policy remains the security boundary.
+
+## Authentication Endpoint Rate Limiting
+
+Generated routes apply separate trusted-proxy-aware per-IP policies before expensive work:
+
+| Endpoint | Generated default | Purpose |
+| --- | --- | --- |
+| Login | 5 attempts per 15 minutes | Slow credential guessing and password hashing abuse. |
+| Registration | 5 attempts per hour | Protect password hashing and account/database creation. |
+| Refresh | 60 attempts per minute | Bound token parsing and refresh-family database work. |
+| Password reset / verification resend | 5 requests per hour per IP and email | Bound email delivery and enumeration abuse. |
+
+Logout remains outside ordinary authentication throttling so a client can revoke a session while
+other authentication endpoints are limited. The generated in-process limiter is a safe single-node
+default; multi-replica deployments should replace it or enforce an equivalent shared policy at a
+trusted gateway.
+
+### Login Flow Rate Limiting
 
 Protect against brute force attacks with IP-based rate limiting on login attempts.
 
@@ -1184,6 +1215,7 @@ async fn login_handler(
 | Target | Level | Description |
 |--------|-------|-------------|
 | `auth.login.rate_limited` | WARN | Login blocked due to rate limiting |
+| `auth.endpoint.rate_limited` | WARN | Registration or refresh blocked due to rate limiting |
 
 ### How It Works
 

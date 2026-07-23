@@ -290,6 +290,7 @@ fn scaffold_files(
     let has_auth_feature = normalized_features.contains("auth");
     let has_auth_mfa_feature = normalized_features.contains("auth-mfa");
     let has_database_feature = normalized_features.contains("database");
+    let has_openapi_feature = normalized_features.contains("openapi");
     let has_database_auth = has_auth_feature && normalized_features.contains("database");
     let has_credits_store = normalized_features.contains("credits-seaorm");
 
@@ -309,6 +310,14 @@ fn scaffold_files(
             &engine.render("starter/src/routes/mod.rs")?,
             args.force,
         )?;
+
+        if has_openapi_feature {
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/openapi_docs.rs"),
+                &engine.render("starter/src/openapi_docs.rs")?,
+                args.force,
+            )?;
+        }
 
         if has_auth_feature {
             write_file_with_force_or_error_default(
@@ -509,6 +518,10 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
     } else {
         files.push("src/main.rs".to_string());
         files.push("src/routes/mod.rs".to_string());
+
+        if normalized_features.contains("openapi") {
+            files.push("src/openapi_docs.rs".to_string());
+        }
 
         if has_auth_feature {
             files.push("src/auth/mod.rs".to_string());
@@ -1438,7 +1451,7 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
             println!("  curl http://localhost:8000/api/todos");
             println!("  curl \"http://localhost:8000/api/todos?limit=20&offset=0&q=Example\"");
             println!(
-                "  curl -X POST http://localhost:8000/auth/register -H 'content-type: application/json' -d '{{\"email\":\"dev@example.com\",\"password\":\"correct horse battery staple\"}}'"
+                "  Public registration is disabled; set ALLOW_PUBLIC_REGISTRATION=true to opt in."
             );
             println!();
         }
@@ -1446,6 +1459,9 @@ fn print_preset_next_steps(preset: Option<NewPreset>) {
             println!("{}", "SaaS smoke checks:".yellow().bold());
             println!("  curl http://localhost:8000/health");
             println!("  curl http://localhost:8000/billing/public/plans");
+            println!(
+                "  Public registration is disabled; use invitations or explicitly opt in with ALLOW_PUBLIC_REGISTRATION=true."
+            );
             println!();
         }
         Some(NewPreset::Worker) => {

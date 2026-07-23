@@ -3,18 +3,16 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::{
     body::{to_bytes, Body},
     extract::ConnectInfo,
-    http::{header, Method, Request, StatusCode},
+    http::{header, HeaderMap, Method, Request, StatusCode},
     Extension, Router,
 };
 use migration::{Migrator, MigratorTrait};
-use sea_orm::Database;
+use sea_orm::{
+    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement,
+};
 use serde_json::{json, Value};
 use tideway::{auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig{{#if has_auth_mfa_feature}}, MfaSecretCipher, TotpConfig, TotpManager{{/if}}}, App};
 use tower::ServiceExt;
-{{#if has_openapi_feature}}
-use utoipa::OpenApi;
-{{/if}}
-
 use super::{AuthModule, SimpleAuthProvider};
 
 const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
@@ -25,7 +23,7 @@ const JWT_AUDIENCE: &str = env!("CARGO_PKG_NAME");
 {{#if has_openapi_feature}}
 #[test]
 fn auth_openapi_covers_generated_routes_and_bearer_security() {
-    let document = crate::auth::AuthApiDoc::openapi();
+    let document = crate::auth::auth_openapi(true);
     for path in [
         "/auth/register",
         "/auth/login",
@@ -47,6 +45,13 @@ fn auth_openapi_covers_generated_routes_and_bearer_security() {
             .as_ref()
             .is_some_and(|components| components.security_schemes.contains_key("bearer_auth")),
         "missing bearer_auth security scheme"
+    );
+    assert!(
+        !crate::auth::auth_openapi(false)
+            .paths
+            .paths
+            .contains_key("/auth/register"),
+        "private registration policy must remove the registration operation"
     );
 
     let document = serde_json::to_value(document).expect("serialize OpenAPI document");
@@ -70,10 +75,32 @@ fn auth_openapi_covers_generated_routes_and_bearer_security() {
 }
 {{/if}}
 
-async fn test_app() -> Router {
-    let db = Database::connect("sqlite::memory:")
+async fn connect_test_database() -> DatabaseConnection {
+    let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+        return Database::connect("sqlite::memory:")
+            .await
+            .expect("connect to in-memory sqlite");
+    };
+    let schema = format!("test_{}", uuid::Uuid::new_v4().simple());
+    let admin = Database::connect(&database_url)
         .await
-        .expect("connect to in-memory sqlite");
+        .expect("connect to PostgreSQL test database");
+    admin
+        .execute(Statement::from_string(
+            DatabaseBackend::Postgres,
+            format!("CREATE SCHEMA \"{schema}\""),
+        ))
+        .await
+        .expect("create isolated PostgreSQL test schema");
+    let mut options = ConnectOptions::new(database_url);
+    options.set_schema_search_path(schema);
+    Database::connect(options)
+        .await
+        .expect("connect to isolated PostgreSQL test schema")
+}
+
+async fn test_app() -> Router {
+    let db = connect_test_database().await;
     Migrator::up(&db, None).await.expect("run migrations");
     let db = Arc::new(db);
     let jwt = JwtAuth::new(
@@ -88,6 +115,7 @@ async fn test_app() -> Router {
         .expect("create verifier");
     let provider = SimpleAuthProvider::new(verifier, db.clone());
     let auth = AuthModule::new(db, issuer, JWT_SECRET.to_owned(), DISPLAY_APP_NAME)
+        .with_public_registration(true)
         {{#if has_auth_mfa_feature}}
         .with_mfa_cipher(Arc::new(
             MfaSecretCipher::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
@@ -102,7 +130,98 @@ async fn test_app() -> Router {
         .layer(Extension(provider))
 }
 
+#[tokio::test]
+async fn public_registration_is_disabled_by_default() {
+    let db = connect_test_database().await;
+    Migrator::up(&db, None).await.expect("run migrations");
+    let db = Arc::new(db);
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(JWT_SECRET, JWT_ISSUER)
+            .expect("valid secret")
+            .audience(JWT_AUDIENCE),
+    )
+    .expect("create paired auth");
+    let auth = AuthModule::new(
+        db,
+        jwt.issuer(),
+        JWT_SECRET.to_owned(),
+        DISPLAY_APP_NAME,
+    )
+    {{#if has_auth_mfa_feature}}
+    .with_mfa_cipher(Arc::new(
+        MfaSecretCipher::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+            .expect("valid test MFA key"),
+    ))
+    {{/if}}
+    ;
+    let app = App::new().register_module(auth).into_router();
+
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/auth/register",
+        json!({"email": "private@example.com", "password": "correct horse battery staple"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn registration_and_refresh_are_rate_limited() {
+    let app = test_app().await;
+
+    for _ in 0..5 {
+        let (status, _) = request(
+            &app,
+            Method::POST,
+            "/auth/register",
+            json!({"email": "invalid", "password": "correct horse battery staple"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, headers, _) = request_with_headers(
+        &app,
+        Method::POST,
+        "/auth/register",
+        json!({"email": "invalid", "password": "correct horse battery staple"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(headers.contains_key(header::RETRY_AFTER));
+
+    for _ in 0..60 {
+        let (status, _) = request(
+            &app,
+            Method::POST,
+            "/auth/refresh",
+            json!({"refresh_token": "invalid"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, headers, _) = request_with_headers(
+        &app,
+        Method::POST,
+        "/auth/refresh",
+        json!({"refresh_token": "invalid"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(headers.contains_key(header::RETRY_AFTER));
+}
+
 async fn request(app: &Router, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
+    let (status, _, body) = request_with_headers(app, method, path, body).await;
+    (status, body)
+}
+
+async fn request_with_headers(
+    app: &Router,
+    method: Method,
+    path: &str,
+    body: Value,
+) -> (StatusCode, HeaderMap, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(path)
@@ -115,11 +234,12 @@ async fn request(app: &Router, method: Method, path: &str, body: Value) -> (Stat
 
     let response = app.clone().oneshot(request).await.expect("route response");
     let status = response.status();
+    let headers = response.headers().clone();
     let bytes = to_bytes(response.into_body(), 1024 * 1024)
         .await
         .expect("read response body");
     let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, body)
+    (status, headers, body)
 }
 
 {{#if has_auth_mfa_feature}}

@@ -723,7 +723,10 @@ mod tests {
     use super::*;
     use axum::http::{header, HeaderMap, HeaderValue};
     use chrono::Utc;
-    use sea_orm::{ConnectionTrait, Database, Schema};
+    use migration::{Migrator, MigratorTrait};
+    use sea_orm::{
+        ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement,
+    };
     use std::sync::Mutex;
     use tideway::auth::{JwtIssuer, JwtIssuerConfig, TokenSubject};
     use tideway::{ConsoleMailer, Email, Mailer};
@@ -781,21 +784,8 @@ mod tests {
         seat_limit: u32,
         mailer: Arc<dyn Mailer>,
     ) -> OrganizationInvitationsState {
-        let db = Database::connect("sqlite::memory:")
-            .await
-            .expect("connect sqlite");
-        let backend = db.get_database_backend();
-        let schema = Schema::new(backend);
-        for statement in [
-            schema.create_table_from_entity(user::Entity),
-            schema.create_table_from_entity(organization::Entity),
-            schema.create_table_from_entity(organization_member::Entity),
-            schema.create_table_from_entity(organization_invitation::Entity),
-        ] {
-            db.execute(backend.build(&statement))
-                .await
-                .expect("create test table");
-        }
+        let db = connect_test_database().await;
+        Migrator::up(&db, None).await.expect("run test migrations");
         let email = Arc::new(
             EmailService::new(
                 mailer,
@@ -815,6 +805,30 @@ mod tests {
             Arc::new(FixedSeats(seat_limit)),
         )
         .state
+    }
+
+    async fn connect_test_database() -> DatabaseConnection {
+        let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+            return Database::connect("sqlite::memory:")
+                .await
+                .expect("connect sqlite");
+        };
+        let schema = format!("test_{}", Uuid::new_v4().simple());
+        let admin = Database::connect(&database_url)
+            .await
+            .expect("connect PostgreSQL test database");
+        admin
+            .execute(Statement::from_string(
+                DatabaseBackend::Postgres,
+                format!("CREATE SCHEMA \"{schema}\""),
+            ))
+            .await
+            .expect("create isolated PostgreSQL test schema");
+        let mut options = ConnectOptions::new(database_url);
+        options.set_schema_search_path(schema);
+        Database::connect(options)
+            .await
+            .expect("connect isolated PostgreSQL test schema")
     }
 
     async fn insert_user(state: &OrganizationInvitationsState, email: &str) -> user::Model {
@@ -969,6 +983,32 @@ mod tests {
             .expect("reload invitation")
             .expect("invitation exists");
         assert_eq!(stored.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn member_role_cannot_list_organization_invitations() {
+        let state = test_state(5).await;
+        let owner = insert_user(&state, "owner@example.com").await;
+        let organization = insert_organization(&state, &owner).await;
+        let member = insert_user(&state, "member@example.com").await;
+        organization_member::ActiveModel {
+            organization_id: Set(organization.id.clone()),
+            user_id: Set(member.id),
+            role: Set("member".to_string()),
+            joined_at: Set(now()),
+        }
+        .insert(state.db.as_ref())
+        .await
+        .expect("insert member membership");
+
+        let result = list_invitations(
+            Extension(state),
+            auth_headers(&member),
+            Path(organization.id),
+        )
+        .await;
+
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
     }
 
     #[tokio::test]

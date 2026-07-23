@@ -15,9 +15,18 @@ JWT_SECRET=replace-with-at-least-32-random-bytes
 # Stable security identifiers. Do not derive these from a display-facing app name.
 JWT_ISSUER={{project_crate}}
 JWT_AUDIENCE={{project_crate}}
+# Disabled by default for private and invitation-only products.
+ALLOW_PUBLIC_REGISTRATION=false
 REQUIRE_EMAIL_VERIFICATION=false
 # Comma-separated proxy IPs/CIDRs. Leave empty unless traffic arrives through them.
 TRUSTED_PROXY_IPS=
+# General per-IP safety net; auth endpoints also have stricter dedicated limits.
+TIDEWAY_RATE_LIMIT_ENABLED=true
+TIDEWAY_RATE_LIMIT_MAX_REQUESTS=300
+TIDEWAY_RATE_LIMIT_WINDOW_SECONDS=60
+TIDEWAY_RATE_LIMIT_STRATEGY=per_ip
+# Keep this equal to TRUSTED_PROXY_IPS when a trusted proxy is configured.
+TIDEWAY_RATE_LIMIT_TRUSTED_PROXIES=
 REFRESH_TOKEN_RETENTION_DAYS=120
 
 # Transactional email: console (development only), resend, smtp, or custom.
