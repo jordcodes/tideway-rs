@@ -1083,15 +1083,27 @@ impl StripeSubscriptionClient for LiveStripeClient {
             });
         }
 
-        // Handle seat quantity updates
-        if let Some(seat_quantity) = update.seat_quantity
-            && let Some(ref seat_item_id) = seat_item_id
-        {
-            params.items = Some(vec![stripe::UpdateSubscriptionItems {
-                id: Some(seat_item_id.clone()),
-                quantity: Some(seat_quantity as u64),
-                ..Default::default()
-            }]);
+        // Handle seat quantity updates. If this is the first paid seat, create the
+        // missing subscription item using the configured seat price.
+        if let Some(seat_quantity) = update.seat_quantity {
+            if let Some(ref seat_item_id) = seat_item_id {
+                params.items = Some(vec![stripe::UpdateSubscriptionItems {
+                    id: Some(seat_item_id.clone()),
+                    quantity: Some(seat_quantity as u64),
+                    ..Default::default()
+                }]);
+            } else if seat_quantity > 0 {
+                let seat_price_id = update.seat_price_id.as_ref().ok_or_else(|| {
+                    crate::error::TidewayError::BadRequest(
+                        "Seat price ID is required when creating the first seat item".to_string(),
+                    )
+                })?;
+                params.items = Some(vec![stripe::UpdateSubscriptionItems {
+                    price: Some(seat_price_id.clone()),
+                    quantity: Some(seat_quantity as u64),
+                    ..Default::default()
+                }]);
+            }
         }
 
         // Handle price changes

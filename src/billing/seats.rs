@@ -186,6 +186,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             .update_subscription(
                 &sub.stripe_subscription_id,
                 UpdateSubscriptionRequest {
+                    seat_price_id: plan.extra_seat_price_id.clone(),
                     seat_quantity: Some(new_seat_count),
                     proration_behavior: Some(ProrationBehavior::CreateProrations),
                     ..Default::default()
@@ -246,6 +247,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             .update_subscription(
                 &sub.stripe_subscription_id,
                 UpdateSubscriptionRequest {
+                    seat_price_id: plan.extra_seat_price_id.clone(),
                     seat_quantity: Some(new_seat_count),
                     proration_behavior: Some(ProrationBehavior::CreateProrations),
                     ..Default::default()
@@ -306,6 +308,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
             .update_subscription(
                 &sub.stripe_subscription_id,
                 UpdateSubscriptionRequest {
+                    seat_price_id: plan.extra_seat_price_id.clone(),
                     seat_quantity: Some(count),
                     proration_behavior: Some(ProrationBehavior::CreateProrations),
                     ..Default::default()
@@ -593,6 +596,42 @@ mod tests {
         assert_eq!(result.previous_seats, 2);
         assert_eq!(result.new_seats, 10);
         assert_eq!(result.total_seats, 13);
+    }
+
+    #[tokio::test]
+    async fn test_set_first_extra_seat_includes_seat_price() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let plans = create_test_plans();
+
+        let mut sub = create_test_subscription("org_first_seat", "starter", 0);
+        sub.seat_item_id = None;
+        store
+            .save_subscription("org_first_seat", &sub)
+            .await
+            .unwrap();
+
+        client.add_subscription(StripeSubscriptionData {
+            id: "sub_org_first_seat".to_string(),
+            customer_id: "cus_org_first_seat".to_string(),
+            plan_id: "starter".to_string(),
+            status: "active".to_string(),
+            current_period_start: 1700000000,
+            current_period_end: 1702592000,
+            extra_seats: 0,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: Some("si_base".to_string()),
+            seat_item_id: None,
+            metadata: SubscriptionMetadata::default(),
+        });
+
+        let manager = SeatManager::new(store, client.clone(), plans);
+        let _result = manager.set_seats("org_first_seat", 1).await.unwrap();
+
+        let update = client.last_update().expect("seat update request");
+        assert_eq!(update.seat_quantity, Some(1));
+        assert_eq!(update.seat_price_id.as_deref(), Some("price_seat"));
     }
 
     #[tokio::test]

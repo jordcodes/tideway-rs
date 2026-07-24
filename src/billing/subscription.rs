@@ -688,6 +688,8 @@ pub trait StripeSubscriptionClient: Send + Sync {
 pub struct UpdateSubscriptionRequest {
     /// New plan price ID.
     pub price_id: Option<String>,
+    /// Seat price ID, used when the subscription does not have a seat item yet.
+    pub seat_price_id: Option<String>,
     /// New seat count (for seat item).
     pub seat_quantity: Option<u32>,
     /// Proration behavior.
@@ -711,6 +713,13 @@ impl UpdateSubscriptionRequest {
     #[must_use]
     pub fn price_id(mut self, price_id: impl Into<String>) -> Self {
         self.price_id = Some(price_id.into());
+        self
+    }
+
+    /// Set the seat price ID, allowing the first seat item to be created.
+    #[must_use]
+    pub fn seat_price_id(mut self, price_id: impl Into<String>) -> Self {
+        self.seat_price_id = Some(price_id.into());
         self
     }
 
@@ -778,6 +787,7 @@ pub mod test {
     #[derive(Default, Clone)]
     pub struct MockStripeSubscriptionClient {
         subscriptions: std::sync::Arc<RwLock<HashMap<String, MockSubscription>>>,
+        last_update: std::sync::Arc<RwLock<Option<UpdateSubscriptionRequest>>>,
     }
 
     #[derive(Clone)]
@@ -798,6 +808,12 @@ pub mod test {
                 .write()
                 .unwrap()
                 .insert(data.id.clone(), MockSubscription { data });
+        }
+
+        /// Return the most recent subscription update request.
+        #[must_use]
+        pub fn last_update(&self) -> Option<UpdateSubscriptionRequest> {
+            self.last_update.read().unwrap().clone()
         }
     }
 
@@ -858,6 +874,7 @@ pub mod test {
             subscription_id: &str,
             update: UpdateSubscriptionRequest,
         ) -> Result<StripeSubscriptionData> {
+            *self.last_update.write().unwrap() = Some(update.clone());
             let mut subs = self.subscriptions.write().unwrap();
             if let Some(sub) = subs.get_mut(subscription_id) {
                 if let Some(seat_qty) = update.seat_quantity {
