@@ -9,6 +9,42 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.47] - 2026-07-24
+
+### Changed
+
+- Newly generated applications use Tideway 0.7.31.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.47 --locked`.
+- Existing generated files require no changes for this release.
+
+## [0.7.31] - 2026-07-24
+
+### Fixed
+
+- Adding the first paid seat now creates the missing Stripe subscription item with the plan's
+  configured extra-seat price and quantity.
+- Newly created seat items carry explicit Tideway metadata, so Stripe response parsing does not
+  depend on subscription item ordering.
+- A missing seat price now returns a clear error instead of allowing an empty subscription update.
+
+### Compatibility
+
+- No database migration or application source change is required.
+- Applications using a Git revision containing the provisional fix can return to the crates.io
+  release.
+- `UpdateSubscriptionRequest` has a new optional `seat_price_id`; builder and
+  `..Default::default()` construction remain compatible.
+
+### DX Gate
+
+- Subscription item construction is covered for existing seats, first-seat creation, zero seats,
+  missing configuration, and combined plan-and-seat changes.
+- The feature-enabled billing suite, complete workspace tests, CLI tests, and repository
+  guardrails pass before publication.
+
 ## [tideway-cli 0.1.46] - 2026-07-23
 
 ### Added

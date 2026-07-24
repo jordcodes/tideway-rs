@@ -72,6 +72,55 @@ fn sanitize_metadata_value(value: &str) -> String {
         .to_string()
 }
 
+/// Build the subscription item updates for a plan or seat change.
+///
+/// New seat items are marked explicitly so response parsing does not depend on
+/// Stripe's subscription item ordering.
+fn build_subscription_update_items(
+    update: &UpdateSubscriptionRequest,
+    base_item_id: Option<&str>,
+    seat_item_id: Option<&str>,
+) -> Result<Option<Vec<stripe::UpdateSubscriptionItems>>> {
+    let mut items = Vec::new();
+
+    if let Some(seat_quantity) = update.seat_quantity {
+        if let Some(seat_item_id) = seat_item_id {
+            items.push(stripe::UpdateSubscriptionItems {
+                id: Some(seat_item_id.to_string()),
+                quantity: Some(seat_quantity as u64),
+                ..Default::default()
+            });
+        } else if seat_quantity > 0 {
+            let seat_price_id = update.seat_price_id.as_ref().ok_or_else(|| {
+                crate::error::TidewayError::BadRequest(
+                    "Seat price ID is required when creating the first seat item".to_string(),
+                )
+            })?;
+            items.push(stripe::UpdateSubscriptionItems {
+                price: Some(seat_price_id.clone()),
+                quantity: Some(seat_quantity as u64),
+                metadata: Some(std::collections::HashMap::from([(
+                    META_ITEM_TYPE.to_string(),
+                    META_ITEM_TYPE_SEATS.to_string(),
+                )])),
+                ..Default::default()
+            });
+        }
+    }
+
+    if let Some(ref price_id) = update.price_id
+        && let Some(base_item_id) = base_item_id
+    {
+        items.push(stripe::UpdateSubscriptionItems {
+            id: Some(base_item_id.to_string()),
+            price: Some(price_id.clone()),
+            ..Default::default()
+        });
+    }
+
+    Ok((!items.is_empty()).then_some(items))
+}
+
 /// Safely extract and sanitize a metadata value.
 #[inline]
 fn get_sanitized_metadata(
@@ -1083,40 +1132,11 @@ impl StripeSubscriptionClient for LiveStripeClient {
             });
         }
 
-        // Handle seat quantity updates. If this is the first paid seat, create the
-        // missing subscription item using the configured seat price.
-        if let Some(seat_quantity) = update.seat_quantity {
-            if let Some(ref seat_item_id) = seat_item_id {
-                params.items = Some(vec![stripe::UpdateSubscriptionItems {
-                    id: Some(seat_item_id.clone()),
-                    quantity: Some(seat_quantity as u64),
-                    ..Default::default()
-                }]);
-            } else if seat_quantity > 0 {
-                let seat_price_id = update.seat_price_id.as_ref().ok_or_else(|| {
-                    crate::error::TidewayError::BadRequest(
-                        "Seat price ID is required when creating the first seat item".to_string(),
-                    )
-                })?;
-                params.items = Some(vec![stripe::UpdateSubscriptionItems {
-                    price: Some(seat_price_id.clone()),
-                    quantity: Some(seat_quantity as u64),
-                    ..Default::default()
-                }]);
-            }
-        }
-
-        // Handle price changes
-        if let Some(ref price_id) = update.price_id
-            && let Some(ref base_item_id) = base_item_id
-        {
-            let items = params.items.get_or_insert_with(Vec::new);
-            items.push(stripe::UpdateSubscriptionItems {
-                id: Some(base_item_id.clone()),
-                price: Some(price_id.clone()),
-                ..Default::default()
-            });
-        }
+        params.items = build_subscription_update_items(
+            &update,
+            base_item_id.as_deref(),
+            seat_item_id.as_deref(),
+        )?;
 
         let subscription = with_retry_cb(
             &self.config,
@@ -2470,6 +2490,84 @@ mod tests {
         assert_eq!(META_ITEM_TYPE, "item_type");
         assert_eq!(META_ITEM_TYPE_SEATS, "seats");
         assert_eq!(META_ITEM_TYPE_BASE, "base");
+    }
+
+    #[test]
+    fn build_subscription_items_updates_existing_seat_item() {
+        let update = UpdateSubscriptionRequest::new().seat_quantity(3);
+
+        let items = build_subscription_update_items(&update, Some("si_base"), Some("si_seats"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id.as_deref(), Some("si_seats"));
+        assert_eq!(items[0].quantity, Some(3));
+        assert!(items[0].price.is_none());
+    }
+
+    #[test]
+    fn build_subscription_items_creates_and_marks_first_seat_item() {
+        let update = UpdateSubscriptionRequest::new()
+            .seat_price_id("price_seats")
+            .seat_quantity(1);
+
+        let items = build_subscription_update_items(&update, Some("si_base"), None)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert!(items[0].id.is_none());
+        assert_eq!(items[0].price.as_deref(), Some("price_seats"));
+        assert_eq!(items[0].quantity, Some(1));
+        assert_eq!(
+            items[0]
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get(META_ITEM_TYPE))
+                .map(String::as_str),
+            Some(META_ITEM_TYPE_SEATS)
+        );
+    }
+
+    #[test]
+    fn build_subscription_items_requires_price_for_first_seat_item() {
+        let update = UpdateSubscriptionRequest::new().seat_quantity(1);
+
+        let result = build_subscription_update_items(&update, Some("si_base"), None);
+
+        assert!(matches!(
+            result,
+            Err(crate::error::TidewayError::BadRequest(message))
+                if message == "Seat price ID is required when creating the first seat item"
+        ));
+    }
+
+    #[test]
+    fn build_subscription_items_skips_absent_zero_quantity_item() {
+        let update = UpdateSubscriptionRequest::new().seat_quantity(0);
+
+        let items = build_subscription_update_items(&update, Some("si_base"), None).unwrap();
+
+        assert!(items.is_none());
+    }
+
+    #[test]
+    fn build_subscription_items_combines_plan_and_first_seat_changes() {
+        let update = UpdateSubscriptionRequest::new()
+            .price_id("price_new_base")
+            .seat_price_id("price_seats")
+            .seat_quantity(2);
+
+        let items = build_subscription_update_items(&update, Some("si_base"), None)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].price.as_deref(), Some("price_seats"));
+        assert_eq!(items[0].quantity, Some(2));
+        assert_eq!(items[1].id.as_deref(), Some("si_base"));
+        assert_eq!(items[1].price.as_deref(), Some("price_new_base"));
     }
 
     // ========================================================================

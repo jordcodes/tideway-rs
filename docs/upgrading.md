@@ -76,6 +76,43 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## 0.7.30 to 0.7.31 / CLI 0.1.46 to 0.1.47: first paid seat creation
+
+This release fixes the transition from zero paid seats to one or more paid seats. When a Stripe
+subscription contains only its base-plan item, Tideway now creates the missing extra-seat item
+using the plan's configured `extra_seat_price_id`. Existing seat quantity updates are unchanged.
+
+No database migration or generated-source change is required.
+
+Install the current CLI and run the read-only compatibility check:
+
+```bash
+cargo install tideway-cli --version 0.1.47 --locked
+tideway --json doctor --upgrade
+```
+
+Replace any temporary Git revision with the crates.io dependency, preserving all existing
+features:
+
+```toml
+[dependencies]
+tideway = { version = "0.7.31", features = ["billing", "billing-seaorm"] }
+```
+
+Then update only Tideway and verify the application:
+
+```bash
+cargo update -p tideway --precise 0.7.31
+cargo check --locked
+tideway doctor --deny-warnings
+cargo test --locked
+```
+
+Applications that call `SeatManager::set_seats`, `add_seats`, or `remove_seats` need no source
+changes. Confirm every seat-enabled plan still configures `.extra_seat_price(...)`, deploy normally,
+then exercise a zero-to-one paid-seat change in Stripe test mode. The resulting subscription should
+contain both the base-plan item and an extra-seat item with the requested quantity.
+
 ## 0.7.29 to 0.7.30 / CLI 0.1.45 to 0.1.46: fail-safe generated authentication
 
 This release makes newly generated authentication safer for private and invitation-only products.
