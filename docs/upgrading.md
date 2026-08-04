@@ -76,6 +76,88 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## 0.7.x to 0.8.0 / CLI 0.1.48: recoverable password resets
+
+> **Action required for existing auth applications.** Tideway 0.8.0 is not a drop-in upgrade from
+> 0.7.x when an application uses authentication, password reset, constructs `TokenSubject`
+> directly, or exhaustively matches `TidewayError`. Run the upgrade doctor and complete the
+> migration below before changing the Tideway dependency. Applications that remain on 0.7.x are
+> unaffected.
+
+Do not deploy Tideway 0.8.0 application code against the old auth schema. The database migration
+must be deployed first.
+
+Install the matching CLI and inspect the application before changing generated, application-owned
+code:
+
+```bash
+cargo install tideway-cli --version 0.1.48 --locked
+tideway --json doctor --upgrade
+```
+
+The initial doctor run is expected to report warnings. Do not use `--deny-warnings` until the
+application has been remediated.
+
+`PasswordResetFlow` now hashes the replacement password before claiming the token and delegates
+the security-state transition to `PasswordResetStore::complete_password_reset`. Tideway 0.8 removes
+the unsafe sequential default: custom stores must implement the new lifecycle methods. The
+completion operation must revalidate and claim the submitted token,
+update the password, clear login and MFA failure counts plus `locked_until`, invalidate every
+outstanding reset token for the user, and revoke sessions in one commit.
+
+Stores must also implement the non-consuming `is_reset_token_valid` preflight. The flow checks it
+before Argon2 hashing, then revalidates inside `complete_password_reset`; this avoids
+both invalid-token hashing abuse and long-running database transactions.
+
+Applications with a custom reset store must implement `discard_reset_token` and retain
+older reset links when storing a newly requested token. Reset requests support multiple
+individually single-use links until one succeeds; email-provider failure discards only the new,
+undelivered token. Run `tideway --json doctor --upgrade` and remediate
+`TW-UPGRADE-PASSWORD-RESET-ATOMIC` before deployment.
+
+Database-backed applications must add focused, additive migrations before deploying the new
+source lifecycle:
+
+1. Add a non-null `users.session_version` 64-bit integer with a default of `0`. Existing access
+   tokens deserialize a missing claim as version `0`, so this migration does not log everyone out.
+2. Check `auth_tokens.token_hash` or `verification_tokens.token_hash` for duplicates, resolve any
+   unexpected duplicates, then add a unique constraint or unique index. Token hashes are random and
+   a collision must never allow one submitted token to identify multiple rows.
+3. Update token issuance to call `TokenSubject::with_session_version`, increment the column inside
+   `complete_password_reset`, and reject access claims whose version differs from the current user
+   row. Deleting refresh-token families alone does not revoke already-issued access JWTs.
+4. Deploy the migration before source that reads or increments the new column. Roll back source
+   before rolling back the column; retain the unique constraint.
+
+The upgrade doctor reports incomplete work as
+`TW-UPGRADE-PASSWORD-RESET-SESSION-VERSION` or
+`TW-UPGRADE-PASSWORD-RESET-TOKEN-UNIQUE`. Custom audited implementations can use the marker named in
+each finding, but the marker is an assertion by the application owner, not a runtime check.
+
+Newly generated auth routes share one configured `PasswordPolicy` across registration, reset, and
+`GET /auth/password-policy`. Error responses now include a stable optional `code` field. Clients
+should branch on codes such as `password_reset.invalid_or_expired_token`,
+`password_policy.too_short`, and `password_policy.too_long`, not on display text.
+
+Password length limits count Unicode scalar values. Tideway 0.8.0 adds a coded bad-request variant
+and marks `TidewayError` non-exhaustive. Because Tideway is pre-1.0, this is released as 0.8.0;
+downstream exhaustive matches must add a wildcard arm.
+
+Generated reset-request routes apply an enumeration-safe rate limit and return the same response
+without waiting for account lookup or email delivery. Their background task preserves older valid
+links and discards a newly stored token if delivery fails. Production deployments that require
+delivery across process termination should replace the in-process task with a durable job/outbox;
+the response contract remains unchanged.
+
+After applying the migration and source changes:
+
+```bash
+cargo update -p tideway --precise 0.8.0
+tideway --json doctor --upgrade --deny-warnings
+tideway doctor --deny-warnings
+cargo test --locked
+```
+
 ## 0.7.30 to 0.7.31 / CLI 0.1.46 to 0.1.47: first paid seat creation
 
 This release fixes the transition from zero paid seats to one or more paid seats. When a Stripe
@@ -505,6 +587,9 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-JWT-IDENTITY-DRIFT` | JWT issuance uses a display name while verification expects the Cargo package name. |
 | `TW-UPGRADE-AUTH-REGISTRATION-POLICY` | A generated registration route is mounted without an explicit public-registration policy. |
 | `TW-UPGRADE-AUTH-ENDPOINT-RATE-LIMITS` | Generated registration and refresh routes need endpoint-specific protection. |
+| `TW-UPGRADE-PASSWORD-RESET-ATOMIC` | A custom password-reset store still uses the non-atomic compatibility lifecycle. |
+| `TW-UPGRADE-PASSWORD-RESET-SESSION-VERSION` | Password reset does not immediately invalidate issued access tokens through a checked session version. |
+| `TW-UPGRADE-PASSWORD-RESET-TOKEN-UNIQUE` | Reset-token hashes lack a database uniqueness constraint. |
 | `TW-UPGRADE-APP-CONTEXT-DATABASE` | Application code accesses the old database field directly. |
 
 For custom auth routing, remediate the two auth findings with equivalent application or gateway

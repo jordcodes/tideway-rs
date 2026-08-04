@@ -45,9 +45,18 @@ impl<S: PasswordResetStore> PasswordResetFlow<S> {
         self
     }
 
+    /// Set a custom password hasher (primarily useful for controlled migrations and tests).
+    pub fn with_hasher(mut self, hasher: PasswordHasher) -> Self {
+        self.password_hasher = hasher;
+        self
+    }
+
     /// Request a password reset.
     ///
-    /// Always returns success to prevent email enumeration.
+    /// Always uses the same response value for known and unknown accounts.
+    ///
+    /// Callers should keep this work off the HTTP response path (for example, enqueue it) so
+    /// account lookup and provider latency cannot become an enumeration side channel.
     pub async fn request_reset(&self, req: PasswordResetRequest) -> Result<()> {
         let email = req.email.trim().to_lowercase();
 
@@ -79,9 +88,16 @@ impl<S: PasswordResetStore> PasswordResetFlow<S> {
             .await?;
 
         // Send email with the raw token (not the hash)
-        self.store
+        if let Err(error) = self
+            .store
             .send_reset_email(&user, &token, self.token_ttl)
-            .await?;
+            .await
+        {
+            if let Err(cleanup_error) = self.store.discard_reset_token(&token_hash).await {
+                tracing::error!(%cleanup_error, "Failed to discard undelivered password reset token");
+            }
+            return Err(error);
+        }
 
         tracing::info!(
             target: "auth.password.reset_requested",
@@ -111,8 +127,29 @@ impl<S: PasswordResetStore> PasswordResetFlow<S> {
         // Hash the provided token to look up
         let token_hash = hash_token(&req.token);
 
-        // Consume token
-        let user_id = match self.store.consume_reset_token(&token_hash).await? {
+        // Avoid expensive Argon2 work for invalid tokens without holding a transaction open
+        // during hashing. The atomic completion operation revalidates after hashing.
+        if !self.store.is_reset_token_valid(&token_hash).await? {
+            tracing::warn!(
+                target: "auth.password.reset_failed",
+                reason = "invalid_token",
+                "Password reset failed: invalid or expired token"
+            );
+            return Err(TidewayError::coded_bad_request(
+                "password_reset.invalid_or_expired_token",
+                "Invalid or expired reset token",
+            ));
+        }
+
+        // Hash before the token is claimed so hashing failure remains retryable.
+        let password_hash = self.password_hasher.hash_async(&req.new_password).await?;
+
+        // The store owns the atomic security-state transition and revalidates the token.
+        let user_id = match self
+            .store
+            .complete_password_reset(&token_hash, &password_hash)
+            .await?
+        {
             Some(id) => id,
             None => {
                 tracing::warn!(
@@ -120,20 +157,12 @@ impl<S: PasswordResetStore> PasswordResetFlow<S> {
                     reason = "invalid_token",
                     "Password reset failed: invalid or expired token"
                 );
-                return Err(TidewayError::BadRequest(
-                    "Invalid or expired reset token".into(),
+                return Err(TidewayError::coded_bad_request(
+                    "password_reset.invalid_or_expired_token",
+                    "Invalid or expired reset token",
                 ));
             }
         };
-
-        // Hash new password
-        let password_hash = self.password_hasher.hash_async(&req.new_password).await?;
-
-        // Update password
-        self.store.update_password(&user_id, &password_hash).await?;
-
-        // Invalidate existing sessions
-        self.store.invalidate_sessions(&user_id).await?;
 
         tracing::info!(
             target: "auth.password.reset_completed",
@@ -178,6 +207,9 @@ mod tests {
         id: String,
         email: String,
         password_hash: String,
+        failed_attempts: u32,
+        failed_mfa_attempts: u32,
+        locked_until: Option<SystemTime>,
     }
 
     struct TestResetStore {
@@ -185,6 +217,8 @@ mod tests {
         tokens: RwLock<HashMap<String, (String, SystemTime)>>,
         emails_sent: RwLock<Vec<(String, String)>>,
         sessions_invalidated: RwLock<Vec<String>>,
+        fail_email: RwLock<bool>,
+        fail_completion: RwLock<bool>,
     }
 
     impl TestResetStore {
@@ -194,6 +228,8 @@ mod tests {
                 tokens: RwLock::new(HashMap::new()),
                 emails_sent: RwLock::new(vec![]),
                 sessions_invalidated: RwLock::new(vec![]),
+                fail_email: RwLock::new(false),
+                fail_completion: RwLock::new(false),
             }
         }
 
@@ -213,6 +249,24 @@ mod tests {
         fn get_user_password(&self, email: &str) -> Option<String> {
             let users = self.users.read().unwrap();
             users.get(email).map(|u| u.password_hash.clone())
+        }
+
+        fn get_lockout_state(&self, email: &str) -> Option<(u32, u32, Option<SystemTime>)> {
+            self.users.read().unwrap().get(email).map(|user| {
+                (
+                    user.failed_attempts,
+                    user.failed_mfa_attempts,
+                    user.locked_until,
+                )
+            })
+        }
+
+        fn set_email_failure(&self, fail: bool) {
+            *self.fail_email.write().unwrap() = fail;
+        }
+
+        fn set_completion_failure(&self, fail: bool) {
+            *self.fail_completion.write().unwrap() = fail;
         }
     }
 
@@ -250,6 +304,20 @@ mod tests {
             Ok(None)
         }
 
+        async fn is_reset_token_valid(&self, token_hash: &str) -> Result<bool> {
+            Ok(self
+                .tokens
+                .read()
+                .unwrap()
+                .get(token_hash)
+                .is_some_and(|(_, expires)| SystemTime::now() < *expires))
+        }
+
+        async fn discard_reset_token(&self, token_hash: &str) -> Result<()> {
+            self.tokens.write().unwrap().remove(token_hash);
+            Ok(())
+        }
+
         async fn update_password(&self, user_id: &str, hash: &str) -> Result<()> {
             let mut users = self.users.write().unwrap();
             for user in users.values_mut() {
@@ -267,12 +335,50 @@ mod tests {
             Ok(())
         }
 
+        async fn complete_password_reset(
+            &self,
+            token_hash: &str,
+            password_hash: &str,
+        ) -> Result<Option<String>> {
+            if *self.fail_completion.read().unwrap() {
+                return Err(TidewayError::Internal("injected completion failure".into()));
+            }
+            let token = self.tokens.read().unwrap().get(token_hash).cloned();
+            let Some((user_id, expires)) = token else {
+                return Ok(None);
+            };
+            if SystemTime::now() >= expires {
+                return Ok(None);
+            }
+
+            let mut users = self.users.write().unwrap();
+            let Some(user) = users.values_mut().find(|user| user.id == user_id) else {
+                return Err(TidewayError::NotFound("User not found".into()));
+            };
+            user.password_hash = password_hash.to_string();
+            user.failed_attempts = 0;
+            user.failed_mfa_attempts = 0;
+            user.locked_until = None;
+            self.tokens
+                .write()
+                .unwrap()
+                .retain(|_, (token_user_id, _)| token_user_id != &user_id);
+            self.sessions_invalidated
+                .write()
+                .unwrap()
+                .push(user_id.clone());
+            Ok(Some(user_id))
+        }
+
         async fn send_reset_email(
             &self,
             user: &Self::User,
             token: &str,
             _expires_in: Duration,
         ) -> Result<()> {
+            if *self.fail_email.read().unwrap() {
+                return Err(TidewayError::Internal("injected email failure".into()));
+            }
             let mut emails = self.emails_sent.write().unwrap();
             emails.push((user.email.clone(), token.to_string()));
             Ok(())
@@ -284,6 +390,9 @@ mod tests {
             id: format!("user-{}", email.split('@').next().unwrap()),
             email: email.to_string(),
             password_hash: "old-hash".to_string(),
+            failed_attempts: 5,
+            failed_mfa_attempts: 5,
+            locked_until: Some(SystemTime::now() + Duration::from_secs(900)),
         }
     }
 
@@ -383,6 +492,10 @@ mod tests {
         // Verify sessions were invalidated
         let invalidated = flow.store.get_invalidated_sessions();
         assert!(invalidated.contains(&"user-test".to_string()));
+
+        // A reset is an account-recovery event and clears both login and MFA lockout state.
+        let lockout = flow.store.get_lockout_state("test@example.com").unwrap();
+        assert_eq!(lockout, (0, 0, None));
     }
 
     #[tokio::test]
@@ -519,5 +632,166 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn completion_failure_does_not_consume_token() {
+        let store = TestResetStore::new();
+        store.add_user(create_test_user("test@example.com"));
+        let flow = PasswordResetFlow::new(store);
+        flow.request_reset(PasswordResetRequest {
+            email: "test@example.com".into(),
+        })
+        .await
+        .unwrap();
+        let token = flow.store.get_sent_emails()[0].1.clone();
+
+        flow.store.set_completion_failure(true);
+        assert!(
+            flow.complete_reset(PasswordResetComplete {
+                token: token.clone(),
+                new_password: "NewSecurePassword123!".into(),
+            })
+            .await
+            .is_err()
+        );
+        flow.store.set_completion_failure(false);
+        assert!(
+            flow.complete_reset(PasswordResetComplete {
+                token,
+                new_password: "NewSecurePassword123!".into(),
+            })
+            .await
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn hashing_failure_does_not_consume_token() {
+        let store = TestResetStore::new();
+        store.add_user(create_test_user("test@example.com"));
+        let invalid_hasher = PasswordHasher::new(crate::auth::PasswordConfig::new(0, 0, 0));
+        let flow = PasswordResetFlow::new(store).with_hasher(invalid_hasher);
+        flow.request_reset(PasswordResetRequest {
+            email: "test@example.com".into(),
+        })
+        .await
+        .unwrap();
+        let token = flow.store.get_sent_emails()[0].1.clone();
+        assert!(
+            flow.complete_reset(PasswordResetComplete {
+                token: token.clone(),
+                new_password: "NewSecurePassword123!".into(),
+            })
+            .await
+            .is_err()
+        );
+
+        let flow = flow.with_hasher(PasswordHasher::default());
+        assert!(
+            flow.complete_reset(PasswordResetComplete {
+                token,
+                new_password: "NewSecurePassword123!".into(),
+            })
+            .await
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn email_failure_preserves_an_existing_token() {
+        let store = TestResetStore::new();
+        store.add_user(create_test_user("test@example.com"));
+        let flow = PasswordResetFlow::new(store);
+        flow.request_reset(PasswordResetRequest {
+            email: "test@example.com".into(),
+        })
+        .await
+        .unwrap();
+        let original_token = flow.store.get_sent_emails()[0].1.clone();
+
+        flow.store.set_email_failure(true);
+        assert!(
+            flow.request_reset(PasswordResetRequest {
+                email: "test@example.com".into(),
+            })
+            .await
+            .is_err()
+        );
+        flow.store.set_email_failure(false);
+        assert!(
+            flow.complete_reset(PasswordResetComplete {
+                token: original_token,
+                new_password: "NewSecurePassword123!".into(),
+            })
+            .await
+            .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_reset_invalidates_other_outstanding_tokens() {
+        let store = TestResetStore::new();
+        store.add_user(create_test_user("test@example.com"));
+        let flow = PasswordResetFlow::new(store);
+        for _ in 0..2 {
+            flow.request_reset(PasswordResetRequest {
+                email: "test@example.com".into(),
+            })
+            .await
+            .unwrap();
+        }
+        let emails = flow.store.get_sent_emails();
+        flow.complete_reset(PasswordResetComplete {
+            token: emails[0].1.clone(),
+            new_password: "NewSecurePassword123!".into(),
+        })
+        .await
+        .unwrap();
+        let error = flow
+            .complete_reset(PasswordResetComplete {
+                token: emails[1].1.clone(),
+                new_password: "AnotherSecurePassword456!".into(),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.error_code(),
+            Some("password_reset.invalid_or_expired_token")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_completion_has_one_winner() {
+        let store = TestResetStore::new();
+        store.add_user(create_test_user("test@example.com"));
+        let flow = PasswordResetFlow::new(store);
+        flow.request_reset(PasswordResetRequest {
+            email: "test@example.com".into(),
+        })
+        .await
+        .unwrap();
+        let token = flow.store.get_sent_emails()[0].1.clone();
+        let (first, second) = tokio::join!(
+            flow.complete_reset(PasswordResetComplete {
+                token: token.clone(),
+                new_password: "FirstSecurePassword123!".into(),
+            }),
+            flow.complete_reset(PasswordResetComplete {
+                token,
+                new_password: "SecondSecurePassword456!".into(),
+            })
+        );
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    }
+
+    #[tokio::test]
+    async fn password_policy_errors_have_stable_codes() {
+        let error = PasswordPolicy::modern().check("short").unwrap_err();
+        assert_eq!(error.error_code(), Some("password_policy.too_short"));
+
+        let too_long = "x".repeat(129);
+        let error = PasswordPolicy::modern().check(&too_long).unwrap_err();
+        assert_eq!(error.error_code(), Some("password_policy.too_long"));
     }
 }

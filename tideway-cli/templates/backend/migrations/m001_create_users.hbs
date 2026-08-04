@@ -21,6 +21,7 @@ impl MigrationTrait for Migration {
                     .col(ColumnDef::new(Users::LockedUntil).timestamp_with_time_zone())
                     .col(ColumnDef::new(Users::FailedAttempts).integer().not_null().default(0))
                     .col(ColumnDef::new(Users::FailedMfaAttempts).integer().not_null().default(0))
+                    .col(ColumnDef::new(Users::SessionVersion).big_integer().not_null().default(0))
                     .col(
                         ColumnDef::new(Users::CreatedAt)
                             .timestamp_with_time_zone()
@@ -56,6 +57,7 @@ pub enum Users {
     LockedUntil,
     FailedAttempts,
     FailedMfaAttempts,
+    SessionVersion,
     CreatedAt,
     UpdatedAt,
 }

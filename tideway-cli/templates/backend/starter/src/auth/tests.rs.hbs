@@ -8,12 +8,14 @@ use axum::{
 };
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement,
+    ActiveModelTrait, ColumnTrait, ConnectOptions, ConnectionTrait, Database, DatabaseBackend,
+    DatabaseConnection, EntityTrait, QueryFilter, Set, Statement,
 };
 use serde_json::{json, Value};
-use tideway::{auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig{{#if has_auth_mfa_feature}}, MfaSecretCipher, TotpConfig, TotpManager{{/if}}}, App};
+use tideway::{auth::{AccessTokenClaims, AuthProvider, JwtAuth, JwtAuthConfig, PasswordResetStore, TokenSubject{{#if has_auth_mfa_feature}}, MfaSecretCipher, TotpConfig, TotpManager{{/if}}}, App};
 use tower::ServiceExt;
-use super::{AuthModule, SimpleAuthProvider};
+use super::{AuthModule, DbUserStore, SimpleAuthProvider};
+use crate::entities::{auth_token, refresh_token_family, user};
 
 const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
 const DISPLAY_APP_NAME: &str = "Human Readable App";
@@ -30,6 +32,7 @@ fn auth_openapi_covers_generated_routes_and_bearer_security() {
         "/auth/refresh",
         "/auth/logout",
         "/auth/me",
+        "/auth/password-policy",
         {{#if has_auth_mfa_feature}}
         "/auth/mfa/setup",
         "/auth/mfa/enable",
@@ -97,6 +100,159 @@ async fn connect_test_database() -> DatabaseConnection {
     Database::connect(options)
         .await
         .expect("connect to isolated PostgreSQL test schema")
+}
+
+fn reset_store(db: Arc<DatabaseConnection>) -> DbUserStore {
+    DbUserStore::new(
+        db,
+        false,
+        {{#if has_auth_mfa_feature}}
+        Arc::new(
+            MfaSecretCipher::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("valid test MFA key"),
+        ),
+        {{/if}}
+    )
+}
+
+async fn seed_reset_state(db: &DatabaseConnection) -> (uuid::Uuid, String, String) {
+    let user_id = uuid::Uuid::new_v4();
+    let now = chrono::Utc::now();
+    user::ActiveModel {
+        id: Set(user_id),
+        email: Set(format!("reset-{user_id}@example.com")),
+        password_hash: Set("old-hash".to_owned()),
+        name: Set(None),
+        email_verified_at: Set(Some(now.into())),
+        locked_until: Set(Some((now + chrono::Duration::minutes(15)).into())),
+        failed_attempts: Set(5),
+        session_version: Set(0),
+        {{#if has_auth_mfa_feature}}
+        failed_mfa_attempts: Set(5),
+        mfa_enabled: Set(false),
+        mfa_totp_secret_encrypted: Set(None),
+        mfa_last_totp_step: Set(None),
+        {{/if}}
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("insert reset user");
+    let submitted = "submitted-reset-hash".to_owned();
+    let other = "other-reset-hash".to_owned();
+    for hash in [&submitted, &other] {
+        auth_token::ActiveModel {
+            id: Set(uuid::Uuid::new_v4()),
+            user_id: Set(user_id),
+            token_hash: Set(hash.clone()),
+            token_type: Set("password_reset".to_owned()),
+            expires_at: Set((now + chrono::Duration::hours(1)).into()),
+            used_at: Set(None),
+            created_at: Set(now.into()),
+        }
+        .insert(db)
+        .await
+        .expect("insert reset token");
+    }
+    refresh_token_family::ActiveModel {
+        family: Set("reset-family".to_owned()),
+        user_id: Set(user_id),
+        generation: Set(0),
+        revoked: Set(false),
+        created_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("insert refresh family");
+    (user_id, submitted, other)
+}
+
+#[tokio::test]
+async fn password_reset_transaction_rolls_back_and_then_revokes_all_security_state() {
+    let db = Database::connect("sqlite::memory:").await.expect("connect sqlite");
+    Migrator::up(&db, None).await.expect("run migrations");
+    let (user_id, submitted, other) = seed_reset_state(&db).await;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "CREATE TRIGGER fail_reset_session_revoke BEFORE DELETE ON refresh_token_families BEGIN SELECT RAISE(ABORT, 'injected revoke failure'); END".to_owned(),
+    ))
+    .await
+    .expect("create failure trigger");
+    let store = reset_store(Arc::new(db.clone()));
+    assert!(store.complete_password_reset(&submitted, "new-hash").await.is_err());
+
+    let rolled_back = user::Entity::find_by_id(user_id).one(&db).await.unwrap().unwrap();
+    assert_eq!(rolled_back.password_hash, "old-hash");
+    assert_eq!(rolled_back.failed_attempts, 5);
+    assert_eq!(rolled_back.session_version, 0);
+    assert!(rolled_back.locked_until.is_some());
+    assert!(auth_token::Entity::find().filter(auth_token::Column::TokenHash.eq(&submitted)).one(&db).await.unwrap().unwrap().used_at.is_none());
+
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "DROP TRIGGER fail_reset_session_revoke".to_owned(),
+    ))
+    .await
+    .expect("drop failure trigger");
+    assert_eq!(store.complete_password_reset(&submitted, "new-hash").await.unwrap(), Some(user_id.to_string()));
+    let completed = user::Entity::find_by_id(user_id).one(&db).await.unwrap().unwrap();
+    assert_eq!(completed.password_hash, "new-hash");
+    assert_eq!(completed.failed_attempts, 0);
+    assert_eq!(completed.session_version, 1);
+    assert!(completed.locked_until.is_none());
+    assert!(auth_token::Entity::find().filter(auth_token::Column::TokenHash.eq(other)).one(&db).await.unwrap().unwrap().used_at.is_some());
+    assert!(refresh_token_family::Entity::find_by_id("reset-family").one(&db).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn concurrent_password_reset_completion_has_exactly_one_winner() {
+    let db = Database::connect("sqlite::memory:").await.expect("connect sqlite");
+    Migrator::up(&db, None).await.expect("run migrations");
+    let (_, submitted, _) = seed_reset_state(&db).await;
+    let first = reset_store(Arc::new(db.clone()));
+    let second = reset_store(Arc::new(db));
+    let (first, second) = tokio::join!(
+        first.complete_password_reset(&submitted, "first-hash"),
+        second.complete_password_reset(&submitted, "second-hash")
+    );
+    let outcomes = [first, second];
+    assert_eq!(outcomes.iter().filter(|result| matches!(result, Ok(Some(_)))).count(), 1);
+    assert_eq!(outcomes.iter().filter(|result| matches!(result, Ok(None))).count(), 1);
+}
+
+#[tokio::test]
+async fn password_reset_immediately_rejects_preexisting_access_token() {
+    let db = Database::connect("sqlite::memory:").await.expect("connect sqlite");
+    Migrator::up(&db, None).await.expect("run migrations");
+    let (user_id, submitted, _) = seed_reset_state(&db).await;
+    let db = Arc::new(db);
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(JWT_SECRET, JWT_ISSUER)
+            .expect("valid secret")
+            .audience(JWT_AUDIENCE),
+    )
+    .expect("create paired auth");
+    let token = jwt
+        .issuer()
+        .issue(TokenSubject::new(&user_id.to_string()).with_session_version(0), false)
+        .expect("issue access token")
+        .access_token;
+    let provider = SimpleAuthProvider::new(
+        jwt.verifier::<AccessTokenClaims<serde_json::Value>>()
+            .expect("create verifier"),
+        db.clone(),
+    );
+    let claims = provider.verify_token(&token).await.expect("verify token");
+    provider.load_user(&claims).await.expect("token initially valid");
+
+    reset_store(db)
+        .complete_password_reset(&submitted, "new-hash")
+        .await
+        .expect("complete reset")
+        .expect("valid reset token");
+
+    assert!(provider.load_user(&claims).await.is_err());
 }
 
 async fn test_app() -> Router {

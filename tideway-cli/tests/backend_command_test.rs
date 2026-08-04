@@ -325,11 +325,27 @@ fn test_backend_auth_uses_shared_guards_and_atomic_token_updates() {
     assert!(routes.contains("state.client_ip_resolver.resolve(address.ip(), &headers)"));
     assert!(routes.contains("DbUserStore::from_transaction(transaction.clone())"));
     assert!(routes.contains("Arc::try_unwrap(transaction)"));
+    assert!(routes.contains("route(\"/password-policy\", get(password_policy))"));
+    assert!(routes.contains("tokio::spawn(async move"));
+    assert!(routes.contains("check_email_rate_limit(&state, address, &headers, &body.email)"));
+    assert!(routes.contains("state.password_policy.clone()"));
+    assert!(routes.contains("check_email_rate_limit(&state, address, &headers, &body.email)"));
+    assert!(
+        routes
+            .contains("If an account with that email exists, a password reset link has been sent.")
+    );
 
     let store = fs::read_to_string(output_dir.join("auth/store.rs")).expect("read auth store");
     assert!(store.contains("compare_and_swap_family_generation"));
     assert!(store.contains("update.rows_affected == 1"));
     assert!(store.contains("revoke_all_for_user(user_id)"));
+    assert!(store.contains("fn complete_password_reset"));
+    assert!(store.contains("fn is_reset_token_valid"));
+    assert!(store.contains("user::Column::FailedMfaAttempts"));
+    assert!(store.contains("user::Column::LockedUntil"));
+    assert!(store.contains("verification_token::Column::TokenType.eq(\"password_reset\")"));
+    assert!(store.contains("refresh_token_family::Entity::delete_many()"));
+    assert!(store.contains("transaction.commit().await"));
 }
 
 fn run_tideway(args: &[&str]) -> std::process::Output {

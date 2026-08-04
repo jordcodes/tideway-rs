@@ -4,7 +4,7 @@ use axum::{
     extract::{ConnectInfo, Extension},
     http::{header::RETRY_AFTER, HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 {{#if has_organizations}}
@@ -17,7 +17,7 @@ use std::{net::SocketAddr, sync::Arc};
 use tideway::auth::{
     AuthRateLimitConfig, AuthRateLimiter, JwtIssuer, LoginFlow, LoginFlowConfig,
     LoginRateLimitConfig, LoginRateLimiter, LoginRequest, LoginHttpResponse,
-    PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, EmailVerificationFlow,
+    PasswordPolicy, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, EmailVerificationFlow,
     EmailVerifyRequest, RegisterRequest, RegistrationFlow, ResendVerificationRequest, UserStore,
 };
 use tideway::{AppContext, ClientIpResolver, MessageResponse, Result, RouteModule};
@@ -49,6 +49,7 @@ pub struct AuthState {
     registration_rate_limiter: AuthRateLimiter,
     refresh_rate_limiter: AuthRateLimiter,
     email_rate_limiter: AuthRateLimiter,
+    password_policy: PasswordPolicy,
     mfa_tokens: InMemoryMfaTokenStore,
 }
 
@@ -86,6 +87,7 @@ impl AuthModule {
                 registration_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
                 refresh_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(60, 60)),
                 email_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
+                password_policy: PasswordPolicy::modern(),
                 mfa_tokens: InMemoryMfaTokenStore::default(),
             },
         }
@@ -111,6 +113,13 @@ impl AuthModule {
         self
     }
 
+    /// Use one password policy for registration, reset validation, and client metadata.
+    #[allow(dead_code)] // Generated production-policy extension point.
+    pub fn with_password_policy(mut self, policy: PasswordPolicy) -> Self {
+        self.state.password_policy = policy;
+        self
+    }
+
     /// Mount email-dependent auth routes with any configured provider.
     pub fn with_email_delivery(mut self, email_service: Arc<EmailService>) -> Self {
         self.state.email_delivery_enabled = true;
@@ -127,6 +136,7 @@ impl RouteModule for AuthModule {
         );
 
         let router = Router::new()
+            .route("/password-policy", get(password_policy))
             .route("/login", post(login))
             .route("/logout", post(logout))
             .route("/refresh", post(refresh))
@@ -355,7 +365,7 @@ async fn register(
     let user_store = user_store(&state);
     {{/if}}
 
-    let flow = RegistrationFlow::new(user_store);
+    let flow = RegistrationFlow::new(user_store).with_policy(state.password_policy.clone());
     let request = RegisterRequest {
         email: body.email.clone(),
         password: body.password,
@@ -554,14 +564,16 @@ async fn request_password_reset(
     Json(body): Json<PasswordResetBody>,
 ) -> AuthRouteResult<MessageResponse> {
     check_email_rate_limit(&state, address, &headers, &body.email)?;
-    let user_store = user_store(&state);
-
-    let flow = PasswordResetFlow::new(user_store);
+    let flow = PasswordResetFlow::new(user_store(&state)).with_policy(state.password_policy.clone());
     let request = PasswordResetRequest { email: body.email };
-
-    if let Err(error) = flow.request_reset(request).await {
-        tracing::error!(%error, "Password reset request failed");
-    }
+    // Keep account lookup and delivery off the response path so known and unknown accounts have
+    // the same externally observable lifecycle. Replace this task with a durable queue when the
+    // deployment requires delivery to survive process termination.
+    tokio::spawn(async move {
+        if let Err(error) = flow.request_reset(request).await {
+            tracing::error!(%error, "Password reset request failed");
+        }
+    });
 
     Ok(MessageResponse::success(
         "If an account with that email exists, a password reset link has been sent.",
@@ -574,7 +586,7 @@ async fn complete_password_reset(
 ) -> Result<MessageResponse> {
     let user_store = user_store(&state);
 
-    let flow = PasswordResetFlow::new(user_store);
+    let flow = PasswordResetFlow::new(user_store).with_policy(state.password_policy.clone());
     let request = PasswordResetComplete {
         token: body.token,
         new_password: body.new_password,
@@ -583,6 +595,10 @@ async fn complete_password_reset(
     flow.complete_reset(request).await?;
 
     Ok(MessageResponse::success("Password has been reset successfully."))
+}
+
+async fn password_policy(Extension(state): Extension<AuthState>) -> Json<PasswordPolicy> {
+    Json(state.password_policy)
 }
 
 async fn verify_email(

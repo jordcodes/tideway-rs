@@ -619,6 +619,49 @@ fn check_upgrade_readiness(
             }
         }
     }
+    let has_password_reset_store = any_rs_file_matches(&src_dir, |contents| {
+        uncommented_line_contains(contents, "PasswordResetStore for")
+    });
+    let has_legacy_password_reset_store = any_rs_file_matches(&src_dir, |contents| {
+        uncommented_line_contains(contents, "PasswordResetStore for")
+            && (!uncommented_line_contains(contents, "fn complete_password_reset")
+                || !uncommented_line_contains(contents, "fn is_reset_token_valid")
+                || !uncommented_line_contains(contents, "fn discard_reset_token"))
+            && !contents.contains("// tideway:password-reset-atomic")
+    });
+    if has_legacy_password_reset_store {
+        report.push_upgrade_warning(
+            "TW-UPGRADE-PASSWORD-RESET-ATOMIC",
+            "src/",
+            "A PasswordResetStore is missing the 0.8 reset lifecycle; implement is_reset_token_valid, discard_reset_token, and complete_password_reset so token claim, password update, lockout clearing, reset-token invalidation, session-version advancement, and refresh-session revocation commit safely. Audited equivalent implementations can add `// tideway:password-reset-atomic` beside the lifecycle operation",
+        );
+    }
+    let session_version_marker =
+        any_rs_file_contains(&src_dir, "// tideway:password-reset-session-version");
+    let session_version_ready = any_rs_file_contains(&src_dir, "SessionVersion")
+        && any_rs_file_contains(&src_dir, "with_session_version")
+        && any_rs_file_contains(&src_dir, "claims.session_version");
+    if has_password_reset_store && !session_version_ready && !session_version_marker {
+        report.push_upgrade_warning(
+            "TW-UPGRADE-PASSWORD-RESET-SESSION-VERSION",
+            "src/",
+            "Password reset does not appear to advance a user session version checked by access-token authentication; add the session_version column/claim/check or an audited equivalent marker `// tideway:password-reset-session-version`",
+        );
+    }
+    let migration_src = project_dir.join("migration/src");
+    let has_reset_token_schema = any_rs_file_matches(&migration_src, |contents| {
+        (contents.contains("AuthTokens") || contents.contains("VerificationTokens"))
+            && contents.contains("TokenHash")
+    });
+    let reset_token_hash_is_unique =
+        any_rs_file_matches(&migration_src, reset_token_hash_has_unique_constraint);
+    if has_reset_token_schema && !reset_token_hash_is_unique {
+        report.push_upgrade_warning(
+            "TW-UPGRADE-PASSWORD-RESET-TOKEN-UNIQUE",
+            "migration/src/",
+            "Password-reset token hashes are indexed but not unique; add an additive unique index after checking for duplicate token_hash values",
+        );
+    }
 }
 
 fn tideway_features_enable_billing(features: &BTreeSet<String>) -> bool {
@@ -1509,6 +1552,39 @@ fn migration_sources_contain(project_dir: &Path, raw_table: &str, iden_table: &s
 
 fn any_rs_file_contains(root: &Path, needle: &str) -> bool {
     any_rs_file_matches(root, |contents| contents.contains(needle))
+}
+
+fn reset_token_hash_has_unique_constraint(contents: &str) -> bool {
+    if contents.contains("// tideway:password-reset-token-hash-unique") {
+        return true;
+    }
+
+    let compact: String = contents
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect();
+    for table in ["AuthTokens", "VerificationTokens"] {
+        let column = format!("ColumnDef::new({table}::TokenHash)");
+        for (start, _) in compact.match_indices(&column) {
+            let tail = &compact[start + column.len()..];
+            let end = tail.find(".col(").unwrap_or(tail.len());
+            if tail[..end].contains(".unique_key()") {
+                return true;
+            }
+        }
+
+        let token_column = format!(".col({table}::TokenHash)");
+        for (token_offset, _) in compact.match_indices(&token_column) {
+            let prefix = &compact[..token_offset];
+            let start = prefix.rfind("Index::create()").unwrap_or(token_offset);
+            let tail = &compact[start..];
+            let end = tail.find(".to_owned()").unwrap_or(tail.len());
+            if tail[..end].contains(&token_column) && tail[..end].contains(".unique()") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn any_rs_file_matches(root: &Path, predicate: impl Fn(&str) -> bool) -> bool {

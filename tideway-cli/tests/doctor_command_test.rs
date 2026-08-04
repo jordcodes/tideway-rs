@@ -194,6 +194,168 @@ let flow = RegistrationFlow::new(store);
 }
 
 #[test]
+fn test_doctor_upgrade_detects_legacy_password_reset_store() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth source");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/auth/store.rs"),
+        "impl PasswordResetStore for DbUserStore { async fn consume_reset_token() {} }",
+    )
+    .expect("write auth store");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-PASSWORD-RESET-ATOMIC") })
+    );
+}
+
+#[test]
+fn test_doctor_upgrade_finds_password_reset_store_outside_auth_directory() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/security/custom")).expect("create custom source");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/security/custom/passwords.rs"),
+        "impl PasswordResetStore for CustomStore {}",
+    )
+    .expect("write custom store");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    for code in [
+        "TW-UPGRADE-PASSWORD-RESET-ATOMIC",
+        "TW-UPGRADE-PASSWORD-RESET-SESSION-VERSION",
+    ] {
+        assert!(
+            report
+                .findings()
+                .iter()
+                .any(|finding| finding.code == Some(code)),
+            "missing {code}: {:?}",
+            report.findings()
+        );
+    }
+}
+
+#[test]
+fn test_doctor_upgrade_detects_non_unique_reset_token_hash() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create source");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("migration/src/m003_auth_tokens.rs"),
+        "ColumnDef::new(Users::Email).unique_key(); enum AuthTokens { Table, TokenHash } // token hash is indexed, but not unique",
+    )
+    .expect("write migration");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| { finding.code == Some("TW-UPGRADE-PASSWORD-RESET-TOKEN-UNIQUE") })
+    );
+}
+
+#[test]
+fn test_doctor_upgrade_accepts_unique_reset_token_hash_and_session_marker() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/security")).expect("create source");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["auth"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/security/passwords.rs"),
+        "// tideway:password-reset-atomic\n// tideway:password-reset-session-version\nimpl PasswordResetStore for CustomStore {}",
+    )
+    .expect("write custom store");
+    fs::write(
+        project_dir.join("migration/src/m003_auth_tokens.rs"),
+        "ColumnDef::new(AuthTokens::TokenHash).string().not_null().unique_key(); enum AuthTokens { Table, TokenHash }",
+    )
+    .expect("write migration");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    for code in [
+        "TW-UPGRADE-PASSWORD-RESET-ATOMIC",
+        "TW-UPGRADE-PASSWORD-RESET-SESSION-VERSION",
+        "TW-UPGRADE-PASSWORD-RESET-TOKEN-UNIQUE",
+    ] {
+        assert!(
+            report
+                .findings()
+                .iter()
+                .all(|finding| finding.code != Some(code)),
+            "unexpected {code}: {:?}",
+            report.findings()
+        );
+    }
+}
+
+#[test]
 fn test_doctor_upgrade_accepts_aligned_dependencies_and_current_apis() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

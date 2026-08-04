@@ -9,6 +9,67 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.1.48] - 2026-08-04
+
+> **Existing applications:** install this CLI and run `tideway --json doctor --upgrade` before
+> updating Tideway. Do not regenerate or overwrite application-owned auth files.
+
+### Changed
+
+- Newly generated applications use Tideway 0.8.0 and include the atomic password-reset lifecycle,
+  reset-request throttling, password-policy metadata, and immediate access-token revocation.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.1.48 --locked`, then run
+  `tideway --json doctor --upgrade` before updating each application.
+- After applying every reported migration and source change, require a clean result with
+  `tideway --json doctor --upgrade --deny-warnings`.
+
+## [0.8.0] - 2026-08-04
+
+> **Migration release — action required.** Tideway 0.8.0 is not a drop-in update for existing
+> applications using auth/password reset. Apply the additive database migration and source changes
+> in `docs/upgrading.md` before deploying 0.8.0. Applications staying on 0.7.x are unaffected.
+
+### Added
+
+- Password reset errors now expose stable machine-readable codes, and generated auth APIs expose
+  the active password policy at `GET /auth/password-policy`.
+- Upgrade doctor reports non-atomic reset stores, incomplete access-token invalidation, and missing
+  reset-token hash uniqueness even when custom stores live outside `src/auth`.
+- Access tokens carry a monotonic session version. Generated authentication providers compare it
+  with the user row, allowing a completed password reset to revoke already-issued access tokens.
+
+### Fixed
+
+- Password hashing failures no longer consume reset tokens. Newly generated SeaORM stores complete
+  password replacement, login/MFA lockout clearing, reset-token invalidation, access-session
+  version advancement, and refresh-session revocation in one transaction.
+- Failed reset-email delivery discards only the undelivered token and leaves previously delivered
+  reset links usable. Concurrent completion is explicitly first-writer-wins.
+- Generated reset-request handlers use enumeration-safe responses, trusted-proxy-aware rate limits,
+  and move token creation plus delivery off the response path to avoid account-existence timing.
+- Password policy limits count Unicode scalar values consistently with their documented
+  character-based contract.
+
+### Compatibility
+
+- This is a minor-version compatibility boundary for the pre-1.0 framework. `TidewayError` is now
+  non-exhaustive and has a coded bad-request variant; downstream exhaustive matches must add a
+  wildcard arm.
+- `PasswordResetStore` now requires the preflight, delivery cleanup, and atomic completion methods;
+  the unsafe sequential compatibility fallback has been removed.
+- Existing database-backed auth applications need additive `users.session_version` and unique
+  reset-token-hash migrations, plus the generated claim issuance and authentication check. See
+  `docs/upgrading.md`; do not overwrite application-owned generated files.
+
+### DX Gate
+
+- Regression coverage injects a session-revocation failure and proves the entire reset transaction
+  rolls back, then verifies lockout clearing, all-token invalidation, access-session advancement,
+  and exactly one winner under concurrent completion.
+
 ## [tideway-cli 0.1.47] - 2026-07-24
 
 ### Changed

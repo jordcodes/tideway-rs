@@ -19,8 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tideway::auth::{
     AuthRateLimitConfig, AuthRateLimiter, AuthUser, JwtIssuer, LoginFlow, LoginFlowConfig,
-    LoginRateLimitConfig, LoginRateLimiter, LoginHttpResponse, LoginRequest, PasswordResetComplete,
-    PasswordResetFlow, PasswordResetRequest, RegisterRequest, RegistrationFlow, TokenRefreshFlow,
+    LoginRateLimitConfig, LoginRateLimiter, LoginHttpResponse, LoginRequest, PasswordPolicy,
+    PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, RegisterRequest,
+    RegistrationFlow, TokenRefreshFlow,
 };
 {{#if has_auth_mfa_feature}}
 use tideway::auth::{
@@ -51,6 +52,7 @@ pub struct AuthState {
     registration_rate_limiter: AuthRateLimiter,
     refresh_rate_limiter: AuthRateLimiter,
     email_rate_limiter: AuthRateLimiter,
+    password_policy: PasswordPolicy,
     mfa_tokens: DbMfaTokenStore,
     {{#if has_auth_mfa_feature}}
     mfa_cipher: Option<Arc<MfaSecretCipher>>,
@@ -102,6 +104,7 @@ impl AuthModule {
                 registration_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
                 refresh_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(60, 60)),
                 email_rate_limiter: AuthRateLimiter::new(AuthRateLimitConfig::new(5, 3600)),
+                password_policy: PasswordPolicy::modern(),
                 mfa_tokens: DbMfaTokenStore::new(db),
                 {{#if has_auth_mfa_feature}}
                 mfa_cipher,
@@ -130,6 +133,13 @@ impl AuthModule {
     #[allow(dead_code)] // Generated production-policy extension point.
     pub fn with_refresh_rate_limit(mut self, config: AuthRateLimitConfig) -> Self {
         self.state.refresh_rate_limiter = AuthRateLimiter::new(config);
+        self
+    }
+
+    /// Use one password policy for registration, reset validation, and client metadata.
+    #[allow(dead_code)] // Generated production-policy extension point.
+    pub fn with_password_policy(mut self, policy: PasswordPolicy) -> Self {
+        self.state.password_policy = policy;
         self
     }
 
@@ -165,6 +175,7 @@ impl RouteModule for AuthModule {
         {{/if}}
 
         let router = Router::new()
+            .route("/password-policy", get(password_policy))
             .route("/login", post(login))
             .route("/refresh", post(refresh))
             .route("/logout", post(logout))
@@ -399,7 +410,7 @@ async fn register(
         address,
         &headers,
     )?;
-    let flow = RegistrationFlow::new(user_store(&state));
+    let flow = RegistrationFlow::new(user_store(&state)).with_policy(state.password_policy.clone());
     let user = flow
         .register(RegisterRequest {
             email: body.email,
@@ -732,15 +743,18 @@ async fn request_password_reset(
             retry_after,
         });
     }
-    let flow = PasswordResetFlow::new(user_store(&state));
-    // Keep the public response generic to prevent account enumeration, but retain
-    // enough operational visibility to diagnose a broken delivery integration.
-    if let Err(error) = flow
-        .request_reset(PasswordResetRequest { email: body.email })
-        .await
-    {
-        tracing::error!(%error, "Password reset request failed");
-    }
+    let flow = PasswordResetFlow::new(user_store(&state)).with_policy(state.password_policy.clone());
+    // Keep account lookup and delivery off the response path so known and unknown accounts have
+    // the same externally observable lifecycle. Replace this task with a durable queue when the
+    // deployment requires delivery to survive process termination.
+    tokio::spawn(async move {
+        if let Err(error) = flow
+            .request_reset(PasswordResetRequest { email: body.email })
+            .await
+        {
+            tracing::error!(%error, "Password reset request failed");
+        }
+    });
     Ok(MessageResponse::success(
         "If that account exists, password reset instructions have been sent.",
     ))
@@ -751,12 +765,25 @@ async fn complete_password_reset(
     Json(body): Json<PasswordResetCompleteBody>,
 ) -> Result<MessageResponse> {
     PasswordResetFlow::new(user_store(&state))
+        .with_policy(state.password_policy.clone())
         .complete_reset(PasswordResetComplete {
             token: body.token,
             new_password: body.new_password,
         })
         .await?;
     Ok(MessageResponse::success("Password reset complete"))
+}
+
+{{#if has_openapi_feature}}
+#[utoipa::path(
+    get,
+    path = "/auth/password-policy",
+    tag = "Authentication",
+    responses((status = 200, description = "Active password policy", body = PasswordPolicy))
+)]
+{{/if}}
+async fn password_policy(Extension(state): Extension<AuthState>) -> Json<PasswordPolicy> {
+    Json(state.password_policy)
 }
 
 {{#if has_openapi_feature}}
@@ -799,7 +826,7 @@ impl utoipa::Modify for BearerSecurity {
 
 tideway::openapi_doc!(
     pub(crate) AuthApiDoc,
-    paths(register, login, refresh, logout, me{{#if has_auth_mfa_feature}}, verify_mfa, setup_mfa, enable_mfa, disable_mfa{{/if}}),
+    paths(register, login, refresh, logout, me, password_policy{{#if has_auth_mfa_feature}}, verify_mfa, setup_mfa, enable_mfa, disable_mfa{{/if}}),
     components(schemas(
         RegisterBody,
         RegisterResponse,
@@ -810,6 +837,7 @@ tideway::openapi_doc!(
         SimpleUser,
         tideway::auth::LoginResponse,
         tideway::auth::MfaType,
+        tideway::auth::PasswordPolicy,
         tideway::MessageResponse,
         tideway::ErrorResponse{{#if has_auth_mfa_feature}},
         MfaVerifyBody,

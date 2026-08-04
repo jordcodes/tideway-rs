@@ -531,6 +531,7 @@ async fn start_impersonation(
         user_id: &target_user.id.to_string(),
         email: Some(&target_user.email),
         name: target_user.name.as_deref(),
+        session_version: target_user.session_version.max(0) as u64,
         custom: None::<()>,
     };
     let tokens = state.jwt_issuer.issue(subject, false)

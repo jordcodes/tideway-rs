@@ -197,6 +197,9 @@ where
     pub standard: StandardClaims,
     /// Token type
     pub token_type: TokenType,
+    /// Monotonic user session version used for immediate server-side revocation.
+    #[serde(default)]
+    pub session_version: u64,
     /// User's email
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
@@ -249,6 +252,8 @@ where
     pub email: Option<&'a str>,
     /// User name (optional, included in access token)
     pub name: Option<&'a str>,
+    /// Current user session version.
+    pub session_version: u64,
     /// Custom claims to include
     pub custom: Option<T>,
 }
@@ -260,6 +265,7 @@ impl<'a> TokenSubject<'a, ()> {
             user_id,
             email: None,
             name: None,
+            session_version: 0,
             custom: None,
         }
     }
@@ -278,12 +284,19 @@ impl<'a, T: Serialize> TokenSubject<'a, T> {
         self
     }
 
+    /// Set the user session version embedded in access tokens.
+    pub fn with_session_version(mut self, version: u64) -> Self {
+        self.session_version = version;
+        self
+    }
+
     /// Add custom claims to the token.
     pub fn with_custom<U: Serialize>(self, custom: U) -> TokenSubject<'a, U> {
         TokenSubject {
             user_id: self.user_id,
             email: self.email,
             name: self.name,
+            session_version: self.session_version,
             custom: Some(custom),
         }
     }
@@ -343,6 +356,7 @@ impl JwtIssuer {
                 jti: jti_access,
             },
             token_type: TokenType::Access,
+            session_version: subject.session_version,
             email: subject.email.map(String::from),
             name: subject.name.map(String::from),
             custom: subject.custom,
@@ -407,6 +421,7 @@ impl JwtIssuer {
                 jti,
             },
             token_type: TokenType::Access,
+            session_version: subject.session_version,
             email: subject.email.map(String::from),
             name: subject.name.map(String::from),
             custom: subject.custom,
@@ -548,7 +563,9 @@ mod tests {
     #[test]
     fn test_access_token_claims() {
         let issuer = test_issuer();
-        let subject = TokenSubject::new("user-123").with_email("test@example.com");
+        let subject = TokenSubject::new("user-123")
+            .with_email("test@example.com")
+            .with_session_version(7);
 
         let pair = issuer.issue(subject, false).unwrap();
 
@@ -567,6 +584,21 @@ mod tests {
         assert_eq!(decoded.claims.standard.sub, "user-123");
         assert_eq!(decoded.claims.email, Some("test@example.com".to_string()));
         assert_eq!(decoded.claims.token_type, TokenType::Access);
+        assert_eq!(decoded.claims.session_version, 7);
+    }
+
+    #[test]
+    fn test_custom_claims_preserve_session_version() {
+        #[derive(Serialize)]
+        struct CustomClaims {
+            role: &'static str,
+        }
+
+        let subject = TokenSubject::new("user-123")
+            .with_session_version(9)
+            .with_custom(CustomClaims { role: "admin" });
+
+        assert_eq!(subject.session_version, 9);
     }
 
     #[test]

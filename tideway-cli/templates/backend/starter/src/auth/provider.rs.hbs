@@ -63,6 +63,9 @@ impl AuthProvider for SimpleAuthProvider {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?
             .ok_or_else(|| TidewayError::unauthorized("User no longer exists"))?;
+        if claims.session_version != user.session_version.max(0) as u64 {
+            return Err(TidewayError::unauthorized("Access token has been revoked"));
+        }
 
         Ok(SimpleUser {
             id: user.id.to_string(),

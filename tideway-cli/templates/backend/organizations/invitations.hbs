@@ -842,6 +842,7 @@ mod tests {
             email_verified_at: Set(Some(timestamp.into())),
             locked_until: Set(None),
             failed_attempts: Set(0),
+            session_version: Set(0),
             failed_mfa_attempts: Set(0),
             is_platform_admin: Set(false),
             created_at: Set(timestamp.into()),
@@ -915,7 +916,11 @@ mod tests {
         .expect("jwt issuer");
         let user_id = user.id.to_string();
         let (token, _) = issuer
-            .issue_access_token(TokenSubject::new(&user_id).with_email(&user.email))
+            .issue_access_token(
+                TokenSubject::new(&user_id)
+                    .with_email(&user.email)
+                    .with_session_version(user.session_version.max(0) as u64),
+            )
             .expect("issue token");
         let mut headers = HeaderMap::new();
         headers.insert(

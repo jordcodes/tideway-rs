@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use sea_orm::{
     sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection,
-    DatabaseTransaction, EntityTrait, QueryFilter, Set,
+    DatabaseTransaction, EntityTrait, QueryFilter, Set, TransactionTrait,
 };
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 use std::time::SystemTime;
@@ -260,6 +260,7 @@ where
             locked_until: Set(None),
             failed_attempts: Set(0),
             failed_mfa_attempts: Set(0),
+            session_version: Set(0),
             is_platform_admin: Set(false),
             created_at: Set(now.into()),
             updated_at: Set(now.into()),
@@ -341,6 +342,29 @@ impl PasswordResetStore for DbUserStore {
         Ok((update.rows_affected == 1).then(|| token.user_id.to_string()))
     }
 
+    async fn is_reset_token_valid(&self, token_hash: &str) -> Result<bool> {
+        verification_token::Entity::find()
+            .filter(verification_token::Column::TokenHash.eq(token_hash))
+            .filter(verification_token::Column::TokenType.eq("password_reset"))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .filter(verification_token::Column::ExpiresAt.gt(Utc::now()))
+            .one(self.db.as_ref())
+            .await
+            .map(|token| token.is_some())
+            .map_err(|error| TidewayError::Database(error.to_string()))
+    }
+
+    async fn discard_reset_token(&self, token_hash: &str) -> Result<()> {
+        verification_token::Entity::delete_many()
+            .filter(verification_token::Column::TokenHash.eq(token_hash))
+            .filter(verification_token::Column::TokenType.eq("password_reset"))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        Ok(())
+    }
+
     async fn update_password(&self, user_id: &str, hash: &str) -> Result<()> {
         let uuid = Uuid::parse_str(user_id)
             .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
@@ -358,6 +382,79 @@ impl PasswordResetStore for DbUserStore {
         DbRefreshTokenStore::new(self.db.clone())
             .revoke_all_for_user(user_id)
             .await
+    }
+
+    // tideway:password-reset-atomic
+    async fn complete_password_reset(
+        &self,
+        token_hash: &str,
+        password_hash: &str,
+    ) -> Result<Option<String>> {
+        let transaction = self.db.begin().await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        let now = Utc::now();
+        let token = verification_token::Entity::find()
+            .filter(verification_token::Column::TokenHash.eq(token_hash))
+            .filter(verification_token::Column::TokenType.eq("password_reset"))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .filter(verification_token::Column::ExpiresAt.gt(now))
+            .one(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        let Some(token) = token else {
+            return Ok(None);
+        };
+
+        let claimed = verification_token::Entity::update_many()
+            .col_expr(verification_token::Column::UsedAt, Expr::value(Some(now)))
+            .filter(verification_token::Column::Id.eq(token.id))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .filter(verification_token::Column::ExpiresAt.gt(now))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        if claimed.rows_affected != 1 {
+            return Ok(None);
+        }
+
+        let updated = user::Entity::update_many()
+            .col_expr(user::Column::PasswordHash, Expr::value(password_hash))
+            .col_expr(user::Column::FailedAttempts, Expr::value(0))
+            .col_expr(user::Column::FailedMfaAttempts, Expr::value(0))
+            .col_expr(
+                user::Column::SessionVersion,
+                Expr::col(user::Column::SessionVersion).add(1),
+            )
+            .col_expr(
+                user::Column::LockedUntil,
+                Expr::value(Option::<chrono::DateTime<Utc>>::None),
+            )
+            .col_expr(user::Column::UpdatedAt, Expr::value(now))
+            .filter(user::Column::Id.eq(token.user_id))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        if updated.rows_affected != 1 {
+            return Err(TidewayError::not_found("User not found"));
+        }
+
+        verification_token::Entity::update_many()
+            .col_expr(verification_token::Column::UsedAt, Expr::value(Some(now)))
+            .filter(verification_token::Column::UserId.eq(token.user_id))
+            .filter(verification_token::Column::TokenType.eq("password_reset"))
+            .filter(verification_token::Column::UsedAt.is_null())
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        refresh_token_family::Entity::delete_many()
+            .filter(refresh_token_family::Column::UserId.eq(token.user_id))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+
+        transaction.commit().await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        Ok(Some(token.user_id.to_string()))
     }
 
     async fn send_reset_email(
@@ -466,6 +563,10 @@ impl UserLoader for DbUserStore {
 
     fn user_name(&self, user: &Self::User) -> Option<String> {
         user.name.clone()
+    }
+
+    fn session_version(&self, user: &Self::User) -> u64 {
+        user.session_version.max(0) as u64
     }
 }
 
@@ -678,6 +779,7 @@ impl TokenIssuer for AppTokenIssuer {
         let user_id = user.id.to_string();
         let mut subject = TokenSubject::new(&user_id)
             .with_email(&user.email)
+            .with_session_version(user.session_version.max(0) as u64)
             .with_custom(custom);
 
         // Add name if present

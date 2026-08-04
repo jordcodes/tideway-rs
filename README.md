@@ -143,11 +143,16 @@ If you prefer integrating Tideway directly as a dependency (without CLI scaffold
 
 #### Installation
 
+> **Upgrading an existing application from Tideway 0.7.x?** Tideway 0.8.0 is a migration release,
+> not a drop-in dependency update for applications using authentication or password reset. Run
+> `tideway --json doctor --upgrade` before changing the dependency, apply the required database and
+> source migrations, and then upgrade. See the [0.8.0 upgrade guide](docs/upgrading.md#07x-to-080--cli-0148-recoverable-password-resets).
+
 Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.7.31"
+tideway = "0.8.0"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 ```
 

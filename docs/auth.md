@@ -273,14 +273,29 @@ impl PasswordResetStore for MyResetStore {
         expires: SystemTime,
     ) -> Result<()>;
 
-    // Consume token, return user_id if valid and not expired
+    // Legacy primitive retained for compatibility
     async fn consume_reset_token(&self, token_hash: &str) -> Result<Option<String>>;
+
+    // Non-consuming preflight; complete_password_reset must revalidate after hashing
+    async fn is_reset_token_valid(&self, token_hash: &str) -> Result<bool>;
+
+    // Delete a newly stored token if delivery fails; do not invalidate older links when storing
+    async fn discard_reset_token(&self, token_hash: &str) -> Result<()>;
 
     // Update user's password
     async fn update_password(&self, user_id: &str, hash: &str) -> Result<()>;
 
     // Invalidate all sessions (revoke refresh tokens)
     async fn invalidate_sessions(&self, user_id: &str) -> Result<()>;
+
+    // Implementations must perform this lifecycle atomically:
+    // claim the token, update the password, clear login/MFA lockout state,
+    // invalidate all reset tokens, advance session_version, and revoke refresh sessions.
+    async fn complete_password_reset(
+        &self,
+        token_hash: &str,
+        password_hash: &str,
+    ) -> Result<Option<String>>;
 
     // Send reset email with token
     async fn send_reset_email(
@@ -291,6 +306,31 @@ impl PasswordResetStore for MyResetStore {
     ) -> Result<()>;
 }
 ```
+
+Reset-token storage uses delivery-safe multiple-token semantics: requesting a new link must not
+invalidate older links. Each link is individually single-use, and the first successful reset
+invalidates every outstanding reset token for that user. If email-provider acceptance fails, the
+new token is discarded while existing delivered links remain usable.
+
+Tideway 0.8 requires `PasswordResetStore` implementations to provide the non-consuming token
+preflight, delivery-failure cleanup, and atomic completion operation. Newly generated SeaORM stores
+perform the password update, login/MFA lockout clearing, reset-token invalidation, session-version
+advance, and refresh-session revocation in one transaction.
+
+Generated auth modules expose `GET /auth/password-policy`, sourced from the same `PasswordPolicy`
+used for registration and reset validation. Configure all three with
+`AuthModule::with_password_policy`. Client errors include stable codes such as
+`password_reset.invalid_or_expired_token`, `password_policy.too_short`, and
+`password_policy.too_long`; display text remains intended for people rather than client branching.
+
+Password length limits count Unicode scalar values rather than UTF-8 bytes. This keeps API
+validation and the metadata contract aligned for non-ASCII passwords.
+
+On successful reset, generated database stores increment `users.session_version` in the same
+transaction as the password and lockout updates. Access-token issuance embeds that version and the
+generated authentication provider compares it with the current user row. Refresh-family revocation
+therefore blocks refresh immediately, while the version check also rejects access JWTs that were
+issued before the reset.
 
 ### VerificationStore
 

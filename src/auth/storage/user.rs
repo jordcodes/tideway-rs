@@ -175,11 +175,37 @@ pub trait PasswordResetStore: Send + Sync {
     /// This should delete or mark the token as used.
     async fn consume_reset_token(&self, token_hash: &str) -> Result<Option<String>>;
 
+    /// Check whether a reset token is currently usable without consuming it.
+    ///
+    /// The final completion operation must revalidate the token after this non-consuming
+    /// preflight. Keeping this lookup cheap avoids expensive password hashing for arbitrary
+    /// invalid tokens.
+    async fn is_reset_token_valid(&self, token_hash: &str) -> Result<bool>;
+
+    /// Remove a newly-created token when reset-email delivery fails.
+    ///
+    /// Implementations should allow multiple individually single-use tokens and must not
+    /// invalidate older tokens from [`Self::store_reset_token`].
+    async fn discard_reset_token(&self, token_hash: &str) -> Result<()>;
+
     /// Update a user's password hash.
     async fn update_password(&self, user_id: &str, hash: &str) -> Result<()>;
 
     /// Invalidate all sessions for a user (force re-login after password change).
     async fn invalidate_sessions(&self, user_id: &str) -> Result<()>;
+
+    /// Complete all security-sensitive password-reset writes.
+    ///
+    /// Implement this as one atomic operation that revalidates and consumes `token_hash`, updates
+    /// the password, clears login/MFA lockout state, invalidates every outstanding password-reset
+    /// token for the user, advances access-token session state, and revokes refresh sessions.
+    /// Return the user ID on success or `None` when the token is invalid, expired, or lost a
+    /// concurrent race.
+    async fn complete_password_reset(
+        &self,
+        token_hash: &str,
+        password_hash: &str,
+    ) -> Result<Option<String>>;
 
     /// Send a password reset email.
     async fn send_reset_email(

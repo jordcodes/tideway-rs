@@ -20,6 +20,7 @@
 //! ```
 
 use crate::error::{Result, TidewayError};
+use serde::Serialize;
 
 #[cfg(feature = "auth")]
 use std::sync::{Arc, OnceLock};
@@ -257,9 +258,10 @@ fn password_work_semaphore() -> &'static Arc<Semaphore> {
 }
 
 /// Password strength validation policy.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct PasswordPolicy {
-    /// Minimum length (default: 8)
+    /// Minimum length in Unicode scalar values (default: 8).
     pub min_length: usize,
     /// Require at least one uppercase letter
     pub require_uppercase: bool,
@@ -269,7 +271,7 @@ pub struct PasswordPolicy {
     pub require_digit: bool,
     /// Require at least one special character
     pub require_special: bool,
-    /// Maximum length (default: 128, prevents DoS)
+    /// Maximum length in Unicode scalar values (default: 128, prevents DoS).
     pub max_length: usize,
 }
 
@@ -358,13 +360,14 @@ impl PasswordPolicy {
     pub fn validate(&self, password: &str) -> Vec<PasswordError> {
         let mut errors = Vec::new();
 
-        if password.len() < self.min_length {
+        let length = password.chars().count();
+        if length < self.min_length {
             errors.push(PasswordError::TooShort {
                 min: self.min_length,
             });
         }
 
-        if password.len() > self.max_length {
+        if length > self.max_length {
             errors.push(PasswordError::TooLong {
                 max: self.max_length,
             });
@@ -400,14 +403,18 @@ impl PasswordPolicy {
         if errors.is_empty() {
             Ok(())
         } else {
-            Err(TidewayError::BadRequest(format!(
-                "Password requirements not met: {}",
-                errors
-                    .iter()
-                    .map(|e| e.message())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )))
+            let code = errors[0].code();
+            Err(TidewayError::coded_bad_request(
+                code,
+                format!(
+                    "Password requirements not met: {}",
+                    errors
+                        .iter()
+                        .map(|e| e.message())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ))
         }
     }
 }
@@ -430,6 +437,18 @@ pub enum PasswordError {
 }
 
 impl PasswordError {
+    /// Stable machine-readable code for this policy violation.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::TooShort { .. } => "password_policy.too_short",
+            Self::TooLong { .. } => "password_policy.too_long",
+            Self::MissingUppercase => "password_policy.missing_uppercase",
+            Self::MissingLowercase => "password_policy.missing_lowercase",
+            Self::MissingDigit => "password_policy.missing_digit",
+            Self::MissingSpecial => "password_policy.missing_special",
+        }
+    }
+
     /// Get a human-readable error message.
     pub fn message(&self) -> String {
         match self {
@@ -563,6 +582,13 @@ mod tests {
 
         assert!(!policy.is_valid("short"));
         assert!(policy.is_valid("longenough!"));
+    }
+
+    #[test]
+    fn test_policy_length_counts_unicode_scalars_not_utf8_bytes() {
+        let policy = PasswordPolicy::modern();
+        assert!(!policy.is_valid("🔐🔐🔐🔐"));
+        assert!(policy.is_valid("🔐🔐🔐🔐🔐🔐🔐🔐🔐🔐🔐🔐"));
     }
 
     #[test]

@@ -42,6 +42,12 @@ impl MigrationTrait for Migration {
                             .default(0),
                     )
                     .col(
+                        ColumnDef::new(Users::SessionVersion)
+                            .big_integer()
+                            .not_null()
+                            .default(0),
+                    )
+                    .col(
                         ColumnDef::new(Users::CreatedAt)
                             .timestamp_with_time_zone()
                             .not_null()
@@ -88,6 +94,7 @@ pub enum Users {
     EmailVerifiedAt,
     LockedUntil,
     FailedAttempts,
+    SessionVersion,
     CreatedAt,
     UpdatedAt,
 }

@@ -15,6 +15,7 @@ pub struct Model {
     pub email_verified_at: Option<DateTimeWithTimeZone>,
     pub locked_until: Option<DateTimeWithTimeZone>,
     pub failed_attempts: i32,
+    pub session_version: i64,
     {{#if has_auth_mfa_feature}}
     pub failed_mfa_attempts: i32,
     pub mfa_enabled: bool,

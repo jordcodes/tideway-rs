@@ -33,6 +33,11 @@ pub trait UserLoader: Send + Sync {
     /// Get the user's name (for token claims).
     fn user_name(&self, user: &Self::User) -> Option<String>;
 
+    /// Return the current user session version for access-token revocation.
+    fn session_version(&self, _user: &Self::User) -> u64 {
+        0
+    }
+
     /// Get custom claims to include in the access token.
     ///
     /// Override this to include app-specific claims like `org_id`, `roles`,
@@ -257,7 +262,8 @@ where
         let custom_claims = self.user_loader.custom_claims(&user).await;
 
         let (access_token, expires_in) = {
-            let mut subject = TokenSubject::new(user_id);
+            let mut subject = TokenSubject::new(user_id)
+                .with_session_version(self.user_loader.session_version(&user));
             if let Some(ref e) = email {
                 subject = subject.with_email(e);
             }

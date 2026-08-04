@@ -9,12 +9,17 @@ use std::collections::HashMap;
 
 /// The main error type for Tideway applications
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TidewayError {
     #[error("Not found: {0}")]
     NotFound(String),
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    /// A client-safe bad request with a stable machine-readable code.
+    #[error("Bad request: {message}")]
+    CodedBadRequest { code: String, message: String },
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
@@ -180,6 +185,8 @@ impl IntoResponse for ErrorWithContext {
 pub struct ErrorResponse {
     error: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     details: Option<String>,
@@ -198,6 +205,14 @@ impl TidewayError {
 
     pub fn bad_request(msg: impl Into<String>) -> Self {
         Self::BadRequest(msg.into())
+    }
+
+    /// Create a bad request with a stable code suitable for client branching.
+    pub fn coded_bad_request(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::CodedBadRequest {
+            code: code.into(),
+            message: message.into(),
+        }
     }
 
     pub fn unauthorized(msg: impl Into<String>) -> Self {
@@ -265,6 +280,7 @@ impl TidewayError {
     /// to prevent information disclosure to attackers.
     pub fn into_response_with_info(self, info: Option<ErrorInfo>, dev_mode: bool) -> Response {
         let status = self.status_code();
+        let code = self.error_code().map(str::to_owned);
 
         // In production, hide internal error details from clients
         // to prevent information disclosure (CWE-209)
@@ -276,6 +292,7 @@ impl TidewayError {
 
         let mut response = ErrorResponse {
             error: error_msg,
+            code,
             error_id: None,
             details: None,
             context: None,
@@ -345,7 +362,7 @@ impl TidewayError {
     fn status_code(&self) -> StatusCode {
         match self {
             Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::BadRequest(_) => StatusCode::BAD_REQUEST,
+            Self::BadRequest(_) | Self::CodedBadRequest { .. } => StatusCode::BAD_REQUEST,
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Conflict(_) => StatusCode::CONFLICT,
@@ -371,6 +388,7 @@ impl TidewayError {
             // Client errors - safe to expose (user needs to know what went wrong)
             Self::NotFound(msg) => format!("Not found: {}", msg),
             Self::BadRequest(msg) => format!("Bad request: {}", msg),
+            Self::CodedBadRequest { message, .. } => format!("Bad request: {}", message),
             Self::Unauthorized(msg) => format!("Unauthorized: {}", msg),
             Self::Forbidden(msg) => format!("Forbidden: {}", msg),
             Self::Conflict(msg) => format!("Conflict: {}", msg),
@@ -384,6 +402,14 @@ impl TidewayError {
 
             #[cfg(feature = "database")]
             Self::Database(_) => "Database error".to_string(),
+        }
+    }
+
+    /// Return the stable client-facing error code, when this error defines one.
+    pub fn error_code(&self) -> Option<&str> {
+        match self {
+            Self::CodedBadRequest { code, .. } => Some(code),
+            _ => None,
         }
     }
 }
@@ -513,6 +539,15 @@ mod tests {
         assert!(matches!(err, TidewayError::BadRequest(_)));
         assert_eq!(err.to_string(), "Bad request: Invalid input");
         assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_coded_bad_request_error() {
+        let err = TidewayError::coded_bad_request("password_policy.too_short", "Too short");
+        assert_eq!(err.status_code(), StatusCode::BAD_REQUEST);
+        assert_eq!(err.error_code(), Some("password_policy.too_short"));
+        let response = err.into_response_with_info(None, false);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -739,6 +774,7 @@ mod tests {
     fn test_error_response_serialization_minimal() {
         let response = ErrorResponse {
             error: "Test error".to_string(),
+            code: None,
             error_id: Some("id-123".to_string()),
             details: None,
             context: None,
@@ -765,6 +801,7 @@ mod tests {
 
         let response = ErrorResponse {
             error: "Validation failed".to_string(),
+            code: Some("validation.failed".to_string()),
             error_id: Some("id-456".to_string()),
             details: Some("Check your input".to_string()),
             context: Some(context),
@@ -773,6 +810,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"code\":\"validation.failed\""));
         assert!(json.contains("\"details\":\"Check your input\""));
         assert!(json.contains("\"context\""));
         assert!(json.contains("\"field_errors\""));
