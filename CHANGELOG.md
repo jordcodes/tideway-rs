@@ -21,6 +21,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - `ImpersonationRequestBody` and `DeletionRequestBody` are safe deserializable request bodies with
   no actor field and `deny_unknown_fields`. Their `into_request(actor_id)` method combines the body
   with the authenticated user's ID.
+- `billing::WebhookHandler` supports multiple Stripe webhook signing secrets through
+  `with_additional_secret` and `with_secrets`, so secrets can be rotated without downtime.
+
+### Fixed
+
+- Stripe webhook verification now checks every `v1` signature in the `Stripe-Signature` header.
+  It previously kept only the last one, so webhooks were rejected during a Stripe secret roll.
 
 ### Migration Notes
 
