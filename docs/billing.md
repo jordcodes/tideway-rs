@@ -1044,6 +1044,39 @@ let refunds = manager.list_refunds_for_charge("org_123", "ch_xxx", 10).await?;
 let refund = manager.get_refund("org_123", "re_xxx").await?;
 ```
 
+### Refund idempotency
+
+The convenience methods derive a Stripe idempotency key from the charge or payment
+intent, amount, and reason, so a double-submit or retry refunds only once. An identical
+call within Stripe's 24-hour key window returns the original refund instead of creating
+a new one, with `refund.replayed` set to `true`:
+
+```rust
+let refund = manager.refund_charge("org_123", "ch_xxx", Some(500)).await?;
+if refund.replayed {
+    // No new refund was issued; this is the one created at `refund.created`.
+}
+```
+
+A replay is expected for a double-submit or retry. A replay that only appears on the
+client's internal retry after a timeout is not reported, since it may be of that call's
+own first attempt.
+
+To issue an intentional repeat refund of the same amount, pass a full request with a
+distinct key (e.g. your support ticket or order adjustment ID):
+
+```rust
+use tideway::billing::CreateRefundRequest;
+
+let request = CreateRefundRequest::for_charge("ch_xxx")
+    .with_amount(500)
+    .with_idempotency_key("refund_ticket_42");
+let refund = manager.refund("org_123", request).await?;
+```
+
+`SecureRefundManager::refund` verifies ownership of the request's charge and payment
+intent; `RefundManager::refund` takes only the request.
+
 ## Customer Portal
 
 Redirect customers to Stripe's billing portal:
