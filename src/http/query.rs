@@ -4,7 +4,9 @@
 //! from HTTP requests.
 
 use axum::extract::Query as AxumQuery;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+const MAX_PER_PAGE: u32 = 100;
 
 /// Query parameter extractor with validation support
 ///
@@ -15,14 +17,19 @@ pub type Query<T> = AxumQuery<T>;
 /// Pagination query parameters
 ///
 /// Common pagination pattern used in REST APIs.
+/// Deserialization rejects page zero and page sizes outside 1..=100, so
+/// `Query<PaginationQuery>` returns a 400 response for those values automatically.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PaginationQuery {
     /// Page number (1-indexed)
-    #[serde(default = "default_page")]
+    #[serde(default = "default_page", deserialize_with = "deserialize_page")]
     pub page: u32,
 
-    /// Number of items per page
-    #[serde(default = "default_per_page")]
+    /// Number of items per page (1..=100)
+    #[serde(
+        default = "default_per_page",
+        deserialize_with = "deserialize_per_page"
+    )]
     pub per_page: u32,
 
     /// Sort field (optional)
@@ -46,6 +53,24 @@ fn default_order() -> String {
     "asc".to_string()
 }
 
+fn deserialize_page<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let page = u32::deserialize(deserializer)?;
+    if page == 0 {
+        return Err(serde::de::Error::custom("Page must be >= 1"));
+    }
+    Ok(page)
+}
+
+fn deserialize_per_page<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
+    let per_page = u32::deserialize(deserializer)?;
+    if !(1..=MAX_PER_PAGE).contains(&per_page) {
+        return Err(serde::de::Error::custom(
+            "Per page must be between 1 and 100",
+        ));
+    }
+    Ok(per_page)
+}
+
 impl Default for PaginationQuery {
     fn default() -> Self {
         Self {
@@ -59,13 +84,18 @@ impl Default for PaginationQuery {
 
 impl PaginationQuery {
     /// Calculate the offset for database queries
+    ///
+    /// Treats page zero as page one for directly constructed values, uses the
+    /// bounded limit, and saturates at `u32::MAX` if the offset is too large.
     pub fn offset(&self) -> u32 {
-        (self.page - 1) * self.per_page
+        self.page.saturating_sub(1).saturating_mul(self.limit())
     }
 
     /// Calculate the limit for database queries
+    ///
+    /// Clamps directly constructed page sizes to 1..=100 without validation.
     pub fn limit(&self) -> u32 {
-        self.per_page
+        self.per_page.clamp(1, MAX_PER_PAGE)
     }
 
     /// Validate pagination parameters
@@ -73,7 +103,7 @@ impl PaginationQuery {
         if self.page == 0 {
             return Err("Page must be >= 1".to_string());
         }
-        if self.per_page == 0 || self.per_page > 100 {
+        if self.per_page == 0 || self.per_page > MAX_PER_PAGE {
             return Err("Per page must be between 1 and 100".to_string());
         }
         if self.order != "asc" && self.order != "desc" {
@@ -158,6 +188,65 @@ mod tests {
         };
         assert_eq!(pagination.offset(), 20);
         assert_eq!(pagination.limit(), 10);
+    }
+
+    #[test]
+    fn test_pagination_query_helpers_handle_invalid_values() {
+        let pagination = PaginationQuery {
+            page: 0,
+            ..Default::default()
+        };
+        assert_eq!(pagination.offset(), 0);
+
+        for (per_page, expected_limit) in [(0, 1), (101, 100), (u32::MAX, 100)] {
+            let pagination = PaginationQuery {
+                page: 3,
+                per_page,
+                ..Default::default()
+            };
+            assert_eq!(pagination.limit(), expected_limit);
+            assert_eq!(pagination.offset(), 2 * expected_limit);
+        }
+
+        let pagination = PaginationQuery {
+            page: u32::MAX,
+            per_page: 100,
+            ..Default::default()
+        };
+        assert_eq!(pagination.offset(), u32::MAX);
+    }
+
+    #[test]
+    fn test_pagination_query_rejects_invalid_request_values() {
+        for (query, message) in [
+            ("page=0", "Page must be >= 1"),
+            ("per_page=0", "Per page must be between 1 and 100"),
+            ("per_page=101", "Per page must be between 1 and 100"),
+            ("per_page=4294967295", "Per page must be between 1 and 100"),
+        ] {
+            let uri = format!("/items?{query}").parse().unwrap();
+            let rejection = Query::<PaginationQuery>::try_from_uri(&uri).unwrap_err();
+            assert_eq!(rejection.status(), axum::http::StatusCode::BAD_REQUEST);
+            assert!(rejection.body_text().contains(message));
+        }
+    }
+
+    #[test]
+    fn test_pagination_query_accepts_valid_request_values() {
+        for (query, page, per_page, offset) in [
+            ("", 1, 20, 0),
+            ("page=1&per_page=1", 1, 1, 0),
+            ("page=3&per_page=100&order=desc", 3, 100, 200),
+            ("page=4294967295&per_page=100", u32::MAX, 100, u32::MAX),
+        ] {
+            let uri = format!("/items?{query}").parse().unwrap();
+            let pagination = Query::<PaginationQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(pagination.page, page);
+            assert_eq!(pagination.per_page, per_page);
+            assert_eq!(pagination.limit(), per_page);
+            assert_eq!(pagination.offset(), offset);
+            assert!(pagination.validate().is_ok());
+        }
     }
 
     #[test]
