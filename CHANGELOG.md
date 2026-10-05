@@ -304,6 +304,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Migration Notes
 
+- **Logging / alerting:** `TidewayError` 4xx responses (including 401, 403, and 429) now log
+  at `WARN` instead of `ERROR`; 5xx responses remain at `ERROR`. Review log filters and
+  alerting rules that relied on `ERROR`-level logs for these client errors and include `WARN`
+  where needed. Stripe upstream 4xx diagnostics also log at `WARN` on the
+  `tideway::billing::stripe` target, except upstream 401/403 credential or permission failures,
+  which remain at `ERROR` and map to HTTP 500.
 - **Breaking:** apps that scrape metrics must set `TIDEWAY_METRICS_BEARER_TOKEN` and configure
   the scraper to send it before deploying, or scrapes get 404 and dashboards go blank.
 - **Breaking:** callers of `CachedInvoiceManager::list_invoices` and `get_upcoming_invoice` must
