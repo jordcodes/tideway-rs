@@ -218,10 +218,12 @@ Railway provides Redis as an addon. To use it:
 Workers automatically handle graceful shutdown:
 
 - On shutdown signal (Ctrl+C or SIGTERM), workers finish processing their current job
-- No new jobs are dequeued
+- Workers finish any dequeue already in progress, including execution and acknowledgement of a claimed job, then stop taking new work
 - Workers exit cleanly
 
-The `App::serve()` method handles worker shutdown automatically.
+The `App::serve()` method handles worker shutdown automatically. When managing a worker pool directly, await `pool.shutdown()` before shutting down the queue so its retry scheduler and Redis heartbeat remain active while jobs finish. Shutdown waits for running handlers without a timeout.
+
+Handler panics are treated as job failures and follow the same retry limits and backoff as returned errors, including with Redis. The worker continues processing jobs. This requires unwinding panics (the default Rust panic strategy); process aborts cannot be caught.
 
 ## Best Practices
 

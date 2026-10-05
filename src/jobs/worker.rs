@@ -3,9 +3,11 @@
 //! Workers poll the job queue and execute jobs using registered handlers.
 
 use crate::app::AppContext;
-use crate::error::Result;
+use crate::error::{Result, TidewayError};
 use crate::jobs::registry::JobRegistry;
 use crate::traits::job::JobQueue;
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
@@ -47,31 +49,29 @@ impl JobWorker {
         tracing::info!(worker_id = %self.worker_id, "Job worker started");
 
         loop {
-            tokio::select! {
-                _ = shutdown_rx.recv() => {
-                    tracing::info!(worker_id = %self.worker_id, "Shutdown signal received, finishing current job...");
-                    break;
+            // Never cancel dequeue: a backend may already have claimed a job even
+            // when its future has not returned yet. Finish the entire claim,
+            // execution and acknowledgement before observing shutdown.
+            match shutdown_rx.try_recv() {
+                Ok(()) | Err(mpsc::error::TryRecvError::Disconnected) => break,
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+
+            match self.process_next_job().await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_rx.recv() => break,
+                        _ = self.queue.wait_for_job(Duration::from_secs(1)) => {},
+                    }
                 }
-                result = self.process_next_job() => {
-                    match result {
-                        Ok(Some(_)) => {
-                            // Job processed successfully, continue immediately
-                        }
-                        Ok(None) => {
-                            // Allow queue implementations to provide event-driven wakeups.
-                            tokio::select! {
-                                _ = shutdown_rx.recv() => break,
-                                _ = self.queue.wait_for_job(Duration::from_secs(1)) => {},
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(worker_id = %self.worker_id, error = %e, "Error processing job");
-                            // Wait before retrying
-                            tokio::select! {
-                                _ = shutdown_rx.recv() => break,
-                                _ = sleep(Duration::from_secs(1)) => {},
-                            }
-                        }
+                Err(e) => {
+                    tracing::error!(worker_id = %self.worker_id, error = %e, "Error processing job");
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_rx.recv() => break,
+                        _ = sleep(Duration::from_secs(1)) => {},
                     }
                 }
             }
@@ -96,8 +96,20 @@ impl JobWorker {
             "Processing job"
         );
 
-        // Execute the job
-        match self.registry.execute(job_data, self.ctx.clone()).await {
+        // Catch both handler construction and future polling panics. Treat them
+        // like ordinary job failures so the worker survives and the queue retries.
+        let result = AssertUnwindSafe(self.registry.execute(job_data, self.ctx.clone()))
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|panic| {
+                let message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .unwrap_or("unknown panic payload");
+                Err(TidewayError::internal(format!("Job panicked: {message}")))
+            });
+        match result {
             Ok(()) => {
                 // Job completed successfully
                 self.queue.complete(&job_id).await?;
