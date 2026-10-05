@@ -64,8 +64,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   including `RedisJobQueue` jobs when the cache and job queue shared a database. `RedisCache`
   now stores keys under a `cache:` prefix (configurable with `with_prefix`), and `clear()`
   deletes only keys with that prefix. Entries written by earlier versions without the prefix
-  are no longer read and expire on their TTL, so expect a cold cache after upgrading. See
-  `docs/upgrading.md`.
+  are no longer read and expire on their TTL, so expect a cold cache after upgrading. During a
+  rolling deploy, invalidations on one version do not reach the other version's keys, so stale
+  values can be served for up to one TTL. See `docs/upgrading.md`.
 - `RedisCache` sets TTLs in milliseconds (`PSETEX`). Previously TTLs under one second were
   truncated to `SETEX 0`, which Redis rejects, so those writes failed.
 - **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
