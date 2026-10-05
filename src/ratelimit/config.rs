@@ -90,7 +90,12 @@ impl RateLimitConfig {
 
     /// Load rate limit configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(self) -> Self {
+        let mut config = self;
 
         if let Some(enabled) = get_env_with_prefix("RATE_LIMIT_ENABLED") {
             config.enabled = enabled.parse().unwrap_or(true);

@@ -123,7 +123,12 @@ impl CorsConfig {
     /// Load CORS configuration from environment variables
     /// Checks TIDEWAY_ prefixed vars first, falls back to unprefixed for compatibility
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(self) -> Self {
+        let mut config = self;
 
         if let Some(enabled) = get_env_with_prefix("CORS_ENABLED") {
             config.enabled = enabled.parse().unwrap_or(true);
