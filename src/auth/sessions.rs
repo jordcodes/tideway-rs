@@ -25,9 +25,11 @@
 //! session_manager.revoke_session("user-123", "session-456").await?;
 //! ```
 
+use crate::auth::storage::RefreshTokenStore;
 use crate::error::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 /// Maximum length for IP address strings (IPv6 max is 45 chars).
@@ -452,9 +454,23 @@ pub trait SessionStore: Send + Sync {
 /// let manager = SessionManager::new(store)
 ///     .with_session_limit(SessionLimitConfig::new(3).reject_new());
 /// ```
+///
+/// # Refresh Token Revocation
+///
+/// Session IDs are refresh token family IDs. Attach the refresh token store
+/// so revoking a session also revokes its refresh token family; otherwise a
+/// revoked session can keep minting access tokens until its refresh token expires.
+///
+/// ```rust,ignore
+/// let token_store = Arc::new(my_token_store);
+/// let manager = SessionManager::new(session_store)
+///     .with_refresh_token_store(token_store.clone());
+/// let flow = TokenRefreshFlow::new(issuer, token_store, user_loader, secret);
+/// ```
 pub struct SessionManager<S: SessionStore> {
     store: S,
     session_limit: Option<SessionLimitConfig>,
+    token_store: Option<Arc<dyn RefreshTokenStore>>,
 }
 
 impl<S: SessionStore> SessionManager<S> {
@@ -464,7 +480,25 @@ impl<S: SessionStore> SessionManager<S> {
         Self {
             store,
             session_limit: None,
+            token_store: None,
         }
+    }
+
+    /// Revoke refresh token families when their sessions are revoked.
+    ///
+    /// Use the same store as your `TokenRefreshFlow`.
+    #[must_use]
+    pub fn with_refresh_token_store(mut self, token_store: Arc<dyn RefreshTokenStore>) -> Self {
+        self.token_store = Some(token_store);
+        self
+    }
+
+    /// Revoke the refresh token family backing a session, if a token store is attached.
+    async fn revoke_token_family(&self, session_id: &str) -> Result<()> {
+        if let Some(token_store) = &self.token_store {
+            token_store.revoke_family(session_id).await?;
+        }
+        Ok(())
     }
 
     /// Enable session limits.
@@ -560,6 +594,7 @@ impl<S: SessionStore> SessionManager<S> {
             .collect();
 
         for session_id in &to_evict {
+            self.revoke_token_family(session_id).await?;
             self.store.revoke_session(session_id).await?;
 
             tracing::info!(
@@ -608,11 +643,18 @@ impl<S: SessionStore> SessionManager<S> {
     /// Revoke a specific session.
     pub async fn revoke_session(&self, user_id: &str, session_id: &str) -> Result<bool> {
         // First verify the session belongs to this user
-        if let Some(session) = self.store.get_session(session_id).await?
+        let session = self.store.get_session(session_id).await?;
+        if let Some(session) = &session
             && session.user_id != user_id
         {
             // Session doesn't belong to this user - don't reveal it exists
             return Ok(false);
+        }
+
+        // Revoke the refresh token first so a partial failure fails closed.
+        // Only touch families of sessions verified to belong to this user.
+        if session.is_some() {
+            self.revoke_token_family(session_id).await?;
         }
 
         let revoked = self.store.revoke_session(session_id).await?;
@@ -631,6 +673,14 @@ impl<S: SessionStore> SessionManager<S> {
 
     /// Revoke all sessions for a user.
     pub async fn revoke_all_sessions(&self, user_id: &str) -> Result<usize> {
+        if let Some(token_store) = &self.token_store {
+            // Also revoke each listed family in case it was never associated with the user.
+            for session in self.store.list_sessions(user_id).await? {
+                token_store.revoke_family(&session.id).await?;
+            }
+            token_store.revoke_all_for_user(user_id).await?;
+        }
+
         let count = self.store.revoke_all_sessions(user_id).await?;
 
         tracing::warn!(
@@ -649,6 +699,14 @@ impl<S: SessionStore> SessionManager<S> {
         user_id: &str,
         current_session_id: &str,
     ) -> Result<usize> {
+        if self.token_store.is_some() {
+            for session in self.store.list_sessions(user_id).await? {
+                if session.id != current_session_id {
+                    self.revoke_token_family(&session.id).await?;
+                }
+            }
+        }
+
         let count = self
             .store
             .revoke_other_sessions(user_id, current_session_id)
@@ -1054,6 +1112,179 @@ mod tests {
         // session should still exist
         let sessions = manager.list_sessions("user-1", None).await.unwrap();
         assert_eq!(sessions.len(), 1);
+    }
+
+    // Refresh token revocation tests
+
+    #[allow(deprecated)]
+    mod token_revocation {
+        use super::*;
+        use crate::auth::jwt_issuer::{JwtIssuer, JwtIssuerConfig, TokenPair, TokenSubject};
+        use crate::auth::refresh::{TokenRefreshFlow, UserLoader};
+        use crate::auth::storage::token::test::InMemoryRefreshTokenStore;
+
+        const SECRET: &[u8] = b"test-secret-key-32-bytes-long!!";
+
+        struct Loader;
+
+        #[async_trait]
+        impl UserLoader for Loader {
+            type User = ();
+
+            async fn load_user(&self, _user_id: &str) -> Result<Option<()>> {
+                Ok(Some(()))
+            }
+
+            fn user_email(&self, _user: &()) -> Option<String> {
+                None
+            }
+
+            fn user_name(&self, _user: &()) -> Option<String> {
+                None
+            }
+        }
+
+        struct Harness {
+            issuer: JwtIssuer,
+            token_store: Arc<InMemoryRefreshTokenStore>,
+            flow: TokenRefreshFlow<Arc<InMemoryRefreshTokenStore>, Loader>,
+            manager: SessionManager<InMemorySessionStore>,
+        }
+
+        impl Harness {
+            fn new(limit: Option<SessionLimitConfig>) -> Self {
+                let issuer = JwtIssuer::new(JwtIssuerConfig::with_secret(
+                    String::from_utf8_lossy(SECRET).to_string(),
+                    "test-app",
+                ))
+                .unwrap();
+                let token_store = Arc::new(InMemoryRefreshTokenStore::new());
+                let flow =
+                    TokenRefreshFlow::new(issuer.clone(), token_store.clone(), Loader, SECRET);
+                let mut manager = SessionManager::new(InMemorySessionStore::new())
+                    .with_refresh_token_store(token_store.clone());
+                if let Some(limit) = limit {
+                    manager = manager.with_session_limit(limit);
+                }
+                Self {
+                    issuer,
+                    token_store,
+                    flow,
+                    manager,
+                }
+            }
+
+            /// Simulate a login: issue tokens and record the session under the token family.
+            async fn login(&self, user_id: &str) -> TokenPair {
+                let tokens = self
+                    .issuer
+                    .issue(TokenSubject::new(user_id), false)
+                    .unwrap();
+                self.token_store
+                    .associate_family_with_user(&tokens.family, user_id)
+                    .await
+                    .unwrap();
+                self.manager
+                    .create_session(&tokens.family, user_id, SessionMetadata::new())
+                    .await
+                    .unwrap();
+                tokens
+            }
+
+            async fn assert_revoked(&self, tokens: &TokenPair) {
+                let err = self.flow.refresh(&tokens.refresh_token).await.unwrap_err();
+                assert!(
+                    err.to_string().contains("revoked"),
+                    "unexpected error: {err}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn revoke_session_revokes_refresh_token() {
+            let h = Harness::new(None);
+            let tokens = h.login("user-1").await;
+
+            assert!(
+                h.manager
+                    .revoke_session("user-1", &tokens.family)
+                    .await
+                    .unwrap()
+            );
+
+            h.assert_revoked(&tokens).await;
+        }
+
+        #[tokio::test]
+        async fn revoke_session_revokes_rotated_refresh_token() {
+            let h = Harness::new(None);
+            let tokens = h.login("user-1").await;
+            let rotated = h.flow.refresh(&tokens.refresh_token).await.unwrap();
+
+            h.manager
+                .revoke_session("user-1", &tokens.family)
+                .await
+                .unwrap();
+
+            h.assert_revoked(&rotated).await;
+        }
+
+        #[tokio::test]
+        async fn revoke_session_of_other_user_leaves_refresh_token_valid() {
+            let h = Harness::new(None);
+            let tokens = h.login("user-1").await;
+
+            assert!(
+                !h.manager
+                    .revoke_session("user-2", &tokens.family)
+                    .await
+                    .unwrap()
+            );
+
+            assert!(h.flow.refresh(&tokens.refresh_token).await.is_ok());
+        }
+
+        #[tokio::test]
+        async fn revoke_other_sessions_keeps_current_refresh_token() {
+            let h = Harness::new(None);
+            let current = h.login("user-1").await;
+            let other = h.login("user-1").await;
+
+            let count = h
+                .manager
+                .revoke_other_sessions("user-1", &current.family)
+                .await
+                .unwrap();
+            assert_eq!(count, 1);
+
+            h.assert_revoked(&other).await;
+            assert!(h.flow.refresh(&current.refresh_token).await.is_ok());
+        }
+
+        #[tokio::test]
+        async fn revoke_all_sessions_revokes_all_refresh_tokens() {
+            let h = Harness::new(None);
+            let first = h.login("user-1").await;
+            let second = h.login("user-1").await;
+            let other_user = h.login("user-2").await;
+
+            assert_eq!(h.manager.revoke_all_sessions("user-1").await.unwrap(), 2);
+
+            h.assert_revoked(&first).await;
+            h.assert_revoked(&second).await;
+            assert!(h.flow.refresh(&other_user.refresh_token).await.is_ok());
+        }
+
+        #[tokio::test]
+        async fn evicted_session_refresh_token_is_revoked() {
+            let h = Harness::new(Some(SessionLimitConfig::new(1)));
+            let oldest = h.login("user-1").await;
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            let newest = h.login("user-1").await;
+
+            h.assert_revoked(&oldest).await;
+            assert!(h.flow.refresh(&newest.refresh_token).await.is_ok());
+        }
     }
 
     #[test]

@@ -773,11 +773,17 @@ impl SessionStore for MySessionStore {
 High-level session operations with tracing:
 
 ```rust
+use std::sync::Arc;
 use tideway::auth::sessions::{SessionManager, SessionMetadata};
 
-let manager = SessionManager::new(session_store);
+// Share one refresh token store with TokenRefreshFlow so revoking a session
+// also revokes its refresh token family.
+let token_store = Arc::new(my_token_store);
+let manager = SessionManager::new(session_store)
+    .with_refresh_token_store(token_store.clone());
+let refresh_flow = TokenRefreshFlow::new(issuer, token_store, user_loader, secret);
 
-// Create session on login
+// Create session on login (session ID = refresh token family)
 let metadata = SessionMetadata::new()
     .with_ip("192.168.1.1")
     .with_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X) Chrome/120.0.0.0");
@@ -803,6 +809,12 @@ manager.revoke_session("user-456", "family-789").await?;
 // Logout all other devices
 manager.revoke_other_sessions("user-456", "family-123").await?;
 ```
+
+> **Important:** Without `with_refresh_token_store`, revoking a session only hides it from
+> session listings. Its refresh token keeps minting access tokens until it expires.
+> With a token store attached, `revoke_session`, `revoke_other_sessions`,
+> `revoke_all_sessions`, and session-limit eviction all revoke the matching refresh token
+> families first.
 
 ### Session Limits
 

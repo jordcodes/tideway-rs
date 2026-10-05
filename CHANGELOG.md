@@ -34,6 +34,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Security
 
+- `SessionManager` can now revoke refresh tokens along with sessions. Attach the refresh token
+  store shared with `TokenRefreshFlow` via `SessionManager::with_refresh_token_store`, and
+  `revoke_session`, `revoke_other_sessions`, `revoke_all_sessions`, and session-limit eviction
+  will revoke the matching refresh token families. Previously, a revoked session's refresh
+  token could keep minting access tokens. `RefreshTokenStore` is now implemented for
+  `Arc<T>` so one store can be shared.
 - Added `EmailVerificationFlow::resend_for_user`, which sends the verification email to the
   address stored on the account (via the new `VerificationStore::verification_email`). The old
   `resend` is deprecated: it mailed the token to the caller-supplied `ResendVerificationRequest`
