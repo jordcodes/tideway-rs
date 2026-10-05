@@ -188,6 +188,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_worker_pool_registry_access_during_execution() {
+        let queue = Arc::new(InMemoryJobQueue::new(3, 60));
+        let registry = Arc::new(JobRegistry::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel(2);
+        let (finished_tx, mut finished_rx) = tokio::sync::mpsc::channel(2);
+
+        registry
+            .register("test_job", {
+                let release = release.clone();
+                move |data, _ctx| {
+                    let release = release.clone();
+                    let started_tx = started_tx.clone();
+                    let finished_tx = finished_tx.clone();
+                    Box::pin(async move {
+                        started_tx.send(data.job_id.clone()).await.unwrap();
+                        release.acquire().await.unwrap().forget();
+                        finished_tx.send(data.job_id).await.unwrap();
+                        Ok(())
+                    })
+                }
+            })
+            .await;
+
+        let pool = WorkerPool::new(
+            queue.clone(),
+            registry.clone(),
+            Arc::new(AppContext::new()),
+            2,
+        );
+        let job = TestJob {
+            message: "Concurrent worker test".to_string(),
+            should_fail: false,
+        };
+
+        let result = tokio::time::timeout(TokioDuration::from_secs(3), async {
+            let first_id = queue.enqueue(&job).await.unwrap();
+            assert_eq!(started_rx.recv().await.unwrap(), first_id);
+
+            // The first handler cannot finish until we release its permit below.
+            // Registration must not wait for that handler to finish.
+            registry
+                .register("another_job", |_data, _ctx| Box::pin(async { Ok(()) }))
+                .await;
+            assert!(registry.is_registered("another_job").await);
+            assert_eq!(registry.registered_types().await.len(), 2);
+
+            let second_id = queue.enqueue(&job).await.unwrap();
+            assert_eq!(started_rx.recv().await.unwrap(), second_id);
+            assert!(finished_rx.try_recv().is_err());
+
+            // Both workers have entered their handlers before either can finish.
+            release.add_permits(2);
+            let mut finished = vec![
+                finished_rx.recv().await.unwrap(),
+                finished_rx.recv().await.unwrap(),
+            ];
+            finished.sort();
+            let mut expected = vec![first_id, second_id];
+            expected.sort();
+            assert_eq!(finished, expected);
+        })
+        .await;
+
+        pool.shutdown().await;
+        result.expect("registry access and concurrent jobs must not wait for running handlers");
+    }
+
+    #[tokio::test]
     async fn test_job_registry_execution() {
         let registry = Arc::new(JobRegistry::new());
         let context = Arc::new(AppContext::new());
