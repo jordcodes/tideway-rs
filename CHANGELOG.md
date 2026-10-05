@@ -29,6 +29,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
+- `ConfigBuilder::from_env()` now applies environment variables on top of existing builder
+  values instead of replacing configured settings with defaults. Values set on the builder
+  survive when the corresponding environment variables are absent; present environment
+  variables still override them. Applications upgrading to 0.9.0 that relied on `from_env()`
+  resetting settings should explicitly reset those values or start with `ConfigBuilder::new()`.
 - Stripe 4xx errors no longer expose Stripe's message (for example "No such price…" or test/live
   mode mismatches) when converted to `TidewayError`. The full error is logged on the
   `tideway::billing::stripe` target instead. Stripe 404 now maps to `NotFound` (HTTP 404), 429 to
