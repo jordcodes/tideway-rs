@@ -26,6 +26,15 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   Plain `login()` calls (and `login_with_ip(req, None)`) are now limited per normalized email
   address. Direct `OptionalRateLimiter::check_rate_limit(None)` calls now share one bucket
   instead of always being allowed.
+- `SeatManager` seat changes no longer lose updates under concurrency. Previously two concurrent
+  `add_seats` calls could both report success while only one seat was added in Stripe. Changes to
+  the same billable entity are now serialized in-process, and each change reserves its new count
+  in the store (via `compare_and_save_subscription`) before calling Stripe. A failed Stripe call
+  releases the reservation. If the reservation keeps losing to concurrent changes, the call
+  returns `Conflict`.
+- Seat counts that would overflow `u32` (`extra_seats + count`, or included plus extra seats) are
+  now rejected with `BadRequest` before Stripe is called, instead of panicking or wrapping. Seat
+  totals computed from stored data saturate.
 
 ### Added
 
