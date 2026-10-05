@@ -107,6 +107,15 @@ impl RefundReason {
 }
 
 /// Request to create a refund.
+///
+/// # Idempotency
+///
+/// Refunds are sent to Stripe with an idempotency key so that retrying the same
+/// request (e.g. a double-submit or a retry after a timeout) refunds only once.
+/// Unless [`with_idempotency_key`](Self::with_idempotency_key) is used, the key is
+/// derived from the charge/payment intent, amount, and reason. Two identical partial
+/// refunds within Stripe's 24-hour key window therefore collapse into one; pass a
+/// distinct explicit key for each when issuing intentional repeat refunds.
 #[derive(Debug, Clone, Default)]
 pub struct CreateRefundRequest {
     /// The charge ID to refund.
@@ -117,6 +126,8 @@ pub struct CreateRefundRequest {
     pub amount: Option<i64>,
     /// Reason for the refund.
     pub reason: Option<RefundReason>,
+    /// Explicit idempotency key. If None, one is derived from the request.
+    pub idempotency_key: Option<String>,
 }
 
 impl CreateRefundRequest {
@@ -157,6 +168,36 @@ impl CreateRefundRequest {
     pub fn with_reason(mut self, reason: RefundReason) -> Self {
         self.reason = Some(reason);
         self
+    }
+
+    /// Set an explicit idempotency key, overriding the derived one.
+    #[must_use]
+    pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(key.into());
+        self
+    }
+
+    /// The idempotency key to send to Stripe for this request.
+    ///
+    /// Returns the explicit key if set, otherwise a deterministic key derived from
+    /// the refund target, amount, and reason, so retries of the same request match.
+    #[must_use]
+    pub fn idempotency_key(&self) -> String {
+        if let Some(key) = &self.idempotency_key {
+            return key.clone();
+        }
+
+        let target = match (&self.charge_id, &self.payment_intent_id) {
+            (Some(charge_id), Some(pi_id)) => format!("ch_{charge_id}_pi_{pi_id}"),
+            (Some(charge_id), None) => format!("ch_{charge_id}"),
+            (None, Some(pi_id)) => format!("pi_{pi_id}"),
+            (None, None) => "none".to_string(),
+        };
+        let amount = self
+            .amount
+            .map_or_else(|| "full".to_string(), |a| a.to_string());
+        let reason = self.reason.map_or("none", |r| r.as_str());
+        format!("refund_{target}_{amount}_{reason}")
     }
 }
 
@@ -532,6 +573,8 @@ pub mod test {
         charge_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
         payment_intent_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
         refund_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        /// Idempotency key -> refund ID, mirroring Stripe's replay behaviour.
+        idempotency_keys: std::sync::Arc<RwLock<HashMap<String, String>>>,
         /// Default currency for mock refunds (e.g., "gbp", "usd").
         pub default_currency: String,
     }
@@ -544,6 +587,7 @@ pub mod test {
                 charge_customers: std::sync::Arc::new(RwLock::new(HashMap::new())),
                 payment_intent_customers: std::sync::Arc::new(RwLock::new(HashMap::new())),
                 refund_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                idempotency_keys: std::sync::Arc::new(RwLock::new(HashMap::new())),
                 default_currency: "gbp".to_string(),
             }
         }
@@ -584,6 +628,16 @@ pub mod test {
 
     impl StripeRefundClient for MockStripeRefundClient {
         async fn create_refund(&self, request: CreateRefundRequest) -> Result<Refund> {
+            // Replay the original refund for a repeated idempotency key, like Stripe.
+            let mut idempotency_keys = self.idempotency_keys.write().unwrap();
+            let idempotency_key = request.idempotency_key();
+            if let Some(existing) = idempotency_keys
+                .get(&idempotency_key)
+                .and_then(|id| self.refunds.read().unwrap().get(id).cloned())
+            {
+                return Ok(existing);
+            }
+
             let id = format!(
                 "re_mock_{}",
                 self.refund_counter
@@ -619,8 +673,10 @@ pub mod test {
                     .unwrap()
                     .entry(charge_id.clone())
                     .or_default()
-                    .push(id);
+                    .push(id.clone());
             }
+
+            idempotency_keys.insert(idempotency_key, id);
 
             Ok(refund)
         }
@@ -799,6 +855,60 @@ mod tests {
         assert_eq!(request.reason, Some(RefundReason::RequestedByCustomer));
     }
 
+    #[test]
+    fn test_refund_idempotency_key_is_deterministic() {
+        let request = || CreateRefundRequest::for_charge("ch_123").with_amount(500);
+        assert_eq!(request().idempotency_key(), request().idempotency_key());
+        assert_eq!(request().idempotency_key(), "refund_ch_ch_123_500_none");
+
+        let key = request().idempotency_key();
+        assert_ne!(
+            CreateRefundRequest::for_charge("ch_456")
+                .with_amount(500)
+                .idempotency_key(),
+            key
+        );
+        assert_ne!(
+            CreateRefundRequest::for_payment_intent("ch_123")
+                .with_amount(500)
+                .idempotency_key(),
+            key
+        );
+        assert_ne!(request().with_amount(600).idempotency_key(), key);
+        assert_ne!(
+            CreateRefundRequest::for_charge("ch_123").idempotency_key(),
+            key
+        );
+        assert_ne!(
+            request()
+                .with_reason(RefundReason::Duplicate)
+                .idempotency_key(),
+            key
+        );
+    }
+
+    #[test]
+    fn test_refund_explicit_idempotency_key_overrides_derived() {
+        let request = CreateRefundRequest::for_charge("ch_123").with_idempotency_key("my_key");
+        assert_eq!(request.idempotency_key(), "my_key");
+    }
+
+    #[tokio::test]
+    async fn test_refund_retry_with_explicit_keys_creates_distinct_refunds() {
+        let client = MockStripeRefundClient::new();
+
+        let first = client
+            .create_refund(CreateRefundRequest::for_charge("ch_123").with_idempotency_key("a"))
+            .await
+            .unwrap();
+        let second = client
+            .create_refund(CreateRefundRequest::for_charge("ch_123").with_idempotency_key("b"))
+            .await
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(client.list_refunds("ch_123", 10).await.unwrap().len(), 2);
+    }
+
     // ========================================================================
     // SecureRefundManager Tests
     // ========================================================================
@@ -946,6 +1056,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(refunds.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_charge_double_submit_refunds_once() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        let first = manager
+            .refund_charge("org_123", "ch_test", Some(500))
+            .await
+            .unwrap();
+        let retry = manager
+            .refund_charge("org_123", "ch_test", Some(500))
+            .await
+            .unwrap();
+        assert_eq!(first.id, retry.id);
+
+        let refunds = manager
+            .list_refunds_for_charge("org_123", "ch_test", 10)
+            .await
+            .unwrap();
+        assert_eq!(refunds.len(), 1, "retrying a refund must not refund twice");
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_payment_intent_double_submit_refunds_once() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        client.add_payment_intent("pi_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        let first = manager
+            .refund_payment_intent("org_123", "pi_test", None)
+            .await
+            .unwrap();
+        let retry = manager
+            .refund_payment_intent("org_123", "pi_test", None)
+            .await
+            .unwrap();
+        assert_eq!(first.id, retry.id);
     }
 
     fn create_other_subscription() -> StoredSubscription {

@@ -524,20 +524,49 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
     }
 
     /// Cleanup all user-related data.
+    ///
+    /// Fails on the first cleanup error so the account is never deleted while
+    /// its credentials are still live. Cleanup steps are idempotent, so a failed
+    /// deletion can be retried.
     async fn cleanup_user_data(&self, user_id: &str) -> Result<CleanupStats> {
-        let sessions_revoked = self.store.revoke_all_sessions(user_id).await.unwrap_or(0);
+        let log_failure = |step: &'static str| {
+            move |e: TidewayError| {
+                tracing::error!(
+                    target: "auth.deletion.cleanup_failed",
+                    user_id = %user_id,
+                    step = step,
+                    error = %e,
+                    "Account cleanup failed; deletion aborted"
+                );
+                e
+            }
+        };
+
+        let sessions_revoked = self
+            .store
+            .revoke_all_sessions(user_id)
+            .await
+            .map_err(log_failure("revoke_all_sessions"))?;
         let refresh_tokens_revoked = self
             .store
             .revoke_all_refresh_tokens(user_id)
             .await
-            .unwrap_or(0);
+            .map_err(log_failure("revoke_all_refresh_tokens"))?;
         let trusted_devices_removed = self
             .store
             .remove_all_trusted_devices(user_id)
             .await
-            .unwrap_or(0);
-        let mfa_cleared = self.store.clear_mfa(user_id).await.unwrap_or(false);
-        let lockout_cleared = self.store.clear_lockout(user_id).await.unwrap_or(false);
+            .map_err(log_failure("remove_all_trusted_devices"))?;
+        let mfa_cleared = self
+            .store
+            .clear_mfa(user_id)
+            .await
+            .map_err(log_failure("clear_mfa"))?;
+        let lockout_cleared = self
+            .store
+            .clear_lockout(user_id)
+            .await
+            .map_err(log_failure("clear_lockout"))?;
 
         Ok(CleanupStats {
             sessions_revoked,
@@ -594,6 +623,7 @@ pub mod test {
         users: RwLock<HashMap<String, UserData>>,
         pending_deletions: RwLock<HashMap<String, PendingDeletion>>,
         emails_sent: RwLock<Vec<(String, String)>>, // (email, type)
+        fail_revocation: RwLock<bool>,
     }
 
     #[derive(Clone)]
@@ -650,6 +680,29 @@ pub mod test {
         /// Get sent emails.
         pub fn get_emails_sent(&self) -> Vec<(String, String)> {
             self.emails_sent.read().unwrap().clone()
+        }
+
+        /// Make session and refresh token revocation fail (simulates a store outage).
+        pub fn fail_revocation(&self, fail: bool) {
+            *self.fail_revocation.write().unwrap() = fail;
+        }
+
+        /// Get the number of active sessions and refresh tokens for a user.
+        pub fn active_credentials(&self, user_id: &str) -> Option<(usize, usize)> {
+            self.users
+                .read()
+                .unwrap()
+                .get(user_id)
+                .map(|u| (u.sessions, u.refresh_tokens))
+        }
+
+        fn check_revocation(&self) -> Result<()> {
+            if *self.fail_revocation.read().unwrap() {
+                return Err(TidewayError::Internal(
+                    "revocation store unavailable".into(),
+                ));
+            }
+            Ok(())
         }
     }
 
@@ -722,6 +775,7 @@ pub mod test {
         }
 
         async fn revoke_all_sessions(&self, user_id: &str) -> Result<usize> {
+            self.check_revocation()?;
             let mut users = self.users.write().unwrap();
             if let Some(user) = users.get_mut(user_id) {
                 let count = user.sessions;
@@ -732,6 +786,7 @@ pub mod test {
         }
 
         async fn revoke_all_refresh_tokens(&self, user_id: &str) -> Result<usize> {
+            self.check_revocation()?;
             let mut users = self.users.write().unwrap();
             if let Some(user) = users.get_mut(user_id) {
                 let count = user.refresh_tokens;
@@ -1118,5 +1173,74 @@ mod tests {
         assert_eq!(emails.len(), 1);
         assert_eq!(emails[0].0, "user@example.com");
         assert_eq!(emails[0].1, "deleted");
+    }
+
+    #[tokio::test]
+    async fn test_immediate_deletion_halts_when_revocation_fails() {
+        for hard_delete in [false, true] {
+            let store = InMemoryDeletionStore::new();
+            store.add_user(
+                "user-1",
+                "user@example.com",
+                &create_test_hash("password123"),
+            );
+            store.fail_revocation(true);
+
+            let config = DeletionConfig::immediate()
+                .require_password(false)
+                .hard_delete(hard_delete);
+            let flow = AccountDeletionFlow::new(store, config);
+
+            let result = flow
+                .request_deletion(DeletionRequest {
+                    user_id: "user-1".to_string(),
+                    password: None,
+                    reason: None,
+                })
+                .await;
+
+            assert!(result.is_err());
+            assert!(!flow.store.is_deleted("user-1"));
+            assert!(!flow.store.is_hard_deleted("user-1"));
+            assert_eq!(flow.store.active_credentials("user-1"), Some((3, 2)));
+            assert!(flow.store.get_emails_sent().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_scheduled_deletion_retried_after_revocation_failure() {
+        let store = InMemoryDeletionStore::new();
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("password123"),
+        );
+
+        let config = DeletionConfig::new()
+            .grace_period(Some(Duration::ZERO))
+            .require_password(false)
+            .send_confirmation_email(false);
+        let flow = AccountDeletionFlow::new(store, config);
+
+        flow.request_deletion(DeletionRequest {
+            user_id: "user-1".to_string(),
+            password: None,
+            reason: None,
+        })
+        .await
+        .unwrap();
+
+        // Revocation fails: the account must survive and stay pending.
+        flow.store.fail_revocation(true);
+        flow.process_due_deletions().await.unwrap();
+        assert!(!flow.store.is_deleted("user-1"));
+        assert!(flow.get_pending_deletion("user-1").await.unwrap().is_some());
+
+        // Next run succeeds once revocation recovers.
+        flow.store.fail_revocation(false);
+        flow.process_due_deletions().await.unwrap();
+        assert!(flow.store.is_deleted("user-1"));
+        assert_eq!(flow.store.active_credentials("user-1"), Some((0, 0)));
+        assert!(flow.get_pending_deletion("user-1").await.unwrap().is_none());
     }
 }

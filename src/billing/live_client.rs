@@ -544,6 +544,13 @@ impl LiveStripeClient {
         self
     }
 
+    /// Point async-stripe calls at a different base URL (e.g. a local test server).
+    #[cfg(test)]
+    fn with_stripe_api_base(mut self, base: &str) -> Self {
+        self.client = stripe::Client::from_url(base, self.api_key.expose_secret());
+        self
+    }
+
     /// Create a client with default configuration.
     ///
     /// # Errors
@@ -1580,7 +1587,13 @@ impl StripePaymentMethodClient for LiveStripeClient {
 
 impl StripeRefundClient for LiveStripeClient {
     async fn create_refund(&self, request: CreateRefundRequest) -> Result<Refund> {
-        let client = self.idempotent_client("create_refund");
+        // Deterministic per request so caller retries don't refund twice.
+        let client = self
+            .client
+            .clone()
+            .with_strategy(stripe::RequestStrategy::Idempotent(
+                request.idempotency_key(),
+            ));
 
         let mut params = stripe::CreateRefund::new();
 
@@ -2871,6 +2884,7 @@ mod tests {
         }
 
         const USAGE_RECORD_OK: &str = r#"{"id":"mbur_123","object":"usage_record"}"#;
+        const REFUND_OK: &str = r#"{"id":"re_123","object":"refund","amount":500,"currency":"usd","created":1700000000,"status":"succeeded","charge":"ch_test123"}"#;
         const RATE_LIMITED: &str =
             r#"{"error":{"type":"invalid_request_error","message":"Too many requests"}}"#;
         const BAD_REQUEST: &str =
@@ -2918,6 +2932,7 @@ mod tests {
                     "/v1/subscription_items/{id}/usage_records",
                     axum::routing::post(handle),
                 )
+                .route("/v1/refunds", axum::routing::post(handle))
                 .with_state(mock.clone());
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
@@ -2967,6 +2982,44 @@ mod tests {
                 .expect("usage record request must carry an Idempotency-Key");
             assert!(!first_key.is_empty());
             assert_eq!(seen[1].idempotency_key.as_deref(), Some(first_key));
+        }
+
+        #[tokio::test]
+        async fn repeated_refund_requests_reuse_same_idempotency_key() {
+            let (base, mock) = start_mock(vec![
+                Reply::Status(200, REFUND_OK),
+                Reply::Status(200, REFUND_OK),
+                Reply::Status(200, REFUND_OK),
+            ])
+            .await;
+            let client = test_client(&base).with_stripe_api_base(&format!("{base}/"));
+
+            // Simulate a caller retrying the same refund (e.g. a double-submit).
+            for _ in 0..2 {
+                let refund = client
+                    .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(500))
+                    .await
+                    .unwrap();
+                assert_eq!(refund.id, "re_123");
+            }
+            // A different refund must not share the key.
+            client
+                .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(700))
+                .await
+                .unwrap();
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            let first_key = seen[0]
+                .idempotency_key
+                .as_deref()
+                .expect("refund request must carry an Idempotency-Key");
+            assert_eq!(
+                seen[1].idempotency_key.as_deref(),
+                Some(first_key),
+                "retrying the same refund must reuse its idempotency key"
+            );
+            assert_ne!(seen[2].idempotency_key.as_deref(), Some(first_key));
         }
 
         #[tokio::test]
