@@ -72,7 +72,7 @@ prometheus = { version = "0.14", optional = true }
 
 # Cache (optional)
 moka = { version = "0.12", features = ["future"], optional = true }
-redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Sessions (optional)
 cookie = { version = "0.18", features = ["private"], optional = true }

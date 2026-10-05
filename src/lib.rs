@@ -87,6 +87,8 @@ pub mod admin {
 pub mod admin {}
 #[cfg(feature = "cache")]
 pub mod cache;
+#[cfg(any(feature = "cache-redis", feature = "jobs-redis"))]
+mod redis_connection;
 #[cfg(all(not(feature = "cache"), feature = "feature-gate-errors"))]
 pub mod cache {
     compile_error!("Enable the `cache` feature to use tideway::cache");
