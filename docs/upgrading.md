@@ -218,6 +218,24 @@ Handlers that do not override `on_upgrade` need no changes. If you override it:
 Later hooks can read the upgrade request through `Connection::headers`, `header`, `cookie`, and
 `uri`. CLI-generated apps do not override `on_upgrade` and are not affected.
 
+## Unreleased: refund lookups scoped to the billable entity
+
+`SecureRefundManager::get_refund` returned any refund by ID, so a caller who knew another
+organization's refund ID could read it. It now takes the billable entity and checks that the
+refund's charge (or payment intent) belongs to that entity's Stripe customer:
+
+```rust
+// Before
+let refund = manager.get_refund("re_xxx").await?;
+
+// After
+let refund = manager.get_refund("org_123", "re_xxx").await?;
+```
+
+A refund owned by another entity returns `BillingError::RefundNotFound` (404), the same as an
+unknown ID. Pass the billable ID of the authenticated caller, not one taken from the request. For
+admin-only lookups that must read any refund, use `RefundManager::get_refund`, which is unchanged.
+
 ## Unreleased: scheduled JWKS refresh
 
 JWKS-backed verifiers (`JwtVerifier::from_jwks_url` and `from_jwks_url_with_client`) now

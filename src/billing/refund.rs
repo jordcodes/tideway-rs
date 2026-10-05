@@ -494,9 +494,49 @@ impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
         self.client.create_refund(request).await
     }
 
-    /// Get a refund by ID.
-    pub async fn get_refund(&self, refund_id: &str) -> Result<Refund> {
-        self.client.get_refund(refund_id).await
+    /// Get a refund by ID with ownership verification.
+    ///
+    /// Verifies that the refund's charge (or payment intent, if it has no charge)
+    /// belongs to the billable entity. A refund owned by another entity is
+    /// reported as not found so its existence is not disclosed.
+    ///
+    /// # Arguments
+    ///
+    /// * `billable_id` - The billable entity ID (used to verify ownership)
+    /// * `refund_id` - The Stripe refund ID
+    pub async fn get_refund(&self, billable_id: &str, refund_id: &str) -> Result<Refund> {
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        let not_found = || -> crate::error::TidewayError {
+            super::error::BillingError::RefundNotFound {
+                refund_id: refund_id.to_string(),
+            }
+            .into()
+        };
+
+        let refund = self.client.get_refund(refund_id).await?;
+
+        let owner = if let Some(charge_id) = &refund.charge_id {
+            self.client.get_charge_customer_id(charge_id).await
+        } else if let Some(payment_intent_id) = &refund.payment_intent_id {
+            self.client
+                .get_payment_intent_customer_id(payment_intent_id)
+                .await
+        } else {
+            return Err(not_found());
+        };
+
+        match owner {
+            Ok(customer_id) if customer_id == sub.stripe_customer_id => Ok(refund),
+            Ok(_) | Err(crate::error::TidewayError::NotFound(_)) => Err(not_found()),
+            Err(e) => Err(e),
+        }
     }
 
     /// List refunds for a charge with ownership verification.
@@ -1070,5 +1110,111 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(first.id, retry.id);
+    }
+
+    fn create_other_subscription() -> StoredSubscription {
+        StoredSubscription {
+            stripe_subscription_id: "sub_other".to_string(),
+            stripe_customer_id: "cus_other".to_string(),
+            ..create_test_subscription()
+        }
+    }
+
+    fn assert_refund_not_found(result: Result<Refund>) {
+        match result {
+            Err(crate::error::TidewayError::NotFound(msg)) => {
+                assert!(
+                    msg.contains("Refund not found"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected refund NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_scoped_to_owner() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        store
+            .save_subscription("org_other", &create_other_subscription())
+            .await
+            .unwrap();
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+        let created = manager
+            .refund_charge("org_123", "ch_test", None)
+            .await
+            .unwrap();
+
+        let retrieved = manager.get_refund("org_123", &created.id).await.unwrap();
+        assert_eq!(retrieved.id, created.id);
+
+        assert_refund_not_found(manager.get_refund("org_other", &created.id).await);
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_for_payment_intent_scoped_to_owner() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        store
+            .save_subscription("org_other", &create_other_subscription())
+            .await
+            .unwrap();
+        client.add_payment_intent("pi_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+        let created = manager
+            .refund_payment_intent("org_123", "pi_test", None)
+            .await
+            .unwrap();
+        assert!(created.charge_id.is_none());
+
+        let retrieved = manager.get_refund("org_123", &created.id).await.unwrap();
+        assert_eq!(retrieved.id, created.id);
+
+        assert_refund_not_found(manager.get_refund("org_other", &created.id).await);
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_unknown_id() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+
+        let manager = SecureRefundManager::new(store, client);
+
+        assert_refund_not_found(manager.get_refund("org_123", "re_missing").await);
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_no_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+        client.add_charge("ch_test", "cus_123");
+
+        let created = client
+            .create_refund(CreateRefundRequest::for_charge("ch_test"))
+            .await
+            .unwrap();
+        let manager = SecureRefundManager::new(store, client);
+
+        let result = manager.get_refund("nonexistent", &created.id).await;
+        assert!(result.is_err());
     }
 }
