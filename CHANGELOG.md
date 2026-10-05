@@ -9,6 +9,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
+  (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
+  charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
+  refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
 - `AccountDeletionFlow` no longer deletes an account when a cleanup step (session or refresh
   token revocation, trusted device removal, MFA or lockout clearing) fails. Previously these
   errors were silently ignored, so a store failure could leave sessions and refresh tokens valid
@@ -161,7 +165,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `CreditRevocation`, plus `CreditTransactionKind::Revoke`. Revocation amounts are cumulative, so
   retries are idempotent. Credits held by open reservations are taken back when the reservation is
   released; credits already spent are reported as `unrecovered_amount`. Custom `CreditStore`s
-  inherit a default that returns an error.
+  inherit a default that logs a warning and returns `None`, so refund and dispute webhooks still
+  succeed but revoke nothing until the store overrides `revoke`.
 - CLI: `migrations/m015_add_credit_revocation` adds the revocation columns, an index, and the
   `revoke` transaction kind. `tideway new` with `credits-seaorm` and `tideway add credits` generate
   it; rerunning `tideway add credits` on an existing app adds only this migration.
