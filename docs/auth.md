@@ -1527,12 +1527,18 @@ use tideway::auth::deletion::{AccountDeletionFlow, DeletionConfig, DeletionReque
 
 let flow = AccountDeletionFlow::new(store, DeletionConfig::default());
 
-// Request deletion (user-initiated)
+// Request deletion (user-initiated). `user_id` must be the authenticated
+// user's ID from your session/JWT, never a value from the request body.
 let result = flow.request_deletion(DeletionRequest {
-    user_id: "user-123".to_string(),
+    user_id: authenticated_user_id,
     password: Some("current-password".to_string()),
     reason: Some("No longer using the service".to_string()),
 }).await?;
+
+// In an HTTP handler, deserialize the client body into `DeletionRequestBody`
+// (password + reason only; unknown fields such as `user_id` are rejected) and
+// attach the authenticated user's ID:
+let result = flow.request_deletion(body.into_request(authenticated_user_id)).await?;
 
 match result {
     DeletionResult::Scheduled { scheduled_for, .. } => {
@@ -1696,13 +1702,19 @@ use tideway::auth::impersonation::{ImpersonationManager, ImpersonationConfig, Im
 
 let manager = ImpersonationManager::new(store, ImpersonationConfig::default());
 
-// Start impersonation
+// Start impersonation. `admin_id` must be the authenticated admin's ID from
+// your session/JWT, never a value from the request body.
 let session = manager.start_impersonation(ImpersonationRequest {
-    admin_id: "admin-123".to_string(),
+    admin_id: authenticated_admin_id,
     target_user_id: "user-456".to_string(),
     reason: Some("Support ticket #789".to_string()),
     duration: None,  // Use config default
 }).await?;
+
+// In an HTTP handler, deserialize the client body into `ImpersonationRequestBody`
+// (`target_user_id`, `reason`, `duration_secs`; unknown fields such as `admin_id`
+// are rejected) and attach the authenticated admin's ID:
+let session = manager.start_impersonation(body.into_request(authenticated_admin_id)).await?;
 
 // Include impersonation info in JWT claims
 let claims = ImpersonationClaims::from_session(&session);

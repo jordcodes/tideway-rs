@@ -76,6 +76,34 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## Unreleased: impersonation and deletion request bodies
+
+`ImpersonationRequest` and `DeletionRequest` no longer implement `Deserialize`. Their `admin_id`
+and `user_id` fields identify the acting user. Before this change, a handler that bound them
+directly to a request body (`Json<ImpersonationRequest>`, `Json<DeletionRequest>`) let a client
+pick which admin to act as, or which account to delete.
+
+If your code no longer compiles after this upgrade, change the handler to deserialize the new body
+type and take the actor ID from the authenticated session or JWT:
+
+```rust,ignore
+// Before (unsafe): Json(req): Json<ImpersonationRequest>
+// After:
+Json(body): Json<ImpersonationRequestBody>
+manager.start_impersonation(body.into_request(authenticated_admin_id)).await?;
+
+// Before (unsafe): Json(req): Json<DeletionRequest>
+// After:
+Json(body): Json<DeletionRequestBody>
+flow.request_deletion(body.into_request(authenticated_user_id)).await?;
+```
+
+The body types reject unknown fields, so clients that still send `admin_id` or `user_id` get a
+`400` instead of having the value silently ignored. The impersonation body takes a custom duration
+as `duration_secs` (an integer). Code that builds the request structs directly on the server does
+not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
+not affected.
+
 ## 0.7.x to 0.8.0 / CLI 0.1.48: recoverable password resets
 
 > **Action required for existing auth applications.** Tideway 0.8.0 is not a drop-in upgrade from
