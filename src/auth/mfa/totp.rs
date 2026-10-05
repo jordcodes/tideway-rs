@@ -73,6 +73,11 @@ impl TotpManager {
         Self { config }
     }
 
+    /// Number of digits in codes produced and accepted by this manager.
+    pub fn digits(&self) -> usize {
+        self.config.digits
+    }
+
     /// Generate a new TOTP setup for a user.
     ///
     /// Returns the secret, URI, and QR code for the user to scan.
