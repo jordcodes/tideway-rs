@@ -1673,6 +1673,140 @@ uuid = { version = "1", features = ["v4", "serde"] }
 }
 
 #[test]
+fn test_resource_default_profile_generates_org_scoped_handlers_when_saas_scaffold_detected() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, true, true, true);
+
+    let args = ResourceArgs {
+        name: "project".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Api,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let route = project_dir.join("src/routes/project.rs");
+    for handler in [
+        "async fn list_projects(",
+        "async fn get_project(",
+        "async fn create_project(",
+        "async fn update_project(",
+        "async fn delete_project(",
+    ] {
+        let contents = fs::read_to_string(&route).expect("read route");
+        let body = &contents[contents.find(handler).expect("handler exists")..];
+        let body = &body[..body.find("\n}\n").expect("handler end")];
+        assert!(
+            body.contains("RequestActor::for_current_organization(&headers, &db).await?;"),
+            "{handler} must authenticate and resolve organization membership:\n{body}"
+        );
+    }
+    assert_file_contains(
+        &route,
+        "service.create_for_actor(&actor, body.name).await?;",
+    );
+    assert_file_not_contains(
+        &route,
+        "pub struct CreateRequest {\n    pub organization_id",
+    );
+    assert_file_not_contains(
+        &route,
+        "pub struct UpdateRequest {\n    pub organization_id",
+    );
+    assert_file_contains(
+        &project_dir.join("src/entities/project.rs"),
+        "pub organization_id: String,",
+    );
+    let repo = project_dir.join("src/repositories/project.rs");
+    assert_file_contains(
+        &repo,
+        "pub async fn list_owned(&self, organization_id: &str, limit: Option<u64>, offset: Option<u64>, search: Option<String>)",
+    );
+    assert_file_contains(
+        &repo,
+        ".filter(project::Column::OrganizationId.eq(organization_id.to_string()))",
+    );
+    assert_file_not_contains(&repo, "OwnerId");
+    let service = project_dir.join("src/services/project.rs");
+    assert_file_contains(&service, "model.organization_id == organization_id");
+    assert_file_contains(&service, ".create_owned(organization_id, name)");
+    assert_file_not_contains(&service, "owner_id: &str");
+}
+
+#[test]
+fn test_resource_profile_tenant_generates_org_scoped_inline_handlers_when_saas_scaffold_detected() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, true, true, false);
+
+    let args = ResourceArgs {
+        name: "workspace".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Tenant,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let route = project_dir.join("src/routes/workspace.rs");
+    assert_file_contains(
+        &route,
+        "async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor>",
+    );
+    assert_file_contains(
+        &route,
+        "let actor = resolve_owned_actor(&headers, &db).await?;",
+    );
+    assert_file_contains(
+        &route,
+        ".create_owned(&actor.organization_id, body.name, body.slug, body.status)",
+    );
+    assert_file_not_contains(&route, "owner_id");
+    assert_file_contains(
+        &project_dir.join("src/entities/workspace.rs"),
+        "pub organization_id: String,",
+    );
+}
+
+#[test]
 fn test_resource_profile_admin_generates_saas_admin_guards_when_saas_scaffold_detected() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -1963,6 +2097,58 @@ fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold()
         &project_dir.join("src/main.rs"),
         ".register_module(my_app::routes::subscription::SubscriptionModule)",
     );
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+}
+
+#[test]
+fn test_resource_api_and_tenant_profiles_compile_against_saas_preset_workspace_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+    tideway_cli::commands::new::run(new_args).expect("run tideway new");
+
+    for (name, profile) in [
+        ("project", tideway_cli::cli::ResourceProfile::Api),
+        ("workspace", tideway_cli::cli::ResourceProfile::Tenant),
+    ] {
+        let resource_args = ResourceArgs {
+            name: name.to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: false,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+        };
+        tideway_cli::commands::resource::run(resource_args).expect("run tideway resource");
+        assert_file_contains(
+            &project_dir.join(format!("src/routes/{name}.rs")),
+            "RequestActor::for_current_organization(&headers, &db).await?;",
+        );
+    }
 
     patch_scaffold_to_workspace(&project_dir);
     run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
