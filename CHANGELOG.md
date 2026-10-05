@@ -9,6 +9,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
+  (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
+  charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
+  refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
 - `WebhookRouter::process` now returns a `ServiceUnavailable` (503) error for a duplicate
   delivery of an event that is still being processed in the same instance. It previously
   returned `Ok` (200), so the provider stopped retrying and the event was lost if the first
