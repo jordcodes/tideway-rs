@@ -25,6 +25,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Security
 
+- Added `EmailVerificationFlow::resend_for_user`, which sends the verification email to the
+  address stored on the account (via the new `VerificationStore::verification_email`). The old
+  `resend` is deprecated: it mailed the token to the caller-supplied `ResendVerificationRequest`
+  email, so a user could verify their account with an address they do not own. Implement
+  `verification_email` on your `VerificationStore` and switch callers to `resend_for_user`.
 - `LoginFlow::verify_mfa` now rejects verification while the account is locked. Previously, MFA
   tokens minted before a lockout could keep guessing codes and complete login after the account
   locked.

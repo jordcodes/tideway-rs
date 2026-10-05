@@ -536,6 +536,10 @@ impl VerificationStore for DbUserStore {
         self.mark_verified(&user).await
     }
 
+    async fn verification_email(&self, user_id: &str) -> Result<Option<String>> {
+        Ok(self.find_by_id(user_id).await?.map(|user| user.email))
+    }
+
     async fn send_verification_email(
         &self,
         _user_id: &str,
