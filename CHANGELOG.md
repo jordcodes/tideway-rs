@@ -7,7 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
-## [Unreleased]
+## [0.9.0] - Unreleased
+
+> **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update: applications
+> using the APIs below stop compiling, so `cargo update` keeps `^0.8` applications on 0.8.x.
+> Change the dependency to `0.9.0` and follow `docs/upgrading.md#08x-to-090-breaking-changes`.
+>
+> - `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize`. Deserialize
+>   `ImpersonationRequestBody` / `DeletionRequestBody` and call `into_request` with the
+>   authenticated actor ID.
+> - `WebSocketHandler::on_upgrade` is now `on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext)`.
+>   Overrides must use the new signature.
+> - `tideway::prelude` exports `DatabaseConnectionTrait` instead of `DatabaseConnection`. Rename
+>   prelude references, or import `tideway::DatabaseConnection` directly.
+> - `CachedInvoiceManager::list_invoices` returns `Arc<InvoiceList>` instead of `InvoiceList`, and
+>   `CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>` instead of
+>   `Option<Invoice>`.
+>
+> Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
+> `BillingEvent::OneTimeCheckoutCompleted` has a new field, `CreditTransactionKind` is
+> `#[non_exhaustive]`, and `credits-seaorm` apps need a database migration.
 
 - **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
@@ -33,9 +52,16 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   that returns one keeps the current keys. RSA decoding keys are built once per fetch instead of
   per request. See `docs/upgrading.md`.
 
-- The database prelude now exports `DatabaseConnectionTrait` instead of `DatabaseConnection`
-  to avoid ambiguous imports with SeaORM. Update prelude trait references to the new alias
-  or explicitly import `tideway::DatabaseConnection`; the original trait paths are unchanged.
+- **Breaking:** the database prelude now exports `DatabaseConnectionTrait` instead of
+  `DatabaseConnection` to avoid ambiguous imports with SeaORM. Code importing
+  `tideway::prelude::DatabaseConnection` no longer compiles. Update prelude trait references to
+  the new alias or explicitly import `tideway::DatabaseConnection`; the original trait paths are
+  unchanged.
+- **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` and
+  `CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>`, so cache hits
+  share the cached value instead of copying it. Callers that bind the result to an owned
+  `InvoiceList` or `Invoice`, or move fields out of it, must borrow instead or clone explicitly.
+  The `InvoiceOperations` trait keeps its owned return types. See `docs/upgrading.md`.
 - The rate-limit middleware now sustains `max_requests` per `window_seconds`. Previously it
   allowed a burst of `max_requests` and then refilled only one request per window, so the
   default "100 per 60s" became 1 request per minute after the first burst (server-wide in
@@ -182,6 +208,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Compatibility
 
+- This is a minor-version compatibility boundary for the pre-1.0 framework. The breaking changes
+  listed at the top of this release mean it cannot ship as a 0.8.x patch release.
 - `BillingEvent::OneTimeCheckoutCompleted` has a new `payment_intent_id` field. Code that
   constructs it, or destructures it without `..`, must be updated.
 - `CreditTransactionKind` has a new `Revoke` variant and is now `#[non_exhaustive]`. Exhaustive
@@ -207,8 +235,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - The organization owner fix has no signature changes, and `invitation_grants_owner` has a default,
   so custom `InvitationStore` implementations still compile. `add_member` and `invite` with an
   owner role now return `InsufficientPermission` for every actor, including owners.
-- `WebSocketHandler::on_upgrade` now takes `&mut UpgradeRequest` before `&AppContext`. Handlers
-  that do not override it still compile unchanged. `Connection` gains accessors only, and its
+- **Breaking:** `WebSocketHandler::on_upgrade` now takes `&mut UpgradeRequest` before
+  `&AppContext`, so overrides written for 0.8 no longer compile. Handlers that do not override it
+  still compile unchanged. `Connection` gains accessors only, and its
   public constructor `Connection::channel` is unchanged.
 
 ### Migration Notes
@@ -233,6 +262,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - **Breaking:** `WebSocketHandler::on_upgrade` overrides must use the new signature
   `on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext)`. The hook now runs on every
   upgrade, so rejection logic that was previously dead code takes effect. See `docs/upgrading.md`.
+- **Breaking:** replace `tideway::prelude::DatabaseConnection` with `DatabaseConnectionTrait`, or
+  import `tideway::DatabaseConnection` directly.
+- **Breaking:** code that takes owned values from `CachedInvoiceManager::list_invoices` or
+  `get_upcoming_invoice` must borrow through the returned `Arc` or clone explicitly. See
+  `docs/upgrading.md`.
 - Before deploying an app that uses `CreditTopUpEventSink`, check Stripe for failed top-up
   webhooks waiting to be retried. If one was already granted before the upgrade, its retry is
   granted again under the new key. Let retries finish first, or reverse the duplicate grant.
