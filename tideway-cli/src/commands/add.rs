@@ -13,7 +13,9 @@ use crate::commands::app_builder::{
 };
 use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::messaging::GREENFIELD_NEW_APP_FIRST;
-use crate::commands::migration_naming::{MigrationName, is_migration_module, next_migration_name};
+use crate::commands::migration_naming::{
+    MigrationName, following_migration_name, is_migration_module, next_migration_name,
+};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success,
@@ -50,9 +52,10 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
     }
     let credits_migration = if args.feature == AddFeature::Credits {
         validate_credits_preconditions(&project_dir)?;
-        let migration = plan_credits_migration(&project_dir)?;
+        let ledger = plan_credits_migration(&project_dir)?;
+        let revocation = plan_credit_revocation_migration(&project_dir, &ledger)?;
         ensure_migration_json_feature(&project_dir.join("migration/Cargo.toml"))?;
-        Some(migration)
+        Some((ledger, revocation))
     } else {
         None
     };
@@ -114,14 +117,20 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
     }
 
     if args.feature == AddFeature::Credits {
-        let migration = scaffold_credits(
+        let (ledger, revocation) =
+            credits_migration.expect("credits migration is planned before mutation");
+        let (ledger, revocation) = scaffold_credits(
             &project_dir,
             &project_name,
             &project_name_pascal,
-            credits_migration.expect("credits migration is planned before mutation"),
+            ledger,
+            revocation,
         )?;
         print_info(&format!(
-            "Credits ledger migration ready: migration/src/{migration}.rs"
+            "Credits ledger migration ready: migration/src/{ledger}.rs"
+        ));
+        print_info(&format!(
+            "Credit revocation migration ready: migration/src/{revocation}.rs"
         ));
         if args.wire {
             print_info(
@@ -357,8 +366,9 @@ fn scaffold_credits(
     project_dir: &Path,
     project_name: &str,
     project_name_pascal: &str,
-    migration_plan: MigrationPlan,
-) -> Result<String> {
+    ledger_plan: MigrationPlan,
+    revocation_plan: MigrationPlan,
+) -> Result<(String, String)> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
         project_crate: project_name.replace('-', "_"),
@@ -388,19 +398,27 @@ fn scaffold_credits(
     };
     let engine = BackendTemplateEngine::new(context)?;
     let migrations_dir = project_dir.join("migration/src");
-    let migration = match migration_plan {
-        MigrationPlan::Existing(existing) => existing,
-        MigrationPlan::Create(migration) => {
-            let migration_path = migrations_dir.join(&migration.file);
-            write_file(
-                &migration_path,
-                &engine.render("migrations/m013_create_credit_ledger")?,
-            )?;
-            migration.module
-        }
-    };
-    ensure_migration_registered(&migrations_dir.join("lib.rs"), &migration)?;
-    Ok(migration)
+    let mut modules = Vec::new();
+    for (plan, template) in [
+        (ledger_plan, "migrations/m013_create_credit_ledger"),
+        (revocation_plan, "migrations/m015_add_credit_revocation"),
+    ] {
+        let migration = match plan {
+            MigrationPlan::Existing(existing) => existing,
+            MigrationPlan::Create(migration) => {
+                write_file(
+                    &migrations_dir.join(&migration.file),
+                    &engine.render(template)?,
+                )?;
+                migration.module
+            }
+        };
+        ensure_migration_registered(&migrations_dir.join("lib.rs"), &migration)?;
+        modules.push(migration);
+    }
+    let revocation = modules.pop().expect("revocation migration planned");
+    let ledger = modules.pop().expect("ledger migration planned");
+    Ok((ledger, revocation))
 }
 
 #[derive(Clone, Debug)]
@@ -419,6 +437,48 @@ fn plan_credits_migration(project_dir: &Path) -> Result<MigrationPlan> {
             13,
         )?)),
     }
+}
+
+fn plan_credit_revocation_migration(
+    project_dir: &Path,
+    ledger: &MigrationPlan,
+) -> Result<MigrationPlan> {
+    let migrations_dir = project_dir.join("migration/src");
+    if let Some(existing) = find_credit_revocation_migration(&migrations_dir)? {
+        return Ok(MigrationPlan::Existing(existing));
+    }
+    let name = match ledger {
+        MigrationPlan::Create(ledger) => {
+            following_migration_name(&migrations_dir, ledger, "add_credit_revocation")?
+        }
+        MigrationPlan::Existing(_) => {
+            next_migration_name(&migrations_dir, "add_credit_revocation", 13)?
+        }
+    };
+    Ok(MigrationPlan::Create(name))
+}
+
+fn find_credit_revocation_migration(migrations_dir: &Path) -> Result<Option<String>> {
+    for entry in fs::read_dir(migrations_dir)
+        .with_context(|| format!("Failed to read {}", migrations_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !is_migration_module(module) || !module.contains("add_credit_revocation") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        if contents.contains("PendingRevocation") || contents.contains("pending_revocation") {
+            return Ok(Some(module.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 fn plan_billing_schema_migration(project_dir: &Path) -> Result<MigrationPlan> {

@@ -1383,6 +1383,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleted_subscription_marker_persists_without_claiming_events() {
+        let store = SeaOrmBillingStore::new(setup_billing_events_db().await);
+
+        assert!(!store.is_subscription_deleted("sub_123").await.unwrap());
+        store.mark_subscription_deleted("sub_123").await.unwrap();
+        store.mark_subscription_deleted("sub_123").await.unwrap();
+
+        assert!(store.is_subscription_deleted("sub_123").await.unwrap());
+        assert!(!store.is_subscription_deleted("sub_other").await.unwrap());
+        assert!(!store.is_event_processed("sub_123").await.unwrap());
+    }
+
+    #[tokio::test]
     async fn claim_event_allows_exactly_one_concurrent_winner() {
         let store = SeaOrmBillingStore::new(setup_billing_events_db().await);
 

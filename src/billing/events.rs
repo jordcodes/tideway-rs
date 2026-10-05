@@ -46,6 +46,37 @@ pub enum BillingEvent {
         plan_id: Option<String>,
         /// Stripe payment status, such as `paid` or `unpaid`.
         payment_status: Option<String>,
+        /// Stripe PaymentIntent ID that collected the payment, when Stripe charged the customer.
+        /// Refund and dispute events reference the same ID.
+        payment_intent_id: Option<String>,
+    },
+    /// Stripe refunded some or all of a charge.
+    ChargeRefunded {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Stripe charge ID.
+        charge_id: String,
+        /// Stripe PaymentIntent ID, when the charge belongs to one.
+        payment_intent_id: Option<String>,
+        /// Stripe customer ID, when included in the event.
+        customer_id: Option<String>,
+        /// Charged amount in the currency's smallest unit.
+        amount: u64,
+        /// Cumulative refunded amount in the currency's smallest unit.
+        amount_refunded: u64,
+    },
+    /// A customer disputed a charge with their bank.
+    ChargeDisputed {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Stripe dispute ID.
+        dispute_id: String,
+        /// Disputed Stripe charge ID.
+        charge_id: String,
+        /// Stripe PaymentIntent ID, when the charge belongs to one.
+        payment_intent_id: Option<String>,
+        /// Disputed amount in the currency's smallest unit.
+        amount: u64,
     },
     /// Stripe created a subscription and Tideway synchronized it locally.
     SubscriptionCreated {
@@ -130,6 +161,8 @@ impl BillingEvent {
         match self {
             Self::CheckoutCompleted { .. } => "checkout_completed",
             Self::OneTimeCheckoutCompleted { .. } => "one_time_checkout_completed",
+            Self::ChargeRefunded { .. } => "charge_refunded",
+            Self::ChargeDisputed { .. } => "charge_disputed",
             Self::SubscriptionCreated { .. } => "subscription_created",
             Self::SubscriptionUpdated { .. } => "subscription_updated",
             Self::DuplicateSubscription { .. } => "duplicate_subscription",
@@ -143,6 +176,8 @@ impl BillingEvent {
         match self {
             Self::CheckoutCompleted { context, .. }
             | Self::OneTimeCheckoutCompleted { context, .. }
+            | Self::ChargeRefunded { context, .. }
+            | Self::ChargeDisputed { context, .. }
             | Self::SubscriptionCreated { context, .. }
             | Self::SubscriptionUpdated { context, .. }
             | Self::DuplicateSubscription { context, .. }

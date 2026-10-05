@@ -34,6 +34,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Security
 
+- Added `EmailVerificationFlow::resend_for_user`, which sends the verification email to the
+  address stored on the account (via the new `VerificationStore::verification_email`). The old
+  `resend` is deprecated: it mailed the token to the caller-supplied `ResendVerificationRequest`
+  email, so a user could verify their account with an address they do not own. Implement
+  `verification_email` on your `VerificationStore` and switch callers to `resend_for_user`.
 - `LoginFlow::verify_mfa` now rejects verification while the account is locked. Previously, MFA
   tokens minted before a lockout could keep guessing codes and complete login after the account
   locked.
@@ -54,6 +59,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - Seat counts that would overflow `u32` (`extra_seats + count`, or included plus extra seats) are
   now rejected with `BadRequest` before Stripe is called, instead of panicking or wrapping. Seat
   totals computed from stored data saturate.
+- `CreditTopUpEventSink` now takes back prepaid credits when Stripe reports a refund
+  (`charge.refunded`) or dispute (`charge.dispute.created`). Previously customers kept the credits
+  after getting their money back. Refunds revoke the refunded share of the pack, rounded up;
+  disputes revoke the whole pack.
+- `CreditTopUpEventSink` no longer grants credits for checkouts with `payment_status`
+  `no_payment_required`, so a 100%-off promotion code no longer buys credits for free.
 
 ### Fixed
 
@@ -67,6 +78,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   sessions, so paying in two tabs can no longer create two subscriptions.
 - A webhook for a second live subscription no longer silently replaces the stored subscription.
   Tideway keeps the stored one and emits `BillingEvent::DuplicateSubscription`.
+- A `customer.subscription.updated` webhook that Stripe delivers after
+  `customer.subscription.deleted` no longer recreates the deleted subscription as active (or
+  overwrites the entity's newer subscription). `SubscriptionManager::delete_subscription` now
+  records the deletion, and later syncs of that subscription are skipped. Only deletions processed
+  after upgrading are recorded; existing stored subscriptions are unchanged. Applications that
+  call `delete_subscription` directly (for example to clear a cached row) can no longer restore
+  that subscription with `sync_from_stripe`; its later syncs return
+  `SubscriptionSyncOutcome::Deleted`.
 - Stripe webhook verification now checks every `v1` signature in the `Stripe-Signature` header.
   It previously kept only the last one, so webhooks were rejected during a Stripe secret roll.
 - `LiveStripeClient::create_usage_record` sends one `Idempotency-Key` across all retry attempts,
@@ -90,8 +109,23 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   Custom clients inherit a no-op default.
 - `BillingEvent::DuplicateSubscription`, plus `SubscriptionManager::sync_from_stripe_checked`
   and `SubscriptionSyncOutcome` for callers that sync subscriptions themselves.
+- `SubscriptionSyncOutcome::Deleted`, plus `BillingStore::mark_subscription_deleted` and
+  `BillingStore::is_subscription_deleted`. The default implementations store a
+  `tideway:subscription_deleted:<id>` marker in processed-event storage, so no migration is
+  needed. `cleanup_old_events` also removes these markers, so keep its retention longer than
+  Stripe's webhook retry window (about three days).
 - `SubscriptionManager::cancel_duplicate_subscription` immediately cancels a reported duplicate.
   It never cancels the stored subscription or another entity's subscription, and does not refund.
+- `BillingEvent::ChargeRefunded` and `BillingEvent::ChargeDisputed`, emitted for Stripe
+  `charge.refunded` and `charge.dispute.created` webhooks.
+- `CreditManager::revoke` / `CreditStore::revoke` with `RevokeCredits`, `RevocationAmount`, and
+  `CreditRevocation`, plus `CreditTransactionKind::Revoke`. Revocation amounts are cumulative, so
+  retries are idempotent. Credits held by open reservations are taken back when the reservation is
+  released; credits already spent are reported as `unrecovered_amount`. Custom `CreditStore`s
+  inherit a default that returns an error.
+- CLI: `migrations/m015_add_credit_revocation` adds the revocation columns, an index, and the
+  `revoke` transaction kind. `tideway new` with `credits-seaorm` and `tideway add credits` generate
+  it; rerunning `tideway add credits` on an existing app adds only this migration.
 
 ### Changed
 
@@ -101,6 +135,19 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Compatibility
 
+- `BillingEvent::OneTimeCheckoutCompleted` has a new `payment_intent_id` field. Code that
+  constructs it, or destructures it without `..`, must be updated.
+- `CreditTransactionKind` has a new `Revoke` variant and is now `#[non_exhaustive]`. Exhaustive
+  matches on it must add a wildcard arm; later kinds will not be breaking.
+- `CreditTopUpEventSink` now keys grants by `stripe-payment-intent:{id}` instead of
+  `stripe-event:{event_id}`. Top-ups granted before this release cannot be found by refund or
+  dispute webhooks and are left unchanged.
+- `WebhookHandler` now processes `charge.refunded` and `charge.dispute.created` instead of
+  returning `WebhookOutcome::Ignored`. It records them as handled and passes them to the event
+  sink, so custom sinks receive `BillingEvent::ChargeRefunded` and `BillingEvent::ChargeDisputed`
+  even when credits are not used.
+- A paid top-up checkout without a `payment_intent` now fails, so Stripe retries it, instead of
+  granting credits. Stripe includes one for every paid payment-mode session.
 - The usage-record fix has no public API or signature changes.
 - Non-2xx responses from `create_usage_record` and `list_usage_records` now return
   `BillingError::StripeApiError { http_status, message, code }` instead of
@@ -121,6 +168,18 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - Handle `BillingEvent::DuplicateSubscription` in your event sink to cancel or refund duplicates.
   The duplicate's later `customer.subscription.updated` events emit it again; deduplicate by
   subscription ID.
+- **Breaking:** apps using `credits-seaorm` must apply a database migration before deploying.
+  `SeaOrmCreditStore` reads the new `credit_buckets.revoked_amount` and
+  `credit_buckets.pending_revocation` columns, so grants, reservations, and balance reads fail
+  until it runs. Run `tideway add credits` to generate the additive migration. Apps using Stripe
+  top-ups must also subscribe the webhook endpoint to `charge.refunded` and
+  `charge.dispute.created`. See `docs/upgrading.md`.
+- **Breaking:** code that constructs `BillingEvent::OneTimeCheckoutCompleted`, or destructures it
+  without `..`, must handle the new `payment_intent_id` field.
+- **Breaking:** exhaustive matches on `CreditTransactionKind` must add a wildcard arm.
+- Before deploying an app that uses `CreditTopUpEventSink`, check Stripe for failed top-up
+  webhooks waiting to be retried. If one was already granted before the upgrade, its retry is
+  granted again under the new key. Let retries finish first, or reverse the duplicate grant.
 
 ## [tideway-cli 0.1.48] - 2026-08-04
 

@@ -474,6 +474,15 @@ fn scaffold_files(
                 &target_dir.join("migration/src/lib.rs"),
                 "m013_create_credit_ledger",
             )?;
+            write_file_with_force_or_error_default(
+                &target_dir.join("migration/src/m015_add_credit_revocation.rs"),
+                &engine.render("migrations/m015_add_credit_revocation")?,
+                args.force,
+            )?;
+            crate::commands::add::ensure_migration_registered(
+                &target_dir.join("migration/src/lib.rs"),
+                "m015_add_credit_revocation",
+            )?;
         }
     }
 
@@ -559,6 +568,7 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
         files.push("src/entities/mod.rs".to_string());
         if normalized_features.contains("credits-seaorm") {
             files.push("migration/src/m013_create_credit_ledger.rs".to_string());
+            files.push("migration/src/m015_add_credit_revocation.rs".to_string());
         }
     }
 

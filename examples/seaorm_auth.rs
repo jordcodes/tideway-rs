@@ -864,6 +864,17 @@ impl tideway::auth::storage::VerificationStore for SeaOrmVerificationStore {
         Ok(())
     }
 
+    async fn verification_email(&self, user_id: &str) -> AppResult<Option<String>> {
+        let uuid = Uuid::parse_str(user_id).map_err(|e| TidewayError::BadRequest(e.to_string()))?;
+
+        let user = user::Entity::find_by_id(uuid)
+            .one(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok(user.map(|user| user.email))
+    }
+
     async fn send_verification_email(
         &self,
         user_id: &str,

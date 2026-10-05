@@ -8,8 +8,9 @@ use crate::{Result, TidewayError};
 
 use super::{
     ConsumptionOrder, CreditAllocation, CreditBalance, CreditBucket, CreditHistoryQuery,
-    CreditReservation, CreditSource, CreditStore, CreditTransaction, CreditTransactionKind,
-    GrantCredits, ReservationStatus, ReserveCredits, SourceBalance,
+    CreditReservation, CreditRevocation, CreditSource, CreditStore, CreditTransaction,
+    CreditTransactionKind, GrantCredits, ReservationStatus, ReserveCredits, RevokeCredits,
+    SourceBalance,
 };
 
 /// Concurrency-safe reference store for development and tests.
@@ -26,6 +27,16 @@ struct State {
     reservations: HashMap<String, CreditReservation>,
     reservations_by_key: HashMap<OperationKey, String>,
     transactions: Vec<CreditTransaction>,
+    revocations: HashMap<String, Revocation>,
+}
+
+/// Revocation state of one bucket.
+#[derive(Clone, Copy, Default)]
+struct Revocation {
+    /// Cumulative credits revoked from the bucket.
+    revoked: u64,
+    /// Revoked credits still held by reservations or already spent.
+    pending: u64,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -277,6 +288,68 @@ impl CreditStore for MemoryCreditStore {
         release_locked(&mut state, account_id, reservation_id, now, "release")
     }
 
+    async fn revoke(&self, request: &RevokeCredits, now: i64) -> Result<Option<CreditRevocation>> {
+        let mut state = self.lock()?;
+        let mut matches = state
+            .buckets
+            .values()
+            .filter(|bucket| bucket.idempotency_key == request.grant_idempotency_key);
+        let Some(bucket) = matches.next().cloned() else {
+            return Ok(None);
+        };
+        if matches.next().is_some() {
+            return Err(TidewayError::conflict(
+                "Credit grant idempotency key matches more than one grant",
+            ));
+        }
+        let current = state
+            .revocations
+            .get(&bucket.id)
+            .copied()
+            .unwrap_or_default();
+        let target = request.amount.resolve(bucket.original_amount);
+        let delta = target.saturating_sub(current.revoked);
+        if delta == 0 {
+            return Ok(Some(CreditRevocation {
+                bucket,
+                revoked_amount: current.revoked,
+                unrecovered_amount: current.pending,
+            }));
+        }
+        let taken = bucket.remaining_amount.min(delta);
+        let updated = Revocation {
+            revoked: target,
+            pending: current
+                .pending
+                .checked_add(delta - taken)
+                .ok_or_else(|| TidewayError::internal("Credit revocation overflow"))?,
+        };
+        let stored = state
+            .buckets
+            .get_mut(&bucket.id)
+            .ok_or_else(|| TidewayError::internal("Credit bucket disappeared"))?;
+        stored.remaining_amount -= taken;
+        let bucket = stored.clone();
+        state.revocations.insert(bucket.id.clone(), updated);
+        state.transactions.push(CreditTransaction {
+            id: uuid::Uuid::new_v4().to_string(),
+            account_id: bucket.account_id.clone(),
+            credit_type: bucket.credit_type.clone(),
+            kind: CreditTransactionKind::Revoke,
+            amount: delta,
+            bucket_id: Some(bucket.id.clone()),
+            reservation_id: None,
+            idempotency_key: request.idempotency_key.clone(),
+            created_at: now,
+            metadata: request.metadata.clone(),
+        });
+        Ok(Some(CreditRevocation {
+            bucket,
+            revoked_amount: updated.revoked,
+            unrecovered_amount: updated.pending,
+        }))
+    }
+
     async fn balance(
         &self,
         account_id: &str,
@@ -300,7 +373,9 @@ impl CreditStore for MemoryCreditStore {
                 .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
         }
         // Expired holds are available immediately, but cleanup is left to mutations or
-        // release_expired. Allocations from expired buckets never become available again.
+        // release_expired. Allocations from expired buckets never become available again, and
+        // releasing a hold first repays credits revoked from its bucket.
+        let mut expired_holds = HashMap::<&str, u64>::new();
         for reservation in state.reservations.values().filter(|reservation| {
             reservation.account_id == account_id
                 && reservation.credit_type == credit_type
@@ -308,16 +383,26 @@ impl CreditStore for MemoryCreditStore {
                 && reservation.expires_at <= now
         }) {
             for allocation in &reservation.allocations {
-                let bucket = state
-                    .buckets
-                    .get(&allocation.bucket_id)
-                    .ok_or_else(|| TidewayError::internal("Credit allocation bucket is missing"))?;
-                if bucket.expires_at.is_none_or(|expiry| expiry > now) {
-                    let total = by_source.entry(bucket.source).or_default();
-                    *total = total
-                        .checked_add(allocation.amount)
-                        .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
-                }
+                let total = expired_holds.entry(&allocation.bucket_id).or_default();
+                *total = total
+                    .checked_add(allocation.amount)
+                    .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
+            }
+        }
+        for (bucket_id, held) in expired_holds {
+            let bucket = state
+                .buckets
+                .get(bucket_id)
+                .ok_or_else(|| TidewayError::internal("Credit allocation bucket is missing"))?;
+            if bucket.expires_at.is_none_or(|expiry| expiry > now) {
+                let pending = state
+                    .revocations
+                    .get(bucket_id)
+                    .map_or(0, |revocation| revocation.pending);
+                let total = by_source.entry(bucket.source).or_default();
+                *total = total
+                    .checked_add(held.saturating_sub(pending))
+                    .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
             }
         }
         let available = by_source.values().try_fold(0u64, |total, amount| {
@@ -476,13 +561,22 @@ fn release_locked(
         }
     }
     for allocation in allocations {
+        // Credits revoked while held go back to the revocation, not the balance.
+        let repaid = match state.revocations.get_mut(&allocation.bucket_id) {
+            Some(revocation) => {
+                let repaid = revocation.pending.min(allocation.amount);
+                revocation.pending -= repaid;
+                repaid
+            }
+            None => 0,
+        };
         let bucket = state
             .buckets
             .get_mut(&allocation.bucket_id)
             .expect("release allocations validated above");
         bucket.remaining_amount = bucket
             .remaining_amount
-            .checked_add(allocation.amount)
+            .checked_add(allocation.amount - repaid)
             .expect("release amount validated above");
     }
     let reservation = state
@@ -552,6 +646,11 @@ mod tests {
     #[tokio::test]
     async fn balance_is_read_only_and_accounts_for_expired_holds() {
         super::super::balance_tests::assert_read_only_balance(&MemoryCreditStore::new()).await;
+    }
+
+    #[tokio::test]
+    async fn revocation_takes_back_remaining_and_held_credits() {
+        super::super::revocation_tests::assert_revocation(&MemoryCreditStore::new()).await;
     }
 
     #[tokio::test]
