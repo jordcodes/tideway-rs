@@ -15,7 +15,7 @@ fn read_manifest(path: &Path) -> toml::Value {
 
 fn str_at<'a>(value: &'a toml::Value, keys: &[&str]) -> &'a str {
     keys.iter()
-        .fold(Some(value), |value, key| value.and_then(|v| v.get(key)))
+        .try_fold(value, |value, key| value.get(key))
         .and_then(|v| v.as_str())
         .unwrap_or_else(|| panic!("missing `{}`", keys.join(".")))
 }
