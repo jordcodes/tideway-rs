@@ -378,4 +378,122 @@ mod websocket_tests {
             "Connection count should be exactly 5"
         );
     }
+
+    struct ChatLikeHandler;
+
+    #[async_trait::async_trait]
+    impl crate::websocket::WebSocketHandler for ChatLikeHandler {
+        async fn on_connect(
+            &self,
+            conn: &mut Connection,
+            ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            conn.set_user_id("user-1".to_string());
+            conn.join_room("general");
+            let manager = ctx.websocket_manager()?;
+            manager.add_to_room(conn.id(), "general");
+            manager
+                .broadcast_text_to_room("general", format!("{} joined", conn.id()))
+                .await
+        }
+
+        async fn on_message(
+            &self,
+            conn: &mut Connection,
+            msg: Message,
+            ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            let Message::Text(text) = msg else {
+                return Ok(());
+            };
+            let manager = ctx.websocket_manager()?;
+            for room in conn.rooms().iter() {
+                manager.broadcast_text_to_room(room, &text).await?;
+            }
+            manager
+                .broadcast_text_to_user("user-1", format!("dm: {text}"))
+                .await
+        }
+
+        async fn on_disconnect(&self, _conn: &mut Connection, _ctx: &crate::AppContext) {}
+    }
+
+    #[tokio::test]
+    async fn test_handlers_can_broadcast_to_own_room_and_user() {
+        use crate::websocket::extractor::{run_on_connect, run_on_message};
+        use tokio::time::{Duration, timeout};
+
+        let manager = Arc::new(ConnectionManager::new());
+        let ctx = crate::AppContext::builder()
+            .with_websocket_manager(manager.clone())
+            .build();
+        let (conn, mut rx) = Connection::channel("conn-1", 16);
+        let conn = Arc::new(tokio::sync::RwLock::new(conn));
+        manager.register(conn.clone()).await.unwrap();
+
+        timeout(
+            Duration::from_secs(2),
+            run_on_connect(&ChatLikeHandler, &conn, &manager, &ctx),
+        )
+        .await
+        .expect("on_connect must not deadlock broadcasting to its own room")
+        .unwrap();
+        assert!(matches!(rx.recv().await, Some(Message::Text(t)) if t == "conn-1 joined"));
+
+        timeout(
+            Duration::from_secs(2),
+            run_on_message(
+                &ChatLikeHandler,
+                &conn,
+                Message::Text("hi".into()),
+                &manager,
+                &ctx,
+            ),
+        )
+        .await
+        .expect("on_message must not deadlock broadcasting to its own room")
+        .unwrap();
+        assert!(matches!(rx.recv().await, Some(Message::Text(t)) if t == "hi"));
+        assert!(matches!(rx.recv().await, Some(Message::Text(t)) if t == "dm: hi"));
+
+        manager.unregister("conn-1").await;
+        manager
+            .broadcast_text_to_user("user-1", "gone")
+            .await
+            .unwrap();
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn test_user_mapping_follows_connection_user_id() {
+        let manager = ConnectionManager::new();
+        let (mut conn, mut rx) = Connection::channel("conn-1", 16);
+        conn.set_user_id("alice".into());
+        let conn = Arc::new(tokio::sync::RwLock::new(conn));
+        manager.register(conn.clone()).await.unwrap();
+
+        conn.write().await.set_user_id("bob".into());
+        manager.update_user_mapping("conn-1");
+        manager
+            .broadcast_text_to_user("alice", "stale")
+            .await
+            .unwrap();
+        manager
+            .broadcast_text_to_user("bob", "fresh")
+            .await
+            .unwrap();
+        assert!(matches!(rx.recv().await, Some(Message::Text(t)) if t == "fresh"));
+        assert!(rx.try_recv().is_err());
+
+        // Unregister must not wait on a lock a handler might hold.
+        let _guard = conn.write().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            manager.unregister("conn-1"),
+        )
+        .await
+        .expect("unregister must not need the connection lock");
+        manager.broadcast_text_to_user("bob", "gone").await.unwrap();
+        assert!(rx.try_recv().is_err());
+    }
 }
