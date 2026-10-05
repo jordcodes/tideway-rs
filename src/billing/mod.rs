@@ -92,7 +92,7 @@ pub use customer::{
 pub use subscription::{
     ProrationBehavior, ReconcileDifference, ReconcileResult, StripeSubscriptionClient,
     StripeSubscriptionData, Subscription, SubscriptionManager, SubscriptionMetadata,
-    UpdateSubscriptionRequest,
+    SubscriptionSyncOutcome, UpdateSubscriptionRequest,
 };
 
 // Checkout exports

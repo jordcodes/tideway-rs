@@ -274,11 +274,26 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
 
     /// Update subscription from a Stripe webhook event.
     ///
-    /// This is called by the webhook handler to sync subscription state.
+    /// This is called by the webhook handler to sync subscription state. A duplicate
+    /// subscription is logged and not saved; use [`Self::sync_from_stripe_checked`] to act on it.
     pub async fn sync_from_stripe(
         &self,
         stripe_subscription: StripeSubscriptionData,
     ) -> Result<()> {
+        self.sync_from_stripe_checked(stripe_subscription).await?;
+        Ok(())
+    }
+
+    /// Update subscription from Stripe, reporting whether it was saved.
+    ///
+    /// A subscription Tideway has not seen before is not saved when its entity already has a
+    /// different subscription that has not ended and is not set to cancel at period end. That
+    /// usually means the customer paid in two checkout sessions and is now billed twice; the
+    /// stored subscription is kept and [`SubscriptionSyncOutcome::Duplicate`] is returned.
+    pub async fn sync_from_stripe_checked(
+        &self,
+        stripe_subscription: StripeSubscriptionData,
+    ) -> Result<SubscriptionSyncOutcome> {
         // Find the billable entity for this subscription
         let billable_id = match self
             .store
@@ -288,7 +303,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             Some((id, _)) => id,
             None => {
                 // New subscription - extract billable_id from metadata
-                stripe_subscription
+                let billable_id = stripe_subscription
                     .metadata
                     .billable_id
                     .clone()
@@ -296,7 +311,27 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
                         crate::error::TidewayError::BadRequest(
                             "Subscription missing billable_id metadata".to_string(),
                         )
-                    })?
+                    })?;
+
+                if let Some(existing) = self.store.get_subscription(&billable_id).await?
+                    && existing.stripe_subscription_id != stripe_subscription.id
+                    && !existing.status.is_ended()
+                    && !existing.cancel_at_period_end
+                {
+                    tracing::warn!(
+                        target: "tideway::billing",
+                        billable_id = %billable_id,
+                        existing_subscription_id = %existing.stripe_subscription_id,
+                        duplicate_subscription_id = %stripe_subscription.id,
+                        "ignoring duplicate Stripe subscription for an entity that already has a live subscription"
+                    );
+                    return Ok(SubscriptionSyncOutcome::Duplicate {
+                        billable_id,
+                        existing,
+                    });
+                }
+
+                billable_id
             }
         };
 
@@ -320,7 +355,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         };
 
         self.store.save_subscription(&billable_id, &stored).await?;
-        Ok(())
+        Ok(SubscriptionSyncOutcome::Saved { billable_id })
     }
 
     /// Delete subscription record (called when subscription is deleted in Stripe).
@@ -333,6 +368,52 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             self.store.delete_subscription(&billable_id).await?;
         }
         Ok(())
+    }
+
+    /// Cancel a duplicate subscription reported by [`SubscriptionSyncOutcome::Duplicate`] or
+    /// `BillingEvent::DuplicateSubscription`.
+    ///
+    /// Cancels immediately in Stripe so the customer is not billed again. Refunds are not
+    /// issued; use `SecureRefundManager` if your policy calls for one.
+    ///
+    /// # Errors
+    ///
+    /// Returns `BadRequest` if the entity has no stored subscription or if
+    /// `duplicate_subscription_id` is the stored one, and `NotFound` if the Stripe subscription
+    /// belongs to a different entity.
+    pub async fn cancel_duplicate_subscription(
+        &self,
+        billable_id: &str,
+        duplicate_subscription_id: &str,
+    ) -> Result<()> {
+        let kept = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| {
+                crate::error::TidewayError::BadRequest(
+                    "No stored subscription; nothing is duplicated".to_string(),
+                )
+            })?;
+        if kept.stripe_subscription_id == duplicate_subscription_id {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Refusing to cancel the stored subscription as a duplicate".to_string(),
+            ));
+        }
+
+        let duplicate = self
+            .client
+            .get_subscription(duplicate_subscription_id)
+            .await?;
+        if duplicate.metadata.billable_id.as_deref() != Some(billable_id) {
+            return Err(crate::error::TidewayError::NotFound(format!(
+                "Subscription not found: {duplicate_subscription_id}"
+            )));
+        }
+
+        self.client
+            .cancel_subscription(duplicate_subscription_id)
+            .await
     }
 
     /// Get the plan configuration for a subscription.
@@ -457,6 +538,24 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             updated_local: update_local,
         })
     }
+}
+
+/// Result of syncing a Stripe subscription into local storage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SubscriptionSyncOutcome {
+    /// The subscription was saved for this entity.
+    Saved {
+        /// Billable entity the subscription belongs to.
+        billable_id: String,
+    },
+    /// Not saved: the entity already has a different live subscription.
+    Duplicate {
+        /// Billable entity the subscription belongs to.
+        billable_id: String,
+        /// The stored subscription that was kept.
+        existing: StoredSubscription,
+    },
 }
 
 /// Result of a reconciliation check.
@@ -996,6 +1095,118 @@ mod tests {
         assert_eq!(sub.plan_id, "starter");
         assert_eq!(sub.extra_seats, 2);
         assert!(sub.is_active());
+    }
+
+    #[tokio::test]
+    async fn test_sync_ignores_duplicate_subscription_for_entity() {
+        let store = InMemoryBillingStore::new();
+        let manager = SubscriptionManager::new(
+            store.clone(),
+            MockStripeSubscriptionClient::new(),
+            create_test_plans(),
+        );
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        let mut duplicate = create_test_subscription_data("org_123");
+        duplicate.id = "sub_duplicate".to_string();
+        duplicate.plan_id = "pro".to_string();
+        let outcome = manager.sync_from_stripe_checked(duplicate).await.unwrap();
+
+        let SubscriptionSyncOutcome::Duplicate {
+            billable_id,
+            existing,
+        } = outcome
+        else {
+            panic!("expected duplicate, got {outcome:?}");
+        };
+        assert_eq!(billable_id, "org_123");
+        assert_eq!(existing.stripe_subscription_id, "sub_123");
+
+        let stored = store.get_subscription("org_123").await.unwrap().unwrap();
+        assert_eq!(stored.stripe_subscription_id, "sub_123");
+        assert_eq!(stored.plan_id, "starter");
+    }
+
+    #[tokio::test]
+    async fn test_cancel_duplicate_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let manager = SubscriptionManager::new(store, client.clone(), create_test_plans());
+
+        let kept = create_test_subscription_data("org_123");
+        client.add_subscription(kept.clone());
+        manager.sync_from_stripe(kept).await.unwrap();
+
+        let mut duplicate = create_test_subscription_data("org_123");
+        duplicate.id = "sub_duplicate".to_string();
+        client.add_subscription(duplicate);
+        let mut other_entity = create_test_subscription_data("org_other");
+        other_entity.id = "sub_other".to_string();
+        client.add_subscription(other_entity);
+
+        // Never cancels the stored subscription or another entity's subscription
+        assert!(matches!(
+            manager
+                .cancel_duplicate_subscription("org_123", "sub_123")
+                .await,
+            Err(crate::error::TidewayError::BadRequest(_))
+        ));
+        assert!(matches!(
+            manager
+                .cancel_duplicate_subscription("org_123", "sub_other")
+                .await,
+            Err(crate::error::TidewayError::NotFound(_))
+        ));
+
+        manager
+            .cancel_duplicate_subscription("org_123", "sub_duplicate")
+            .await
+            .unwrap();
+
+        for (id, expected) in [
+            ("sub_duplicate", "canceled"),
+            ("sub_123", "active"),
+            ("sub_other", "active"),
+        ] {
+            assert_eq!(client.get_subscription(id).await.unwrap().status, expected);
+        }
+        let stored = manager.get_subscription("org_123").await.unwrap().unwrap();
+        assert_eq!(stored.id, "sub_123");
+    }
+
+    #[tokio::test]
+    async fn test_sync_replaces_subscription_that_is_ending() {
+        for (status, cancel_at_period_end) in [("canceled", false), ("active", true)] {
+            let store = InMemoryBillingStore::new();
+            let manager = SubscriptionManager::new(
+                store.clone(),
+                MockStripeSubscriptionClient::new(),
+                create_test_plans(),
+            );
+            let mut previous = create_test_subscription_data("org_123");
+            previous.status = status.to_string();
+            previous.cancel_at_period_end = cancel_at_period_end;
+            manager.sync_from_stripe(previous).await.unwrap();
+
+            let mut resubscribed = create_test_subscription_data("org_123");
+            resubscribed.id = "sub_new".to_string();
+            let outcome = manager
+                .sync_from_stripe_checked(resubscribed)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                outcome,
+                SubscriptionSyncOutcome::Saved {
+                    billable_id: "org_123".to_string()
+                }
+            );
+            let stored = store.get_subscription("org_123").await.unwrap().unwrap();
+            assert_eq!(stored.stripe_subscription_id, "sub_new");
+        }
     }
 
     #[tokio::test]

@@ -298,6 +298,8 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert!(billing_routes.contains(".with_event_sink(AppBillingEventSink)"));
     assert!(billing_events.contains("impl BillingEventSink for AppBillingEventSink"));
     assert!(billing_events.contains("event.event_id()"));
+    assert!(billing_events.contains("BillingEvent::DuplicateSubscription"));
+    assert!(billing_events.contains("cancel_duplicate_subscription"));
 }
 
 #[test]

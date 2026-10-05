@@ -12,7 +12,9 @@ use super::error::BillingError;
 use super::events::{BillingEvent, BillingEventContext, BillingEventSink, NoOpBillingEventSink};
 use super::plans::Plans;
 use super::storage::BillingStore;
-use super::subscription::{StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata};
+use super::subscription::{
+    StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata, SubscriptionSyncOutcome,
+};
 
 /// Webhook handler for Stripe events.
 ///
@@ -294,7 +296,21 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             NullSubscriptionClient,
             self.plans.clone(),
         );
-        sub_manager.sync_from_stripe(sub_data).await?;
+        let lifecycle_event = match sub_manager
+            .sync_from_stripe_checked(sub_data.clone())
+            .await?
+        {
+            SubscriptionSyncOutcome::Duplicate {
+                billable_id,
+                existing,
+            } => BillingEvent::DuplicateSubscription {
+                context: event_context(event),
+                billable_id,
+                existing_subscription_id: existing.stripe_subscription_id,
+                subscription: sub_data,
+            },
+            SubscriptionSyncOutcome::Saved { .. } => lifecycle_event,
+        };
         self.event_sink.handle(&lifecycle_event).await?;
 
         Ok(WebhookOutcome::Processed)
@@ -1079,6 +1095,63 @@ mod tests {
                 && plan_id == "sms_100"
                 && payment_status == "paid"
         ));
+    }
+
+    fn subscription_created_event(event_id: &str, subscription_id: &str) -> WebhookEvent {
+        WebhookEvent {
+            id: event_id.to_string(),
+            event_type: "customer.subscription.created".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": subscription_id,
+                    "customer": "cus_123",
+                    "status": "active",
+                    "items": {"data": [{"id": "si_base", "price": {"id": "price_starter"}}]},
+                    "metadata": {"billable_id": "org-1", "billable_type": "org"}
+                }),
+            },
+            created: 1_700_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn second_live_subscription_emits_duplicate_event_and_keeps_first() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+
+        handler
+            .handle_event(subscription_created_event("evt_first", "sub_first"))
+            .await
+            .unwrap();
+        assert_eq!(
+            handler
+                .handle_event(subscription_created_event("evt_second", "sub_second"))
+                .await
+                .unwrap(),
+            WebhookOutcome::Processed
+        );
+
+        let stored = store.get_subscription("org-1").await.unwrap().unwrap();
+        assert_eq!(stored.stripe_subscription_id, "sub_first");
+        let events = sink.events.lock().unwrap();
+        assert!(matches!(
+            &events[0],
+            BillingEvent::SubscriptionCreated { .. }
+        ));
+        assert!(matches!(
+            &events[1],
+            BillingEvent::DuplicateSubscription {
+                billable_id,
+                existing_subscription_id,
+                subscription,
+                ..
+            } if billable_id == "org-1"
+                && existing_subscription_id == "sub_first"
+                && subscription.id == "sub_second"
+        ));
+        assert_eq!(events[1].kind(), "duplicate_subscription");
     }
 
     #[tokio::test]

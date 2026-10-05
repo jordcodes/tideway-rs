@@ -26,6 +26,30 @@ pub trait BillingStore: Send + Sync {
         customer_id: &str,
     ) -> Result<()>;
 
+    /// Link a billable entity to a Stripe customer only if it has no customer yet.
+    ///
+    /// Returns the customer ID that is linked after the call: `customer_id` if this caller
+    /// created the link, or the previously linked ID if another caller got there first.
+    /// `get_or_create_customer` uses this so concurrent first checkouts converge on one
+    /// Stripe customer.
+    ///
+    /// Production stores should override this with an atomic insert-or-ignore followed by a
+    /// read (e.g. `INSERT ... ON CONFLICT (billable_id) DO NOTHING`). The default
+    /// implementation is a non-atomic check-then-set.
+    async fn link_stripe_customer_if_absent(
+        &self,
+        billable_id: &str,
+        billable_type: &str,
+        customer_id: &str,
+    ) -> Result<String> {
+        if let Some(existing) = self.get_stripe_customer_id(billable_id).await? {
+            return Ok(existing);
+        }
+        self.set_stripe_customer_id(billable_id, billable_type, customer_id)
+            .await?;
+        Ok(customer_id.to_string())
+    }
+
     // Subscription tracking
 
     /// Get the cached subscription for a billable entity.
@@ -315,6 +339,15 @@ impl SubscriptionStatus {
             Self::Paused => "paused",
             Self::Unpaid => "unpaid",
         }
+    }
+
+    /// Whether the subscription has ended and can no longer bill or be resumed.
+    ///
+    /// Any other status still belongs to a live Stripe subscription, so starting a new
+    /// checkout for the same entity would create a second subscription.
+    #[must_use]
+    pub fn is_ended(&self) -> bool {
+        matches!(self, Self::Canceled | Self::IncompleteExpired)
     }
 }
 
@@ -680,6 +713,23 @@ pub mod test {
                 },
             );
             Ok(())
+        }
+
+        async fn link_stripe_customer_if_absent(
+            &self,
+            billable_id: &str,
+            billable_type: &str,
+            customer_id: &str,
+        ) -> Result<String> {
+            let mut customers = self.inner.customers.write().unwrap();
+            let record =
+                customers
+                    .entry(billable_id.to_string())
+                    .or_insert_with(|| CustomerRecord {
+                        billable_type: billable_type.to_string(),
+                        stripe_customer_id: customer_id.to_string(),
+                    });
+            Ok(record.stripe_customer_id.clone())
         }
 
         async fn get_subscription(&self, billable_id: &str) -> Result<Option<StoredSubscription>> {

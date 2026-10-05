@@ -1051,6 +1051,59 @@ impl StripeCheckoutClient for LiveStripeClient {
             })?,
         })
     }
+
+    async fn expire_open_subscription_checkouts(&self, customer_id: &str) -> Result<()> {
+        let customer_id = parse_customer_id(customer_id)?;
+
+        let mut params = stripe::ListCheckoutSessions::new();
+        params.customer = Some(customer_id);
+        params.status = Some(stripe::CheckoutSessionStatus::Open);
+        params.limit = Some(100);
+
+        let sessions = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "list_checkout_sessions",
+            || {
+                let client = self.client.clone();
+                let params = params.clone();
+                async move { stripe::CheckoutSession::list(&client, &params).await }
+            },
+        )
+        .await?;
+
+        for session in sessions
+            .data
+            .into_iter()
+            .filter(|session| session.mode == stripe::CheckoutSessionMode::Subscription)
+        {
+            let client = self.idempotent_client("expire_checkout_session");
+            let path = format!("/checkout/sessions/{}/expire", session.id);
+            let expired = with_retry_cb(
+                &self.config,
+                &self.circuit_breaker,
+                "expire_checkout_session",
+                || {
+                    let client = client.clone();
+                    let path = path.clone();
+                    async move { client.post::<stripe::CheckoutSession>(&path).await }
+                },
+            )
+            .await;
+
+            // A session completed or expired since listing can no longer be expired
+            if let Err(error) = expired {
+                tracing::warn!(
+                    target: "tideway::billing",
+                    checkout_session_id = %session.id,
+                    error = %error,
+                    "failed to expire open subscription checkout session"
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // ============================================================================

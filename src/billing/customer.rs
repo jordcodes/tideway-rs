@@ -25,7 +25,8 @@ impl<S: BillingStore, C: StripeClient> CustomerManager<S, C> {
     /// This is the primary method for getting a customer ID. It will:
     /// 1. Check if the entity already has a linked Stripe customer
     /// 2. If not, create a new Stripe customer
-    /// 3. Link the new customer to the entity
+    /// 3. Link the new customer to the entity unless a concurrent call linked one first, in
+    ///    which case the linked customer is returned and the redundant one is deleted
     pub async fn get_or_create_customer(&self, entity: &impl BillableEntity) -> Result<String> {
         // Check if already linked
         if let Some(customer_id) = self
@@ -49,12 +50,30 @@ impl<S: BillingStore, C: StripeClient> CustomerManager<S, C> {
             })
             .await?;
 
-        // Link to entity
-        self.store
-            .set_stripe_customer_id(entity.billable_id(), entity.billable_type(), &customer_id)
+        // Link to entity, keeping any link a concurrent call made first
+        let linked_id = self
+            .store
+            .link_stripe_customer_if_absent(
+                entity.billable_id(),
+                entity.billable_type(),
+                &customer_id,
+            )
             .await?;
 
-        Ok(customer_id)
+        if linked_id != customer_id
+            && let Err(error) = self.client.delete_customer(&customer_id).await
+        {
+            tracing::warn!(
+                target: "tideway::billing",
+                billable_id = %entity.billable_id(),
+                orphaned_customer_id = %customer_id,
+                linked_customer_id = %linked_id,
+                error = %error,
+                "failed to delete redundant Stripe customer created by a concurrent checkout"
+            );
+        }
+
+        Ok(linked_id)
     }
 
     /// Get the Stripe customer ID for an entity (without creating).
@@ -313,6 +332,62 @@ mod tests {
         let id2 = manager.get_or_create_customer(&entity).await.unwrap();
 
         assert_eq!(id1, id2);
+    }
+
+    /// Yields before creating so concurrent callers interleave inside `get_or_create_customer`.
+    #[derive(Default)]
+    struct YieldingStripeClient {
+        inner: MockStripeClient,
+    }
+
+    impl StripeClient for YieldingStripeClient {
+        async fn create_customer(&self, request: CreateCustomerRequest) -> Result<String> {
+            tokio::task::yield_now().await;
+            self.inner.create_customer(request).await
+        }
+
+        async fn update_customer(
+            &self,
+            customer_id: &str,
+            request: UpdateCustomerRequest,
+        ) -> Result<()> {
+            self.inner.update_customer(customer_id, request).await
+        }
+
+        async fn delete_customer(&self, customer_id: &str) -> Result<()> {
+            self.inner.delete_customer(customer_id).await
+        }
+
+        async fn get_default_payment_method(&self, customer_id: &str) -> Result<Option<String>> {
+            self.inner.get_default_payment_method(customer_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_get_or_create_customer_reuses_one_customer() {
+        let store = InMemoryBillingStore::new();
+        let manager = CustomerManager::new(store.clone(), YieldingStripeClient::default());
+
+        let entity = TestEntity {
+            id: "org_race".to_string(),
+            email: "race@example.com".to_string(),
+            name: "Race Org".to_string(),
+        };
+
+        let (id1, id2) = tokio::join!(
+            manager.get_or_create_customer(&entity),
+            manager.get_or_create_customer(&entity)
+        );
+        let (id1, id2) = (id1.unwrap(), id2.unwrap());
+
+        assert_eq!(id1, id2);
+        assert_eq!(
+            store.get_stripe_customer_id("org_race").await.unwrap(),
+            Some(id1.clone())
+        );
+        let customers = manager.client.inner.get_customers();
+        assert_eq!(customers.len(), 1, "orphaned Stripe customer left behind");
+        assert_eq!(customers[0].0, id1);
     }
 
     #[tokio::test]

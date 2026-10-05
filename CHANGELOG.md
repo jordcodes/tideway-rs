@@ -40,6 +40,26 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   now rejected with `BadRequest` before Stripe is called, instead of panicking or wrapping. Seat
   totals computed from stored data saturate.
 
+### Fixed
+
+- Concurrent first checkouts for the same billable entity no longer create duplicate Stripe
+  customers. `CustomerManager::get_or_create_customer` keeps the first customer link and deletes
+  the redundant Stripe customer it created.
+- `CheckoutManager::create_checkout_session` returns `TidewayError::Conflict` when the entity
+  already has a subscription that has not ended. Previously it started a checkout that created a
+  second, separately billed subscription.
+- Creating a subscription checkout now expires the customer's other open subscription checkout
+  sessions, so paying in two tabs can no longer create two subscriptions.
+- A webhook for a second live subscription no longer silently replaces the stored subscription.
+  Tideway keeps the stored one and emits `BillingEvent::DuplicateSubscription`.
+- Stripe webhook verification now checks every `v1` signature in the `Stripe-Signature` header.
+  It previously kept only the last one, so webhooks were rejected during a Stripe secret roll.
+- `LiveStripeClient::create_usage_record` sends one `Idempotency-Key` across all retry attempts,
+  so a request that timed out after reaching Stripe can no longer be recorded (and billed) twice.
+- Usage-record calls now retry HTTP 429 and 5xx responses, matching timeouts and every other
+  `LiveStripeClient` operation. Other 4xx responses still fail immediately.
+- Usage-record calls reuse one pooled HTTP client instead of building a new client per attempt.
+
 ### Added
 
 - `ImpersonationRequestBody` and `DeletionRequestBody` are safe deserializable request bodies with
@@ -47,19 +67,22 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   with the authenticated user's ID.
 - `billing::WebhookHandler` supports multiple Stripe webhook signing secrets through
   `with_additional_secret` and `with_secrets`, so secrets can be rotated without downtime.
+- `BillingStore::link_stripe_customer_if_absent` links a Stripe customer only when none is linked
+  and returns the winning ID. The in-memory and SeaORM stores implement it atomically. Custom
+  stores inherit a non-atomic default and should override it.
+- `SubscriptionStatus::is_ended` reports `canceled` and `incomplete_expired` subscriptions.
+- `StripeCheckoutClient::expire_open_subscription_checkouts`, implemented by the live client.
+  Custom clients inherit a no-op default.
+- `BillingEvent::DuplicateSubscription`, plus `SubscriptionManager::sync_from_stripe_checked`
+  and `SubscriptionSyncOutcome` for callers that sync subscriptions themselves.
+- `SubscriptionManager::cancel_duplicate_subscription` immediately cancels a reported duplicate.
+  It never cancels the stored subscription or another entity's subscription, and does not refund.
 
-### Fixed
+### Changed
 
-- Stripe webhook verification now checks every `v1` signature in the `Stripe-Signature` header.
-  It previously kept only the last one, so webhooks were rejected during a Stripe secret roll.
-
-### Fixed
-
-- `LiveStripeClient::create_usage_record` sends one `Idempotency-Key` across all retry attempts,
-  so a request that timed out after reaching Stripe can no longer be recorded (and billed) twice.
-- Usage-record calls now retry HTTP 429 and 5xx responses, matching timeouts and every other
-  `LiveStripeClient` operation. Other 4xx responses still fail immediately.
-- Usage-record calls reuse one pooled HTTP client instead of building a new client per attempt.
+- CLI: the generated `src/billing/events.rs` logs a warning for `BillingEvent::DuplicateSubscription`
+  with a TODO for the cancel-and-refund policy. It requires the next Tideway release, so ship it
+  with the CLI release that targets that version.
 
 ### Compatibility
 
@@ -78,6 +101,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - **Breaking:** handlers using `Json<ImpersonationRequest>` or `Json<DeletionRequest>` no longer
   compile. Switch them to the `*Body` types and pass the authenticated actor ID to `into_request`.
   See `docs/upgrading.md`.
+- Checkout endpoints now return 409 for entities with a live subscription. Send existing
+  subscribers to plan changes or the customer portal instead.
+- Handle `BillingEvent::DuplicateSubscription` in your event sink to cancel or refund duplicates.
+  The duplicate's later `customer.subscription.updated` events emit it again; deduplicate by
+  subscription ID.
 
 ## [tideway-cli 0.1.48] - 2026-08-04
 

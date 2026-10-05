@@ -61,6 +61,21 @@ pub enum BillingEvent {
         /// Normalized subscription state.
         subscription: StripeSubscriptionData,
     },
+    /// Stripe created a subscription for an entity that already has a different live
+    /// subscription, so the customer is likely billed twice.
+    ///
+    /// Tideway keeps the existing subscription and does not save the duplicate. Cancel or refund
+    /// the duplicate in Stripe, or alert someone to resolve it.
+    DuplicateSubscription {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Application billable ID.
+        billable_id: String,
+        /// Stripe subscription ID that Tideway kept.
+        existing_subscription_id: String,
+        /// The duplicate subscription, which was not saved.
+        subscription: StripeSubscriptionData,
+    },
     /// Stripe deleted a subscription and Tideway removed its local state.
     SubscriptionDeleted {
         /// Shared Stripe event metadata.
@@ -117,6 +132,7 @@ impl BillingEvent {
             Self::OneTimeCheckoutCompleted { .. } => "one_time_checkout_completed",
             Self::SubscriptionCreated { .. } => "subscription_created",
             Self::SubscriptionUpdated { .. } => "subscription_updated",
+            Self::DuplicateSubscription { .. } => "duplicate_subscription",
             Self::SubscriptionDeleted { .. } => "subscription_deleted",
             Self::InvoicePaid { .. } => "invoice_paid",
             Self::InvoicePaymentFailed { .. } => "invoice_payment_failed",
@@ -129,6 +145,7 @@ impl BillingEvent {
             | Self::OneTimeCheckoutCompleted { context, .. }
             | Self::SubscriptionCreated { context, .. }
             | Self::SubscriptionUpdated { context, .. }
+            | Self::DuplicateSubscription { context, .. }
             | Self::SubscriptionDeleted { context, .. }
             | Self::InvoicePaid { context, .. }
             | Self::InvoicePaymentFailed { context, .. } => context,
