@@ -116,6 +116,31 @@ as `duration_secs` (an integer). Code that builds the request structs directly o
 not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
 not affected.
 
+## Unreleased: scheduled JWKS refresh
+
+JWKS-backed verifiers (`JwtVerifier::from_jwks_url` and `from_jwks_url_with_client`) now
+re-fetch the key set every hour. Before this change, keys were fetched at startup and again only
+for an unknown `kid`, so a key the provider revoked stayed trusted until the process restarted.
+No code change is required. Behavior changes:
+
+| Situation | Before | Now |
+| --- | --- | --- |
+| Provider removes a key | Tokens signed with it still verify | Rejected after the next scheduled refresh |
+| JWKS also contains `EC`, `OKP`, or `oct` keys | Loading or refresh fails | Those keys are skipped; RSA keys are used |
+| JWKS contains keys, but no valid RSA keys | Loading or refresh fails | Unchanged: loading fails, refresh keeps the current keys |
+| RSA key with invalid `n`/`e` | `Internal` (500) on each request using it | Key skipped; requests using it get `Unauthorized` (401) |
+
+The refresh runs in the background, so requests never wait for it. If it fails, the current keys
+stay in use, a warning is logged, and the refresh is retried after the unknown-key cooldown
+(30 seconds by default).
+
+Before deploying, check JWKS-backed verifiers:
+
+1. Confirm the app can reach the JWKS endpoint after startup, not just during boot. If it cannot,
+   expect a warning roughly every 30 seconds.
+2. Choose a different interval with `.with_jwks_refresh_interval(duration)`, or keep the old
+   behavior with `.without_scheduled_jwks_refresh()`.
+
 ## Unreleased: credit top-up refunds and disputes
 
 `CreditTopUpEventSink` now takes back prepaid credits when a Stripe payment is refunded or
