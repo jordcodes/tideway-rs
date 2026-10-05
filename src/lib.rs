@@ -277,6 +277,17 @@ macro_rules! register_optional_modules {
     }};
 }
 
+// Internal helper for `module!`: builds a `MethodRouter` from `method => handler` pairs.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tideway_method_router {
+    ($method:ident => $handler:expr $(, $more_method:ident => $more_handler:expr)* $(,)?) => {{
+        let router = axum::routing::$method($handler);
+        $(let router = router.$more_method($more_handler);)*
+        router
+    }};
+}
+
 /// Define a `RouteModule` with a compact route list.
 ///
 /// # Example
@@ -301,16 +312,6 @@ macro_rules! register_optional_modules {
 ///     ]
 /// );
 /// ```
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __tideway_method_router {
-    ($method:ident => $handler:expr $(, $more_method:ident => $more_handler:expr)* $(,)?) => {{
-        let router = axum::routing::$method($handler);
-        $(let router = router.$more_method($more_handler);)*
-        router
-    }};
-}
-
 #[macro_export]
 macro_rules! module {
     ($(#[$attr:meta])*, $name:ident, prefix = $prefix:expr, routes = [ $(($path:expr, $( $method:ident => $handler:expr ),+ $(,)?)),+ $(,)? ]) => {
