@@ -290,10 +290,23 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
     /// different subscription that has not ended and is not set to cancel at period end. That
     /// usually means the customer paid in two checkout sessions and is now billed twice; the
     /// stored subscription is kept and [`SubscriptionSyncOutcome::Duplicate`] is returned.
+    ///
+    /// A subscription removed by [`Self::delete_subscription`] is never saved again, so a late
+    /// webhook cannot restore it; [`SubscriptionSyncOutcome::Deleted`] is returned instead.
     pub async fn sync_from_stripe_checked(
         &self,
         stripe_subscription: StripeSubscriptionData,
     ) -> Result<SubscriptionSyncOutcome> {
+        if self
+            .store
+            .is_subscription_deleted(&stripe_subscription.id)
+            .await?
+        {
+            return Ok(SubscriptionSyncOutcome::Deleted {
+                stripe_subscription_id: stripe_subscription.id,
+            });
+        }
+
         // Find the billable entity for this subscription
         let billable_id = match self
             .store
@@ -354,12 +367,33 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
                 .unwrap_or(0),
         };
 
+        let stripe_subscription_id = stored.stripe_subscription_id.clone();
         self.store.save_subscription(&billable_id, &stored).await?;
+
+        // A deletion processed while this sync was in flight marks the subscription before
+        // removing its row, so re-check and undo the save.
+        if self
+            .store
+            .is_subscription_deleted(&stripe_subscription_id)
+            .await?
+        {
+            self.delete_subscription(&stripe_subscription_id).await?;
+            return Ok(SubscriptionSyncOutcome::Deleted {
+                stripe_subscription_id,
+            });
+        }
+
         Ok(SubscriptionSyncOutcome::Saved { billable_id })
     }
 
     /// Delete subscription record (called when subscription is deleted in Stripe).
+    ///
+    /// The subscription is marked deleted first, so later syncs of it are ignored even when
+    /// Stripe delivers an older event after this one.
     pub async fn delete_subscription(&self, stripe_subscription_id: &str) -> Result<()> {
+        self.store
+            .mark_subscription_deleted(stripe_subscription_id)
+            .await?;
         if let Some((billable_id, _)) = self
             .store
             .get_subscription_by_stripe_id(stripe_subscription_id)
@@ -555,6 +589,11 @@ pub enum SubscriptionSyncOutcome {
         billable_id: String,
         /// The stored subscription that was kept.
         existing: StoredSubscription,
+    },
+    /// Not saved: the subscription was already deleted in Stripe.
+    Deleted {
+        /// Stripe subscription ID of the deleted subscription.
+        stripe_subscription_id: String,
     },
 }
 
@@ -1128,6 +1167,153 @@ mod tests {
         let stored = store.get_subscription("org_123").await.unwrap().unwrap();
         assert_eq!(stored.stripe_subscription_id, "sub_123");
         assert_eq!(stored.plan_id, "starter");
+    }
+
+    #[tokio::test]
+    async fn test_sync_does_not_resurrect_deleted_subscription() {
+        let store = InMemoryBillingStore::new();
+        let manager = SubscriptionManager::new(
+            store.clone(),
+            MockStripeSubscriptionClient::new(),
+            create_test_plans(),
+        );
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+        manager.delete_subscription("sub_123").await.unwrap();
+
+        let outcome = manager
+            .sync_from_stripe_checked(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            SubscriptionSyncOutcome::Deleted {
+                stripe_subscription_id: "sub_123".to_string()
+            }
+        );
+        assert!(store.get_subscription("org_123").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_before_first_sync_blocks_later_sync() {
+        let store = InMemoryBillingStore::new();
+        let manager = SubscriptionManager::new(
+            store.clone(),
+            MockStripeSubscriptionClient::new(),
+            create_test_plans(),
+        );
+
+        manager.delete_subscription("sub_123").await.unwrap();
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        assert!(store.get_subscription("org_123").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_sync_still_updates_live_and_cancelled_subscriptions() {
+        let store = InMemoryBillingStore::new();
+        let manager = SubscriptionManager::new(
+            store.clone(),
+            MockStripeSubscriptionClient::new(),
+            create_test_plans(),
+        );
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        let mut cancelled = create_test_subscription_data("org_123");
+        cancelled.status = "canceled".to_string();
+        manager.sync_from_stripe(cancelled).await.unwrap();
+        let stored = store.get_subscription("org_123").await.unwrap().unwrap();
+        assert_eq!(stored.status, SubscriptionStatus::Canceled);
+
+        let mut other = create_test_subscription_data("org_456");
+        other.id = "sub_456".to_string();
+        manager.delete_subscription("sub_123").await.unwrap();
+        assert!(matches!(
+            manager.sync_from_stripe_checked(other).await.unwrap(),
+            SubscriptionSyncOutcome::Saved { .. }
+        ));
+    }
+
+    /// Store that processes a deletion of the subscription while it is being saved.
+    #[derive(Clone)]
+    struct DeleteDuringSaveStore(InMemoryBillingStore);
+
+    #[async_trait::async_trait]
+    impl BillingStore for DeleteDuringSaveStore {
+        async fn get_stripe_customer_id(&self, billable_id: &str) -> Result<Option<String>> {
+            self.0.get_stripe_customer_id(billable_id).await
+        }
+        async fn set_stripe_customer_id(
+            &self,
+            billable_id: &str,
+            billable_type: &str,
+            customer_id: &str,
+        ) -> Result<()> {
+            self.0
+                .set_stripe_customer_id(billable_id, billable_type, customer_id)
+                .await
+        }
+        async fn get_subscription(&self, billable_id: &str) -> Result<Option<StoredSubscription>> {
+            self.0.get_subscription(billable_id).await
+        }
+        async fn save_subscription(
+            &self,
+            billable_id: &str,
+            subscription: &StoredSubscription,
+        ) -> Result<()> {
+            // The concurrent deletion marks and removes before this save lands.
+            self.0
+                .mark_subscription_deleted(&subscription.stripe_subscription_id)
+                .await?;
+            self.0.save_subscription(billable_id, subscription).await
+        }
+        async fn delete_subscription(&self, billable_id: &str) -> Result<()> {
+            self.0.delete_subscription(billable_id).await
+        }
+        async fn get_subscription_by_stripe_id(
+            &self,
+            stripe_subscription_id: &str,
+        ) -> Result<Option<(String, StoredSubscription)>> {
+            self.0
+                .get_subscription_by_stripe_id(stripe_subscription_id)
+                .await
+        }
+        async fn is_event_processed(&self, event_id: &str) -> Result<bool> {
+            self.0.is_event_processed(event_id).await
+        }
+        async fn mark_event_processed(&self, event_id: &str) -> Result<()> {
+            self.0.mark_event_processed(event_id).await
+        }
+        async fn count_subscriptions_by_plan(&self, plan_id: &str) -> Result<u32> {
+            self.0.count_subscriptions_by_plan(plan_id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sync_undoes_save_when_deleted_concurrently() {
+        let inner = InMemoryBillingStore::new();
+        let manager = SubscriptionManager::new(
+            DeleteDuringSaveStore(inner.clone()),
+            MockStripeSubscriptionClient::new(),
+            create_test_plans(),
+        );
+
+        let outcome = manager
+            .sync_from_stripe_checked(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        assert!(matches!(outcome, SubscriptionSyncOutcome::Deleted { .. }));
+        assert!(inner.get_subscription("org_123").await.unwrap().is_none());
     }
 
     #[tokio::test]
