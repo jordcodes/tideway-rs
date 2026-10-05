@@ -26,7 +26,7 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 >
 > Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
 > `CreateRefundRequest` has a new `idempotency_key` field,
-> `BillingEvent::OneTimeCheckoutCompleted` has a new field, `CreditTransactionKind` is
+> `BillingEvent::OneTimeCheckoutCompleted` and `Refund` have new fields, `CreditTransactionKind` is
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
@@ -68,6 +68,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   retries. Identical partial refunds within Stripe's 24-hour key window collapse into one;
   use a distinct explicit key for each intentional repeat refund via `idempotency_key: Some(...)`
   or `.with_idempotency_key(...)`, and reuse that key when retrying the same refund.
+- **Breaking:** `Refund` has a new `replayed` field, true when Stripe returned a cached refund
+  for a repeated idempotency key (its `Idempotent-Replayed` header) instead of issuing a new one.
+  Previously an identical refund within 24 hours silently returned the first refund. Struct
+  literals and custom `StripeRefundClient`s must set it. `LiveStripeClient::create_refund` now
+  calls Stripe's REST API directly to read the header.
 - **Breaking:** `JobsConfig` has a new `shutdown_timeout_seconds` field (default 25, env
   `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`); struct literals must set it or use
   `..Default::default()`. On SIGTERM, `App::serve()` now stops accepting HTTP connections
@@ -281,6 +286,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - `InvitationStore::invitation_grants_owner` lets `InvitationManager::invite` reject owner-role
   invitations at creation. The in-memory and SeaORM stores implement it. Custom stores inherit a
   default that returns `false`; owner invitations from those stores are still rejected at `accept`.
+- `RefundManager::refund(request)` and `SecureRefundManager::refund(billable_id, request)` take a
+  full `CreateRefundRequest`, so callers can set `with_idempotency_key`. The convenience refund
+  methods derive their key from the target, amount, and reason, so an identical refund within
+  Stripe's 24-hour window returns the original refund with `replayed` set; use a distinct key for
+  intentional repeat refunds. The secure variant verifies ownership of both the charge and the payment intent.
 
 ### Changed
 

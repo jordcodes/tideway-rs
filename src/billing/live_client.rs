@@ -465,6 +465,10 @@ fn parse_invoice_id(id: &str) -> Result<stripe::InvoiceId> {
 
 const STRIPE_API_BASE: &str = "https://api.stripe.com";
 
+/// API version for raw REST calls, matching the version async-stripe pins, so
+/// responses deserialize into its types.
+const STRIPE_API_VERSION: stripe::ApiVersion = stripe::ApiVersion::V2023_10_16;
+
 /// Live Stripe client for production use.
 ///
 /// Implements all Stripe client traits with:
@@ -495,8 +499,9 @@ pub struct LiveStripeClient {
     circuit_breaker: Arc<CircuitBreaker>,
     /// Shared HTTP client for raw REST calls, reused across requests and retries.
     http: reqwest::Client,
-    /// Base URL for raw REST calls the async-stripe crate doesn't cover (usage records).
-    usage_api_base: String,
+    /// Base URL for raw REST calls the async-stripe crate doesn't cover (usage
+    /// records, and refund creation, which needs the `Idempotent-Replayed` header).
+    rest_api_base: String,
 }
 
 impl LiveStripeClient {
@@ -533,21 +538,14 @@ impl LiveStripeClient {
             api_key,
             circuit_breaker,
             http: reqwest::Client::new(),
-            usage_api_base: STRIPE_API_BASE.to_string(),
+            rest_api_base: STRIPE_API_BASE.to_string(),
         })
     }
 
     /// Point raw REST calls at a different base URL (e.g. a local test server).
     #[cfg(test)]
-    fn with_usage_api_base(mut self, base: impl Into<String>) -> Self {
-        self.usage_api_base = base.into();
-        self
-    }
-
-    /// Point async-stripe calls at a different base URL (e.g. a local test server).
-    #[cfg(test)]
-    fn with_stripe_api_base(mut self, base: &str) -> Self {
-        self.client = stripe::Client::from_url(base, self.api_key.expose_secret());
+    fn with_rest_api_base(mut self, base: impl Into<String>) -> Self {
+        self.rest_api_base = base.into();
         self
     }
 
@@ -1588,54 +1586,77 @@ impl StripePaymentMethodClient for LiveStripeClient {
 impl StripeRefundClient for LiveStripeClient {
     async fn create_refund(&self, request: CreateRefundRequest) -> Result<Refund> {
         // Deterministic per request so caller retries don't refund twice.
-        let client = self
-            .client
-            .clone()
-            .with_strategy(stripe::RequestStrategy::Idempotent(
-                request.idempotency_key(),
-            ));
+        let idempotency_key = request.idempotency_key();
 
-        let mut params = stripe::CreateRefund::new();
+        let mut form = Vec::new();
 
         if let Some(ref charge_id) = request.charge_id {
-            params.charge = Some(
-                charge_id
-                    .parse()
-                    .map_err(|_| BillingError::ChargeNotFound {
-                        charge_id: charge_id.clone(),
-                    })?,
-            );
+            charge_id
+                .parse::<stripe::ChargeId>()
+                .map_err(|_| BillingError::ChargeNotFound {
+                    charge_id: charge_id.clone(),
+                })?;
+            form.push(("charge", charge_id.clone()));
         }
 
         if let Some(ref pi_id) = request.payment_intent_id {
-            params.payment_intent =
-                Some(pi_id.parse().map_err(|_| BillingError::RefundFailed {
+            pi_id
+                .parse::<stripe::PaymentIntentId>()
+                .map_err(|_| BillingError::RefundFailed {
                     reason: format!("Invalid payment intent ID: {}", pi_id),
-                })?);
+                })?;
+            form.push(("payment_intent", pi_id.clone()));
         }
 
         if let Some(amount) = request.amount {
-            params.amount = Some(amount);
+            form.push(("amount", amount.to_string()));
         }
 
         if let Some(reason) = request.reason {
-            params.reason = Some(match reason {
-                RefundReason::Duplicate => stripe::RefundReasonFilter::Duplicate,
-                RefundReason::Fraudulent => stripe::RefundReasonFilter::Fraudulent,
-                RefundReason::RequestedByCustomer => {
-                    stripe::RefundReasonFilter::RequestedByCustomer
-                }
-            });
+            form.push(("reason", reason.as_str().to_string()));
         }
 
-        let refund = with_retry_cb(&self.config, &self.circuit_breaker, "create_refund", || {
-            let client = client.clone();
-            let params = params.clone();
-            async move { stripe::Refund::create(&client, params).await }
-        })
-        .await?;
+        // Raw REST call because async-stripe doesn't expose response headers, and
+        // `Idempotent-Replayed` is how Stripe reports a cached response.
+        let url = format!("{}/v1/refunds", self.rest_api_base);
+        let attempts = std::sync::atomic::AtomicU32::new(0);
 
-        Ok(map_refund(refund))
+        let (body, replayed) =
+            with_retry_cb(&self.config, &self.circuit_breaker, "create_refund", || {
+                // A replay on a retry may be of our own timed-out first attempt,
+                // so only a replay on the first attempt is reported.
+                let first_attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                let request = self
+                    .http
+                    .post(&url)
+                    .basic_auth(self.api_key.expose_secret(), None::<&str>)
+                    .header("Idempotency-Key", &idempotency_key)
+                    .header("Stripe-Version", STRIPE_API_VERSION.as_str())
+                    .form(&form);
+                async move {
+                    let resp = request
+                        .send()
+                        .await
+                        .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
+                    let replayed = resp
+                        .headers()
+                        .get("idempotent-replayed")
+                        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"true"));
+                    let body = read_stripe_response(resp).await?;
+                    Ok((body, first_attempt && replayed))
+                }
+            })
+            .await?;
+
+        let refund: stripe::Refund =
+            serde_json::from_value(body).map_err(|e| BillingError::Internal {
+                message: format!("Failed to parse Stripe refund: {e}"),
+            })?;
+
+        Ok(Refund {
+            replayed,
+            ..map_refund(refund)
+        })
     }
 
     async fn get_refund(&self, refund_id: &str) -> Result<Refund> {
@@ -1783,6 +1804,7 @@ fn map_refund(refund: stripe::Refund) -> Refund {
         created: refund.created as u64,
         charge_id,
         payment_intent_id,
+        replayed: false,
     }
 }
 
@@ -2317,7 +2339,7 @@ impl StripeUsageClient for LiveStripeClient {
         // The async-stripe crate doesn't fully expose usage record creation
         let url = format!(
             "{}/v1/subscription_items/{}/usage_records",
-            self.usage_api_base, subscription_item_id
+            self.rest_api_base, subscription_item_id
         );
 
         let form = vec![
@@ -2386,7 +2408,7 @@ impl StripeUsageClient for LiveStripeClient {
         // Use Stripe's REST API directly
         let url = format!(
             "{}/v1/subscription_items/{}/usage_record_summaries",
-            self.usage_api_base, subscription_item_id
+            self.rest_api_base, subscription_item_id
         );
 
         let response: serde_json::Value = with_retry_cb(
@@ -2869,11 +2891,15 @@ mod tests {
         enum Reply {
             Hang(Duration),
             Status(u16, &'static str),
+            /// 200 with `Idempotent-Replayed: true`, as Stripe sends for a cached response.
+            Replayed(&'static str),
         }
 
         #[derive(Debug)]
         struct SeenRequest {
             idempotency_key: Option<String>,
+            stripe_version: Option<String>,
+            body: String,
             peer: SocketAddr,
         }
 
@@ -2894,12 +2920,18 @@ mod tests {
             State(mock): State<MockStripe>,
             ConnectInfo(peer): ConnectInfo<SocketAddr>,
             headers: HeaderMap,
+            body: String,
         ) -> axum::response::Response {
-            mock.seen.lock().unwrap().push(SeenRequest {
-                idempotency_key: headers
-                    .get("idempotency-key")
+            let header = |name: &str| {
+                headers
+                    .get(name)
                     .and_then(|v| v.to_str().ok())
-                    .map(str::to_string),
+                    .map(str::to_string)
+            };
+            mock.seen.lock().unwrap().push(SeenRequest {
+                idempotency_key: header("idempotency-key"),
+                stripe_version: header("stripe-version"),
+                body,
                 peer,
             });
             let reply = mock
@@ -2916,6 +2948,15 @@ mod tests {
                 Reply::Status(code, body) => (
                     StatusCode::from_u16(code).unwrap(),
                     [("content-type", "application/json")],
+                    body,
+                )
+                    .into_response(),
+                Reply::Replayed(body) => (
+                    StatusCode::OK,
+                    [
+                        ("content-type", "application/json"),
+                        ("idempotent-replayed", "true"),
+                    ],
                     body,
                 )
                     .into_response(),
@@ -2956,7 +2997,7 @@ mod tests {
                 .disable_circuit_breaker();
             LiveStripeClient::new("sk_test_12345678901234567890", config)
                 .unwrap()
-                .with_usage_api_base(base)
+                .with_rest_api_base(base)
         }
 
         #[tokio::test]
@@ -2988,20 +3029,27 @@ mod tests {
         async fn repeated_refund_requests_reuse_same_idempotency_key() {
             let (base, mock) = start_mock(vec![
                 Reply::Status(200, REFUND_OK),
-                Reply::Status(200, REFUND_OK),
+                Reply::Replayed(REFUND_OK),
                 Reply::Status(200, REFUND_OK),
             ])
             .await;
-            let client = test_client(&base).with_stripe_api_base(&format!("{base}/"));
+            let client = test_client(&base);
 
             // Simulate a caller retrying the same refund (e.g. a double-submit).
+            let mut replayed = Vec::new();
             for _ in 0..2 {
                 let refund = client
                     .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(500))
                     .await
                     .unwrap();
                 assert_eq!(refund.id, "re_123");
+                replayed.push(refund.replayed);
             }
+            assert_eq!(
+                replayed,
+                [false, true],
+                "Stripe's replay must be reported, not silent"
+            );
             // A different refund must not share the key.
             client
                 .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(700))
@@ -3020,6 +3068,53 @@ mod tests {
                 "retrying the same refund must reuse its idempotency key"
             );
             assert_ne!(seen[2].idempotency_key.as_deref(), Some(first_key));
+        }
+
+        #[tokio::test]
+        async fn refund_request_sends_params_and_pinned_api_version() {
+            let (base, mock) = start_mock(vec![Reply::Status(200, REFUND_OK)]).await;
+            let refund = test_client(&base)
+                .create_refund(
+                    CreateRefundRequest::for_charge("ch_test123")
+                        .with_amount(500)
+                        .with_reason(RefundReason::RequestedByCustomer)
+                        .with_idempotency_key("ticket_42"),
+                )
+                .await
+                .unwrap();
+            assert_eq!(refund.amount, 500);
+            assert_eq!(refund.charge_id.as_deref(), Some("ch_test123"));
+            assert!(!refund.replayed);
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].idempotency_key.as_deref(), Some("ticket_42"));
+            assert_eq!(
+                seen[0].stripe_version.as_deref(),
+                Some(STRIPE_API_VERSION.as_str())
+            );
+            assert_eq!(
+                seen[0].body,
+                "charge=ch_test123&amount=500&reason=requested_by_customer"
+            );
+        }
+
+        #[tokio::test]
+        async fn refund_replayed_only_on_internal_retry_is_not_reported() {
+            // The first attempt may have reached Stripe before timing out, so the
+            // retry's replay can be of this same call and must not be flagged.
+            let (base, mock) = start_mock(vec![
+                Reply::Hang(Duration::from_secs(3)),
+                Reply::Replayed(REFUND_OK),
+            ])
+            .await;
+            let refund = test_client(&base)
+                .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(500))
+                .await
+                .unwrap();
+            assert_eq!(refund.id, "re_123");
+            assert!(!refund.replayed);
+            assert_eq!(mock.seen.lock().unwrap().len(), 2);
         }
 
         #[tokio::test]

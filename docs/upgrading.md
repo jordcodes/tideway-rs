@@ -101,6 +101,7 @@ through the application's normal migration and deployment workflow.
 | `tideway::prelude` exports `DatabaseConnectionTrait` instead of `DatabaseConnection` | See [prelude database trait](#08x-to-090-prelude-database-trait) |
 | `CachedInvoiceManager` returns `Arc<InvoiceList>` and `Option<Arc<Invoice>>` | See [shared cached invoices](#08x-to-090-shared-cached-invoices) |
 | `SecureRefundManager::get_refund` takes the billable ID | See [refund lookups](#08x-to-090-refund-lookups-scoped-to-the-billable-entity) |
+| `Refund` has a new `replayed` field | Set it in struct literals and custom `StripeRefundClient`s; see [replayed refunds](#08x-to-090-replayed-refunds) |
 | `BillingEvent::OneTimeCheckoutCompleted` field, `CreditTransactionKind` `#[non_exhaustive]`, `credits-seaorm` migration | See [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes) |
 | `JobsConfig` has a new `shutdown_timeout_seconds` field | Set it in struct literals or use `..Default::default()`; see [bounded job shutdown](#08x-to-090-bounded-job-shutdown) |
 
@@ -372,6 +373,24 @@ let refund = manager.get_refund("org_123", "re_xxx").await?;
 A refund owned by another entity returns `BillingError::RefundNotFound` (404), the same as an
 unknown ID. Pass the billable ID of the authenticated caller, not one taken from the request. For
 admin-only lookups that must read any refund, use `RefundManager::get_refund`, which is unchanged.
+
+## 0.8.x to 0.9.0: replayed refunds
+
+Refund creation derives a Stripe idempotency key from the charge or payment intent, amount, and
+reason, so a second identical refund within 24 hours returned the first refund and issued
+nothing. `Refund` now has a `replayed` field that is `true` in that case:
+
+```rust
+let refund = manager.refund_charge("org_123", "ch_xxx", Some(500)).await?;
+if refund.replayed {
+    // No new refund was issued.
+}
+```
+
+Code that constructs `Refund` must set `replayed`, and custom `StripeRefundClient`
+implementations should set it to `true` when they return a cached refund. To issue an intentional
+repeat refund, use `refund(...)` with `CreateRefundRequest::with_idempotency_key`; see
+[refund idempotency](billing.md#refund-idempotency).
 
 ## 0.8.x to 0.9.0: bounded job shutdown
 
