@@ -9,6 +9,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- `RedisCache` now stores keys under a `cache:` prefix (configurable with `with_key_prefix`),
+  and `clear()` deletes only keys with that prefix. Previously `clear()` ran `FLUSHDB`, which
+  also wiped job queues and any other data in the same Redis database. Entries written by
+  earlier versions are no longer read and expire on their existing TTL. See `docs/upgrading.md`.
+- `RedisCache` sets TTLs in milliseconds (`PSETEX`). Previously TTLs under one second were
+  truncated to `SETEX 0`, which Redis rejects, so those writes failed.
 - **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
