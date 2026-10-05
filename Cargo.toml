@@ -38,9 +38,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = "2.0"
 anyhow = "1.0"
 
-# Configuration
-config = "0.14"
-
 # Auth
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
