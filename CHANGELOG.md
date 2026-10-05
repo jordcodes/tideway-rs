@@ -9,6 +9,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- The database prelude now exports `DatabaseConnectionTrait` instead of `DatabaseConnection`
+  to avoid ambiguous imports with SeaORM. Update prelude trait references to the new alias
+  or explicitly import `tideway::DatabaseConnection`; the original trait paths are unchanged.
+
 > **Billing behavior change:** `LiveStripeClient` usage-record errors now report Stripe's HTTP
 > status instead of a generic internal error. Applications using metered billing should review
 > the Compatibility notes below and `docs/upgrading.md`.
