@@ -773,6 +773,15 @@ All requests automatically include:
 10. **Request Logging**: Structured request/response logging
 11. **Metrics**: Prometheus metrics collection (optional, uses route templates when available)
 
+For the built-in application routes, middleware runs from outermost to innermost:
+request ID generation → response ID propagation → CORS → user global layers →
+metrics → tracing → development logging → request logging → security headers →
+compression → rate limiting → timeout → body size limit → auth provider bridge → handler.
+Optional layers run only when enabled. Responses unwind the stack in reverse, so
+logging and metrics include rate-limit (429) and timeout (408) responses. Request IDs
+also wrap extra routers and early responses from CORS or global layers; extra routers
+retain their own application middleware.
+
 ## Dependency Injection
 
 Tideway provides `AppContext` for dependency injection:
