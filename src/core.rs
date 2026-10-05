@@ -84,18 +84,17 @@ impl App {
         // Add metrics endpoint route (needs to be here so into_test_router() includes it)
         #[cfg(feature = "metrics")]
         {
-            if metrics_collector.is_some() {
-                if let Some(token) = config
+            if metrics_collector.is_some()
+                && let Some(token) = config
                     .metrics
                     .bearer_token
                     .as_ref()
                     .filter(|t| !t.trim().is_empty())
-                {
-                    router = router.route(
-                        config.metrics.path.as_str(),
-                        authenticated_metrics_route(token.clone()),
-                    );
-                }
+            {
+                router = router.route(
+                    config.metrics.path.as_str(),
+                    authenticated_metrics_route(token.clone()),
+                );
             }
         }
 
@@ -840,7 +839,7 @@ mod middleware_stack_tests {
         app.router = app
             .router
             .route("/fast", get(|| async { "ok" }))
-            .route("/slow", get(|| std::future::pending::<StatusCode>()));
+            .route("/slow", get(std::future::pending::<StatusCode>));
         app
     }
 
