@@ -26,7 +26,7 @@ use tower_http::trace::TraceLayer;
 use std::sync::Arc;
 
 #[cfg(feature = "metrics")]
-use crate::metrics::{MetricsCollector, build_metrics_layer, metrics_handler};
+use crate::metrics::{MetricsCollector, authenticated_metrics_route, build_metrics_layer};
 
 #[cfg(feature = "jobs")]
 use crate::jobs::{JobRegistry, WorkerPool};
@@ -85,10 +85,17 @@ impl App {
         #[cfg(feature = "metrics")]
         {
             if metrics_collector.is_some() {
-                router = router.route(
-                    config.metrics.path.as_str(),
-                    axum::routing::get(metrics_handler),
-                );
+                if let Some(token) = config
+                    .metrics
+                    .bearer_token
+                    .as_ref()
+                    .filter(|t| !t.trim().is_empty())
+                {
+                    router = router.route(
+                        config.metrics.path.as_str(),
+                        authenticated_metrics_route(token.clone()),
+                    );
+                }
             }
         }
 

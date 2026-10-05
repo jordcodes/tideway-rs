@@ -16,6 +16,18 @@ adoption checklist in [Organizations](organizations.md#existing-and-custom-organ
 and add only schema-compatible migrations. This avoids replacing application roles, route
 contracts, authorization rules, or table layouts.
 
+## Metrics scrape authentication
+
+The built-in metrics route now requires a bearer token. Existing apps that enable metrics
+must configure `MetricsConfig::builder().bearer_token(...)` or, when using environment
+configuration, `TIDEWAY_METRICS_BEARER_TOKEN` (fallback: `METRICS_BEARER_TOKEN`). Set the
+same token in your scraper's Authorization bearer header. Without a nonempty token, the
+route is absent (404), while collection remains enabled. Invalid or missing credentials
+on a configured scrape route return 401. Custom metrics paths follow the same rules.
+
+Unknown HTTP methods now use the shared `OTHER` label. Update dashboards that previously
+selected custom method labels. Standard HTTP method labels are unchanged.
+
 ## Recommended Workflow
 
 1. Update the CLI so its checks target the current framework release:

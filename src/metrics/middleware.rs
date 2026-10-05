@@ -121,6 +121,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_extension_methods_share_one_series() {
+        let collector = Arc::new(MetricsCollector::new().unwrap());
+        let app = Router::new()
+            .route("/test", axum::routing::any(|| async { "ok" }))
+            .layer(build_metrics_layer(collector.clone()));
+        for i in 0..1000 {
+            let request = Request::builder()
+                .method(format!("CUSTOM-{i}").as_str())
+                .uri("/test")
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(app.clone().oneshot(request).await.unwrap().status(), 200);
+        }
+        let families = collector.registry().gather();
+        for name in [
+            "tideway_http_requests_total",
+            "tideway_http_request_duration_seconds",
+        ] {
+            let family = find_metric_family(&families, name).unwrap();
+            assert_eq!(family.get_metric().len(), 1);
+            let metric = &family.get_metric()[0];
+            assert_eq!(find_label_value(metric, "method").as_deref(), Some("OTHER"));
+            if name == "tideway_http_requests_total" {
+                assert_eq!(metric.get_counter().value(), 1000.0);
+            } else {
+                assert_eq!(metric.get_histogram().sample_count(), 1000);
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_in_flight_decrements_when_unpolled_request_is_dropped() {
         use tower::Layer;
 
