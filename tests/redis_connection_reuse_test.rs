@@ -62,7 +62,7 @@ impl TestRedis {
                                 ":0\r\n"
                             }
                             b"LPUSH" | b"ZADD" | b"SADD" | b"DEL" => ":1\r\n",
-                            b"CLIENT" | b"SETEX" => "+OK\r\n",
+                            b"CLIENT" | b"SETEX" | b"PSETEX" => "+OK\r\n",
                             b"SCAN" => "*2\r\n$1\r\n0\r\n*0\r\n",
                             command => panic!("unexpected command: {:?}", command),
                         };

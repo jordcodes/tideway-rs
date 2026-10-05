@@ -61,6 +61,8 @@ share a database:
 let sessions = RedisCache::new(url, ttl)?.with_prefix("myapp:sessions:");
 ```
 
+TTLs are sent with millisecond precision; anything below 1ms is rounded up to 1ms.
+
 ### No-Op Cache
 
 For testing or when caching is disabled:

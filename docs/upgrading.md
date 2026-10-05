@@ -343,6 +343,18 @@ Handlers that do not override `on_upgrade` need no changes. If you override it:
 Later hooks can read the upgrade request through `Connection::headers`, `header`, `cookie`, and
 `uri`. CLI-generated apps do not override `on_upgrade` and are not affected.
 
+## 0.8.x to 0.9.0: namespaced Redis cache keys
+
+`RedisCache::clear()` ran `FLUSHDB`, deleting everything in the Redis database, including
+pending jobs from `RedisJobQueue` when both used the same database. The cache now stores keys
+under a `cache:` prefix, and `clear()` deletes only keys with that prefix.
+
+No code change is required. After deploying, the cache starts cold: entries written by earlier
+versions are stored without the prefix, so they are no longer read and expire on their
+existing TTL. If several apps or caches share one Redis database, give each a distinct prefix
+with `.with_prefix("myapp:cache:")`. An empty prefix is not supported: `clear()` returns an
+error rather than deleting every key in the database.
+
 ## 0.8.x to 0.9.0: refund lookups scoped to the billable entity
 
 `SecureRefundManager::get_refund` returned any refund by ID, so a caller who knew another

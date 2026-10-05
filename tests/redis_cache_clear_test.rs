@@ -139,7 +139,7 @@ fn handle(store: &Store, args: &[Vec<u8>]) -> Vec<u8> {
             store.insert(args[1].clone(), vec![args[2].clone()]);
             b"+OK\r\n".to_vec()
         }
-        b"SETEX" => {
+        b"SETEX" | b"PSETEX" => {
             store.insert(args[1].clone(), vec![args[3].clone()]);
             b"+OK\r\n".to_vec()
         }
