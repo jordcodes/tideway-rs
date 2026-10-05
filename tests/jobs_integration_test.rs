@@ -257,6 +257,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_finishes_current_job_without_starting_another() {
+        let queue = Arc::new(InMemoryJobQueue::new(0, 0));
+        let registry = Arc::new(JobRegistry::new());
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::channel(2);
+        let (finished_tx, mut finished_rx) = tokio::sync::mpsc::channel(2);
+        registry
+            .register("test_job", {
+                let release = release.clone();
+                move |data, _| {
+                    let release = release.clone();
+                    let started_tx = started_tx.clone();
+                    let finished_tx = finished_tx.clone();
+                    Box::pin(async move {
+                        started_tx.send(data.job_id.clone()).await.unwrap();
+                        release.acquire().await.unwrap().forget();
+                        finished_tx.send(data.job_id).await.unwrap();
+                        Ok(())
+                    })
+                }
+            })
+            .await;
+        let job = TestJob {
+            message: "shutdown".into(),
+            should_fail: false,
+        };
+        let first = queue.enqueue(&job).await.unwrap();
+        let second = queue.enqueue(&job).await.unwrap();
+        let pool = WorkerPool::new(queue.clone(), registry, Arc::new(AppContext::new()), 1);
+        assert_eq!(started_rx.recv().await.unwrap(), first);
+        let mut shutdown = Box::pin(pool.shutdown());
+        assert!(
+            tokio::time::timeout(TokioDuration::from_millis(50), &mut shutdown)
+                .await
+                .is_err(),
+            "shutdown must wait for the running handler"
+        );
+        release.add_permits(1);
+        tokio::time::timeout(TokioDuration::from_secs(2), shutdown)
+            .await
+            .unwrap();
+        assert_eq!(finished_rx.recv().await.unwrap(), first);
+        assert_eq!(queue.dequeue().await.unwrap().unwrap().job_id, second);
+        queue.shutdown().await;
+    }
+
+    // Exercise both a panic while constructing the future and a panic after yielding.
+    async fn check_panic_retry(queue: Arc<dyn JobQueue>, synchronous: bool) {
+        let registry = Arc::new(JobRegistry::new());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        registry
+            .register("test_job", move |data, _| {
+                let tx = tx.clone();
+                if synchronous && data.retry_count == 0 {
+                    panic!("handler construction panic");
+                }
+                Box::pin(async move {
+                    tokio::task::yield_now().await;
+                    if data.retry_count == 0 {
+                        panic!("handler execution panic");
+                    }
+                    tx.send((data.job_id, data.retry_count)).await.unwrap();
+                    Ok(())
+                })
+            })
+            .await;
+        let job = TestJob {
+            message: "panic".into(),
+            should_fail: false,
+        };
+        let id = queue.enqueue(&job).await.unwrap();
+        let pool = WorkerPool::new(queue.clone(), registry, Arc::new(AppContext::new()), 1);
+        let result = tokio::time::timeout(TokioDuration::from_secs(8), rx.recv()).await;
+        pool.shutdown().await;
+        assert_eq!(
+            result.expect("panicked job must be retried by the same worker"),
+            Some((id, 1))
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_survives_async_panic_and_retries() {
+        let queue = Arc::new(InMemoryJobQueue::new(1, 0));
+        check_panic_retry(queue.clone(), false).await;
+        queue.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn worker_survives_handler_construction_panic_and_retries() {
+        let queue = Arc::new(InMemoryJobQueue::new(1, 0));
+        check_panic_retry(queue.clone(), true).await;
+        queue.shutdown().await;
+    }
+
+    #[cfg(feature = "jobs-redis")]
+    #[tokio::test]
+    #[ignore = "requires an isolated Redis database at TIDEWAY_TEST_REDIS_URL"]
+    async fn redis_worker_retries_panics_and_errors() {
+        let url = std::env::var("TIDEWAY_TEST_REDIS_URL").expect("isolated Redis URL required");
+        let queue = Arc::new(tideway::jobs::RedisJobQueue::new(&url, None, 1, 0).unwrap());
+        check_panic_retry(queue.clone(), false).await;
+        check_panic_retry(queue.clone(), true).await;
+
+        let registry = Arc::new(JobRegistry::new());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        registry
+            .register("test_job", move |data, _| {
+                let tx = tx.clone();
+                Box::pin(async move {
+                    if data.retry_count == 0 {
+                        return Err(tideway::TidewayError::internal("retry me"));
+                    }
+                    tx.send(data.retry_count).await.unwrap();
+                    Ok(())
+                })
+            })
+            .await;
+        queue
+            .enqueue(&TestJob {
+                message: "error".into(),
+                should_fail: true,
+            })
+            .await
+            .unwrap();
+        let pool = WorkerPool::new(queue.clone(), registry, Arc::new(AppContext::new()), 1);
+        let result = tokio::time::timeout(TokioDuration::from_secs(8), rx.recv()).await;
+        pool.shutdown().await;
+        queue.shutdown().await;
+        assert_eq!(result.unwrap(), Some(1));
+    }
+
+    #[tokio::test]
     async fn test_job_registry_execution() {
         let registry = Arc::new(JobRegistry::new());
         let context = Arc::new(AppContext::new());
