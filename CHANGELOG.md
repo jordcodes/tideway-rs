@@ -395,8 +395,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Changed
 
-- The CLI is now versioned with the framework: tideway-cli 0.9.0 follows 0.1.48 and is released
-  alongside Tideway 0.9.0. Newly generated applications use Tideway 0.9.0.
+- The CLI now shares the framework's major.minor version: tideway-cli 0.9.0 follows 0.1.48 and
+  is released alongside Tideway 0.9.0. CLI 0.9.x targets Tideway 0.9.x; patch releases stay
+  independent, so CLI fixes can ship without a framework release. Newly generated applications
+  use Tideway 0.9.0.
 
 ### Migration Notes
 
