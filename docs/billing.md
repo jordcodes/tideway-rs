@@ -1057,6 +1057,26 @@ let result = manager.remove_seats("org_123", 2).await?;
 let result = manager.set_seats("org_123", 10).await?;
 ```
 
+### Concurrent seat changes
+
+Stripe receives an absolute seat quantity, so `SeatManager` serializes changes for the same
+billable entity:
+
+- Within one `SeatManager`, calls for the same billable ID wait for each other. Share a single
+  manager (for example in `Arc`) rather than building one per request.
+- Across processes, each change first reserves the new seat count in your store with
+  `compare_and_save_subscription`, and only the caller that wins the reservation calls Stripe.
+  Others re-read and recompute. This requires an atomic `compare_and_save_subscription`
+  (the SeaORM store provides one).
+- The reserved count is visible locally while the Stripe call is in flight. If Stripe fails, the
+  previous count is restored. If the change keeps losing the reservation, the call returns
+  `TidewayError::Conflict` and can be retried.
+- Across processes, a change can still reserve on top of another process's change while that
+  change's Stripe call is in flight. If the Stripe calls then land out of order, the
+  `customer.subscription.updated` webhook resyncs the local count to Stripe's.
+
+Seat counts that would overflow `u32` are rejected with `BadRequest` before Stripe is called.
+
 ## Entitlements
 
 Check feature access and limits:

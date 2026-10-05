@@ -555,7 +555,7 @@ impl Subscription {
     #[must_use]
     pub fn total_seats(&self) -> u32 {
         let included = self.plan.as_ref().map(|p| p.included_seats).unwrap_or(0);
-        included + self.extra_seats
+        included.saturating_add(self.extra_seats)
     }
 
     /// Check if a feature is available.
