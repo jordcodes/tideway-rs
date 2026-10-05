@@ -247,8 +247,8 @@ where
 {
     /// Primary login endpoint - handles email/password and optional MFA.
     ///
-    /// This method does not perform IP-based rate limiting. Use [`Self::login_with_ip`]
-    /// if you have configured a rate limiter.
+    /// If a rate limiter is configured, attempts are limited per normalized email address.
+    /// Prefer [`Self::login_with_ip`] so attempts are also limited per client IP.
     #[cfg(feature = "auth")]
     pub async fn login(&self, req: LoginRequest) -> Result<LoginResponse> {
         self.login_with_ip(req, None).await
@@ -257,7 +257,8 @@ where
     /// Primary login endpoint with IP-based rate limiting.
     ///
     /// Pass the client's IP address to enable rate limiting protection
-    /// against brute force attacks.
+    /// against brute force attacks. When `client_ip` is `None`, attempts are
+    /// limited per normalized email address instead.
     ///
     /// # Example
     ///
@@ -280,10 +281,13 @@ where
         req: LoginRequest,
         client_ip: Option<String>,
     ) -> Result<LoginResponse> {
-        // Check rate limit first (before any auth logic)
-        self.rate_limiter.check_rate_limit(client_ip.as_deref())?;
         // Normalize email
         let email = req.email.trim().to_lowercase();
+
+        // Check rate limit first (before any auth logic). Without a client IP, fall back to
+        // the targeted account so a configured limiter is never silently bypassed.
+        let rate_limit_key = client_ip.unwrap_or_else(|| format!("email:{email}"));
+        self.rate_limiter.check_rate_limit(Some(&rate_limit_key))?;
 
         // Find user
         let user = match self.user_store.find_by_email(&email).await? {
@@ -1237,5 +1241,87 @@ mod tests {
         let users = flow.user_store.users.read().unwrap();
         let user = users.get("test@example.com").unwrap();
         assert_eq!(user.failed_attempts, 0);
+    }
+
+    fn rate_limited_flow(
+        max_attempts: u32,
+    ) -> LoginFlow<TestUserStore, InMemoryMfaTokenStore, TestTokenIssuer, (), WithRateLimiter>
+    {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+        LoginFlow::new(
+            user_store,
+            InMemoryMfaTokenStore::new(),
+            TestTokenIssuer,
+            LoginFlowConfig::new("TestApp"),
+        )
+        .with_rate_limiter(LoginRateLimiter::new(
+            super::super::rate_limit::LoginRateLimitConfig::new(max_attempts, 60),
+        ))
+    }
+
+    fn login_request(email: &str, password: &str) -> LoginRequest {
+        LoginRequest {
+            email: email.to_string(),
+            password: password.to_string(),
+            remember_me: false,
+            mfa_code: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plain_login_is_rate_limited_without_ip() {
+        let flow = rate_limited_flow(2);
+
+        for _ in 0..2 {
+            let response = flow
+                .login(login_request("test@example.com", "wrong"))
+                .await
+                .unwrap();
+            assert!(is_error(&response));
+        }
+
+        // Email normalization must not yield a fresh bucket.
+        let result = flow
+            .login(login_request("  TEST@example.com ", "password123"))
+            .await;
+        assert!(matches!(result, Err(TidewayError::TooManyRequests(_))));
+
+        // Other accounts are unaffected.
+        let other = flow
+            .login(login_request("other@example.com", "password123"))
+            .await;
+        assert!(other.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_login_with_ip_is_rate_limited_per_ip() {
+        let flow = rate_limited_flow(2);
+
+        for _ in 0..2 {
+            flow.login_with_ip(
+                login_request("test@example.com", "wrong"),
+                Some("192.0.2.1".to_string()),
+            )
+            .await
+            .unwrap();
+        }
+
+        let blocked = flow
+            .login_with_ip(
+                login_request("other@example.com", "wrong"),
+                Some("192.0.2.1".to_string()),
+            )
+            .await;
+        assert!(matches!(blocked, Err(TidewayError::TooManyRequests(_))));
+
+        let other_ip = flow
+            .login_with_ip(
+                login_request("test@example.com", "password123"),
+                Some("192.0.2.2".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(is_success(&other_ip));
     }
 }

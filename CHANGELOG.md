@@ -15,6 +15,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   either type directly to a request body, the client controlled the acting admin (`admin_id`) or
   the account being deleted (`user_id`). That allowed impersonation through any admin's identity,
   and deletion of arbitrary accounts when password verification was disabled.
+- A `LoginFlow` with a rate limiter no longer skips rate limiting when no client IP is supplied.
+  Plain `login()` calls (and `login_with_ip(req, None)`) are now limited per normalized email
+  address. Direct `OptionalRateLimiter::check_rate_limit(None)` calls now share one bucket
+  instead of always being allowed.
 
 ### Added
 
