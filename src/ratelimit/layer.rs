@@ -2,7 +2,7 @@
 //!
 //! Uses the governor crate for a production-grade rate limiter with:
 //! - Lock-free atomic operations (GCRA algorithm)
-//! - Per-IP rate limiting with keyed rate limiters
+//! - Per-IP rate limiting keyed by IPv4 /32 or IPv6 /64
 //! - Automatic cleanup of stale entries via periodic shrinking
 //! - High performance under concurrent load
 
@@ -27,13 +27,33 @@ use std::{
 };
 use tower::{Layer, Service};
 
-/// Shrink the keyed state store every N requests to prevent unbounded memory growth.
+/// Remove stale keys every N requests to reduce memory usage.
 /// This is a balance between memory efficiency and performance overhead.
 const SHRINK_INTERVAL: u64 = 1000;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ClientKey {
     Ip(std::net::IpAddr),
     Unknown,
+}
+
+impl From<std::net::IpAddr> for ClientKey {
+    fn from(ip: std::net::IpAddr) -> Self {
+        use std::net::{IpAddr, Ipv6Addr};
+
+        let ip = match ip {
+            IpAddr::V4(ip) => IpAddr::V4(ip),
+            IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+                Some(ip) => IpAddr::V4(ip),
+                None => {
+                    // Rotating interface identifiers within a /64 must not
+                    // create fresh quotas or additional state-store entries.
+                    let prefix = u128::from(ip) & (u128::MAX << 64);
+                    IpAddr::V6(Ipv6Addr::from(prefix))
+                }
+            },
+        };
+        Self::Ip(ip)
+    }
 }
 
 /// Custom error response for rate limit exceeded
@@ -123,13 +143,13 @@ impl RateLimitState {
         match &self.limiter {
             LimiterState::PerIp(limiter) => {
                 // Periodically shrink the state store to remove stale entries
-                // This prevents unbounded memory growth from many unique IPs
+                // Active prefixes still retain their quota state.
                 let count = self.request_count.fetch_add(1, Ordering::Relaxed);
                 if count.is_multiple_of(SHRINK_INTERVAL) && count > 0 {
                     limiter.retain_recent();
                 }
 
-                let key = ip.map(ClientKey::Ip).unwrap_or(ClientKey::Unknown);
+                let key = ip.map(ClientKey::from).unwrap_or(ClientKey::Unknown);
                 match limiter.check_key(&key) {
                     Ok(_) => Ok(()),
                     Err(not_until) => {
@@ -321,6 +341,64 @@ mod tests {
         // IP 2 should still be allowed
         let result = state.check_rate_limit(Some(ip("192.168.1.2")));
         assert!(result.is_ok(), "Different IP should have separate quota");
+    }
+
+    #[test]
+    fn test_ipv6_subnet_shares_quota() {
+        let state = RateLimitState::new(test_config());
+        for address in [
+            "2001:db8:1234:5678::",
+            "2001:db8:1234:5678::1",
+            "2001:db8:1234:5678:abcd::",
+            "2001:db8:1234:5678:ffff:ffff:ffff:fffe",
+            "2001:db8:1234:5678:ffff:ffff:ffff:ffff",
+        ] {
+            assert!(state.check_rate_limit(Some(ip(address))).is_ok());
+        }
+        assert!(
+            state
+                .check_rate_limit(Some(ip("2001:db8:1234:5678::2")))
+                .is_err()
+        );
+        assert!(
+            state
+                .check_rate_limit(Some(ip("2001:db8:1234:5679::2")))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_ipv6_address_rotation_keeps_one_key() {
+        let state = RateLimitState::new(test_config());
+        let prefix = u128::from(
+            "2001:db8:1234:5678::"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap(),
+        );
+        // Cross several cleanup intervals while rotating all four host segments.
+        for host in 0..10_000_u64 {
+            let host_bits = host * 0x0001_0001_0001_0001;
+            let address = std::net::Ipv6Addr::from(prefix | u128::from(host_bits));
+            let _ = state.check_rate_limit(Some(address.into()));
+        }
+        let LimiterState::PerIp(limiter) = &state.limiter else {
+            panic!("expected per-IP limiter");
+        };
+        assert_eq!(limiter.len(), 1, "one /64 must occupy only one key");
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ipv6_shares_ipv4_quota() {
+        let state = RateLimitState::new(test_config());
+        for _ in 0..5 {
+            assert!(state.check_rate_limit(Some(ip("192.0.2.1"))).is_ok());
+        }
+        assert!(
+            state
+                .check_rate_limit(Some(ip("::ffff:192.0.2.1")))
+                .is_err()
+        );
+        assert!(state.check_rate_limit(Some(ip("::ffff:192.0.2.2"))).is_ok());
     }
 
     #[test]
