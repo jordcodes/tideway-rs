@@ -271,4 +271,95 @@ mod tests {
 
         let _router = App::with_config(config).into_router();
     }
+
+    /// Re-runs `test` in a child process with a controlled metrics environment so
+    /// env var changes cannot race with other tests. Returns `true` in the parent.
+    fn isolated(test: &str, overrides: &[(&str, &str)]) -> bool {
+        if std::env::var("METRICS_TEST_CHILD").as_deref() == Ok(test) {
+            return false;
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", &format!("tests::{test}"), "--nocapture"])
+            .env("METRICS_TEST_CHILD", test);
+        for key in ["METRICS_ENABLED", "METRICS_PATH", "METRICS_BEARER_TOKEN"] {
+            command.env_remove(key).env_remove(format!("TIDEWAY_{key}"));
+        }
+        let output = command.envs(overrides.iter().copied()).output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
+    async fn assert_metrics_scrapable(config: tideway::Config, path: &str, token: &str) {
+        let app = App::with_config(config).into_router();
+        test_get(app.clone(), path)
+            .execute()
+            .await
+            .assert_unauthorized();
+        test_get(app, path)
+            .header("Authorization", &format!("Bearer {token}"))
+            .execute()
+            .await
+            .assert_ok();
+    }
+
+    #[tokio::test]
+    async fn test_builder_metrics_token_survives_from_env() {
+        if isolated("test_builder_metrics_token_survives_from_env", &[]) {
+            return;
+        }
+        let config = ConfigBuilder::new()
+            .with_metrics(
+                tideway::MetricsConfig::builder()
+                    .enabled(true)
+                    .path("/private/metrics")
+                    .bearer_token("builder-secret")
+                    .build(),
+            )
+            .from_env()
+            .build()
+            .unwrap();
+        assert_metrics_scrapable(config, "/private/metrics", "builder-secret").await;
+    }
+
+    #[tokio::test]
+    async fn test_metrics_token_from_env() {
+        if isolated(
+            "test_metrics_token_from_env",
+            &[
+                ("TIDEWAY_METRICS_ENABLED", "true"),
+                ("TIDEWAY_METRICS_BEARER_TOKEN", "env-secret"),
+            ],
+        ) {
+            return;
+        }
+        let config = ConfigBuilder::new().from_env().build().unwrap();
+        assert_metrics_scrapable(config, "/metrics", "env-secret").await;
+    }
+
+    #[tokio::test]
+    async fn test_env_metrics_token_overrides_builder_token() {
+        if isolated(
+            "test_env_metrics_token_overrides_builder_token",
+            &[("TIDEWAY_METRICS_BEARER_TOKEN", "env-secret")],
+        ) {
+            return;
+        }
+        let config = ConfigBuilder::new()
+            .with_metrics(
+                tideway::MetricsConfig::builder()
+                    .enabled(true)
+                    .bearer_token("builder-secret")
+                    .build(),
+            )
+            .from_env()
+            .build()
+            .unwrap();
+        assert_metrics_scrapable(config, "/metrics", "env-secret").await;
+    }
 }
