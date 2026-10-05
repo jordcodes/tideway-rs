@@ -11,6 +11,21 @@ use tower::Service;
 
 const UNMATCHED_ROUTE_LABEL: &str = "<unmatched>";
 
+struct InFlightGuard(Arc<MetricsCollector>);
+
+impl InFlightGuard {
+    fn new(collector: Arc<MetricsCollector>) -> Self {
+        collector.increment_in_flight();
+        Self(collector)
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.decrement_in_flight();
+    }
+}
+
 /// Build a Tower layer for metrics collection
 pub fn build_metrics_layer(collector: Arc<MetricsCollector>) -> MetricsLayer {
     MetricsLayer { collector }
@@ -66,12 +81,14 @@ where
             .map(|p| p.as_str().to_string())
             .unwrap_or_else(|| UNMATCHED_ROUTE_LABEL.to_string());
 
-        // Increment in-flight requests
-        collector.increment_in_flight();
+        // Create the guard before the future so even an unpolled cancellation is counted.
+        let in_flight = InFlightGuard::new(collector.clone());
 
         let fut = self.inner.call(req);
 
         Box::pin(async move {
+            // Keep cleanup tied to the future's lifetime, including cancellation.
+            let _in_flight = in_flight;
             let result = fut.await;
             let duration = start.elapsed();
 
@@ -79,13 +96,9 @@ where
                 Ok(response) => {
                     let status = response.status().as_u16();
                     collector.record_request(&method, &path, status, duration);
-                    collector.decrement_in_flight();
                     Ok(response)
                 }
-                Err(error) => {
-                    collector.decrement_in_flight();
-                    Err(error)
-                }
+                Err(error) => Err(error),
             }
         })
     }
@@ -105,6 +118,68 @@ mod tests {
     fn test_metrics_layer_creation() {
         let collector = Arc::new(MetricsCollector::new().unwrap());
         let _layer = build_metrics_layer(collector);
+    }
+
+    #[tokio::test]
+    async fn test_in_flight_decrements_when_unpolled_request_is_dropped() {
+        use tower::Layer;
+
+        let collector = Arc::new(MetricsCollector::new().unwrap());
+        let mut service = build_metrics_layer(collector.clone()).layer(tower::service_fn(|_| {
+            std::future::pending::<Result<Response, std::convert::Infallible>>()
+        }));
+
+        let request = service.call(Request::new(Body::empty()));
+        assert_eq!(collector.http_requests_in_flight.get(), 1);
+        drop(request);
+        assert_eq!(collector.http_requests_in_flight.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_in_flight_tracks_concurrent_requests_across_cancellations() {
+        use tower::Layer;
+
+        let collector = Arc::new(MetricsCollector::new().unwrap());
+        let mut service = build_metrics_layer(collector.clone()).layer(tower::service_fn(|_| {
+            std::future::pending::<Result<Response, std::convert::Infallible>>()
+        }));
+
+        let mut active = service.call(Request::new(Body::empty()));
+        assert!(futures::poll!(&mut active).is_pending());
+        for _ in 0..10 {
+            let mut cancelled = service.call(Request::new(Body::empty()));
+            assert!(futures::poll!(&mut cancelled).is_pending());
+            assert_eq!(collector.http_requests_in_flight.get(), 2);
+            drop(cancelled);
+            assert_eq!(collector.http_requests_in_flight.get(), 1);
+        }
+        drop(active);
+        assert_eq!(collector.http_requests_in_flight.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_in_flight_decrements_once_on_success_and_error() {
+        use tower::Layer;
+
+        for fail in [false, true] {
+            let collector = Arc::new(MetricsCollector::new().unwrap());
+            let mut service = build_metrics_layer(collector.clone()).layer(tower::service_fn(
+                move |_| async move {
+                    if fail {
+                        Err("service failed")
+                    } else {
+                        Ok(Response::new(Body::empty()))
+                    }
+                },
+            ));
+
+            let mut request = service.call(Request::new(Body::empty()));
+            assert_eq!(collector.http_requests_in_flight.get(), 1);
+            assert_eq!((&mut request).await.is_err(), fail);
+            assert_eq!(collector.http_requests_in_flight.get(), 0);
+            drop(request);
+            assert_eq!(collector.http_requests_in_flight.get(), 0);
+        }
     }
 
     #[tokio::test]
