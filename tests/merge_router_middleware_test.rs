@@ -29,7 +29,7 @@ fn app() -> App {
         .merge_router(
             Router::new()
                 .route("/merged/fast", get(|| async { "ok" }))
-                .route("/merged/slow", get(|| std::future::pending::<StatusCode>())),
+                .route("/merged/slow", get(std::future::pending::<StatusCode>)),
         )
 }
 

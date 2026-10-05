@@ -49,19 +49,24 @@ impl MetricsConfig {
 
     /// Load metrics configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
 
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(mut self) -> Self {
         if let Some(enabled) = get_env_with_prefix("METRICS_ENABLED") {
-            config.enabled = enabled.parse().unwrap_or(true);
+            self.enabled = enabled.parse().unwrap_or(true);
         }
 
         if let Some(path) = get_env_with_prefix("METRICS_PATH") {
-            config.path = path;
+            self.path = path;
         }
 
-        config.bearer_token = get_env_with_prefix("METRICS_BEARER_TOKEN");
+        if let Some(token) = get_env_with_prefix("METRICS_BEARER_TOKEN") {
+            self.bearer_token = Some(token);
+        }
 
-        config
+        self
     }
 }
 

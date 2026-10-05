@@ -15,11 +15,15 @@ pub fn build_cors_layer(config: &CorsConfig) -> Option<CorsLayer> {
 
     let mut layer = CorsLayer::new();
 
+    // A `*` anywhere in a list means "any". tower-http panics if a wildcard is
+    // passed inside an origin list, so it must be mapped to `Any` explicitly.
+    let has_wildcard = |values: &[String]| values.iter().any(|v| v.trim() == "*");
+
     // Configure allowed origins
     if config.allowed_origins.is_empty() {
         // No origins configured - don't set any allow_origin (most restrictive)
         // The layer will default to not allowing any origins
-    } else if config.allowed_origins.len() == 1 && config.allowed_origins[0] == "*" {
+    } else if has_wildcard(&config.allowed_origins) {
         // Allow any origin
         layer = layer.allow_origin(Any);
     } else {
@@ -33,18 +37,22 @@ pub fn build_cors_layer(config: &CorsConfig) -> Option<CorsLayer> {
     }
 
     // Configure allowed methods
-    let methods: Vec<Method> = config
-        .allowed_methods
-        .iter()
-        .filter_map(|m| m.parse().ok())
-        .collect();
+    if has_wildcard(&config.allowed_methods) {
+        layer = layer.allow_methods(Any);
+    } else {
+        let methods: Vec<Method> = config
+            .allowed_methods
+            .iter()
+            .filter_map(|m| m.parse().ok())
+            .collect();
 
-    if !methods.is_empty() {
-        layer = layer.allow_methods(methods);
+        if !methods.is_empty() {
+            layer = layer.allow_methods(methods);
+        }
     }
 
     // Configure allowed headers
-    if config.allowed_headers.len() == 1 && config.allowed_headers[0] == "*" {
+    if has_wildcard(&config.allowed_headers) {
         layer = layer.allow_headers(Any);
     } else {
         let headers: Vec<_> = config
@@ -58,7 +66,9 @@ pub fn build_cors_layer(config: &CorsConfig) -> Option<CorsLayer> {
     }
 
     // Configure exposed headers
-    if !config.exposed_headers.is_empty() {
+    if has_wildcard(&config.exposed_headers) {
+        layer = layer.expose_headers(Any);
+    } else if !config.exposed_headers.is_empty() {
         let headers: Vec<_> = config
             .exposed_headers
             .iter()
@@ -125,6 +135,70 @@ mod tests {
         let config = CorsConfig::builder().enabled(true).build();
         let layer = build_cors_layer(&config);
         assert!(layer.is_some());
+    }
+
+    /// Building the layer and wrapping a service is what happens at startup;
+    /// tower-http runs its own panicking checks at both points.
+    fn apply_layer(config: &CorsConfig) -> Option<CorsLayer> {
+        use tower::Layer;
+        let layer = build_cors_layer(config)?;
+        let _ = layer.layer(tower::service_fn(|_: ()| async {
+            Ok::<_, std::convert::Infallible>(())
+        }));
+        Some(layer)
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn test_wildcard_mixed_into_origins_does_not_panic() {
+        let config = CorsConfig::builder()
+            .enabled(true)
+            .allow_origins(strings(&["https://example.com", "*"]))
+            .build();
+        assert!(apply_layer(&config).is_some());
+    }
+
+    #[test]
+    fn test_wildcard_mixed_into_headers_does_not_panic() {
+        let config = CorsConfig::builder()
+            .enabled(true)
+            .allow_origin("https://example.com")
+            .allow_headers(strings(&["content-type", "*"]))
+            .build();
+        assert!(apply_layer(&config).is_some());
+    }
+
+    #[test]
+    fn test_wildcard_methods_and_exposed_headers_do_not_panic() {
+        let config = CorsConfig::builder()
+            .enabled(true)
+            .allow_origin("https://example.com")
+            .allow_methods(strings(&["GET", "*"]))
+            .expose_headers(strings(&["x-request-id", "*"]))
+            .build();
+        assert!(apply_layer(&config).is_some());
+    }
+
+    #[test]
+    fn test_credentialed_wildcard_methods_or_exposed_headers_are_refused() {
+        let methods = CorsConfig::builder()
+            .enabled(true)
+            .allow_origin("https://example.com")
+            .allow_methods(strings(&["*"]))
+            .allow_credentials(true)
+            .build();
+        assert!(apply_layer(&methods).is_none());
+
+        let exposed = CorsConfig::builder()
+            .enabled(true)
+            .allow_origin("https://example.com")
+            .expose_headers(strings(&["*"]))
+            .allow_credentials(true)
+            .build();
+        assert!(apply_layer(&exposed).is_none());
     }
 
     #[test]

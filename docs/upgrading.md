@@ -102,6 +102,7 @@ through the application's normal migration and deployment workflow.
 | `CachedInvoiceManager` returns `Arc<InvoiceList>` and `Option<Arc<Invoice>>` | See [shared cached invoices](#08x-to-090-shared-cached-invoices) |
 | `SecureRefundManager::get_refund` takes the billable ID | See [refund lookups](#08x-to-090-refund-lookups-scoped-to-the-billable-entity) |
 | `BillingEvent::OneTimeCheckoutCompleted` field, `CreditTransactionKind` `#[non_exhaustive]`, `credits-seaorm` migration | See [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes) |
+| `JobsConfig` has a new `shutdown_timeout_seconds` field | Set it in struct literals or use `..Default::default()`; see [bounded job shutdown](#08x-to-090-bounded-job-shutdown) |
 
 The remaining 0.9.0 sections below describe behavior changes that need review but no code change.
 
@@ -216,13 +217,27 @@ as `duration_secs` (an integer). Code that builds the request structs directly o
 not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
 not affected.
 
+## 0.8.x to 0.9.0: impersonation opt-out always enforced
+
+`ImpersonationManager::start_impersonation` used to skip `ImpersonationStore::can_be_impersonated`
+whenever `allow_admin_impersonation` was enabled, so users who had opted out could still be
+impersonated. The two checks are now separate:
+
+- Admin targets are detected with `ImpersonationStore::is_admin` and rejected unless
+  `allow_admin_impersonation` is enabled.
+- `can_be_impersonated` is always enforced and should express per-user eligibility only (for
+  example, an opt-out flag). Rejections are logged with reason `target_opted_out`.
+
+If your store returns `false` from `can_be_impersonated` just because the user is an admin, admin
+impersonation stays blocked even with `allow_admin_impersonation(true)`. Remove the admin condition
+from `can_be_impersonated` if you rely on that setting. Stores that never enable it need no changes.
+
 ## 0.8.x to 0.9.0: organization owners only through ownership transfer
 
 `MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` now
 reject memberships and invitations that grant the owner role. Before this change, they only checked
 that the actor could manage members, so an admin could add or invite a new owner. Owners can now
-only be created with `MembershipManager::transfer_ownership`, which already applied to
-`update_membership`.
+only be created with `transfer_ownership`, which already applied to `update_membership`.
 
 No public signatures change, and no migration is required. Behavior changes:
 
@@ -246,6 +261,60 @@ Before deploying:
 
 CLI-generated invitation and membership routes already reject the `owner` role and are not
 affected.
+
+## 0.8.x to 0.9.0: ownership transfer updates the organization owner
+
+`MembershipManager::transfer_ownership` only swapped membership roles. It never updated the
+organization's `owner_id`, which `OrganizationStore::count_owned_by_user` reads to enforce
+`max_orgs_per_user`. After a transfer, the organization still counted against the former owner and
+not the new one.
+
+Use the new `OrganizationManager::transfer_ownership`. It takes the same `make_owner` and
+`demote_owner` closures plus a `set_owner` closure that returns the organization with its owner
+set, and returns the updated organization:
+
+```rust
+org_manager
+    .transfer_ownership(
+        &org_id,
+        &new_owner_id,
+        &actor_id,
+        |m| MyMembership { role: MyRole::Owner, ..m.clone() },
+        |m| MyMembership { role: MyRole::Admin, ..m.clone() },
+        |org, owner_id| MyOrganization { owner_id: owner_id.to_string(), ..org },
+    )
+    .await?;
+```
+
+It updates the organization first, then the memberships, and reverts the organization if the
+membership update fails. `set_owner` must set the owner to the ID it receives, otherwise the
+transfer fails without writing anything. `MembershipManager::transfer_ownership` still works but
+is deprecated.
+
+With the built-in SeaORM store, prefer `transfer_ownership_atomic`, which updates the organization
+and both memberships in one transaction. It takes the role to give the former owner:
+
+```rust
+org_manager
+    .transfer_ownership_atomic(&org_id, &new_owner_id, &actor_id, DefaultOrgRole::Admin)
+    .await?;
+```
+
+Both methods now enforce `max_orgs_per_user` for the new owner: if they already own the maximum
+number of organizations, the transfer returns `MaxOrgsReached` and nothing is written. Handle that
+error wherever you expose ownership transfer.
+
+Organizations transferred with the old method still have the former owner's ID. Find them by
+comparing `owner_id` with the owner membership; with the SeaORM store:
+
+```sql
+SELECT o.id, o.owner_id, m.user_id AS owner_member
+FROM organizations o
+JOIN organization_members m ON m.org_id = o.id AND m.role = 'owner'
+WHERE o.owner_id <> m.user_id;
+```
+
+Set `owner_id` to `owner_member` for each row in a reviewed data migration.
 
 ## 0.8.x to 0.9.0: WebSocket upgrade authentication
 
@@ -291,6 +360,36 @@ let refund = manager.get_refund("org_123", "re_xxx").await?;
 A refund owned by another entity returns `BillingError::RefundNotFound` (404), the same as an
 unknown ID. Pass the billable ID of the authenticated caller, not one taken from the request. For
 admin-only lookups that must read any refund, use `RefundManager::get_refund`, which is unchanged.
+
+## 0.8.x to 0.9.0: bounded job shutdown
+
+`App::serve()` used to keep accepting HTTP connections on SIGTERM until every running job finished,
+with no time limit. Under Kubernetes, a slow job meant the pod was SIGKILLed while still serving
+traffic. The listener now closes as soon as the signal arrives, in-flight requests drain while
+workers stop in parallel, and workers get at most `jobs.shutdown_timeout_seconds` (default 25)
+before running jobs are aborted.
+
+`JobsConfig` has a new public field, so constructing it as a full struct literal no longer compiles:
+
+```rust
+// Before
+JobsConfig { enabled: true, /* ... */ retry_backoff_seconds: 60 }
+
+// After: set the field, or fill the rest from the defaults
+JobsConfig { enabled: true, /* ... */ retry_backoff_seconds: 60, shutdown_timeout_seconds: 25 }
+JobsConfig { enabled: true, ..Default::default() }
+```
+
+Configs loaded with `JobsConfig::from_env()` or deserialized with serde pick up the default and
+need no change. Before deploying:
+
+1. Set `shutdown_timeout_seconds` (or `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`) a few seconds below
+   your platform's kill deadline, such as Kubernetes `terminationGracePeriodSeconds` (default 30).
+   Raise both together if jobs legitimately need longer to finish.
+2. Make sure job handlers are idempotent. A job aborted at the timeout stays claimed and is run
+   again through the queue's normal retry handling.
+3. If you manage a `WorkerPool` directly, prefer `pool.shutdown_with_timeout(timeout)` over
+   `pool.shutdown()`, which still waits without a limit.
 
 ## 0.8.x to 0.9.0: scheduled JWKS refresh
 

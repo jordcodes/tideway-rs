@@ -347,6 +347,14 @@ where
     }
 
     /// Transfer ownership to another member.
+    ///
+    /// This only swaps membership roles. It does not update the organization's owner, so
+    /// `max_orgs_per_user` keeps counting the organization against the former owner. Use
+    /// [`OrganizationManager::transfer_ownership`](super::OrganizationManager::transfer_ownership)
+    /// instead.
+    #[deprecated(
+        note = "does not update the organization's owner_id; use OrganizationManager::transfer_ownership"
+    )]
     #[instrument(skip(self, make_owner, demote_owner))]
     pub async fn transfer_ownership<F, G>(
         &self,

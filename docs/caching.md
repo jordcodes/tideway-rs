@@ -52,6 +52,15 @@ let cache = Arc::new(
 );
 ```
 
+Keys are stored under a `cache:` prefix (`cache.set("user:1", ...)` writes `cache:user:1`).
+`clear()` deletes only keys with that prefix, using `SCAN` + `DEL`, so a job queue or other data
+in the same Redis database is left alone. Use a different prefix per cache if several caches
+share a database:
+
+```rust
+let sessions = RedisCache::new(url, ttl)?.with_prefix("myapp:sessions:");
+```
+
 ### No-Op Cache
 
 For testing or when caching is disabled:

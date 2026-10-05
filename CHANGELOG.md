@@ -26,12 +26,33 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 >
 > Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
 > `BillingEvent::OneTimeCheckoutCompleted` has a new field, `CreditTransactionKind` is
-> `#[non_exhaustive]`, and `credits-seaorm` apps need a database migration.
+> `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
+> migration.
 
+- Added `OrganizationManager::transfer_ownership`, which also sets the organization's owner to the
+  new owner. `MembershipManager::transfer_ownership` only swapped membership roles and left
+  `owner_id` unchanged, so `max_orgs_per_user` kept counting a transferred organization against
+  its former owner. The `MembershipManager` method is now deprecated. Organizations transferred
+  with it keep the stale `owner_id`; see `docs/upgrading.md` to find and fix them. With the
+  SeaORM store, `OrganizationManager::transfer_ownership_atomic` (backed by
+  `SeaOrmOrgStore::transfer_ownership_atomic`) does the whole transfer in one transaction. Both
+  methods return `MaxOrgsReached` if the new owner is already at `max_orgs_per_user`.
+- `RedisCache::clear()` no longer runs `FLUSHDB`. It previously wiped the whole Redis database,
+  including `RedisJobQueue` jobs when the cache and job queue shared a database. `RedisCache`
+  now stores keys under a `cache:` prefix (configurable with `with_prefix`), and `clear()`
+  deletes only keys with that prefix. Entries written by earlier versions without the prefix
+  are no longer read and expire on their TTL, so expect a cold cache after upgrading.
 - **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
   refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
+- **Breaking:** `JobsConfig` has a new `shutdown_timeout_seconds` field (default 25, env
+  `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`); struct literals must set it or use
+  `..Default::default()`. On SIGTERM, `App::serve()` now stops accepting HTTP connections
+  immediately and shuts down job workers in parallel, aborting jobs still running after the
+  timeout. Previously it kept serving until every running job finished, with no limit, so under
+  Kubernetes a slow job could get the pod SIGKILLed mid-request. Added
+  `WorkerPool::shutdown_with_timeout`. See `docs/upgrading.md`.
 - `AccountDeletionFlow` no longer deletes an account when a cleanup step (session or refresh
   token revocation, trusted device removal, MFA or lockout clearing) fails. Previously these
   errors were silently ignored, so a store failure could leave sessions and refresh tokens valid
