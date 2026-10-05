@@ -96,7 +96,9 @@ forever. Change this with `CreditManager::with_reservation_ttl`. Grant, reserve,
 are idempotent. The SeaORM store uses transactions and conditional updates to prevent concurrent
 overspending.
 
-`balance` returns available and currently reserved units, broken down by source. `history` returns
+`balance` returns available and currently reserved units, broken down by source. It reads only
+the requested account and credit type, counting expired holds as available when their buckets
+are still valid, without writing expiry updates. `history` returns
 the append-only audit ledger with bounded pagination.
 
 Tideway deliberately does not generate public balance or history routes. Tenant authorization is
@@ -150,8 +152,8 @@ successful billable operation.
 
 ## Operational notes
 
-- Run `release_expired` from periodic maintenance if an application has long stretches without
-  balance or reservation requests. Normal balance and reservation operations also clean up a
+- Run `release_expired` from periodic maintenance to persist expired reservation releases and
+  their history entries. Reservation operations also clean up a
   bounded batch of expired holds for that account and credit type; they never sweep other tenants
   or process an unlimited backlog in the request path.
 - Treat pack IDs as immutable versions. If price, credit type, or amount changes, create a new pack

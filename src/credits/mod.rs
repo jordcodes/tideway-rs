@@ -25,3 +25,6 @@ pub use types::{
     CreditHistoryQuery, CreditReservation, CreditSource, CreditTransaction, CreditTransactionKind,
     GrantCredits, ReservationStatus, ReserveCredits, SourceBalance,
 };
+
+#[cfg(test)]
+mod balance_tests;
