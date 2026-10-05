@@ -71,6 +71,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   disputes revoke the whole pack.
 - `CreditTopUpEventSink` no longer grants credits for checkouts with `payment_status`
   `no_payment_required`, so a 100%-off promotion code no longer buys credits for free.
+- `MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` no
+  longer create organization owners. Previously they only checked that the actor could manage
+  members, so an admin could add or invite a member with the owner role. Owners can now only be
+  created through `transfer_ownership`. Accepting an owner-role invitation fails and revokes it.
 
 ### Fixed
 
@@ -132,6 +136,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - CLI: `migrations/m015_add_credit_revocation` adds the revocation columns, an index, and the
   `revoke` transaction kind. `tideway new` with `credits-seaorm` and `tideway add credits` generate
   it; rerunning `tideway add credits` on an existing app adds only this migration.
+- `InvitationStore::invitation_grants_owner` lets `InvitationManager::invite` reject owner-role
+  invitations at creation. The in-memory and SeaORM stores implement it. Custom stores inherit a
+  default that returns `false`; owner invitations from those stores are still rejected at `accept`.
 
 ### Changed
 
@@ -163,6 +170,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   message. 5xx errors remain `Internal`.
 - Rate-limited or 5xx usage-record calls now take longer to fail: up to `max_retries` additional
   attempts with exponential backoff (4 attempts total by default).
+- The organization owner fix has no signature changes, and `invitation_grants_owner` has a default,
+  so custom `InvitationStore` implementations still compile. `add_member` and `invite` with an
+  owner role now return `InsufficientPermission` for every actor, including owners.
 
 ### Migration Notes
 
@@ -186,6 +196,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - Before deploying an app that uses `CreditTopUpEventSink`, check Stripe for failed top-up
   webhooks waiting to be retried. If one was already granted before the upgrade, its retry is
   granted again under the new key. Let retries finish first, or reverse the duplicate grant.
+- Pending owner-role invitations created before this release fail when accepted and are revoked.
+  Code that used `add_member` to create co-owners must use `transfer_ownership` instead. See
+  `docs/upgrading.md`.
 
 ## [tideway-cli 0.1.48] - 2026-08-04
 

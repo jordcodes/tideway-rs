@@ -1025,6 +1025,10 @@ impl InvitationStore for SeaOrmOrgStore {
         inv.role
     }
 
+    fn invitation_grants_owner(&self, inv: &Self::Invitation) -> bool {
+        matches!(inv.role, DefaultOrgRole::Owner)
+    }
+
     fn invitation_token(&self, inv: &Self::Invitation) -> String {
         inv.token.clone()
     }

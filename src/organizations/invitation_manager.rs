@@ -15,7 +15,7 @@ use super::storage::{
     WithAuditStore,
 };
 use super::utils::{current_timestamp, is_valid_email};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 /// Parameters passed to the invitation factory function.
@@ -335,6 +335,13 @@ where
             created_at: now,
         });
 
+        // Prevent inviting owners (must use transfer_ownership)
+        if self.invitation_store.invitation_grants_owner(&invitation) {
+            return Err(OrganizationError::insufficient_permission(
+                "cannot invite as owner, use transfer_ownership instead",
+            ));
+        }
+
         // Persist invitation
         self.invitation_store.create(&invitation).await?;
 
@@ -416,6 +423,18 @@ where
                 joined_at: now,
             },
         );
+
+        // Invitations can never grant ownership. Revoke rather than release, since
+        // the invitation can never succeed and would otherwise block re-inviting.
+        let role = self.membership_store.membership_role(&membership);
+        if self.membership_store.is_owner(&role) {
+            warn!(org_id, invitation_id, "Rejected invitation granting owner role");
+            let _ = self.invitation_store.release_claim(&invitation_id).await;
+            let _ = self.invitation_store.mark_revoked(&invitation_id).await;
+            return Err(OrganizationError::insufficient_permission(
+                "invitations cannot grant owner role",
+            ));
+        }
 
         // Add member and mark invitation as accepted
         if let Err(error) = self.membership_store.add_member(&membership).await {
