@@ -352,6 +352,10 @@ impl VerificationStore for MyVerificationStore {
 
     async fn mark_user_verified(&self, user_id: &str) -> Result<()>;
 
+    // Used by `EmailVerificationFlow::resend_for_user`; resends always go to
+    // the account's stored address, never one from the request.
+    async fn verification_email(&self, user_id: &str) -> Result<Option<String>>;
+
     async fn send_verification_email(
         &self,
         user_id: &str,

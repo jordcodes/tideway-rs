@@ -94,9 +94,35 @@ impl<S: VerificationStore> EmailVerificationFlow<S> {
         Ok(())
     }
 
+    /// Resend a verification email to the address stored on the user's account.
+    ///
+    /// The destination is loaded with [`VerificationStore::verification_email`] so a
+    /// client can never redirect the verification token to an address it chose.
+    ///
+    /// Note: The caller should verify the user is not already verified.
+    pub async fn resend_for_user(&self, user_id: &str) -> Result<()> {
+        let email = self
+            .store
+            .verification_email(user_id)
+            .await?
+            .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+        tracing::info!(
+            target: "auth.email.verification_resent",
+            user_id = %user_id,
+            email = %email,
+            "Verification email resend requested"
+        );
+        self.send_verification(user_id, &email).await
+    }
+
     /// Resend a verification email.
     ///
     /// Note: The caller should verify the user exists and is not already verified.
+    #[deprecated(
+        since = "0.8.1",
+        note = "sends to a caller-supplied address, which lets users verify an email they do not own; use `resend_for_user`"
+    )]
     pub async fn resend(&self, req: ResendVerificationRequest, user_id: &str) -> Result<()> {
         tracing::info!(
             target: "auth.email.verification_resent",
@@ -135,6 +161,7 @@ mod tests {
         tokens: RwLock<HashMap<String, (String, SystemTime)>>,
         verified_users: RwLock<Vec<String>>,
         emails_sent: RwLock<Vec<(String, String, String)>>, // (user_id, email, token)
+        user_emails: HashMap<String, String>,
     }
 
     impl TestVerificationStore {
@@ -143,6 +170,10 @@ mod tests {
                 tokens: RwLock::new(HashMap::new()),
                 verified_users: RwLock::new(vec![]),
                 emails_sent: RwLock::new(vec![]),
+                user_emails: HashMap::from([(
+                    "user-123".to_string(),
+                    "test@example.com".to_string(),
+                )]),
             }
         }
 
@@ -189,6 +220,10 @@ mod tests {
             let mut verified = self.verified_users.write().unwrap();
             verified.push(user_id.to_string());
             Ok(())
+        }
+
+        async fn verification_email(&self, user_id: &str) -> Result<Option<String>> {
+            Ok(self.user_emails.get(user_id).cloned())
         }
 
         async fn send_verification_email(
@@ -306,18 +341,53 @@ mod tests {
             .unwrap();
 
         // Resend
+        flow.resend_for_user("user-123").await.unwrap();
+
+        // Should have two emails sent, both to the account's address
+        let emails = flow.store.get_sent_emails();
+        assert_eq!(emails.len(), 2);
+        assert_eq!(emails[1].0, "user-123");
+        assert_eq!(emails[1].1, "test@example.com");
+    }
+
+    #[tokio::test]
+    async fn test_resend_unknown_user_sends_nothing() {
+        let store = TestVerificationStore::new();
+        let flow = EmailVerificationFlow::new(store);
+
+        let result = flow.resend_for_user("missing-user").await;
+
+        assert!(matches!(result, Err(TidewayError::NotFound(_))));
+        assert!(flow.store.get_sent_emails().is_empty());
+        assert!(flow.store.tokens.read().unwrap().is_empty());
+    }
+
+    /// Reproduces the original vulnerability: the deprecated `resend` mails a
+    /// token for the account to an attacker-chosen address, which then verifies
+    /// an account whose email the attacker does not own.
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_deprecated_resend_uses_request_email() {
+        let store = TestVerificationStore::new();
+        let flow = EmailVerificationFlow::new(store);
+
         flow.resend(
             ResendVerificationRequest {
-                email: "test@example.com".to_string(),
+                email: "attacker@evil.example".to_string(),
             },
             "user-123",
         )
         .await
         .unwrap();
 
-        // Should have two emails sent
         let emails = flow.store.get_sent_emails();
-        assert_eq!(emails.len(), 2);
+        assert_eq!(emails[0].1, "attacker@evil.example");
+        flow.verify(EmailVerifyRequest {
+            token: emails[0].2.clone(),
+        })
+        .await
+        .unwrap();
+        assert!(flow.store.is_user_verified("user-123"));
     }
 
     #[tokio::test]
