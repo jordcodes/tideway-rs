@@ -9,6 +9,15 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- JWKS-backed `JwtVerifier`s now re-fetch keys in the background on a schedule (hourly by
+  default; configure with `with_jwks_refresh_interval` or opt out with
+  `without_scheduled_jwks_refresh`) so rotated and revoked keys take effect. Previously keys
+  were only fetched at startup or for an unknown `kid`, so a revoked key stayed trusted forever.
+  `JwkSet` now skips non-RSA (`EC`, `OKP`, `oct`) and malformed keys instead of failing to
+  parse the whole set; a JWKS with keys but no valid RSA keys still fails to load, and a refresh
+  that returns one keeps the current keys. RSA decoding keys are built once per fetch instead of
+  per request. See `docs/upgrading.md`.
+
 - The database prelude now exports `DatabaseConnectionTrait` instead of `DatabaseConnection`
   to avoid ambiguous imports with SeaORM. Update prelude trait references to the new alias
   or explicitly import `tideway::DatabaseConnection`; the original trait paths are unchanged.
