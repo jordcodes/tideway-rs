@@ -67,7 +67,7 @@ fn default_per_page() -> u32 {
 }
 
 /// Parameters for listing organizations.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListOrgsParams {
     /// Optional search term (matches name or slug).
     pub search: Option<String>,
@@ -77,6 +77,16 @@ pub struct ListOrgsParams {
     /// Number of items per page.
     #[serde(default = "default_per_page")]
     pub per_page: u32,
+}
+
+impl Default for ListOrgsParams {
+    fn default() -> Self {
+        Self {
+            search: None,
+            page: default_page(),
+            per_page: default_per_page(),
+        }
+    }
 }
 
 /// Parameters for updating a user.
@@ -137,7 +147,7 @@ impl<T> PaginatedResult<T> {
 }
 
 /// Parameters for querying the audit log.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditLogParams {
     /// Filter by user ID.
     pub user_id: Option<String>,
@@ -153,6 +163,19 @@ pub struct AuditLogParams {
     /// Number of items per page.
     #[serde(default = "default_per_page")]
     pub per_page: u32,
+}
+
+impl Default for AuditLogParams {
+    fn default() -> Self {
+        Self {
+            user_id: None,
+            action: None,
+            from: None,
+            to: None,
+            page: default_page(),
+            per_page: default_per_page(),
+        }
+    }
 }
 
 /// An entry in the audit log.
@@ -230,7 +253,7 @@ pub struct CreatePlatformInvite {
 }
 
 /// Parameters for listing platform invitations.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListPlatformInvitesParams {
     /// Filter by status.
     pub status: Option<PlatformInviteStatus>,
@@ -242,6 +265,17 @@ pub struct ListPlatformInvitesParams {
     /// Number of items per page.
     #[serde(default = "default_per_page")]
     pub per_page: u32,
+}
+
+impl Default for ListPlatformInvitesParams {
+    fn default() -> Self {
+        Self {
+            status: None,
+            search: None,
+            page: default_page(),
+            per_page: default_per_page(),
+        }
+    }
 }
 
 /// Result of consuming a platform invite during signup.
@@ -276,5 +310,29 @@ mod tests {
         let params = ListUsersParams::default();
         assert_eq!(params.page, 1);
         assert_eq!(params.per_page, 20);
+
+        let params = ListOrgsParams::default();
+        assert_eq!(params.page, 1);
+        assert_eq!(params.per_page, 20);
+
+        let params = AuditLogParams::default();
+        assert_eq!(params.page, 1);
+        assert_eq!(params.per_page, 20);
+
+        let params = ListPlatformInvitesParams::default();
+        assert_eq!(params.page, 1);
+        assert_eq!(params.per_page, 20);
+    }
+
+    #[test]
+    fn test_deserialized_params_default_to_first_page() {
+        let users: ListUsersParams = serde_json::from_str("{}").unwrap();
+        let orgs: ListOrgsParams = serde_json::from_str("{}").unwrap();
+        let audit: AuditLogParams = serde_json::from_str("{}").unwrap();
+        let invites: ListPlatformInvitesParams = serde_json::from_str("{}").unwrap();
+        assert_eq!((users.page, users.per_page), (1, 20));
+        assert_eq!((orgs.page, orgs.per_page), (1, 20));
+        assert_eq!((audit.page, audit.per_page), (1, 20));
+        assert_eq!((invites.page, invites.per_page), (1, 20));
     }
 }

@@ -229,6 +229,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Fixed
 
+- `ListOrgsParams::default()`, `AuditLogParams::default()`, and
+  `ListPlatformInvitesParams::default()` now return `page: 1, per_page: 20`, matching
+  deserialization and `ListUsersParams`. They previously returned `page: 0, per_page: 0`.
 - `WebSocketHandler::on_upgrade` is now called before a WebSocket upgrade is accepted. It was
   never called before, so overriding it to authenticate connections had no effect. The hook now
   takes an `UpgradeRequest` with the request headers, cookies, and URI
