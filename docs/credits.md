@@ -23,7 +23,7 @@ a new custom scaffold, selecting
 `credits-stripe`.
 
 ```toml
-tideway = { version = "0.7", features = ["credits-seaorm", "credits-stripe"] }
+tideway = { version = "0.9.0", features = ["credits-seaorm", "credits-stripe"] }
 ```
 
 ```rust

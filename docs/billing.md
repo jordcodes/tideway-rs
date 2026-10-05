@@ -241,7 +241,7 @@ Enable the `billing-seaorm` feature for a ready-to-use implementation:
 
 ```toml
 [dependencies]
-tideway = { version = "0.2", features = ["billing", "billing-seaorm"] }
+tideway = { version = "0.9.0", features = ["billing", "billing-seaorm"] }
 ```
 
 ```rust
@@ -1425,7 +1425,7 @@ Enable the `test-billing` feature for access to mock implementations:
 
 ```toml
 [dev-dependencies]
-tideway = { version = "0.2", features = ["billing", "test-billing"] }
+tideway = { version = "0.9.0", features = ["billing", "test-billing"] }
 ```
 
 ## Security Features
@@ -1452,14 +1452,14 @@ STRIPE_WEBHOOK_SECRET=whsec_xxx
 
 ```toml
 [dependencies]
-tideway = { version = "0.2", features = ["billing"] }
+tideway = { version = "0.9.0", features = ["billing"] }
 
 # With SeaORM storage
-tideway = { version = "0.2", features = ["billing", "billing-seaorm"] }
+tideway = { version = "0.9.0", features = ["billing", "billing-seaorm"] }
 
 # For testing
 [dev-dependencies]
-tideway = { version = "0.2", features = ["billing", "test-billing"] }
+tideway = { version = "0.9.0", features = ["billing", "test-billing"] }
 ```
 
 ## Limitations & Future Enhancements
