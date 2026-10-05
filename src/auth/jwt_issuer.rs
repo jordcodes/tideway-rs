@@ -226,7 +226,9 @@ pub struct RefreshTokenClaims {
 }
 
 /// Issued token pair.
-#[derive(Debug, Clone, Serialize)]
+///
+/// The `Debug` output redacts the tokens and family ID.
+#[derive(Clone, Serialize)]
 pub struct TokenPair {
     /// Access token (short-lived)
     pub access_token: String,
@@ -239,6 +241,18 @@ pub struct TokenPair {
     /// Token family ID (for refresh token rotation tracking)
     #[serde(skip)]
     pub family: String,
+}
+
+impl std::fmt::Debug for TokenPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenPair")
+            .field("access_token", &"[REDACTED]")
+            .field("refresh_token", &"[REDACTED]")
+            .field("expires_in", &self.expires_in)
+            .field("token_type", &self.token_type)
+            .field("family", &"[REDACTED]")
+            .finish()
+    }
 }
 
 /// User info needed for token issuance.
@@ -511,6 +525,24 @@ fn generate_token_family() -> String {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_token_pair_debug_redacts_tokens() {
+        let pair = TokenPair {
+            access_token: "access-secret".into(),
+            refresh_token: "refresh-secret".into(),
+            expires_in: 900,
+            token_type: "Bearer",
+            family: "family-secret".into(),
+        };
+        let debug = format!("{pair:?}");
+
+        assert!(!debug.contains("access-secret"), "{debug}");
+        assert!(!debug.contains("refresh-secret"), "{debug}");
+        assert!(!debug.contains("family-secret"), "{debug}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(debug.contains("900"));
+    }
 
     #[test]
     fn test_secure_config_rejects_short_hs256_secret() {

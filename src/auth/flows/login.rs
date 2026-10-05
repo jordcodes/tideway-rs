@@ -1340,8 +1340,7 @@ mod tests {
 
     fn rate_limited_flow(
         max_attempts: u32,
-    ) -> LoginFlow<TestUserStore, InMemoryMfaTokenStore, TestTokenIssuer, (), WithRateLimiter>
-    {
+    ) -> LoginFlow<TestUserStore, InMemoryMfaTokenStore, TestTokenIssuer, (), WithRateLimiter> {
         let user_store = TestUserStore::new();
         user_store.add_user(create_test_user("test@example.com", "password123", true));
         LoginFlow::new(

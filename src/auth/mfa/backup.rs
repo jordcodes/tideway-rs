@@ -1,10 +1,20 @@
 //! Backup codes for account recovery.
 
 /// A set of backup codes for account recovery.
-#[derive(Clone, Debug)]
+///
+/// The `Debug` output redacts the codes and only reports how many there are.
+#[derive(Clone)]
 pub struct BackupCodes {
     /// The codes (store hashed in production).
     pub codes: Vec<String>,
+}
+
+impl std::fmt::Debug for BackupCodes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupCodes")
+            .field("codes", &format_args!("[REDACTED; {}]", self.codes.len()))
+            .finish()
+    }
 }
 
 impl BackupCodes {
@@ -182,6 +192,18 @@ mod tests {
         };
 
         assert_eq!(codes.display_codes(), vec!["ABCD-1234"]);
+    }
+
+    #[test]
+    fn test_debug_redacts_codes() {
+        let codes = BackupCodes {
+            codes: vec!["ABCD1234".to_string(), "WXYZ9876".to_string()],
+        };
+        let debug = format!("{codes:?}");
+
+        assert!(!debug.contains("ABCD1234"), "{debug}");
+        assert!(!debug.contains("WXYZ9876"), "{debug}");
+        assert!(debug.contains("[REDACTED; 2]"), "{debug}");
     }
 
     #[test]
