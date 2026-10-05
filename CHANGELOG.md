@@ -13,6 +13,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
   refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
+- `AccountDeletionFlow` no longer deletes an account when a cleanup step (session or refresh
+  token revocation, trusted device removal, MFA or lockout clearing) fails. Previously these
+  errors were silently ignored, so a store failure could leave sessions and refresh tokens valid
+  after the account was deleted. Immediate deletions now return the error; scheduled deletions
+  stay pending and are retried by the next `process_due_deletions` run.
 - `WebhookRouter::process` now returns a `ServiceUnavailable` (503) error for a duplicate
   delivery of an event that is still being processed in the same instance. It previously
   returned `Ok` (200), so the provider stopped retrying and the event was lost if the first
