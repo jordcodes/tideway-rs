@@ -852,6 +852,33 @@ let session = manager.create_checkout_session(
 redirect_to(session.url);
 ```
 
+Concurrent first checkouts for the same entity share one Stripe customer. If two requests race,
+the first customer link wins and the redundant customer is deleted from Stripe. A failed delete
+is logged and does not fail the checkout.
+
+`create_checkout_session` returns `TidewayError::Conflict` (HTTP 409) when the entity already has
+a stored subscription whose status is anything other than `canceled` or `incomplete_expired`. Use
+`SubscriptionManager` plan changes or the customer portal for existing subscribers.
+
+That check reads webhook-synced local state, so it cannot stop sessions opened before the first
+payment. Two more safeguards cover that window:
+
+- Before creating a session, Tideway expires the customer's other open subscription-mode
+  checkout sessions (`StripeCheckoutClient::expire_open_subscription_checkouts`), so a customer
+  who opened checkout in two tabs can only pay in the newest one. One-time payment sessions are
+  left alone. Custom checkout clients inherit a no-op default.
+- If a second live subscription still reaches the webhook, Tideway keeps the stored one and emits
+  `BillingEvent::DuplicateSubscription` instead of `SubscriptionCreated`/`SubscriptionUpdated`.
+  Handle it in your event sink by cancelling and refunding the duplicate, or alerting someone.
+  Each later update to the duplicate emits the event again, so deduplicate by subscription ID.
+  `SubscriptionManager::cancel_duplicate_subscription(billable_id, subscription_id)` cancels the
+  duplicate immediately. It refuses to cancel the stored subscription or one whose metadata
+  names another entity. It does not refund; use `SecureRefundManager` if your policy calls for
+  one. Generated apps log a warning for this event in `src/billing/events.rs`, with a TODO for
+  the policy.
+  A new subscription replaces the stored one normally when the stored one has ended or is set to
+  cancel at period end (a resubscribe).
+
 ## Subscription Management
 
 ```rust
@@ -1221,6 +1248,10 @@ operations:
 - A successful compare-and-save must persist a version different from `expected_version`. Treat
   `StoredSubscription::updated_at` as an opaque optimistic-lock token; it may be a timestamp or an
 integer revision, but it must advance even when two writes share a wall-clock tick.
+- `link_stripe_customer_if_absent` must insert the customer link only when none exists and return
+  the ID that ends up linked, in one atomic operation (for SQL, `INSERT ... ON CONFLICT
+  (billable_id) DO NOTHING` followed by a read). Otherwise concurrent first checkouts create
+  duplicate Stripe customers.
 
 The built-in SeaORM store uses a five-minute claim lease by default. Configure
 `with_event_claim_ttl` longer than the slowest expected handler. Webhook side effects must still be

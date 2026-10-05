@@ -15,6 +15,27 @@ impl BillingEventSink for AppBillingEventSink {
         // Stripe retries failed webhook deliveries. Any side effects added here must therefore be
         // idempotent by event.event_id(); enqueueing a durable job is usually preferable to doing
         // slow network work in the webhook request.
+        if let BillingEvent::DuplicateSubscription {
+            billable_id,
+            existing_subscription_id,
+            subscription,
+            ..
+        } = event
+        {
+            // The customer paid for a second subscription and Stripe bills both until one is
+            // canceled. TODO: alert support, or cancel it with
+            // SubscriptionManager::cancel_duplicate_subscription and refund per your policy.
+            // Later updates to the duplicate repeat this event; deduplicate by subscription.id.
+            tracing::warn!(
+                stripe_event_id = event.event_id(),
+                billable_id = %billable_id,
+                existing_subscription_id = %existing_subscription_id,
+                duplicate_subscription_id = %subscription.id,
+                "Duplicate Stripe subscription needs manual resolution"
+            );
+            return Ok(());
+        }
+
         tracing::info!(
             stripe_event_id = event.event_id(),
             billing_event = event.kind(),
