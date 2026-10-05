@@ -41,7 +41,7 @@ impl Message {
     pub fn into_axum(self) -> axum::extract::ws::Message {
         match self {
             Message::Text(text) => {
-                axum::extract::ws::Message::Text(axum::extract::ws::Utf8Bytes::from(text.as_str()))
+                axum::extract::ws::Message::Text(axum::extract::ws::Utf8Bytes::from(text))
             }
             Message::Binary(data) => {
                 axum::extract::ws::Message::Binary(axum::body::Bytes::from(data))
@@ -55,7 +55,7 @@ impl Message {
                     let code = CloseCode::from(f.code);
                     axum::extract::ws::CloseFrame {
                         code,
-                        reason: axum::extract::ws::Utf8Bytes::from(f.reason.as_str()),
+                        reason: axum::extract::ws::Utf8Bytes::from(f.reason),
                     }
                 }))
             }

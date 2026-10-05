@@ -782,6 +782,18 @@ logging and metrics include rate-limit (429) and timeout (408) responses. Reques
 also wrap extra routers and early responses from CORS or global layers; extra routers
 retain their own application middleware.
 
+Metrics collection requires the `metrics` feature and `MetricsConfig::builder().enabled(true)`
+(or `TIDEWAY_METRICS_ENABLED=true` when loading environment configuration). To expose the
+scrape endpoint, also set `.bearer_token("your-secret")` or `TIDEWAY_METRICS_BEARER_TOKEN`.
+Scrapers must send `Authorization: Bearer <your-secret>`; missing or invalid credentials
+receive `401`. Without a nonempty token, collection continues but no scrape route is added.
+This applies to custom metrics paths too. Use a secret supplied at deployment and configure
+Prometheus `authorization.credentials_file` with the matching token.
+
+HTTP method labels preserve GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, and PATCH;
+all other method names share the `OTHER` label. Manually mounted `metrics_handler` routes
+must be protected by application authentication.
+
 ## Dependency Injection
 
 Tideway provides `AppContext` for dependency injection:
