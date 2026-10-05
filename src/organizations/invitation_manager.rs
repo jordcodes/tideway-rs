@@ -367,7 +367,7 @@ where
     /// Accept an invitation by token.
     ///
     /// User provides factory for creating membership from invitation.
-    #[instrument(skip(self, membership_factory))]
+    #[instrument(skip(self, token, membership_factory))]
     pub async fn accept<F>(
         &self,
         token: &str,

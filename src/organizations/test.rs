@@ -1664,6 +1664,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_accept_does_not_log_invitation_token() {
+        #[derive(Clone, Default)]
+        struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogBuffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+        let inv_manager = InvitationManager::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            InvitationConfig::default(),
+        );
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+
+        let secret_token = "inv_secret_token_do_not_log";
+        store.insert_invitation(TestInvitation {
+            id: "inv_1".to_string(),
+            org_id: org.id.clone(),
+            email: "invitee@example.com".to_string(),
+            role: DefaultOrgRole::Member,
+            invited_by: "owner".to_string(),
+            token: secret_token.to_string(),
+            expires_at: u64::MAX,
+            created_at: 0,
+            accepted: false,
+            revoked: false,
+        });
+
+        let logs = LogBuffer::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        inv_manager
+            .accept(secret_token, "invitee", |inv, p| TestMembership {
+                org_id: p.org_id,
+                user_id: p.user_id,
+                role: inv.role,
+                joined_at: p.joined_at,
+            })
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("Invitation accepted"),
+            "expected accept logs: {output}"
+        );
+        assert!(
+            !output.contains(secret_token),
+            "invitation token leaked into logs: {output}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_accept_revoked_invitation() {
         let store = InMemoryOrgStore::new();
         let org_manager = OrganizationManager::new(
