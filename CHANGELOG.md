@@ -9,6 +9,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- Stripe 4xx errors no longer expose Stripe's message (for example "No such price…" or test/live
+  mode mismatches) when converted to `TidewayError`. The full error is logged on the
+  `tideway::billing::stripe` target instead. Stripe 404 now maps to `NotFound` (HTTP 404), 429 to
+  `TooManyRequests` (HTTP 429), and other 4xx statuses to `BadRequest` (HTTP 400) with a generic
+  message. `BillingError` itself is unchanged, so handlers that match on it can still read
+  `message`, `code`, and `http_status`.
 - `RedisCache::clear()` no longer runs `FLUSHDB`. It previously wiped the whole Redis database,
   including `RedisJobQueue` jobs when the cache and job queue shared a database. `RedisCache`
   now stores keys under a `cache:` prefix (configurable with `with_prefix`), and `clear()`
