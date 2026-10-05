@@ -116,6 +116,46 @@ as `duration_secs` (an integer). Code that builds the request structs directly o
 not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
 not affected.
 
+## Unreleased: credit top-up refunds and disputes
+
+`CreditTopUpEventSink` now takes back prepaid credits when a Stripe payment is refunded or
+disputed, and no longer grants credits for checkouts a 100%-off promotion code made free. This
+needs a database migration for apps using `credits-seaorm`, and two more Stripe webhook events.
+
+1. Run `tideway --json doctor --upgrade`. A `TW-UPGRADE-CREDIT-REVOCATION-SCHEMA` warning means
+   the migration below is missing.
+2. From a clean application worktree, run `tideway add credits`. When the credits ledger already
+   exists, the command adds only an `add_credit_revocation` migration. It adds
+   `credit_buckets.revoked_amount` and `credit_buckets.pending_revocation` (both default `0`), an
+   index on `credit_buckets.idempotency_key`, and allows the `revoke` kind in
+   `credit_transactions`. On SQLite this rebuilds `credit_transactions`, because SQLite cannot alter
+   a CHECK constraint. Every step is safe to rerun.
+3. Apply the migration before deploying the new Tideway version. `SeaOrmCreditStore` reads the new
+   columns, so grants, reservations, and balance reads fail against an unmigrated database.
+4. In the Stripe dashboard, add `charge.refunded` and `charge.dispute.created` to the webhook
+   endpoint that already receives `checkout.session.completed`.
+5. If your code constructs or exhaustively destructures `BillingEvent::OneTimeCheckoutCompleted`,
+   handle the new `payment_intent_id` field. `CreditTransactionKind` has a new `Revoke` variant
+   and is now `#[non_exhaustive]`, so exhaustive matches on it need a wildcard arm. Custom
+   `CreditStore` implementations should implement `revoke`; the default returns an error.
+6. Before deploying, check the Stripe dashboard for failed top-up webhooks waiting to be retried.
+   A top-up granted before the upgrade under its event ID would be granted again under the new
+   key if a later sink failed and Stripe retries it after the deploy. Let pending retries finish
+   first, or reverse the duplicate grant afterwards.
+
+Custom billing event sinks now also receive `BillingEvent::ChargeRefunded` and
+`BillingEvent::ChargeDisputed`, because `WebhookHandler` processes `charge.refunded` and
+`charge.dispute.created` instead of ignoring them. Apps that do not use credits need no change.
+
+Top-ups are now granted under the key `stripe-payment-intent:{payment_intent_id}`. Purchases
+granted before the upgrade used `stripe-event:{event_id}`, so their refunds and disputes are not
+matched and leave the credits in place. Reverse those manually if needed. Credits already spent
+before a refund cannot be taken back; the sink logs a warning with the unrecovered amount.
+
+Rollback: the migration is additive and its down migration keeps the columns. Older Tideway
+versions ignore the columns, so they return held credits from revoked grants to the balance, and
+their `history` fails for an account once it has a `revoke` entry.
+
 ## Unreleased: usage-record retries and errors
 
 This release fixes possible double billing of metered usage. `LiveStripeClient::create_usage_record`
@@ -649,6 +689,7 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-BILLING-CUSTOMER-SCHEMA` | Migration source lacks required built-in billing customer columns. |
 | `TW-UPGRADE-BILLING-MIGRATION-MISSING` | The built-in billing store's event migration is absent. |
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |
+| `TW-UPGRADE-CREDIT-REVOCATION-SCHEMA` | Migration source lacks the credit revocation columns and `revoke` transaction kind. |
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |
 | `TW-UPGRADE-JWT-VERIFIER-SECRET` | The deprecated unchecked JWT verifier constructor is present. |
 | `TW-UPGRADE-JWT-IDENTITY-DRIFT` | JWT issuance uses a display name while verification expects the Cargo package name. |

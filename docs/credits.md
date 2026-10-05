@@ -142,9 +142,23 @@ let webhook = WebhookHandler::new(billing_store, webhook_secret, plans)
 ```
 
 The sink fulfils only Tideway-created `credit_top_up` sessions in Stripe `payment` mode whose
-`payment_status` is `paid` or `no_payment_required`. Delayed payment methods are handled by
-`checkout.session.async_payment_succeeded`. The signed event ID is the grant idempotency key. If the
-application already has a billing event sink, compose it with `top_up_sink.with_next(existing_sink)`.
+`payment_status` is `paid`. Checkouts a 100%-off promotion code made free (`no_payment_required`)
+grant nothing. Delayed payment methods are handled by `checkout.session.async_payment_succeeded`.
+The grant idempotency key is `stripe-payment-intent:{payment_intent_id}`, so each payment grants
+once. If the application already has a billing event sink, compose it with
+`top_up_sink.with_next(existing_sink)`.
+
+Subscribe the webhook endpoint to `charge.refunded` and `charge.dispute.created` as well. The sink
+then revokes credits from the matching grant:
+
+- A refund revokes the refunded share of the pack, rounded up. Stripe reports the cumulative
+  refunded amount, so repeated or partial refunds never revoke more than that share.
+- A dispute revokes the whole pack.
+
+Revocation takes unspent credits first. Credits held by an open reservation are taken back when it
+is released instead of returning to the balance. Credits already committed cannot be recovered;
+the sink logs a warning with the unrecovered amount, which `CreditManager::revoke` also returns.
+Refunds of payments that did not buy a pack are passed through unchanged.
 
 The application remains responsible for authorizing checkout creation, obtaining the Stripe
 customer linked to that account, provider delivery, product wording, and deciding what counts as a
@@ -161,5 +175,6 @@ successful billable operation.
   pack early fails fulfilment safely rather than granting an unverified amount.
 - Treat credit transaction metadata as operational context, not a place for secrets or message
   contents.
-- For refunds or chargebacks, grant policy is application-specific. Use a stable compensating
-  operation in application code; Tideway does not silently remove already-consumed credits.
+- To revoke credits outside Stripe top-ups, call `CreditManager::revoke` with the grant's
+  idempotency key and a cumulative `RevocationAmount`. Tideway never makes a balance negative;
+  decide in application code what to do about an `unrecovered_amount`.
