@@ -52,9 +52,17 @@ async fn merged_routes_receive_security_headers_and_request_ids() {
 #[tokio::test]
 async fn merged_routes_are_rate_limited() {
     let router = app().into_router_with_middleware();
-    let first = router.clone().oneshot(request("/merged/fast")).await.unwrap();
+    let first = router
+        .clone()
+        .oneshot(request("/merged/fast"))
+        .await
+        .unwrap();
     assert_eq!(first.status(), StatusCode::OK);
-    let second = router.clone().oneshot(request("/merged/fast")).await.unwrap();
+    let second = router
+        .clone()
+        .oneshot(request("/merged/fast"))
+        .await
+        .unwrap();
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(second.headers().contains_key("x-request-id"));
 

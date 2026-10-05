@@ -1012,7 +1012,7 @@ inherent methods to avoid those copies.
 The module provides two refund managers:
 
 - `RefundManager` - Low-level, no authorization checks (admin use only)
-- `SecureRefundManager` - Verifies charge ownership before refunding (customer-facing)
+- `SecureRefundManager` - Verifies charge ownership before refunding or reading refunds (customer-facing)
 
 ```rust
 use tideway::billing::{SecureRefundManager, RefundReason};
@@ -1039,6 +1039,9 @@ let refund = manager.refund_payment_intent("org_123", "pi_xxx", None).await?;
 
 // List refunds for a charge
 let refunds = manager.list_refunds_for_charge("org_123", "ch_xxx", 10).await?;
+
+// Get a refund (returns RefundNotFound unless it belongs to org_123)
+let refund = manager.get_refund("org_123", "re_xxx").await?;
 ```
 
 ## Customer Portal
