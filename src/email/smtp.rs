@@ -10,6 +10,7 @@ use lettre::{
     message::{Mailbox, MultiPart, SinglePart, header::ContentType},
     transport::smtp::authentication::Credentials,
 };
+use std::borrow::Cow;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -177,17 +178,28 @@ impl SmtpMailer {
         Self::new(config)
     }
 
-    fn build_message(&self, email: &Email) -> Result<Message> {
-        // Determine from address
-        let from_str = if email.from.is_empty() {
-            self.config.default_from.as_ref().ok_or_else(|| {
+    /// Apply the configured default "from" address, validate, and build the message
+    fn prepare_message(&self, email: &Email) -> Result<Message> {
+        // Fill in the default before validating, since validation rejects an empty 'from'
+        let email = if email.from.is_empty() {
+            let default_from = self.config.default_from.as_ref().ok_or_else(|| {
                 TidewayError::bad_request("No 'from' address specified and no default configured")
-            })?
+            })?;
+            Cow::Owned(Email {
+                from: default_from.clone(),
+                ..email.clone()
+            })
         } else {
-            &email.from
+            Cow::Borrowed(email)
         };
 
-        let from: Mailbox = from_str
+        email.validate()?;
+        self.build_message(&email)
+    }
+
+    fn build_message(&self, email: &Email) -> Result<Message> {
+        let from: Mailbox = email
+            .from
             .parse()
             .map_err(|e| TidewayError::bad_request(format!("Invalid 'from' address: {}", e)))?;
 
@@ -274,9 +286,7 @@ impl SmtpMailer {
 #[async_trait]
 impl Mailer for SmtpMailer {
     async fn send(&self, email: &Email) -> Result<()> {
-        email.validate()?;
-
-        let message = self.build_message(email)?;
+        let message = self.prepare_message(email)?;
 
         let transport = self.transport.read().await;
         transport
@@ -314,5 +324,38 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("secret-password"));
+    }
+
+    #[tokio::test]
+    async fn empty_from_uses_configured_default() {
+        let mailer = SmtpMailer::new(SmtpConfig::new("localhost").from("noreply@example.com"))
+            .expect("mailer");
+        let email = Email::new("", "user@example.com", "Hello").text("Hi");
+
+        let message = mailer
+            .prepare_message(&email)
+            .expect("default from applied");
+        let formatted = String::from_utf8(message.formatted()).expect("utf8");
+        assert!(formatted.contains("From: noreply@example.com"));
+    }
+
+    #[tokio::test]
+    async fn empty_from_without_default_is_rejected() {
+        let mailer = SmtpMailer::new(SmtpConfig::new("localhost")).expect("mailer");
+        let email = Email::new("", "user@example.com", "Hello").text("Hi");
+
+        let error = mailer.prepare_message(&email).unwrap_err();
+        assert!(error.to_string().contains("no default configured"));
+    }
+
+    #[tokio::test]
+    async fn explicit_from_overrides_default() {
+        let mailer = SmtpMailer::new(SmtpConfig::new("localhost").from("noreply@example.com"))
+            .expect("mailer");
+        let email = Email::new("team@example.com", "user@example.com", "Hello").text("Hi");
+
+        let message = mailer.prepare_message(&email).expect("message");
+        let formatted = String::from_utf8(message.formatted()).expect("utf8");
+        assert!(formatted.contains("From: team@example.com"));
     }
 }

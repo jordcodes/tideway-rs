@@ -7,18 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
-## [Unreleased]
+## [0.9.0] - Unreleased
 
-- `RedisCache` now stores keys under a `cache:` prefix (configurable with `with_key_prefix`),
-  and `clear()` deletes only keys with that prefix. Previously `clear()` ran `FLUSHDB`, which
-  also wiped job queues and any other data in the same Redis database. Entries written by
-  earlier versions are no longer read and expire on their existing TTL. See `docs/upgrading.md`.
+> **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update: applications
+> using the APIs below stop compiling, so `cargo update` keeps `^0.8` applications on 0.8.x.
+> Change the dependency to `0.9.0` and follow `docs/upgrading.md#08x-to-090-breaking-changes`.
+>
+> - `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize`. Deserialize
+>   `ImpersonationRequestBody` / `DeletionRequestBody` and call `into_request` with the
+>   authenticated actor ID.
+> - `WebSocketHandler::on_upgrade` is now `on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext)`.
+>   Overrides must use the new signature.
+> - `tideway::prelude` exports `DatabaseConnectionTrait` instead of `DatabaseConnection`. Rename
+>   prelude references, or import `tideway::DatabaseConnection` directly.
+> - `CachedInvoiceManager::list_invoices` returns `Arc<InvoiceList>` instead of `InvoiceList`, and
+>   `CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>` instead of
+>   `Option<Invoice>`.
+>
+> Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
+> `BillingEvent::OneTimeCheckoutCompleted` has a new field, `CreditTransactionKind` is
+> `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
+> migration.
+
+- Added `OrganizationManager::transfer_ownership`, which also sets the organization's owner to the
+  new owner. `MembershipManager::transfer_ownership` only swapped membership roles and left
+  `owner_id` unchanged, so `max_orgs_per_user` kept counting a transferred organization against
+  its former owner. The `MembershipManager` method is now deprecated. Organizations transferred
+  with it keep the stale `owner_id`; see `docs/upgrading.md` to find and fix them. With the
+  SeaORM store, `OrganizationManager::transfer_ownership_atomic` (backed by
+  `SeaOrmOrgStore::transfer_ownership_atomic`) does the whole transfer in one transaction. Both
+  methods return `MaxOrgsReached` if the new owner is already at `max_orgs_per_user`.
+- `RedisCache::clear()` no longer runs `FLUSHDB`. It previously wiped the whole Redis database,
+  including `RedisJobQueue` jobs when the cache and job queue shared a database. `RedisCache`
+  now stores keys under a `cache:` prefix (configurable with `with_prefix`), and `clear()`
+  deletes only keys with that prefix. Entries written by earlier versions without the prefix
+  are no longer read and expire on their TTL, so expect a cold cache after upgrading. See
+  `docs/upgrading.md`.
 - `RedisCache` sets TTLs in milliseconds (`PSETEX`). Previously TTLs under one second were
   truncated to `SETEX 0`, which Redis rejects, so those writes failed.
 - **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
   refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
+- **Breaking:** `JobsConfig` has a new `shutdown_timeout_seconds` field (default 25, env
+  `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`); struct literals must set it or use
+  `..Default::default()`. On SIGTERM, `App::serve()` now stops accepting HTTP connections
+  immediately and shuts down job workers in parallel, aborting jobs still running after the
+  timeout. Previously it kept serving until every running job finished, with no limit, so under
+  Kubernetes a slow job could get the pod SIGKILLed mid-request. Added
+  `WorkerPool::shutdown_with_timeout`. See `docs/upgrading.md`.
 - `AccountDeletionFlow` no longer deletes an account when a cleanup step (session or refresh
   token revocation, trusted device removal, MFA or lockout clearing) fails. Previously these
   errors were silently ignored, so a store failure could leave sessions and refresh tokens valid
@@ -39,9 +76,16 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   that returns one keeps the current keys. RSA decoding keys are built once per fetch instead of
   per request. See `docs/upgrading.md`.
 
-- The database prelude now exports `DatabaseConnectionTrait` instead of `DatabaseConnection`
-  to avoid ambiguous imports with SeaORM. Update prelude trait references to the new alias
-  or explicitly import `tideway::DatabaseConnection`; the original trait paths are unchanged.
+- **Breaking:** the database prelude now exports `DatabaseConnectionTrait` instead of
+  `DatabaseConnection` to avoid ambiguous imports with SeaORM. Code importing
+  `tideway::prelude::DatabaseConnection` no longer compiles. Update prelude trait references to
+  the new alias or explicitly import `tideway::DatabaseConnection`; the original trait paths are
+  unchanged.
+- **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` and
+  `CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>`, so cache hits
+  share the cached value instead of copying it. Callers that bind the result to an owned
+  `InvoiceList` or `Invoice`, or move fields out of it, must borrow instead or clone explicitly.
+  The `InvoiceOperations` trait keeps its owned return types. See `docs/upgrading.md`.
 - The rate-limit middleware now sustains `max_requests` per `window_seconds`. Previously it
   allowed a burst of `max_requests` and then refilled only one request per window, so the
   default "100 per 60s" became 1 request per minute after the first burst (server-wide in
@@ -59,6 +103,38 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   deliveries count against the same limit as other traffic, so review `max_requests` and
   `window_seconds` if webhook volume is high. Layers added with `App::layer` still apply only to
   registered modules. See `docs/upgrading.md`.
+
+- **Breaking:** the built-in metrics route (`/metrics` by default, or a custom metrics path) now
+  requires a bearer token and returns 404 unless one is configured. Set
+  `TIDEWAY_METRICS_BEARER_TOKEN` (fallback: `METRICS_BEARER_TOKEN`) or
+  `MetricsConfig::builder().bearer_token(...)`, and send the same token in your scraper's
+  `Authorization: Bearer` header. Requests with a missing or wrong token get 401. Metrics are
+  still collected when no token is set, but they cannot be scraped. Unknown HTTP methods are now
+  labelled `OTHER`. See `docs/upgrading.md`.
+- **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` instead of
+  `InvoiceList`, and `get_upcoming_invoice` returns `Option<Arc<Invoice>>` instead of
+  `Option<Invoice>`, so cache hits no longer copy the data. Callers that move fields out of the
+  result must borrow them (`for invoice in &invoices.invoices`), serialize with
+  `invoices.as_ref()`, or clone the inner value. The `InvoiceOperations` trait keeps its owned
+  return types. See `docs/billing.md`.
+- **Breaking:** the `imp_blocked` claim built by `ImpersonationClaims::from_session` now uses
+  the same action names as `validate_session` and `BlockedAction::matches`: `delete_account`,
+  `change_password`, `change_mfa`, `change_email`, `modify_billing`, `export_data`,
+  `make_purchase`, and `send_messages`. It previously held the lowercased variant names
+  (`deleteaccount`, `changepassword`, `changemfa`, ...), and custom actions appeared as
+  `custom("name")`. Custom actions are now the name as given, with its case preserved. Frontends
+  that read `imp_blocked` (for example `token.imp_blocked.includes("deleteaccount")`) to hide
+  actions during impersonation must switch to the new names, or they will stop hiding those
+  actions. Tokens issued before the upgrade still carry the old values until they expire, so
+  check for both forms during the rollout.
+- `RedisJobQueue` workers no longer use the blocking `BRPOPLPUSH`, which stalled the shared
+  Redis connection. An idle worker now sends `RPOPLPUSH` every 100 ms for up to 5 seconds per
+  dequeue, which works out to about 8–10 Redis commands per second per idle worker. Previously
+  it sent about one command every 6 seconds. With the default 4 workers, an idle instance now
+  sends about 35 commands per second (roughly 3 million per day) instead of under 1. If your
+  Redis provider bills per command or request, lower `worker_count`
+  (`TIDEWAY_JOBS_WORKER_COUNT`) on instances that do not need it, or run fewer job-processing
+  replicas.
 
 > **Billing behavior change:** `LiveStripeClient` usage-record errors now report Stripe's HTTP
 > status instead of a generic internal error. Applications using metered billing should review
@@ -188,6 +264,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Compatibility
 
+- This is a minor-version compatibility boundary for the pre-1.0 framework. The breaking changes
+  listed at the top of this release mean it cannot ship as a 0.8.x patch release.
 - `BillingEvent::OneTimeCheckoutCompleted` has a new `payment_intent_id` field. Code that
   constructs it, or destructures it without `..`, must be updated.
 - `CreditTransactionKind` has a new `Revoke` variant and is now `#[non_exhaustive]`. Exhaustive
@@ -213,12 +291,21 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - The organization owner fix has no signature changes, and `invitation_grants_owner` has a default,
   so custom `InvitationStore` implementations still compile. `add_member` and `invite` with an
   owner role now return `InsufficientPermission` for every actor, including owners.
-- `WebSocketHandler::on_upgrade` now takes `&mut UpgradeRequest` before `&AppContext`. Handlers
-  that do not override it still compile unchanged. `Connection` gains accessors only, and its
+- **Breaking:** `WebSocketHandler::on_upgrade` now takes `&mut UpgradeRequest` before
+  `&AppContext`, so overrides written for 0.8 no longer compile. Handlers that do not override it
+  still compile unchanged. `Connection` gains accessors only, and its
   public constructor `Connection::channel` is unchanged.
 
 ### Migration Notes
 
+- **Breaking:** apps that scrape metrics must set `TIDEWAY_METRICS_BEARER_TOKEN` and configure
+  the scraper to send it before deploying, or scrapes get 404 and dashboards go blank.
+- **Breaking:** callers of `CachedInvoiceManager::list_invoices` and `get_upcoming_invoice` must
+  handle the `Arc` return types.
+- **Breaking:** frontends that read the `imp_blocked` claim must compare against the snake_case
+  action names (`delete_account`, not `deleteaccount`).
+- Metered Redis users: expect many more commands from idle `RedisJobQueue` workers (about
+  8–10 per second per worker). Review `worker_count` before deploying.
 - **Breaking:** handlers using `Json<ImpersonationRequest>` or `Json<DeletionRequest>` no longer
   compile. Switch them to the `*Body` types and pass the authenticated actor ID to `into_request`.
   See `docs/upgrading.md`.
@@ -239,6 +326,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - **Breaking:** `WebSocketHandler::on_upgrade` overrides must use the new signature
   `on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext)`. The hook now runs on every
   upgrade, so rejection logic that was previously dead code takes effect. See `docs/upgrading.md`.
+- **Breaking:** replace `tideway::prelude::DatabaseConnection` with `DatabaseConnectionTrait`, or
+  import `tideway::DatabaseConnection` directly.
+- **Breaking:** code that takes owned values from `CachedInvoiceManager::list_invoices` or
+  `get_upcoming_invoice` must borrow through the returned `Arc` or clone explicitly. See
+  `docs/upgrading.md`.
 - Before deploying an app that uses `CreditTopUpEventSink`, check Stripe for failed top-up
   webhooks waiting to be retried. If one was already granted before the upgrade, its retry is
   granted again under the new key. Let retries finish first, or reverse the duplicate grant.

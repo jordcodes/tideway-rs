@@ -13,7 +13,7 @@ impl RouteModule for TestRoutes {
     fn routes(&self) -> Router<AppContext> {
         Router::new()
             .route("/fast", get(|| async { "ok" }))
-            .route("/slow", get(|| std::future::pending::<StatusCode>()))
+            .route("/slow", get(std::future::pending::<StatusCode>))
     }
 }
 

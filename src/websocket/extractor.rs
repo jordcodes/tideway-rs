@@ -85,6 +85,22 @@ where
     )
 }
 
+/// Heartbeat timing for a WebSocket connection
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Heartbeat {
+    pub(crate) interval: tokio::time::Duration,
+    pub(crate) timeout: tokio::time::Duration,
+}
+
+impl Default for Heartbeat {
+    fn default() -> Self {
+        Self {
+            interval: tokio::time::Duration::from_secs(30),
+            timeout: tokio::time::Duration::from_secs(60),
+        }
+    }
+}
+
 /// Handle a WebSocket connection lifecycle
 async fn handle_socket<H: WebSocketHandler>(
     socket: axum::extract::ws::WebSocket,
@@ -93,6 +109,38 @@ async fn handle_socket<H: WebSocketHandler>(
     manager: Arc<ConnectionManager>,
     ctx: Arc<AppContext>,
 ) {
+    let (ws_sender, ws_receiver) = socket.split();
+    run_connection(
+        ws_sender,
+        ws_receiver,
+        request,
+        handler,
+        manager,
+        ctx,
+        Heartbeat::default(),
+    )
+    .await;
+}
+
+/// Drive a connection until the peer disconnects, the socket fails, or the
+/// heartbeat times out. `on_disconnect` runs exactly once on every exit path
+/// after `on_connect` succeeded.
+pub(crate) async fn run_connection<H, Si, St>(
+    mut ws_sender: Si,
+    mut ws_receiver: St,
+    request: UpgradeRequest,
+    handler: Arc<H>,
+    manager: Arc<ConnectionManager>,
+    ctx: Arc<AppContext>,
+    heartbeat: Heartbeat,
+) where
+    H: WebSocketHandler,
+    Si: futures::Sink<axum::extract::ws::Message> + Unpin + Send + 'static,
+    St: futures::Stream<Item = std::result::Result<axum::extract::ws::Message, axum::Error>>
+        + Unpin
+        + Send
+        + 'static,
+{
     // Generate unique connection ID
     let conn_id = Uuid::new_v4().to_string();
 
@@ -100,7 +148,6 @@ async fn handle_socket<H: WebSocketHandler>(
     // Default to 1000 messages buffer - prevents unbounded memory growth
     let channel_capacity = 1000;
     let (tx, mut rx) = mpsc::channel::<Message>(channel_capacity);
-    let (mut ws_sender, mut ws_receiver) = socket.split();
 
     // Create connection wrapper
     let conn_handle: ConnectionHandle = Arc::new(tokio::sync::RwLock::new(
@@ -122,36 +169,22 @@ async fn handle_socket<H: WebSocketHandler>(
         return;
     }
 
-    // Use a oneshot channel to coordinate cleanup
-    let (cleanup_tx, mut cleanup_rx) = tokio::sync::oneshot::channel::<()>();
-    let cleanup_tx = Arc::new(tokio::sync::Mutex::new(Some(cleanup_tx)));
-
-    // Heartbeat configuration
-    let heartbeat_interval = tokio::time::Duration::from_secs(30);
-    let heartbeat_timeout = tokio::time::Duration::from_secs(60);
     let last_pong = Arc::new(tokio::sync::RwLock::new(std::time::Instant::now()));
 
     // Spawn heartbeat task to detect dead connections
-    let heartbeat_task = {
+    let mut heartbeat_task = {
         let tx = tx.clone();
-        let manager = manager.clone();
         let conn_id = conn_id.clone();
         let last_pong = last_pong.clone();
-        let cleanup_tx = cleanup_tx.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(heartbeat_interval);
+            let mut interval = tokio::time::interval(heartbeat.interval);
             loop {
                 interval.tick().await;
 
                 // Check if we've received a pong recently
                 let last_pong_time = *last_pong.read().await;
-                if last_pong_time.elapsed() > heartbeat_timeout {
+                if last_pong_time.elapsed() > heartbeat.timeout {
                     tracing::warn!(conn_id = %conn_id, "Connection heartbeat timeout");
-                    // Signal cleanup
-                    if let Some(tx) = cleanup_tx.lock().await.take() {
-                        let _ = tx.send(());
-                        let _ = manager.unregister(&conn_id).await;
-                    }
                     break;
                 }
 
@@ -162,35 +195,22 @@ async fn handle_socket<H: WebSocketHandler>(
     };
 
     // Spawn task to send messages from channel to WebSocket
-    let send_task = tokio::spawn({
-        let conn_id = conn_id.clone();
-        let manager = manager.clone();
-        let cleanup_tx = cleanup_tx.clone();
-        async move {
-            while let Some(msg) = rx.recv().await {
-                let axum_msg = msg.into_axum();
-                if ws_sender.send(axum_msg).await.is_err() {
-                    // WebSocket closed
-                    break;
-                }
-            }
-
-            // Signal cleanup and unregister
-            if let Some(tx) = cleanup_tx.lock().await.take() {
-                let _ = tx.send(());
-                let _ = manager.unregister(&conn_id).await;
+    let mut send_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if ws_sender.send(msg.into_axum()).await.is_err() {
+                // WebSocket closed
+                break;
             }
         }
     });
 
     // Spawn task to receive messages from WebSocket
-    let recv_task = tokio::spawn({
+    let mut recv_task = tokio::spawn({
         let handler = handler.clone();
         let conn_handle = conn_handle.clone();
         let ctx = ctx.clone();
         let manager = manager.clone();
         let conn_id = conn_id.clone();
-        let cleanup_tx = cleanup_tx.clone();
 
         async move {
             while let Some(result) = ws_receiver.next().await {
@@ -232,50 +252,27 @@ async fn handle_socket<H: WebSocketHandler>(
                     }
                 }
             }
-
-            // Call on_disconnect handler
-            {
-                let mut conn = conn_handle.write().await;
-                handler.on_disconnect(&mut conn, &ctx).await;
-            }
-
-            // Signal cleanup and unregister (only if not already done)
-            if let Some(tx) = cleanup_tx.lock().await.take() {
-                let _ = tx.send(());
-                let _ = manager.unregister(&conn_id).await;
-            }
         }
     });
 
-    // Wait for any task to complete, then ensure cleanup happens
-    // Use tokio::select! with pinned futures
-    tokio::pin!(send_task);
-    tokio::pin!(recv_task);
-    tokio::pin!(heartbeat_task);
-
-    tokio::select! {
-        _ = send_task.as_mut() => {
-            recv_task.abort();
-            heartbeat_task.abort();
-            // Wait a bit for recv_task to finish cleanup if it's running
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
-        _ = recv_task.as_mut() => {
-            send_task.abort();
-            heartbeat_task.abort();
-        }
-        _ = heartbeat_task.as_mut() => {
-            // Heartbeat timeout - connection is dead
-            send_task.abort();
-            recv_task.abort();
-        }
+    // Whichever task ends first ends the connection; stop the others.
+    let remaining = tokio::select! {
+        _ = &mut send_task => [recv_task, heartbeat_task],
+        _ = &mut recv_task => [send_task, heartbeat_task],
+        _ = &mut heartbeat_task => [send_task, recv_task],
+    };
+    // Wait for aborted tasks to drop, releasing any connection lock an
+    // in-flight on_message held, before running on_disconnect.
+    for task in remaining {
+        task.abort();
+        let _ = task.await;
     }
 
-    // Final cleanup check - ensure unregister happens even if both tasks abort
-    if cleanup_rx.try_recv().is_err() {
-        // Cleanup hasn't happened yet, do it now
-        let _ = manager.unregister(&conn_id).await;
+    {
+        let mut conn = conn_handle.write().await;
+        handler.on_disconnect(&mut conn, &ctx).await;
     }
+    let _ = manager.unregister(&conn_id).await;
 }
 
 // Handlers run under the connection's write lock to get `&mut Connection`, so the

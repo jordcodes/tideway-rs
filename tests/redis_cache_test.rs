@@ -90,7 +90,6 @@ fn command(args: &[&str]) -> Vec<String> {
 async fn keys_are_namespaced_under_default_prefix() {
     let server = RecordingRedis::start().await;
     let cache = RedisCache::new(&server.url, Duration::from_secs(60)).unwrap();
-    assert_eq!(cache.key_prefix(), "cache:");
 
     cache.get_bytes("user:1").await.unwrap();
     cache
@@ -155,7 +154,7 @@ async fn custom_prefix_is_used_for_keys_and_escaped_for_clear() {
     let server = RecordingRedis::start().await;
     let cache = RedisCache::new(&server.url, Duration::from_secs(60))
         .unwrap()
-        .with_key_prefix("app[1]:");
+        .with_prefix("app[1]:");
 
     cache.delete("k").await.unwrap();
     // The fake server ignores the pattern, so only the SCAN arguments matter here.

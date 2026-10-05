@@ -36,7 +36,12 @@ impl TimeoutConfig {
 
     /// Load timeout configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(self) -> Self {
+        let mut config = self;
 
         if let Some(enabled) = get_env_with_prefix("TIMEOUT_ENABLED") {
             match enabled.parse() {
@@ -44,8 +49,8 @@ impl TimeoutConfig {
                 Err(_) => {
                     tracing::warn!(
                         value = %enabled,
-                        "Invalid TIMEOUT_ENABLED (expected true/false), using default ({})",
-                        default_enabled()
+                        "Invalid TIMEOUT_ENABLED (expected true/false), keeping current value ({})",
+                        config.enabled
                     );
                 }
             }
@@ -56,8 +61,8 @@ impl TimeoutConfig {
                 Ok(s) => config.timeout_seconds = s,
                 Err(_) => tracing::warn!(
                     value = %seconds,
-                    "Invalid TIMEOUT_SECONDS (expected integer), using default ({})",
-                    default_timeout_seconds()
+                    "Invalid TIMEOUT_SECONDS (expected integer), keeping current value ({})",
+                    config.timeout_seconds
                 ),
             }
         }

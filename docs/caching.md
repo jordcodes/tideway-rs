@@ -52,16 +52,14 @@ let cache = Arc::new(
 );
 ```
 
-Keys are stored under the `cache:` prefix (`cache.set("user:123", ...)` writes
-`cache:user:123`), and `clear()` deletes only keys with that prefix, so the cache can share a
-Redis database with the job queue or other data. Give caches that share a database distinct
-prefixes:
+Keys are stored under a `cache:` prefix (`cache.set("user:1", ...)` writes `cache:user:1`).
+`clear()` deletes only keys with that prefix, using `SCAN` + `DEL`, so a job queue or other data
+in the same Redis database is left alone. Use a different prefix per cache if several caches
+share a database:
 
 ```rust
-let sessions = RedisCache::new(url, ttl)?.with_key_prefix("myapp:sessions:");
+let sessions = RedisCache::new(url, ttl)?.with_prefix("myapp:sessions:");
 ```
-
-An empty prefix stores keys unprefixed, and `clear()` then deletes every key in the database.
 
 TTLs are sent with millisecond precision; anything below 1ms is rounded up to 1ms.
 

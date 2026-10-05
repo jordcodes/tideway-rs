@@ -87,7 +87,12 @@ impl RequestLoggingConfig {
 
     /// Load request logging configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(self) -> Self {
+        let mut config = self;
 
         if let Some(enabled) = get_env_with_prefix("REQUEST_LOGGING_ENABLED") {
             config.enabled = parse_bool_with_default(&enabled, config.enabled);
