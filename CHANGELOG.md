@@ -12,6 +12,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - The database prelude now exports `DatabaseConnectionTrait` instead of `DatabaseConnection`
   to avoid ambiguous imports with SeaORM. Update prelude trait references to the new alias
   or explicitly import `tideway::DatabaseConnection`; the original trait paths are unchanged.
+- The rate-limit middleware now sustains `max_requests` per `window_seconds`. Previously it
+  allowed a burst of `max_requests` and then refilled only one request per window, so the
+  default "100 per 60s" became 1 request per minute after the first burst (server-wide in
+  `global` mode). Clients now receive many more requests over time than before. If you tuned
+  `max_requests` or `window_seconds` around the old behavior, review those values. See
+  `docs/rate_limiting.md` for burst semantics.
 
 > **Billing behavior change:** `LiveStripeClient` usage-record errors now report Stripe's HTTP
 > status instead of a generic internal error. Applications using metered billing should review
