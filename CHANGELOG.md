@@ -9,6 +9,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+### Security
+
+- `LoginFlow::verify_mfa` now rejects verification while the account is locked. Previously, MFA
+  tokens minted before a lockout could keep guessing codes and complete login after the account
+  locked.
+
 ## [tideway-cli 0.1.48] - 2026-08-04
 
 > **Existing applications:** install this CLI and run `tideway --json doctor --upgrade` before
