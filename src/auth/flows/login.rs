@@ -470,8 +470,8 @@ where
         let user_id = self.user_store.user_id(user);
         let email = self.user_store.user_email(user);
 
-        // Try TOTP first (6 digits)
-        if code.len() == 6
+        // Try TOTP first (configured digit length)
+        if code.len() == self.totp_manager.digits()
             && code.chars().all(|c| c.is_ascii_digit())
             && let Some(secret) = self.user_store.get_totp_secret(user).await?
             && let Some(step) = self.totp_manager.verify_step(&secret, code, &email)?
@@ -1139,6 +1139,67 @@ mod tests {
             .await
             .unwrap();
 
+        assert!(is_success(&response));
+
+        let replay = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: Some(code),
+            })
+            .await
+            .unwrap();
+        assert!(is_error(&replay));
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_login_with_eight_digit_mfa_code() {
+        use crate::auth::mfa::{TotpConfig, TotpManager};
+
+        let totp_config = TotpConfig::new("TestApp").digits(8);
+        let user_store = TestUserStore::new();
+        let totp = TotpManager::new(totp_config.clone());
+        let setup = totp.generate_setup("test@example.com").unwrap();
+        let code = totp
+            .generate_current(&setup.secret, "test@example.com")
+            .unwrap();
+        assert_eq!(code.len(), 8);
+
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.mfa_enabled = true;
+        user.totp_secret = Some(setup.secret.clone());
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let mut config = LoginFlowConfig::new("TestApp");
+        config.totp_config = totp_config;
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        let wrong_code = format!("{:08}", (code.parse::<u32>().unwrap() + 1) % 100_000_000);
+        let wrong = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: Some(wrong_code),
+            })
+            .await
+            .unwrap();
+        assert!(is_error(&wrong));
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "password123".to_string(),
+                remember_me: false,
+                mfa_code: Some(code.clone()),
+            })
+            .await
+            .unwrap();
         assert!(is_success(&response));
 
         let replay = flow
