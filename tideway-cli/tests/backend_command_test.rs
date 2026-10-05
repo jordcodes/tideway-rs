@@ -336,8 +336,11 @@ fn test_backend_auth_uses_shared_guards_and_atomic_token_updates() {
         routes
             .contains("If an account with that email exists, a password reset link has been sent.")
     );
+    assert!(routes.contains("flow.resend_for_user(&user.id.to_string())"));
+    assert!(!routes.contains("ResendVerificationRequest"));
 
     let store = fs::read_to_string(output_dir.join("auth/store.rs")).expect("read auth store");
+    assert!(store.contains("async fn verification_email(&self, user_id: &str)"));
     assert!(store.contains("compare_and_swap_family_generation"));
     assert!(store.contains("update.rows_affected == 1"));
     assert!(store.contains("revoke_all_for_user(user_id)"));

@@ -1,0 +1,206 @@
+//! Let the credits ledger revoke grants, such as refunded or disputed Stripe top-ups.
+//!
+//! Adds revocation tracking to `credit_buckets`, an index for looking grants up by idempotency
+//! key, and allows the `revoke` kind in `credit_transactions`. Every step is safe to rerun.
+
+use sea_orm_migration::prelude::*;
+use sea_orm_migration::sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
+
+const TRANSACTION_KINDS: [&str; 5] = ["grant", "reserve", "commit", "release", "revoke"];
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        for column in [
+            CreditBuckets::RevokedAmount,
+            CreditBuckets::PendingRevocation,
+        ] {
+            if !manager
+                .has_column("credit_buckets", &column.to_string())
+                .await?
+            {
+                manager
+                    .alter_table(
+                        Table::alter()
+                            .table(CreditBuckets::Table)
+                            .add_column(ColumnDef::new(column).big_integer().not_null().default(0))
+                            .to_owned(),
+                    )
+                    .await?;
+            }
+        }
+
+        manager
+            .create_index(
+                Index::create()
+                    .if_not_exists()
+                    .name("idx_credit_buckets_idempotency_key")
+                    .table(CreditBuckets::Table)
+                    .col(CreditBuckets::IdempotencyKey)
+                    .to_owned(),
+            )
+            .await?;
+
+        allow_revoke_transactions(manager).await
+    }
+
+    async fn down(&self, _manager: &SchemaManager) -> Result<(), DbErr> {
+        // Intentionally retained: the credit store expects these columns, and revoke ledger
+        // entries may already exist.
+        Ok(())
+    }
+}
+
+async fn allow_revoke_transactions(manager: &SchemaManager<'_>) -> Result<(), DbErr> {
+    let db = manager.get_connection();
+    let kinds = TRANSACTION_KINDS
+        .iter()
+        .map(|kind| format!("'{kind}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match manager.get_database_backend() {
+        DatabaseBackend::Postgres => {
+            db.execute_unprepared(&format!(
+                r#"
+                DO $$
+                DECLARE constraint_name text;
+                BEGIN
+                    FOR constraint_name IN
+                        SELECT conname FROM pg_constraint
+                        WHERE conrelid = 'credit_transactions'::regclass
+                          AND contype = 'c'
+                          AND pg_get_constraintdef(oid) LIKE '%kind%'
+                    LOOP
+                        EXECUTE format(
+                            'ALTER TABLE credit_transactions DROP CONSTRAINT %I',
+                            constraint_name
+                        );
+                    END LOOP;
+                END $$;
+                ALTER TABLE credit_transactions
+                    ADD CONSTRAINT credit_transactions_kind_check CHECK (kind IN ({kinds}));
+                "#
+            ))
+            .await?;
+            Ok(())
+        }
+        DatabaseBackend::Sqlite => {
+            // SQLite cannot alter a CHECK constraint, so rebuild the table when the old one is
+            // still in place.
+            let schema = db
+                .query_one(Statement::from_string(
+                    DatabaseBackend::Sqlite,
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'credit_transactions'",
+                ))
+                .await?
+                .map(|row| row.try_get::<String>("", "sql"))
+                .transpose()?
+                .unwrap_or_default();
+            if !schema.contains("'release'") || schema.contains("'revoke'") {
+                return Ok(());
+            }
+            manager
+                .create_table(
+                    Table::create()
+                        .table(Alias::new("credit_transactions_rebuild"))
+                        .col(
+                            ColumnDef::new(CreditTransactions::Id)
+                                .string()
+                                .not_null()
+                                .primary_key(),
+                        )
+                        .col(
+                            ColumnDef::new(CreditTransactions::AccountId)
+                                .string()
+                                .not_null(),
+                        )
+                        .col(
+                            ColumnDef::new(CreditTransactions::CreditType)
+                                .string()
+                                .not_null(),
+                        )
+                        .col(ColumnDef::new(CreditTransactions::Kind).string().not_null())
+                        .col(
+                            ColumnDef::new(CreditTransactions::Amount)
+                                .big_integer()
+                                .not_null(),
+                        )
+                        .col(ColumnDef::new(CreditTransactions::BucketId).string())
+                        .col(ColumnDef::new(CreditTransactions::ReservationId).string())
+                        .col(
+                            ColumnDef::new(CreditTransactions::IdempotencyKey)
+                                .string()
+                                .not_null(),
+                        )
+                        .col(
+                            ColumnDef::new(CreditTransactions::CreatedAt)
+                                .big_integer()
+                                .not_null(),
+                        )
+                        .col(
+                            ColumnDef::new(CreditTransactions::Metadata)
+                                .json_binary()
+                                .not_null(),
+                        )
+                        .check(Expr::col(CreditTransactions::Amount).gt(0))
+                        .check(Expr::col(CreditTransactions::Kind).is_in(TRANSACTION_KINDS))
+                        .to_owned(),
+                )
+                .await?;
+            db.execute_unprepared(
+                r#"
+                INSERT INTO credit_transactions_rebuild
+                    (id, account_id, credit_type, kind, amount, bucket_id, reservation_id,
+                     idempotency_key, created_at, metadata)
+                SELECT id, account_id, credit_type, kind, amount, bucket_id, reservation_id,
+                       idempotency_key, created_at, metadata
+                FROM credit_transactions;
+                DROP TABLE credit_transactions;
+                ALTER TABLE credit_transactions_rebuild RENAME TO credit_transactions;
+                "#,
+            )
+            .await?;
+            manager
+                .create_index(
+                    Index::create()
+                        .if_not_exists()
+                        .name("idx_credit_transactions_history")
+                        .table(CreditTransactions::Table)
+                        .col(CreditTransactions::AccountId)
+                        .col(CreditTransactions::CreditType)
+                        .col(CreditTransactions::CreatedAt)
+                        .to_owned(),
+                )
+                .await
+        }
+        backend => Err(DbErr::Migration(format!(
+            "Allow the 'revoke' kind in credit_transactions manually for {backend:?}"
+        ))),
+    }
+}
+
+#[derive(DeriveIden)]
+enum CreditBuckets {
+    Table,
+    IdempotencyKey,
+    RevokedAmount,
+    PendingRevocation,
+}
+
+#[derive(DeriveIden)]
+enum CreditTransactions {
+    Table,
+    Id,
+    AccountId,
+    CreditType,
+    Kind,
+    Amount,
+    BucketId,
+    ReservationId,
+    IdempotencyKey,
+    CreatedAt,
+    Metadata,
+}

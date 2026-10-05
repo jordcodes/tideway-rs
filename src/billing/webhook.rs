@@ -209,6 +209,8 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             "customer.subscription.deleted" => self.handle_subscription_deleted(&event).await,
             "invoice.paid" => self.handle_invoice_paid(&event).await,
             "invoice.payment_failed" => self.handle_payment_failed(&event).await,
+            "charge.refunded" => self.handle_charge_refunded(&event).await,
+            "charge.dispute.created" => self.handle_charge_disputed(&event).await,
             _ => unreachable!("unsupported event types return before claiming idempotency"),
         };
 
@@ -257,6 +259,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                         .get("payment_status")
                         .and_then(serde_json::Value::as_str)
                         .map(String::from),
+                    payment_intent_id: value_id(session.get("payment_intent")),
                 })
                 .await?;
             return Ok(WebhookOutcome::Processed);
@@ -272,6 +275,50 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             })
             .await?;
 
+        Ok(WebhookOutcome::Processed)
+    }
+
+    /// Handle charge.refunded event.
+    async fn handle_charge_refunded(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let charge = event.data.object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid event data".to_string())
+        })?;
+        let charge_id = value_id(charge.get("id")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing charge ID".to_string())
+        })?;
+        self.event_sink
+            .handle(&BillingEvent::ChargeRefunded {
+                context: event_context(event),
+                charge_id,
+                payment_intent_id: value_id(charge.get("payment_intent")),
+                customer_id: value_id(charge.get("customer")),
+                amount: required_amount(charge, "amount")?,
+                amount_refunded: required_amount(charge, "amount_refunded")?,
+            })
+            .await?;
+        Ok(WebhookOutcome::Processed)
+    }
+
+    /// Handle charge.dispute.created event.
+    async fn handle_charge_disputed(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let dispute = event.data.object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid event data".to_string())
+        })?;
+        let dispute_id = value_id(dispute.get("id")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing dispute ID".to_string())
+        })?;
+        let charge_id = value_id(dispute.get("charge")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing disputed charge ID".to_string())
+        })?;
+        self.event_sink
+            .handle(&BillingEvent::ChargeDisputed {
+                context: event_context(event),
+                dispute_id,
+                charge_id,
+                payment_intent_id: value_id(dispute.get("payment_intent")),
+                amount: required_amount(dispute, "amount")?,
+            })
+            .await?;
         Ok(WebhookOutcome::Processed)
     }
 
@@ -310,6 +357,17 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 subscription: sub_data,
             },
             SubscriptionSyncOutcome::Saved { .. } => lifecycle_event,
+            SubscriptionSyncOutcome::Deleted {
+                stripe_subscription_id,
+            } => {
+                tracing::info!(
+                    target: "tideway::billing",
+                    event_id = %event.id,
+                    subscription_id = %stripe_subscription_id,
+                    "ignoring late webhook for a deleted Stripe subscription"
+                );
+                return Ok(WebhookOutcome::Processed);
+            }
         };
         self.event_sink.handle(&lifecycle_event).await?;
 
@@ -555,6 +613,13 @@ fn value_id(value: Option<&serde_json::Value>) -> Option<String> {
     })
 }
 
+fn required_amount(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<u64> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| crate::error::TidewayError::BadRequest(format!("Missing or invalid {key}")))
+}
+
 fn metadata_value(
     object: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -615,6 +680,8 @@ fn is_supported_event_type(event_type: &str) -> bool {
             | "customer.subscription.deleted"
             | "invoice.paid"
             | "invoice.payment_failed"
+            | "charge.refunded"
+            | "charge.dispute.created"
     )
 }
 
@@ -1065,6 +1132,7 @@ mod tests {
                     "mode": "payment",
                     "customer": "cus_123",
                     "payment_status": "paid",
+                    "payment_intent": "pi_123",
                     "metadata": {
                         "billable_id": "org-1",
                         "billable_type": "credit_top_up",
@@ -1088,13 +1156,87 @@ mod tests {
                 billable_type: Some(billable_type),
                 plan_id: Some(plan_id),
                 payment_status: Some(payment_status),
+                payment_intent_id: Some(payment_intent_id),
                 ..
             } if checkout_session_id == "cs_topup"
                 && billable_id == "org-1"
                 && billable_type == "credit_top_up"
                 && plan_id == "sms_100"
                 && payment_status == "paid"
+                && payment_intent_id == "pi_123"
         ));
+    }
+
+    #[tokio::test]
+    async fn refunds_and_disputes_are_delivered_once() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let refund = WebhookEvent {
+            id: "evt_refund".to_string(),
+            event_type: "charge.refunded".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "ch_123",
+                    "object": "charge",
+                    "amount": 1000,
+                    "amount_refunded": 400,
+                    "customer": "cus_123",
+                    "payment_intent": "pi_123"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+        let dispute = WebhookEvent {
+            id: "evt_dispute".to_string(),
+            event_type: "charge.dispute.created".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "dp_123",
+                    "object": "dispute",
+                    "amount": 1000,
+                    "charge": "ch_123",
+                    "payment_intent": "pi_123"
+                }),
+            },
+            created: 1_700_000_001,
+        };
+
+        for event in [refund.clone(), dispute.clone()] {
+            assert_eq!(
+                handler.handle_event(event).await.unwrap(),
+                WebhookOutcome::Processed
+            );
+        }
+        assert_eq!(
+            handler.handle_event(refund).await.unwrap(),
+            WebhookOutcome::AlreadyProcessed
+        );
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            BillingEvent::ChargeRefunded {
+                charge_id,
+                payment_intent_id: Some(payment_intent_id),
+                customer_id: Some(customer_id),
+                amount: 1000,
+                amount_refunded: 400,
+                ..
+            } if charge_id == "ch_123" && payment_intent_id == "pi_123" && customer_id == "cus_123"
+        ));
+        assert!(matches!(
+            &events[1],
+            BillingEvent::ChargeDisputed {
+                dispute_id,
+                charge_id,
+                payment_intent_id: Some(payment_intent_id),
+                amount: 1000,
+                ..
+            } if dispute_id == "dp_123" && charge_id == "ch_123" && payment_intent_id == "pi_123"
+        ));
+        assert_eq!(events[1].kind(), "charge_disputed");
     }
 
     fn subscription_created_event(event_id: &str, subscription_id: &str) -> WebhookEvent {
@@ -1152,6 +1294,98 @@ mod tests {
                 && subscription.id == "sub_second"
         ));
         assert_eq!(events[1].kind(), "duplicate_subscription");
+    }
+
+    fn subscription_event(event_id: &str, event_type: &str, subscription_id: &str) -> WebhookEvent {
+        let mut event = subscription_created_event(event_id, subscription_id);
+        event.event_type = event_type.to_string();
+        event
+    }
+
+    #[tokio::test]
+    async fn late_subscription_update_does_not_resurrect_deleted_subscription() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+
+        handler
+            .handle_event(subscription_created_event("evt_created", "sub_late"))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_event(
+                "evt_deleted",
+                "customer.subscription.deleted",
+                "sub_late",
+            ))
+            .await
+            .unwrap();
+        assert!(store.get_subscription("org-1").await.unwrap().is_none());
+
+        // Stripe delivers an older `updated` snapshot (still active) after the deletion.
+        assert_eq!(
+            handler
+                .handle_event(subscription_event(
+                    "evt_late_update",
+                    "customer.subscription.updated",
+                    "sub_late",
+                ))
+                .await
+                .unwrap(),
+            WebhookOutcome::Processed
+        );
+
+        assert!(
+            store.get_subscription("org-1").await.unwrap().is_none(),
+            "a late update must not recreate a deleted subscription"
+        );
+        let kinds: Vec<_> = sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.kind())
+            .collect();
+        assert_eq!(kinds, ["subscription_created", "subscription_deleted"]);
+    }
+
+    #[tokio::test]
+    async fn late_update_for_deleted_subscription_does_not_replace_new_subscription() {
+        let store = InMemoryBillingStore::new();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans());
+
+        handler
+            .handle_event(subscription_created_event("evt_old_created", "sub_old"))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_event(
+                "evt_old_deleted",
+                "customer.subscription.deleted",
+                "sub_old",
+            ))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_created_event("evt_new_created", "sub_new"))
+            .await
+            .unwrap();
+        let mut new_sub = store.get_subscription("org-1").await.unwrap().unwrap();
+        new_sub.cancel_at_period_end = true;
+        store.save_subscription("org-1", &new_sub).await.unwrap();
+
+        handler
+            .handle_event(subscription_event(
+                "evt_old_late_update",
+                "customer.subscription.updated",
+                "sub_old",
+            ))
+            .await
+            .unwrap();
+
+        let stored = store.get_subscription("org-1").await.unwrap().unwrap();
+        assert_eq!(stored.stripe_subscription_id, "sub_new");
     }
 
     #[tokio::test]

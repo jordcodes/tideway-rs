@@ -18,7 +18,7 @@ use tideway::auth::{
     AuthRateLimitConfig, AuthRateLimiter, JwtIssuer, LoginFlow, LoginFlowConfig,
     LoginRateLimitConfig, LoginRateLimiter, LoginRequest, LoginHttpResponse,
     PasswordPolicy, PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, EmailVerificationFlow,
-    EmailVerifyRequest, RegisterRequest, RegistrationFlow, ResendVerificationRequest, UserStore,
+    EmailVerifyRequest, RegisterRequest, RegistrationFlow, UserStore,
 };
 use tideway::{AppContext, ClientIpResolver, MessageResponse, Result, RouteModule};
 {{#if has_organizations}}
@@ -626,15 +626,7 @@ async fn resend_verification(
     if let Ok(Some(user)) = store.find_by_email(&normalized_email).await {
         if user.email_verified_at.is_none() {
             let flow = EmailVerificationFlow::new(store);
-            if let Err(error) = flow
-                .resend(
-                    ResendVerificationRequest {
-                        email: normalized_email,
-                    },
-                    &user.id.to_string(),
-                )
-                .await
-            {
+            if let Err(error) = flow.resend_for_user(&user.id.to_string()).await {
                 tracing::error!(user_id = %user.id, %error, "Verification resend failed");
             }
         }

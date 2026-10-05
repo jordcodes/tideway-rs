@@ -173,6 +173,14 @@ fn test_new_credits_seaorm_includes_database_and_ledger_schema() {
         &project_dir.join("migration/src/lib.rs"),
         "Box::new(m013_create_credit_ledger::Migration)",
     );
+    assert_file_contains(
+        &project_dir.join("migration/src/m015_add_credit_revocation.rs"),
+        "PendingRevocation",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m015_add_credit_revocation::Migration)",
+    );
 }
 
 #[test]

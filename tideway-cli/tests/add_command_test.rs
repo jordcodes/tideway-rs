@@ -100,11 +100,86 @@ fn test_add_credits_is_additive_and_registers_ledger_migration() {
     assert_file_contains(&migration, "credit_buckets");
     assert_file_contains(&migration, "credit_reservations");
     assert_file_contains(&migration, "credit_transactions");
-    assert_file_contains(
-        &project_dir.join("migration/src/lib.rs"),
-        "Box::new(m013_create_credit_ledger::Migration)",
-    );
+    let revocation = project_dir.join("migration/src/m014_add_credit_revocation.rs");
+    assert_file_contains(&revocation, "PendingRevocation");
+    assert_file_contains(&revocation, "\"revoke\"");
+    let migration_lib =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    let ledger_position = migration_lib
+        .find("Box::new(m013_create_credit_ledger::Migration)")
+        .expect("ledger registered");
+    let revocation_position = migration_lib
+        .find("Box::new(m014_add_credit_revocation::Migration)")
+        .expect("revocation registered");
+    assert!(ledger_position < revocation_position);
     assert_file_contains(&project_dir.join("migration/Cargo.toml"), "with-json");
+}
+
+#[test]
+fn test_add_credits_upgrades_an_existing_ledger_with_revocation_only() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, true);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    let args = || AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    };
+    tideway_cli::commands::add::run(args()).expect("first add");
+    // Simulate an app created before credit revocation existed.
+    fs::remove_file(project_dir.join("migration/src/m014_add_credit_revocation.rs"))
+        .expect("remove revocation migration");
+    let migration_lib =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        migration_lib
+            .replace("mod m014_add_credit_revocation;\n", "")
+            .replace("Box::new(m014_add_credit_revocation::Migration),", ""),
+    )
+    .expect("write legacy migration lib");
+    fs::write(
+        project_dir.join("migration/src/m014_application_change.rs"),
+        "// application-owned migration\n",
+    )
+    .expect("write application migration");
+    let ledger = fs::read_to_string(project_dir.join("migration/src/m013_create_credit_ledger.rs"))
+        .expect("read ledger");
+
+    tideway_cli::commands::add::run(args()).expect("upgrade credits");
+
+    assert_eq!(
+        fs::read_to_string(project_dir.join("migration/src/m013_create_credit_ledger.rs"))
+            .expect("read ledger after"),
+        ledger
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/m015_add_credit_revocation.rs"),
+        "PendingRevocation",
+    );
+    let migration_lib =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    assert_eq!(
+        migration_lib
+            .matches("Box::new(m013_create_credit_ledger::Migration)")
+            .count(),
+        1
+    );
+    assert_eq!(
+        migration_lib
+            .matches("Box::new(m015_add_credit_revocation::Migration)")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -140,6 +215,10 @@ fn test_add_credits_uses_next_number_without_overwriting_an_existing_migration()
     assert_file_contains(
         &project_dir.join("migration/src/lib.rs"),
         "Box::new(m014_create_credit_ledger::Migration)",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m015_add_credit_revocation::Migration)",
     );
 }
 
@@ -186,6 +265,21 @@ fn test_add_credits_is_idempotent_with_a_dynamically_numbered_migration() {
             .count(),
         1
     );
+    assert_file_contains(
+        &project_dir.join("migration/src/m029_add_credit_revocation.rs"),
+        "PendingRevocation",
+    );
+    assert!(
+        !project_dir
+            .join("migration/src/m030_add_credit_revocation.rs")
+            .exists()
+    );
+    assert_eq!(
+        migration_lib
+            .matches("Box::new(m029_add_credit_revocation::Migration)")
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -229,6 +323,14 @@ impl MigratorTrait for Migrator {
     assert_file_contains(
         &project_dir.join("migration/src/lib.rs"),
         "Box::new(m20990101_000001_create_credit_ledger::Migration)",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/m20990101_000002_add_credit_revocation.rs"),
+        "PendingRevocation",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m20990101_000002_add_credit_revocation::Migration)",
     );
 }
 
