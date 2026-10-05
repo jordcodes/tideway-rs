@@ -9,6 +9,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- `RedisCache::clear()` no longer runs `FLUSHDB`. It previously wiped the whole Redis database,
+  including `RedisJobQueue` jobs when the cache and job queue shared a database. `RedisCache`
+  now stores keys under a `cache:` prefix (configurable with `with_prefix`), and `clear()`
+  deletes only keys with that prefix. Entries written by earlier versions without the prefix
+  are no longer read and expire on their TTL, so expect a cold cache after upgrading.
 - **Breaking:** `SecureRefundManager::get_refund` now takes the billable ID
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
