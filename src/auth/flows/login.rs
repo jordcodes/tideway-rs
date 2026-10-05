@@ -8,6 +8,7 @@
 //! - `auth.login.mfa_required` - MFA challenge issued
 //! - `auth.login.rate_limited` - Login blocked due to IP rate limiting
 //! - `auth.mfa.failed` - Failed MFA verification
+//! - `auth.mfa.locked` - MFA verification blocked due to account lockout
 //! - `auth.mfa.backup_used` - Backup code consumed
 //! - `auth.password.rehashed` - Password hash upgraded
 
@@ -247,8 +248,8 @@ where
 {
     /// Primary login endpoint - handles email/password and optional MFA.
     ///
-    /// This method does not perform IP-based rate limiting. Use [`Self::login_with_ip`]
-    /// if you have configured a rate limiter.
+    /// If a rate limiter is configured, attempts are limited per normalized email address.
+    /// Prefer [`Self::login_with_ip`] so attempts are also limited per client IP.
     #[cfg(feature = "auth")]
     pub async fn login(&self, req: LoginRequest) -> Result<LoginResponse> {
         self.login_with_ip(req, None).await
@@ -257,7 +258,8 @@ where
     /// Primary login endpoint with IP-based rate limiting.
     ///
     /// Pass the client's IP address to enable rate limiting protection
-    /// against brute force attacks.
+    /// against brute force attacks. When `client_ip` is `None`, attempts are
+    /// limited per normalized email address instead.
     ///
     /// # Example
     ///
@@ -280,10 +282,13 @@ where
         req: LoginRequest,
         client_ip: Option<String>,
     ) -> Result<LoginResponse> {
-        // Check rate limit first (before any auth logic)
-        self.rate_limiter.check_rate_limit(client_ip.as_deref())?;
         // Normalize email
         let email = req.email.trim().to_lowercase();
+
+        // Check rate limit first (before any auth logic). Without a client IP, fall back to
+        // the targeted account so a configured limiter is never silently bypassed.
+        let rate_limit_key = client_ip.unwrap_or_else(|| format!("email:{email}"));
+        self.rate_limiter.check_rate_limit(Some(&rate_limit_key))?;
 
         // Find user
         let user = match self.user_store.find_by_email(&email).await? {
@@ -424,6 +429,21 @@ where
             .find_by_id(&user_id)
             .await?
             .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))?;
+
+        // Check if locked - MFA tokens minted before a lockout must not bypass it
+        if let Some(until) = self.user_store.is_locked(&user).await?
+            && until > SystemTime::now()
+        {
+            tracing::warn!(
+                target: "auth.mfa.locked",
+                user_id = %user_id,
+                locked_until = ?until,
+                "MFA verification blocked: account locked"
+            );
+            return Ok(LoginResponse::error(
+                "Account temporarily locked. Try again later.",
+            ));
+        }
 
         #[cfg(feature = "auth-mfa")]
         {
@@ -585,6 +605,8 @@ mod tests {
         last_totp_step: Option<u64>,
     }
 
+    const TEST_MAX_FAILED_ATTEMPTS: u32 = 5;
+
     struct TestUserStore {
         users: RwLock<HashMap<String, TestUser>>,
     }
@@ -656,6 +678,9 @@ mod tests {
             let mut users = self.users.write().unwrap();
             if let Some(u) = users.get_mut(&user.email) {
                 u.failed_attempts += 1;
+                if u.failed_attempts >= TEST_MAX_FAILED_ATTEMPTS {
+                    u.locked_until = Some(SystemTime::now() + Duration::from_secs(900));
+                }
             }
             Ok(())
         }
@@ -1179,6 +1204,80 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_verify_mfa_blocked_when_account_locked() {
+        use crate::auth::mfa::{TotpConfig, TotpManager};
+
+        let user_store = TestUserStore::new();
+        let totp = TotpManager::new(TotpConfig::default());
+        let setup = totp.generate_setup("test@example.com").unwrap();
+
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.mfa_enabled = true;
+        user.totp_secret = Some(setup.secret.clone());
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        // Mint more MFA tokens than the lockout threshold before any failures.
+        let mut tokens = Vec::new();
+        for _ in 0..=TEST_MAX_FAILED_ATTEMPTS {
+            let response = flow
+                .login(LoginRequest {
+                    email: "test@example.com".to_string(),
+                    password: "password123".to_string(),
+                    remember_me: false,
+                    mfa_code: None,
+                })
+                .await
+                .unwrap();
+            tokens.push(get_mfa_token(&response).unwrap());
+        }
+
+        // Brute-force the code until the account locks.
+        let last_token = tokens.pop().unwrap();
+        for mfa_token in tokens {
+            let response = flow
+                .verify_mfa(MfaVerifyRequest {
+                    mfa_token,
+                    code: "000000".to_string(),
+                })
+                .await
+                .unwrap();
+            assert!(is_error(&response));
+        }
+
+        {
+            let users = flow.user_store.users.read().unwrap();
+            let user = users.get("test@example.com").unwrap();
+            assert_eq!(user.failed_attempts, TEST_MAX_FAILED_ATTEMPTS);
+            assert!(user.locked_until.is_some());
+        }
+
+        // A previously minted token with a valid code must not bypass the lockout.
+        let code = totp
+            .generate_current(&setup.secret, "test@example.com")
+            .unwrap();
+        let response = flow
+            .verify_mfa(MfaVerifyRequest {
+                mfa_token: last_token,
+                code,
+            })
+            .await
+            .unwrap();
+
+        assert!(!is_success(&response));
+        assert_eq!(
+            get_error_message(&response),
+            Some("Account temporarily locked. Try again later.".to_string())
+        );
+    }
+
     #[tokio::test]
     async fn test_failed_attempts_recorded() {
         let user_store = TestUserStore::new();
@@ -1237,5 +1336,86 @@ mod tests {
         let users = flow.user_store.users.read().unwrap();
         let user = users.get("test@example.com").unwrap();
         assert_eq!(user.failed_attempts, 0);
+    }
+
+    fn rate_limited_flow(
+        max_attempts: u32,
+    ) -> LoginFlow<TestUserStore, InMemoryMfaTokenStore, TestTokenIssuer, (), WithRateLimiter> {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+        LoginFlow::new(
+            user_store,
+            InMemoryMfaTokenStore::new(),
+            TestTokenIssuer,
+            LoginFlowConfig::new("TestApp"),
+        )
+        .with_rate_limiter(LoginRateLimiter::new(
+            super::super::rate_limit::LoginRateLimitConfig::new(max_attempts, 60),
+        ))
+    }
+
+    fn login_request(email: &str, password: &str) -> LoginRequest {
+        LoginRequest {
+            email: email.to_string(),
+            password: password.to_string(),
+            remember_me: false,
+            mfa_code: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_plain_login_is_rate_limited_without_ip() {
+        let flow = rate_limited_flow(2);
+
+        for _ in 0..2 {
+            let response = flow
+                .login(login_request("test@example.com", "wrong"))
+                .await
+                .unwrap();
+            assert!(is_error(&response));
+        }
+
+        // Email normalization must not yield a fresh bucket.
+        let result = flow
+            .login(login_request("  TEST@example.com ", "password123"))
+            .await;
+        assert!(matches!(result, Err(TidewayError::TooManyRequests(_))));
+
+        // Other accounts are unaffected.
+        let other = flow
+            .login(login_request("other@example.com", "password123"))
+            .await;
+        assert!(other.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_login_with_ip_is_rate_limited_per_ip() {
+        let flow = rate_limited_flow(2);
+
+        for _ in 0..2 {
+            flow.login_with_ip(
+                login_request("test@example.com", "wrong"),
+                Some("192.0.2.1".to_string()),
+            )
+            .await
+            .unwrap();
+        }
+
+        let blocked = flow
+            .login_with_ip(
+                login_request("other@example.com", "wrong"),
+                Some("192.0.2.1".to_string()),
+            )
+            .await;
+        assert!(matches!(blocked, Err(TidewayError::TooManyRequests(_))));
+
+        let other_ip = flow
+            .login_with_ip(
+                login_request("test@example.com", "password123"),
+                Some("192.0.2.2".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(is_success(&other_ip));
     }
 }

@@ -752,7 +752,7 @@ pub fn can_downgrade(
 ) -> Result<(), PlanDowngradeError> {
     // Check if new plan has enough seats
     let new_total_seats = if to_plan.supports_extra_seats() {
-        to_plan.included_seats + current_extra_seats
+        to_plan.included_seats.saturating_add(current_extra_seats)
     } else {
         to_plan.included_seats
     };

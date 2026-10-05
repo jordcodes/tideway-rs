@@ -43,7 +43,7 @@ impl<S: BillingStore> EntitlementsManager<S> {
                             max_api_calls_monthly: plan.limits.max_api_calls_monthly,
                             custom: plan.limits.custom.clone(),
                         },
-                        total_seats: plan.included_seats + sub.extra_seats,
+                        total_seats: plan.included_seats.saturating_add(sub.extra_seats),
                     }),
                     None => Ok(Entitlements::none()),
                 }
@@ -244,7 +244,7 @@ pub async fn require_seat<S: BillingStore>(
         None => return FeatureCheckResult::FeatureNotIncluded,
     };
 
-    let total_seats = plan.included_seats + sub.extra_seats;
+    let total_seats = plan.included_seats.saturating_add(sub.extra_seats);
     if current_member_count < total_seats {
         FeatureCheckResult::Allowed
     } else {

@@ -104,6 +104,33 @@ as `duration_secs` (an integer). Code that builds the request structs directly o
 not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
 not affected.
 
+## Unreleased: usage-record retries and errors
+
+This release fixes possible double billing of metered usage. `LiveStripeClient::create_usage_record`
+now sends one idempotency key across all retry attempts, retries HTTP 429 and 5xx responses as
+well as timeouts, and reuses a pooled HTTP client.
+
+No database migration, generated-source change, or API change is required. Error reporting for
+usage-record calls does change:
+
+| Stripe response | Before | Now |
+| --- | --- | --- |
+| 429 | `Internal` (500), not retried | Retried; after the last attempt, `BadRequest` (400) |
+| 5xx | `Internal` (500), not retried | Retried; after the last attempt, `Internal` (500) |
+| Other 4xx (incl. 401/403) | `Internal` (500), message hidden | `BadRequest` (400), Stripe's message shown |
+
+The underlying error is now `BillingError::StripeApiError` with `http_status` set, matching every
+other `LiveStripeClient` operation, rather than `BillingError::Internal`.
+
+Before deploying, check applications that record usage:
+
+1. Search for code that matches the `"HTTP client error: HTTP"` message text or relies on
+   usage-record failures being `Internal`. Branch on `StripeApiError::http_status` instead.
+2. If usage-record errors reach API clients, confirm that showing Stripe's 4xx message is
+   acceptable, or map the error in the handler.
+3. If usage is recorded on a latency-sensitive path, note that 429 and 5xx failures now take up to
+   `max_retries` backoff delays before they are returned.
+
 ## 0.7.x to 0.8.0 / CLI 0.1.48: recoverable password resets
 
 > **Action required for existing auth applications.** Tideway 0.8.0 is not a drop-in upgrade from

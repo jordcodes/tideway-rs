@@ -993,6 +993,20 @@ let invoice = manager.get_invoice("org_123", "in_xxx").await?;
 let items = manager.get_line_items("org_123", "in_xxx").await?;
 ```
 
+### Cached invoices
+
+`CachedInvoiceManager::list_invoices` returns `Arc<InvoiceList>` and
+`get_upcoming_invoice` returns `Option<Arc<Invoice>>`. Hits share the cached
+allocation, and returned handles remain valid after invalidation or eviction.
+When migrating callers that previously consumed owned fields, borrow them instead
+(for example, `for invoice in &invoices.invoices`). Use `invoices.as_ref()` when
+serializing a shared list, or explicitly clone the underlying value if ownership
+is required.
+
+The `InvoiceOperations` trait retains its owned return types for compatibility;
+calling through that trait still copies cached results. Use the cached manager's
+inherent methods to avoid those copies.
+
 ## Refunds
 
 The module provides two refund managers:
@@ -1084,6 +1098,26 @@ let result = manager.remove_seats("org_123", 2).await?;
 let result = manager.set_seats("org_123", 10).await?;
 ```
 
+### Concurrent seat changes
+
+Stripe receives an absolute seat quantity, so `SeatManager` serializes changes for the same
+billable entity:
+
+- Within one `SeatManager`, calls for the same billable ID wait for each other. Share a single
+  manager (for example in `Arc`) rather than building one per request.
+- Across processes, each change first reserves the new seat count in your store with
+  `compare_and_save_subscription`, and only the caller that wins the reservation calls Stripe.
+  Others re-read and recompute. This requires an atomic `compare_and_save_subscription`
+  (the SeaORM store provides one).
+- The reserved count is visible locally while the Stripe call is in flight. If Stripe fails, the
+  previous count is restored. If the change keeps losing the reservation, the call returns
+  `TidewayError::Conflict` and can be retried.
+- Across processes, a change can still reserve on top of another process's change while that
+  change's Stripe call is in flight. If the Stripe calls then land out of order, the
+  `customer.subscription.updated` webhook resyncs the local count to Stripe's.
+
+Seat counts that would overflow `u32` are rejected with `BadRequest` before Stripe is called.
+
 ## Entitlements
 
 Check feature access and limits:
@@ -1170,6 +1204,24 @@ network calls inside the webhook request.
 The built-in `billing_processed_events` table belongs to one Tideway billing webhook consumer. If
 an application also processes Stripe Connect or another independent Stripe webhook stream, give
 that consumer a separate idempotency table or use a store keyed by both consumer name and event ID.
+
+### Rotating webhook signing secrets
+
+`WebhookHandler` accepts a webhook signed with any configured secret. It checks every `v1`
+signature in the `Stripe-Signature` header, since Stripe sends one per active secret while a
+secret is being rolled. To rotate without downtime:
+
+1. Roll the secret in the Stripe Dashboard, keeping the old secret valid for a period.
+2. Deploy with both secrets configured:
+
+   ```rust
+   let handler = WebhookHandler::new(store, new_secret, plans)
+       .with_additional_secret(old_secret);
+   // or: WebhookHandler::with_secrets(store, [new_secret, old_secret], plans)?
+   ```
+
+3. After Stripe stops signing with the old secret, remove it and redeploy. Webhooks signed only
+   with a removed secret are rejected.
 
 ## Live Stripe Client
 

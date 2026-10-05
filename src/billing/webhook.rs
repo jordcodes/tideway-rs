@@ -20,11 +20,15 @@ use super::subscription::{
 ///
 /// Handles webhook signature verification, idempotency, and event processing.
 ///
-/// The webhook secret is stored using [`SecretString`] to prevent accidental
+/// Webhook secrets are stored using [`SecretString`] to prevent accidental
 /// exposure in logs or debug output.
+///
+/// Multiple signing secrets can be configured so that Stripe secrets can be
+/// rotated without downtime: a webhook is accepted if it is signed with any
+/// configured secret.
 pub struct WebhookHandler<S: BillingStore, E: BillingEventSink = NoOpBillingEventSink> {
     store: S,
-    webhook_secret: SecretString,
+    webhook_secrets: Vec<SecretString>,
     plans: Plans,
     event_sink: E,
 }
@@ -33,14 +37,41 @@ impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
     /// Create a new webhook handler.
     ///
     /// The webhook secret is stored securely and won't be exposed in debug output.
+    /// Use [`with_additional_secret`](Self::with_additional_secret) to accept
+    /// another secret while rotating.
     #[must_use]
     pub fn new(store: S, webhook_secret: impl Into<SecretString>, plans: Plans) -> Self {
         Self {
             store,
-            webhook_secret: webhook_secret.into(),
+            webhook_secrets: vec![webhook_secret.into()],
             plans,
             event_sink: NoOpBillingEventSink,
         }
+    }
+
+    /// Create a webhook handler that accepts signatures from any of the given secrets.
+    ///
+    /// # Errors
+    /// Returns an error if `webhook_secrets` is empty.
+    pub fn with_secrets<I>(store: S, webhook_secrets: I, plans: Plans) -> Result<Self>
+    where
+        I: IntoIterator,
+        I::Item: Into<SecretString>,
+    {
+        let webhook_secrets: Vec<SecretString> =
+            webhook_secrets.into_iter().map(Into::into).collect();
+        if webhook_secrets.is_empty() {
+            return Err(crate::error::TidewayError::Internal(
+                "At least one Stripe webhook secret is required".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            store,
+            webhook_secrets,
+            plans,
+            event_sink: NoOpBillingEventSink,
+        })
     }
 }
 
@@ -50,10 +81,20 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
     pub fn with_event_sink<E2: BillingEventSink>(self, event_sink: E2) -> WebhookHandler<S, E2> {
         WebhookHandler {
             store: self.store,
-            webhook_secret: self.webhook_secret,
+            webhook_secrets: self.webhook_secrets,
             plans: self.plans,
             event_sink,
         }
+    }
+
+    /// Also accept webhooks signed with `webhook_secret`.
+    ///
+    /// Use this during secret rotation to keep the previous secret valid until
+    /// it is removed from configuration.
+    #[must_use]
+    pub fn with_additional_secret(mut self, webhook_secret: impl Into<SecretString>) -> Self {
+        self.webhook_secrets.push(webhook_secret.into());
+        self
     }
 
     /// Verify the webhook signature and parse the event.
@@ -81,25 +122,40 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             ));
         }
 
-        // Compute expected signature
+        // Stripe sends one v1 signature per active secret during a roll, so skip
+        // malformed entries rather than letting one block a valid signature.
+        let provided_signatures: Vec<Vec<u8>> = sig_parts
+            .signatures
+            .iter()
+            .filter_map(|signature| hex::decode(signature).ok())
+            .collect();
+        if provided_signatures.is_empty() {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Invalid signature format".to_string(),
+            ));
+        }
+
         let signed_payload = format!(
             "{}.{}",
             sig_parts.timestamp,
             String::from_utf8_lossy(payload)
         );
-        let expected_sig = compute_signature(
-            self.webhook_secret.expose_secret(),
-            signed_payload.as_bytes(),
-        )?;
 
-        // Verify signature matches (constant-time comparison)
-        let expected_bytes = hex::decode(&expected_sig)
-            .map_err(|_| crate::error::TidewayError::Internal("Hex decode error".to_string()))?;
-        let provided_bytes = hex::decode(&sig_parts.signature).map_err(|_| {
-            crate::error::TidewayError::BadRequest("Invalid signature format".to_string())
-        })?;
+        // Accept the webhook if any configured secret produced any provided
+        // signature (constant-time comparison for each pair).
+        let mut matched = false;
+        for secret in &self.webhook_secrets {
+            let expected_sig =
+                compute_signature(secret.expose_secret(), signed_payload.as_bytes())?;
+            let expected_bytes = hex::decode(&expected_sig).map_err(|_| {
+                crate::error::TidewayError::Internal("Hex decode error".to_string())
+            })?;
+            for provided_bytes in &provided_signatures {
+                matched |= expected_bytes.ct_eq(provided_bytes).unwrap_u8() == 1;
+            }
+        }
 
-        if expected_bytes.ct_eq(&provided_bytes).unwrap_u8() != 1 {
+        if !matched {
             return Err(crate::error::TidewayError::BadRequest(
                 "Invalid webhook signature".to_string(),
             ));
@@ -546,7 +602,7 @@ pub enum WebhookOutcome {
 /// Parsed signature header parts.
 struct SignatureParts {
     timestamp: i64,
-    signature: String,
+    signatures: Vec<String>,
 }
 
 fn is_supported_event_type(event_type: &str) -> bool {
@@ -565,7 +621,7 @@ fn is_supported_event_type(event_type: &str) -> bool {
 /// Parse the Stripe-Signature header.
 fn parse_signature_header(header: &str) -> Result<SignatureParts> {
     let mut timestamp = None;
-    let mut signature = None;
+    let mut signatures = Vec::new();
 
     for part in header.split(',') {
         let (key, value) = part.split_once('=').ok_or_else(|| {
@@ -574,18 +630,24 @@ fn parse_signature_header(header: &str) -> Result<SignatureParts> {
 
         match key.trim() {
             "t" => timestamp = value.parse().ok(),
-            "v1" => signature = Some(value.to_string()),
+            // Stripe sends multiple v1 signatures while a secret is being rolled.
+            "v1" => signatures.push(value.to_string()),
             _ => {} // Ignore other versions
         }
     }
 
+    let timestamp = timestamp.ok_or_else(|| {
+        crate::error::TidewayError::BadRequest("Missing timestamp in signature".to_string())
+    })?;
+    if signatures.is_empty() {
+        return Err(crate::error::TidewayError::BadRequest(
+            "Missing v1 signature".to_string(),
+        ));
+    }
+
     Ok(SignatureParts {
-        timestamp: timestamp.ok_or_else(|| {
-            crate::error::TidewayError::BadRequest("Missing timestamp in signature".to_string())
-        })?,
-        signature: signature.ok_or_else(|| {
-            crate::error::TidewayError::BadRequest("Missing v1 signature".to_string())
-        })?,
+        timestamp,
+        signatures,
     })
 }
 
@@ -717,7 +779,7 @@ mod tests {
         let header = "t=1234567890,v1=abc123def456";
         let parts = parse_signature_header(header).unwrap();
         assert_eq!(parts.timestamp, 1234567890);
-        assert_eq!(parts.signature, "abc123def456");
+        assert_eq!(parts.signatures, vec!["abc123def456".to_string()]);
     }
 
     #[test]
@@ -779,6 +841,143 @@ mod tests {
 
         let result = handler.verify_signature(payload.as_bytes(), &signature);
         assert!(result.is_err());
+    }
+
+    fn now_timestamp() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn v1_signature(secret: &str, payload: &[u8], timestamp: i64) -> String {
+        let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(payload));
+        compute_signature(secret, signed_payload.as_bytes()).unwrap()
+    }
+
+    const ROTATION_PAYLOAD: &str =
+        r#"{"id":"evt_rotate","type":"test","data":{"object":{}},"created":1234567890}"#;
+
+    #[test]
+    fn test_parse_signature_header_keeps_all_v1_signatures() {
+        let parts = parse_signature_header("t=1234567890,v1=aaaa,v0=bbbb,v1=cccc").unwrap();
+        assert_eq!(parts.timestamp, 1234567890);
+        assert_eq!(
+            parts.signatures,
+            vec!["aaaa".to_string(), "cccc".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_signature_header_requires_v1() {
+        assert!(parse_signature_header("t=1234567890,v0=bbbb").is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_accepts_non_final_v1_during_stripe_roll() {
+        // During a secret roll Stripe sends one v1 per active secret.
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_old",
+            create_test_plans(),
+        );
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+        let header = format!(
+            "t={},v1={},v1={}",
+            timestamp,
+            v1_signature("whsec_old", payload, timestamp),
+            v1_signature("whsec_new", payload, timestamp)
+        );
+
+        assert!(handler.verify_signature(payload, &header).is_ok());
+    }
+
+    #[test]
+    fn test_verify_signature_accepts_any_configured_secret() {
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_new",
+            create_test_plans(),
+        )
+        .with_additional_secret("whsec_old");
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+
+        for secret in ["whsec_new", "whsec_old"] {
+            let header = create_test_signature(secret, payload, timestamp);
+            assert!(
+                handler.verify_signature(payload, &header).is_ok(),
+                "signature from {secret} should be accepted"
+            );
+        }
+
+        let unknown = create_test_signature("whsec_unknown", payload, timestamp);
+        assert!(handler.verify_signature(payload, &unknown).is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_rejects_removed_secret() {
+        let handler = WebhookHandler::with_secrets(
+            InMemoryBillingStore::new(),
+            ["whsec_new"],
+            create_test_plans(),
+        )
+        .unwrap();
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+
+        let old = create_test_signature("whsec_old", payload, timestamp);
+        assert!(handler.verify_signature(payload, &old).is_err());
+
+        let new = create_test_signature("whsec_new", payload, timestamp);
+        assert!(handler.verify_signature(payload, &new).is_ok());
+    }
+
+    #[test]
+    fn test_with_secrets_rejects_empty_list() {
+        let result = WebhookHandler::with_secrets(
+            InMemoryBillingStore::new(),
+            Vec::<String>::new(),
+            create_test_plans(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_skips_malformed_v1_entries() {
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_test",
+            create_test_plans(),
+        );
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+        let header = format!(
+            "t={},v1=not_hex,v1={}",
+            timestamp,
+            v1_signature("whsec_test", payload, timestamp)
+        );
+
+        assert!(handler.verify_signature(payload, &header).is_ok());
+    }
+
+    #[test]
+    fn test_verify_signature_all_malformed_keeps_format_error() {
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_test",
+            create_test_plans(),
+        );
+        let header = format!("t={},v1=not_hex,v1=zz", now_timestamp());
+
+        let err = handler
+            .verify_signature(ROTATION_PAYLOAD.as_bytes(), &header)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid signature format"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

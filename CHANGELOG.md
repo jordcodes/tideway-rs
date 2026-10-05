@@ -9,12 +9,36 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- The database prelude now exports `DatabaseConnectionTrait` instead of `DatabaseConnection`
+  to avoid ambiguous imports with SeaORM. Update prelude trait references to the new alias
+  or explicitly import `tideway::DatabaseConnection`; the original trait paths are unchanged.
+
+> **Billing behavior change:** `LiveStripeClient` usage-record errors now report Stripe's HTTP
+> status instead of a generic internal error. Applications using metered billing should review
+> the Compatibility notes below and `docs/upgrading.md`.
+
 ### Security
 
+- `LoginFlow::verify_mfa` now rejects verification while the account is locked. Previously, MFA
+  tokens minted before a lockout could keep guessing codes and complete login after the account
+  locked.
 - `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize`. When a handler bound
   either type directly to a request body, the client controlled the acting admin (`admin_id`) or
   the account being deleted (`user_id`). That allowed impersonation through any admin's identity,
   and deletion of arbitrary accounts when password verification was disabled.
+- A `LoginFlow` with a rate limiter no longer skips rate limiting when no client IP is supplied.
+  Plain `login()` calls (and `login_with_ip(req, None)`) are now limited per normalized email
+  address. Direct `OptionalRateLimiter::check_rate_limit(None)` calls now share one bucket
+  instead of always being allowed.
+- `SeatManager` seat changes no longer lose updates under concurrency. Previously two concurrent
+  `add_seats` calls could both report success while only one seat was added in Stripe. Changes to
+  the same billable entity are now serialized in-process, and each change reserves its new count
+  in the store (via `compare_and_save_subscription`) before calling Stripe. A failed Stripe call
+  releases the reservation. If the reservation keeps losing to concurrent changes, the call
+  returns `Conflict`.
+- Seat counts that would overflow `u32` (`extra_seats + count`, or included plus extra seats) are
+  now rejected with `BadRequest` before Stripe is called, instead of panicking or wrapping. Seat
+  totals computed from stored data saturate.
 
 ### Fixed
 
@@ -28,12 +52,21 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   sessions, so paying in two tabs can no longer create two subscriptions.
 - A webhook for a second live subscription no longer silently replaces the stored subscription.
   Tideway keeps the stored one and emits `BillingEvent::DuplicateSubscription`.
+- Stripe webhook verification now checks every `v1` signature in the `Stripe-Signature` header.
+  It previously kept only the last one, so webhooks were rejected during a Stripe secret roll.
+- `LiveStripeClient::create_usage_record` sends one `Idempotency-Key` across all retry attempts,
+  so a request that timed out after reaching Stripe can no longer be recorded (and billed) twice.
+- Usage-record calls now retry HTTP 429 and 5xx responses, matching timeouts and every other
+  `LiveStripeClient` operation. Other 4xx responses still fail immediately.
+- Usage-record calls reuse one pooled HTTP client instead of building a new client per attempt.
 
 ### Added
 
 - `ImpersonationRequestBody` and `DeletionRequestBody` are safe deserializable request bodies with
   no actor field and `deny_unknown_fields`. Their `into_request(actor_id)` method combines the body
   with the authenticated user's ID.
+- `billing::WebhookHandler` supports multiple Stripe webhook signing secrets through
+  `with_additional_secret` and `with_secrets`, so secrets can be rotated without downtime.
 - `BillingStore::link_stripe_customer_if_absent` links a Stripe customer only when none is linked
   and returns the winning ID. The in-memory and SeaORM stores implement it atomically. Custom
   stores inherit a non-atomic default and should override it.
@@ -50,6 +83,18 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - CLI: the generated `src/billing/events.rs` logs a warning for `BillingEvent::DuplicateSubscription`
   with a TODO for the cancel-and-refund policy. It requires the next Tideway release, so ship it
   with the CLI release that targets that version.
+
+### Compatibility
+
+- The usage-record fix has no public API or signature changes.
+- Non-2xx responses from `create_usage_record` and `list_usage_records` now return
+  `BillingError::StripeApiError { http_status, message, code }` instead of
+  `BillingError::Internal("HTTP client error: HTTP …")`. Through the existing `TidewayError`
+  mapping, Stripe 4xx errors (including 401/403, and 429 after retries are exhausted) now surface
+  as `BadRequest` (HTTP 400) with Stripe's message instead of `Internal` (HTTP 500) with a hidden
+  message. 5xx errors remain `Internal`.
+- Rate-limited or 5xx usage-record calls now take longer to fail: up to `max_retries` additional
+  attempts with exponential backoff (4 attempts total by default).
 
 ### Migration Notes
 

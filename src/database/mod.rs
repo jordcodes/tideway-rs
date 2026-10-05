@@ -2,6 +2,9 @@
 //!
 //! Provides abstractions for database connections with support for
 //! SeaORM (default) and SQLx backends.
+//!
+//! Connections created from configuration enable SQL statement logging only in
+//! builds with debug assertions. Standard release builds disable SQL logging.
 
 #[cfg(feature = "database")]
 pub mod config;

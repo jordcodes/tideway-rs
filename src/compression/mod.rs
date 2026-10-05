@@ -7,4 +7,4 @@ mod config;
 mod layer;
 
 pub use config::{CompressionConfig, CompressionConfigBuilder};
-pub use layer::build_compression_layer;
+pub use layer::{ConfiguredCompression, ConfiguredCompressionLayer, build_compression_layer};
