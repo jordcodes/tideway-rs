@@ -22,7 +22,7 @@ Enable the auth features in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["auth", "auth-mfa"] }
+tideway = { version = "0.9.0", features = ["auth", "auth-mfa"] }
 ```
 
 ### Basic Login Flow
@@ -76,7 +76,7 @@ For integration tests, enable the test-only bypass feature:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["auth", "test-auth-bypass"] }
+tideway = { version = "0.9.0", features = ["auth", "test-auth-bypass"] }
 ```
 
 Then use `TestHost` or the lower-level request DSL to inject either a synthetic
@@ -491,7 +491,7 @@ Requires `auth-breach` feature:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["auth", "auth-breach"] }
+tideway = { version = "0.9.0", features = ["auth", "auth-breach"] }
 ```
 
 ### Basic Usage

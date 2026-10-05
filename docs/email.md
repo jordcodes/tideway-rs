@@ -477,5 +477,5 @@ Email support requires the `email` feature:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["email"] }
+tideway = { version = "0.9.0", features = ["email"] }
 ```
