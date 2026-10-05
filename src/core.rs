@@ -351,65 +351,15 @@ impl App {
     fn with_middleware(mut self) -> Self {
         let mut router = self.router;
 
-        // Middleware order (from outer to inner):
-        // 1. Metrics (if enabled) - needs to be outermost to track all requests
-        #[cfg(feature = "metrics")]
-        {
-            if let Some(ref collector) = self.metrics_collector {
-                // Add metrics middleware layer (outermost)
-                // Note: metrics route is added in with_config() so it's available in tests
-                router = router.layer(build_metrics_layer(collector.clone()));
-            }
-        }
-
-        // 2. Body size limit - reject large bodies early to prevent DoS attacks
-        router = router.layer(DefaultBodyLimit::max(self.config.server.max_body_size));
-
-        // 3. Timeout - early in stack to catch slow requests
-        if let Some(timeout_layer) = build_timeout_layer(&self.config.timeout) {
-            router = router.layer(timeout_layer);
-        }
-
-        // 4. Security headers - early to secure all responses
-        if let Some(security_layer) = build_security_headers_layer(&self.config.security) {
-            router = router.layer(security_layer);
-        }
-
-        // 5. Compression - compress responses before sending
-        if let Some(compression_layer) = build_compression_layer(&self.config.compression) {
-            router = router.layer(compression_layer);
-        }
-
-        // 6. Rate limiting - after compression/security but before request processing
-        if let Some(rate_limit_layer) = build_rate_limit_layer(&self.config.rate_limit) {
-            router = router.layer(rate_limit_layer);
-        }
-
-        // 7. Request ID - add request IDs for tracing
-        router = router
-            .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-            .layer(PropagateRequestIdLayer::x_request_id());
-
-        // 8. Trace layer - HTTP tracing
-        router = router.layer(TraceLayer::new_for_http());
-
-        // 9. Dev middleware - request dumper and error logging
-        if self.config.dev.enabled {
-            let dev_config = Arc::new(self.config.dev.clone());
-            if dev_config.enable_request_dumper {
-                router = router.layer(build_request_dumper_layer(dev_config.clone()));
-            }
-            router = router.layer(build_dev_error_layer(dev_config));
-        }
-
-        // 10. Request logging - log requests/responses (innermost of logging layers)
-        if let Some(logging_layer) = build_request_logging_layer(&self.config.request_logging) {
-            router = router.layer(logging_layer);
-        }
-
+        // Router::layer wraps the existing router: add layers INNERMOST FIRST.
+        // Request execution order (outer to inner): metrics, tracing, dev logging,
+        // request logging, security headers, compression, rate limit, timeout,
+        // body limit, auth bridge, handler. Response processing unwinds this order.
+        // Request ID generation/propagation wraps even CORS and global layers in
+        // apply_global_layers_with_config, before any logging or early responses.
         #[cfg(feature = "auth")]
         {
-            // 11. Auth provider bridge - make AppContext auth provider available to extractors.
+            // Auth provider bridge - make AppContext auth provider available to extractors.
             if let Some(auth_provider) = self.context.auth_provider_extension() {
                 router = router.layer(axum::middleware::from_fn({
                     move |mut request: axum::extract::Request, next: axum::middleware::Next| {
@@ -421,6 +371,50 @@ impl App {
                     }
                 }));
             }
+        }
+
+        router = router.layer(DefaultBodyLimit::max(self.config.server.max_body_size));
+
+        if let Some(timeout_layer) = build_timeout_layer(&self.config.timeout) {
+            router = router.layer(timeout_layer);
+        }
+        if let Some(rate_limit_layer) = build_rate_limit_layer(&self.config.rate_limit) {
+            router = router.layer(rate_limit_layer);
+        }
+        if let Some(compression_layer) = build_compression_layer(&self.config.compression) {
+            router = router.layer(compression_layer);
+        }
+        if let Some(security_layer) = build_security_headers_layer(&self.config.security) {
+            router = router.layer(security_layer);
+        }
+
+        // Logging must see IDs and responses synthesized by timeout/rate limiting.
+        if let Some(logging_layer) = build_request_logging_layer(&self.config.request_logging) {
+            router = router.layer(logging_layer);
+        }
+        if self.config.dev.enabled {
+            let dev_config = Arc::new(self.config.dev.clone());
+            router = router.layer(build_dev_error_layer(dev_config.clone()));
+            if dev_config.enable_request_dumper {
+                router = router.layer(build_request_dumper_layer(dev_config));
+            }
+        }
+        router = router.layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                tracing::debug_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                    version = ?request.version(),
+                    request_id = ?request.headers().get("x-request-id"),
+                )
+            },
+        ));
+
+        // Keep metrics outside all middleware that can synthesize a response.
+        #[cfg(feature = "metrics")]
+        if let Some(ref collector) = self.metrics_collector {
+            router = router.layer(build_metrics_layer(collector.clone()));
         }
 
         self.router = router;
@@ -655,7 +649,11 @@ fn apply_global_layers_with_config(
     if let Some(cors_layer) = crate::cors::build_cors_layer(cors_config) {
         router = router.layer(cors_layer);
     }
+    // Set the ID before propagation captures it, including for CORS preflights
+    // and responses returned early by user-supplied global layers.
     router
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
 
 impl Default for AppBuilder {
@@ -812,4 +810,87 @@ where
 
     // Returning starts Axum's graceful connection drain. Sleeping here would delay
     // shutdown rather than give active requests time to finish.
+}
+
+#[cfg(test)]
+mod middleware_stack_tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use tower::ServiceExt;
+
+    fn app() -> App {
+        let mut config = Config::default();
+        config.dev.enabled = false;
+        config.request_logging.enabled = true;
+        config.timeout.timeout_seconds = 0;
+        config.rate_limit.enabled = true;
+        config.rate_limit.strategy = "global".into();
+        config.rate_limit.max_requests = 1;
+        config.rate_limit.window_seconds = 3600;
+        #[cfg(feature = "metrics")]
+        {
+            config.metrics.enabled = true;
+        }
+        let mut app = App::with_config(config);
+        app.router = app
+            .router
+            .route("/fast", get(|| async { "ok" }))
+            .route("/slow", get(|| std::future::pending::<StatusCode>()));
+        app
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_has_generated_request_id() {
+        let mut app = app();
+        app.config.cors = crate::cors::CorsConfig::permissive();
+        let response = app
+            .into_router_with_middleware()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/fast")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap()).unwrap();
+    }
+
+    #[cfg(feature = "metrics")]
+    #[tokio::test]
+    async fn metrics_count_short_circuit_responses() {
+        for (path, statuses) in [
+            ("/fast", vec![StatusCode::OK, StatusCode::TOO_MANY_REQUESTS]),
+            ("/slow", vec![StatusCode::REQUEST_TIMEOUT]),
+        ] {
+            let app = app();
+            let collector = app.metrics_collector.clone().unwrap();
+            let router = app.into_router_with_middleware();
+            for status in statuses {
+                let response = router
+                    .clone()
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), status);
+                assert_eq!(
+                    collector
+                        .http_requests_total
+                        .with_label_values(&["GET", path, status.as_str()])
+                        .get(),
+                    1,
+                    "missing {status} metric"
+                );
+                assert_eq!(collector.http_requests_in_flight.get(), 0);
+            }
+        }
+    }
 }
