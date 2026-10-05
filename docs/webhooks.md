@@ -171,6 +171,11 @@ async fn handle_webhook(
 }
 ```
 
+`WebhookRouter::process` follows this flow for you. A duplicate delivery that arrives while the
+same event is still being processed gets a `ServiceUnavailable` (503) error rather than a 200, so
+the provider retries it if the first attempt fails. Only events that already completed are
+acknowledged without running the handler again.
+
 ### Idempotency Stores
 
 #### In-Memory Store (Development)
