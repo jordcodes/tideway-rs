@@ -4,7 +4,7 @@ use crate::Result;
 
 use super::{
     ConsumptionOrder, CreditBalance, CreditBucket, CreditHistoryQuery, CreditReservation,
-    CreditTransaction, GrantCredits, ReserveCredits,
+    CreditRevocation, CreditTransaction, GrantCredits, ReserveCredits, RevokeCredits,
 };
 
 /// Atomic persistence contract for the credit ledger.
@@ -50,6 +50,18 @@ pub trait CreditStore: Send + Sync {
         credit_type: &str,
         query: CreditHistoryQuery,
     ) -> Result<Vec<CreditTransaction>>;
+
+    /// Raise a grant's cumulative revoked amount to `request.amount`.
+    ///
+    /// Returns `None` when no grant has the requested idempotency key. Revoked credits come out
+    /// of the grant's remaining amount first; the rest is recorded as unrecovered and taken from
+    /// reservations on that grant when they are released, never returned to the balance.
+    async fn revoke(&self, request: &RevokeCredits, now: i64) -> Result<Option<CreditRevocation>> {
+        let _ = (request, now);
+        Err(crate::TidewayError::internal(
+            "This credit store does not support revoking credits",
+        ))
+    }
 
     /// Release expired reservations and restore their bucket allocations.
     async fn release_expired(&self, now: i64, limit: u64) -> Result<u64>;

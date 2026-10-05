@@ -12,8 +12,9 @@ use crate::{Result, TidewayError};
 
 use super::{
     ConsumptionOrder, CreditAllocation, CreditBalance, CreditBucket, CreditHistoryQuery,
-    CreditReservation, CreditSource, CreditStore, CreditTransaction, CreditTransactionKind,
-    GrantCredits, ReservationStatus, ReserveCredits, SourceBalance,
+    CreditReservation, CreditRevocation, CreditSource, CreditStore, CreditTransaction,
+    CreditTransactionKind, GrantCredits, ReservationStatus, ReserveCredits, RevokeCredits,
+    SourceBalance,
 };
 
 mod entity {
@@ -37,6 +38,10 @@ mod entity {
             #[sea_orm(column_type = "JsonBinary")]
             pub metadata: serde_json::Value,
             pub created_at: i64,
+            /// Cumulative credits revoked from the grant.
+            pub revoked_amount: i64,
+            /// Revoked credits still held by reservations or already spent.
+            pub pending_revocation: i64,
         }
 
         #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
@@ -453,6 +458,89 @@ impl CreditStore for SeaOrmCreditStore {
         release_reservation(&self.db, account_id, reservation_id, now, "release").await
     }
 
+    async fn revoke(&self, request: &RevokeCredits, now: i64) -> Result<Option<CreditRevocation>> {
+        let txn = self.db.begin().await.map_err(db_error)?;
+        let mut models = bucket::Entity::find()
+            .filter(bucket::Column::IdempotencyKey.eq(&request.grant_idempotency_key))
+            .limit(2)
+            .all(&txn)
+            .await
+            .map_err(db_error)?;
+        if models.len() > 1 {
+            txn.rollback().await.map_err(db_error)?;
+            return Err(TidewayError::conflict(
+                "Credit grant idempotency key matches more than one grant",
+            ));
+        }
+        let Some(model) = models.pop() else {
+            txn.rollback().await.map_err(db_error)?;
+            return Ok(None);
+        };
+        let current_revoked = to_u64(model.revoked_amount)?;
+        let current_pending = to_u64(model.pending_revocation)?;
+        let remaining = to_u64(model.remaining_amount)?;
+        let target = request.amount.resolve(to_u64(model.original_amount)?);
+        let delta = target.saturating_sub(current_revoked);
+        if delta == 0 {
+            txn.commit().await.map_err(db_error)?;
+            return Ok(Some(CreditRevocation {
+                bucket: model_to_bucket(model)?,
+                revoked_amount: current_revoked,
+                unrecovered_amount: current_pending,
+            }));
+        }
+        let taken = remaining.min(delta);
+        let pending = current_pending
+            .checked_add(delta - taken)
+            .ok_or_else(|| TidewayError::internal("Credit revocation overflow"))?;
+        let updated = bucket::Entity::update_many()
+            .col_expr(
+                bucket::Column::RemainingAmount,
+                Expr::value(to_i64(remaining - taken)?),
+            )
+            .col_expr(bucket::Column::RevokedAmount, Expr::value(to_i64(target)?))
+            .col_expr(
+                bucket::Column::PendingRevocation,
+                Expr::value(to_i64(pending)?),
+            )
+            .filter(bucket::Column::Id.eq(&model.id))
+            .filter(bucket::Column::RemainingAmount.eq(model.remaining_amount))
+            .filter(bucket::Column::RevokedAmount.eq(model.revoked_amount))
+            .filter(bucket::Column::PendingRevocation.eq(model.pending_revocation))
+            .exec(&txn)
+            .await
+            .map_err(db_error)?;
+        if updated.rows_affected != 1 {
+            txn.rollback().await.map_err(db_error)?;
+            return Err(TidewayError::conflict(
+                "Credit grant changed concurrently; retry the revocation",
+            ));
+        }
+        let mut bucket = model_to_bucket(model)?;
+        bucket.remaining_amount = remaining - taken;
+        transaction::Entity::insert(transaction_active_model(CreditTransaction {
+            id: uuid::Uuid::new_v4().to_string(),
+            account_id: bucket.account_id.clone(),
+            credit_type: bucket.credit_type.clone(),
+            kind: CreditTransactionKind::Revoke,
+            amount: delta,
+            bucket_id: Some(bucket.id.clone()),
+            reservation_id: None,
+            idempotency_key: request.idempotency_key.clone(),
+            created_at: now,
+            metadata: request.metadata.clone(),
+        })?)
+        .exec(&txn)
+        .await
+        .map_err(db_error)?;
+        txn.commit().await.map_err(db_error)?;
+        Ok(Some(CreditRevocation {
+            bucket,
+            revoked_amount: target,
+            unrecovered_amount: pending,
+        }))
+    }
+
     async fn balance(
         &self,
         account_id: &str,
@@ -475,9 +563,13 @@ impl CreditStore for SeaOrmCreditStore {
         // Read the stored amounts, recoverable expired allocations, and live holds in one
         // snapshot. Only mutations / maintenance persist reservation expiry. UNION ALL keeps
         // separate amounts so Rust can retain checked u64 totals without SQL SUM overflow.
+        // Expired allocations carry their bucket because releasing them first repays revoked
+        // credits.
         let expired_allocations = Query::select()
             .column((bucket::Entity, bucket::Column::Source))
             .column((allocation::Entity, allocation::Column::Amount))
+            .column((bucket::Entity, bucket::Column::Id))
+            .column((bucket::Entity, bucket::Column::PendingRevocation))
             .from(allocation::Entity)
             .join(
                 JoinType::InnerJoin,
@@ -498,6 +590,8 @@ impl CreditStore for SeaOrmCreditStore {
         let live_holds = Query::select()
             .expr(Expr::val(Option::<String>::None))
             .column(reservation::Column::Amount)
+            .expr(Expr::val(Option::<String>::None))
+            .expr(Expr::val(0i64))
             .from(reservation::Entity)
             .cond_where(held_reservations)
             .and_where(reservation::Column::ExpiresAt.gt(now))
@@ -508,6 +602,8 @@ impl CreditStore for SeaOrmCreditStore {
                 Expr::col(bucket::Column::RemainingAmount),
                 Alias::new("amount"),
             )
+            .expr_as(Expr::val(Option::<String>::None), Alias::new("bucket_id"))
+            .expr_as(Expr::val(0i64), Alias::new("pending"))
             .from(bucket::Entity)
             .cond_where(active_buckets)
             .union(UnionType::All, expired_allocations)
@@ -519,11 +615,24 @@ impl CreditStore for SeaOrmCreditStore {
             .await
             .map_err(db_error)?;
         let mut by_source = std::collections::HashMap::<CreditSource, u64>::new();
+        let mut expired_holds =
+            std::collections::HashMap::<String, (CreditSource, u64, u64)>::new();
         let mut reserved = 0u64;
         for row in rows {
             let amount = to_u64(row.try_get("", "amount").map_err(db_error)?)?;
             let source: Option<String> = row.try_get("", "source").map_err(db_error)?;
-            if let Some(source) = source {
+            let bucket_id: Option<String> = row.try_get("", "bucket_id").map_err(db_error)?;
+            if let (Some(source), Some(bucket_id)) = (&source, bucket_id) {
+                let pending = to_u64(row.try_get("", "pending").map_err(db_error)?)?;
+                let entry =
+                    expired_holds
+                        .entry(bucket_id)
+                        .or_insert((parse_source(source)?, 0, pending));
+                entry.1 = entry
+                    .1
+                    .checked_add(amount)
+                    .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
+            } else if let Some(source) = source {
                 let entry = by_source.entry(parse_source(&source)?).or_default();
                 *entry = entry
                     .checked_add(amount)
@@ -533,6 +642,12 @@ impl CreditStore for SeaOrmCreditStore {
                     .checked_add(amount)
                     .ok_or_else(|| TidewayError::internal("Reserved credit balance overflow"))?;
             }
+        }
+        for (source, held, pending) in expired_holds.into_values() {
+            let entry = by_source.entry(source).or_default();
+            *entry = entry
+                .checked_add(held.saturating_sub(pending))
+                .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
         }
         let available = by_source.values().try_fold(0u64, |total, amount| {
             total
@@ -616,6 +731,8 @@ fn bucket_active_model(
         idempotency_key: Set(bucket.idempotency_key.clone()),
         metadata: Set(metadata.clone()),
         created_at: Set(bucket.created_at),
+        revoked_amount: Set(0),
+        pending_revocation: Set(0),
     })
 }
 
@@ -790,10 +907,28 @@ async fn release_reservation(
         .await
         .map_err(db_error)?;
     for item in &allocations {
+        // Credits revoked while held repay the revocation first and only the rest returns to the
+        // balance. Both assignments read the pre-update row.
+        let pending = Expr::col(bucket::Column::PendingRevocation);
         let restored = bucket::Entity::update_many()
             .col_expr(
                 bucket::Column::RemainingAmount,
-                Expr::col(bucket::Column::RemainingAmount).add(item.amount),
+                Expr::case(
+                    pending.clone().gte(item.amount),
+                    Expr::col(bucket::Column::RemainingAmount),
+                )
+                .finally(
+                    Expr::col(bucket::Column::RemainingAmount)
+                        .add(item.amount)
+                        .sub(pending.clone()),
+                )
+                .into(),
+            )
+            .col_expr(
+                bucket::Column::PendingRevocation,
+                Expr::case(pending.clone().gte(item.amount), pending.sub(item.amount))
+                    .finally(0i64)
+                    .into(),
             )
             .filter(bucket::Column::Id.eq(&item.bucket_id))
             .exec(&txn)
@@ -940,6 +1075,8 @@ mod tests {
                 idempotency_key TEXT NOT NULL,
                 metadata JSON NOT NULL,
                 created_at BIGINT NOT NULL,
+                revoked_amount BIGINT NOT NULL DEFAULT 0,
+                pending_revocation BIGINT NOT NULL DEFAULT 0,
                 UNIQUE (account_id, credit_type, idempotency_key)
             );
             CREATE TABLE credit_reservations (
@@ -1060,6 +1197,11 @@ mod tests {
     #[tokio::test]
     async fn balance_is_read_only_and_accounts_for_expired_holds() {
         super::super::balance_tests::assert_read_only_balance(&store().await).await;
+    }
+
+    #[tokio::test]
+    async fn revocation_takes_back_remaining_and_held_credits() {
+        super::super::revocation_tests::assert_revocation(&store().await).await;
     }
 
     #[tokio::test]
@@ -1337,6 +1479,8 @@ mod tests {
                     source TEXT NOT NULL, original_amount BIGINT NOT NULL,
                     remaining_amount BIGINT NOT NULL, expires_at BIGINT,
                     idempotency_key TEXT NOT NULL, metadata JSONB NOT NULL, created_at BIGINT NOT NULL,
+                    revoked_amount BIGINT NOT NULL DEFAULT 0,
+                    pending_revocation BIGINT NOT NULL DEFAULT 0,
                     UNIQUE (account_id, credit_type, idempotency_key)
                 );
                 CREATE TABLE credit_reservations (

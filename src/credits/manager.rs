@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::{Result, TidewayError};
 
 use super::{
-    CreditBalance, CreditBucket, CreditHistoryQuery, CreditReservation, CreditStore,
-    CreditTransaction, GrantCredits, ReserveCredits,
+    CreditBalance, CreditBucket, CreditHistoryQuery, CreditReservation, CreditRevocation,
+    CreditStore, CreditTransaction, GrantCredits, ReserveCredits, RevocationAmount, RevokeCredits,
 };
 
 const MAX_IDENTIFIER_LENGTH: usize = 128;
@@ -82,6 +82,17 @@ impl<S: CreditStore> CreditManager<S> {
         self.store
             .release(account_id, reservation_id, now_timestamp()?)
             .await
+    }
+
+    /// Revoke credits from an earlier grant, for example after its payment was refunded.
+    ///
+    /// Returns `None` when no grant has `request.grant_idempotency_key`.
+    pub async fn revoke(&self, request: RevokeCredits) -> Result<Option<CreditRevocation>> {
+        validate_idempotency_key(&request.grant_idempotency_key)?;
+        validate_idempotency_key(&request.idempotency_key)?;
+        validate_revocation_amount(request.amount)?;
+        validate_metadata(&request.metadata)?;
+        self.store.revoke(&request, now_timestamp()?).await
     }
 
     pub async fn balance(&self, account_id: &str, credit_type: &str) -> Result<CreditBalance> {
@@ -167,6 +178,19 @@ fn validate_amount(amount: u64) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_revocation_amount(amount: RevocationAmount) -> Result<()> {
+    match amount {
+        RevocationAmount::Credits(credits) => validate_amount(credits),
+        RevocationAmount::Fraction {
+            numerator,
+            denominator,
+        } if numerator == 0 || denominator == 0 => Err(TidewayError::bad_request(
+            "Credit revocation fraction must have a non-zero numerator and denominator",
+        )),
+        RevocationAmount::Fraction { .. } => Ok(()),
+    }
 }
 
 fn validate_metadata(metadata: &serde_json::Value) -> Result<()> {

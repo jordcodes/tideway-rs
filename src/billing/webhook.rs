@@ -209,6 +209,8 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             "customer.subscription.deleted" => self.handle_subscription_deleted(&event).await,
             "invoice.paid" => self.handle_invoice_paid(&event).await,
             "invoice.payment_failed" => self.handle_payment_failed(&event).await,
+            "charge.refunded" => self.handle_charge_refunded(&event).await,
+            "charge.dispute.created" => self.handle_charge_disputed(&event).await,
             _ => unreachable!("unsupported event types return before claiming idempotency"),
         };
 
@@ -257,6 +259,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                         .get("payment_status")
                         .and_then(serde_json::Value::as_str)
                         .map(String::from),
+                    payment_intent_id: value_id(session.get("payment_intent")),
                 })
                 .await?;
             return Ok(WebhookOutcome::Processed);
@@ -272,6 +275,50 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             })
             .await?;
 
+        Ok(WebhookOutcome::Processed)
+    }
+
+    /// Handle charge.refunded event.
+    async fn handle_charge_refunded(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let charge = event.data.object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid event data".to_string())
+        })?;
+        let charge_id = value_id(charge.get("id")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing charge ID".to_string())
+        })?;
+        self.event_sink
+            .handle(&BillingEvent::ChargeRefunded {
+                context: event_context(event),
+                charge_id,
+                payment_intent_id: value_id(charge.get("payment_intent")),
+                customer_id: value_id(charge.get("customer")),
+                amount: required_amount(charge, "amount")?,
+                amount_refunded: required_amount(charge, "amount_refunded")?,
+            })
+            .await?;
+        Ok(WebhookOutcome::Processed)
+    }
+
+    /// Handle charge.dispute.created event.
+    async fn handle_charge_disputed(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let dispute = event.data.object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid event data".to_string())
+        })?;
+        let dispute_id = value_id(dispute.get("id")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing dispute ID".to_string())
+        })?;
+        let charge_id = value_id(dispute.get("charge")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing disputed charge ID".to_string())
+        })?;
+        self.event_sink
+            .handle(&BillingEvent::ChargeDisputed {
+                context: event_context(event),
+                dispute_id,
+                charge_id,
+                payment_intent_id: value_id(dispute.get("payment_intent")),
+                amount: required_amount(dispute, "amount")?,
+            })
+            .await?;
         Ok(WebhookOutcome::Processed)
     }
 
@@ -555,6 +602,13 @@ fn value_id(value: Option<&serde_json::Value>) -> Option<String> {
     })
 }
 
+fn required_amount(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<u64> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| crate::error::TidewayError::BadRequest(format!("Missing or invalid {key}")))
+}
+
 fn metadata_value(
     object: &serde_json::Map<String, serde_json::Value>,
     key: &str,
@@ -615,6 +669,8 @@ fn is_supported_event_type(event_type: &str) -> bool {
             | "customer.subscription.deleted"
             | "invoice.paid"
             | "invoice.payment_failed"
+            | "charge.refunded"
+            | "charge.dispute.created"
     )
 }
 
@@ -1065,6 +1121,7 @@ mod tests {
                     "mode": "payment",
                     "customer": "cus_123",
                     "payment_status": "paid",
+                    "payment_intent": "pi_123",
                     "metadata": {
                         "billable_id": "org-1",
                         "billable_type": "credit_top_up",
@@ -1088,13 +1145,87 @@ mod tests {
                 billable_type: Some(billable_type),
                 plan_id: Some(plan_id),
                 payment_status: Some(payment_status),
+                payment_intent_id: Some(payment_intent_id),
                 ..
             } if checkout_session_id == "cs_topup"
                 && billable_id == "org-1"
                 && billable_type == "credit_top_up"
                 && plan_id == "sms_100"
                 && payment_status == "paid"
+                && payment_intent_id == "pi_123"
         ));
+    }
+
+    #[tokio::test]
+    async fn refunds_and_disputes_are_delivered_once() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let refund = WebhookEvent {
+            id: "evt_refund".to_string(),
+            event_type: "charge.refunded".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "ch_123",
+                    "object": "charge",
+                    "amount": 1000,
+                    "amount_refunded": 400,
+                    "customer": "cus_123",
+                    "payment_intent": "pi_123"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+        let dispute = WebhookEvent {
+            id: "evt_dispute".to_string(),
+            event_type: "charge.dispute.created".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "dp_123",
+                    "object": "dispute",
+                    "amount": 1000,
+                    "charge": "ch_123",
+                    "payment_intent": "pi_123"
+                }),
+            },
+            created: 1_700_000_001,
+        };
+
+        for event in [refund.clone(), dispute.clone()] {
+            assert_eq!(
+                handler.handle_event(event).await.unwrap(),
+                WebhookOutcome::Processed
+            );
+        }
+        assert_eq!(
+            handler.handle_event(refund).await.unwrap(),
+            WebhookOutcome::AlreadyProcessed
+        );
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            BillingEvent::ChargeRefunded {
+                charge_id,
+                payment_intent_id: Some(payment_intent_id),
+                customer_id: Some(customer_id),
+                amount: 1000,
+                amount_refunded: 400,
+                ..
+            } if charge_id == "ch_123" && payment_intent_id == "pi_123" && customer_id == "cus_123"
+        ));
+        assert!(matches!(
+            &events[1],
+            BillingEvent::ChargeDisputed {
+                dispute_id,
+                charge_id,
+                payment_intent_id: Some(payment_intent_id),
+                amount: 1000,
+                ..
+            } if dispute_id == "dp_123" && charge_id == "ch_123" && payment_intent_id == "pi_123"
+        ));
+        assert_eq!(events[1].kind(), "charge_disputed");
     }
 
     fn subscription_created_event(event_id: &str, subscription_id: &str) -> WebhookEvent {
