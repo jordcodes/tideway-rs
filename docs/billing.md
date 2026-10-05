@@ -966,6 +966,20 @@ let invoice = manager.get_invoice("org_123", "in_xxx").await?;
 let items = manager.get_line_items("org_123", "in_xxx").await?;
 ```
 
+### Cached invoices
+
+`CachedInvoiceManager::list_invoices` returns `Arc<InvoiceList>` and
+`get_upcoming_invoice` returns `Option<Arc<Invoice>>`. Hits share the cached
+allocation, and returned handles remain valid after invalidation or eviction.
+When migrating callers that previously consumed owned fields, borrow them instead
+(for example, `for invoice in &invoices.invoices`). Use `invoices.as_ref()` when
+serializing a shared list, or explicitly clone the underlying value if ownership
+is required.
+
+The `InvoiceOperations` trait retains its owned return types for compatibility;
+calling through that trait still copies cached results. Use the cached manager's
+inherent methods to avoid those copies.
+
 ## Refunds
 
 The module provides two refund managers:
