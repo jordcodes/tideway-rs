@@ -22,9 +22,12 @@ pub use storage::CreditStore;
 pub use stripe::*;
 pub use types::{
     ConsumptionOrder, CreditAllocation, CreditBalance, CreditBucket, CreditGrantRequest,
-    CreditHistoryQuery, CreditReservation, CreditSource, CreditTransaction, CreditTransactionKind,
-    GrantCredits, ReservationStatus, ReserveCredits, SourceBalance,
+    CreditHistoryQuery, CreditReservation, CreditRevocation, CreditSource, CreditTransaction,
+    CreditTransactionKind, GrantCredits, ReservationStatus, ReserveCredits, RevocationAmount,
+    RevokeCredits, SourceBalance,
 };
 
 #[cfg(test)]
 mod balance_tests;
+#[cfg(test)]
+mod revocation_tests;

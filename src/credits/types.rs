@@ -95,6 +95,75 @@ pub struct ReserveCredits {
     pub metadata: serde_json::Value,
 }
 
+/// Request to take back credits from an earlier grant, such as after a refund or dispute.
+///
+/// `amount` is the cumulative total that should be revoked from the grant, not a delta.
+/// Repeating a request, or sending an older smaller total, changes nothing, so a retried or
+/// out-of-order webhook cannot revoke twice.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RevokeCredits {
+    /// [`GrantCredits::idempotency_key`] of the grant to revoke. It must identify exactly one
+    /// grant across all accounts and credit types.
+    pub grant_idempotency_key: String,
+    /// Cumulative credits to revoke from the grant.
+    pub amount: RevocationAmount,
+    /// Stable operation identifier recorded on the ledger entry.
+    pub idempotency_key: String,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+/// Cumulative amount of a grant to revoke.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RevocationAmount {
+    /// A number of credits, capped to the original grant.
+    Credits(u64),
+    /// A share of the original grant, rounded up and capped to the whole grant. Use it to
+    /// revoke in proportion to a partial refund.
+    Fraction { numerator: u64, denominator: u64 },
+}
+
+impl RevocationAmount {
+    /// The whole grant.
+    pub const ALL: Self = Self::Fraction {
+        numerator: 1,
+        denominator: 1,
+    };
+
+    /// Resolve the cumulative credits to revoke from a grant of `original` credits.
+    #[must_use]
+    pub fn resolve(self, original: u64) -> u64 {
+        match self {
+            Self::Credits(credits) => credits.min(original),
+            Self::Fraction {
+                numerator,
+                denominator,
+            } => {
+                if denominator == 0 {
+                    return 0;
+                }
+                let share = (u128::from(original) * u128::from(numerator))
+                    .div_ceil(u128::from(denominator));
+                u64::try_from(share).unwrap_or(u64::MAX).min(original)
+            }
+        }
+    }
+}
+
+/// Revocation state of one grant after [`RevokeCredits`] was applied.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CreditRevocation {
+    /// The revoked grant, with its updated remaining amount.
+    pub bucket: CreditBucket,
+    /// Cumulative credits revoked from the grant.
+    pub revoked_amount: u64,
+    /// Revoked credits not yet taken back because they are held by open reservations or were
+    /// already spent. Held credits are taken back when their reservation is released; credits
+    /// that were committed cannot be recovered.
+    pub unrecovered_amount: u64,
+}
+
 /// One durable bucket created by a grant.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CreditBucket {
@@ -182,13 +251,18 @@ pub struct CreditBalance {
 }
 
 /// Audit-ledger event kind.
+///
+/// New kinds may be added in minor releases; match with a wildcard arm.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CreditTransactionKind {
     Grant,
     Reserve,
     Commit,
     Release,
+    /// Credits removed from a grant after its payment was refunded or disputed.
+    Revoke,
 }
 
 impl CreditTransactionKind {
@@ -199,6 +273,7 @@ impl CreditTransactionKind {
             Self::Reserve => "reserve",
             Self::Commit => "commit",
             Self::Release => "release",
+            Self::Revoke => "revoke",
         }
     }
 
@@ -209,6 +284,7 @@ impl CreditTransactionKind {
             "reserve" => Some(Self::Reserve),
             "commit" => Some(Self::Commit),
             "release" => Some(Self::Release),
+            "revoke" => Some(Self::Revoke),
             _ => None,
         }
     }

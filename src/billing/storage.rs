@@ -185,6 +185,24 @@ pub trait BillingStore: Send + Sync {
         Ok(())
     }
 
+    // Deleted subscription markers
+
+    /// Record that a Stripe subscription was deleted, so late webhooks cannot restore it.
+    ///
+    /// The default stores a marker in processed-event storage under a `tideway:` key, so it is
+    /// removed by [`Self::cleanup_old_events`] with the events. Keep the retention window longer
+    /// than Stripe's webhook retry period (about three days).
+    async fn mark_subscription_deleted(&self, stripe_subscription_id: &str) -> Result<()> {
+        self.mark_event_processed(&deleted_subscription_marker(stripe_subscription_id))
+            .await
+    }
+
+    /// Check whether [`Self::mark_subscription_deleted`] recorded this Stripe subscription.
+    async fn is_subscription_deleted(&self, stripe_subscription_id: &str) -> Result<bool> {
+        self.is_event_processed(&deleted_subscription_marker(stripe_subscription_id))
+            .await
+    }
+
     // Optional: cleanup old events
 
     /// Clean up old processed events (default: no-op).
@@ -199,6 +217,10 @@ pub trait BillingStore: Send + Sync {
     /// Used to prevent deleting plans that have active subscriptions.
     /// Returns the count of subscriptions with status Active or Trialing.
     async fn count_subscriptions_by_plan(&self, plan_id: &str) -> Result<u32>;
+}
+
+fn deleted_subscription_marker(stripe_subscription_id: &str) -> String {
+    format!("tideway:subscription_deleted:{stripe_subscription_id}")
 }
 
 /// Cached subscription state.
