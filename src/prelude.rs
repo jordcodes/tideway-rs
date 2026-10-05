@@ -9,6 +9,11 @@
 //!
 //! Note: feature-specific items are re-exported only when the corresponding
 //! feature is enabled.
+//!
+//! With `database` enabled, the connection trait is exported as
+//! [`DatabaseConnectionTrait`] to avoid colliding with SeaORM's `DatabaseConnection`.
+//! Code using the former prelude trait name should use `DatabaseConnectionTrait`
+//! or import `tideway::DatabaseConnection` explicitly.
 
 pub use crate::{
     App, AppBuilder, AppContext, AppContextBuilder, Config, ConfigBuilder, MessageResponse, Result,
@@ -21,7 +26,7 @@ pub use crate::{module, register_modules, register_optional_modules};
 pub use crate::{Cache, CacheExt};
 
 #[cfg(feature = "database")]
-pub use crate::{DatabaseConnection, DatabasePool, SeaOrmPool};
+pub use crate::{DatabaseConnection as DatabaseConnectionTrait, DatabasePool, SeaOrmPool};
 
 #[cfg(feature = "email")]
 pub use crate::{ConsoleMailer, Email, Mailer, ResendConfig, ResendMailer, SmtpConfig, SmtpMailer};

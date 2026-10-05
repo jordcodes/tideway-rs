@@ -25,6 +25,12 @@ These APIs are intended to remain stable and are covered by tests.
 
 Use the prelude for application code when you want stable, low-friction imports.
 
+With `database` enabled, the prelude exports `DatabaseConnectionTrait`, `DatabasePool`,
+and `SeaOrmPool`. The trait alias lets `tideway::prelude::*` coexist with `sea_orm::*`
+without colliding with SeaORM's `DatabaseConnection` type. Code using the former prelude
+trait name should switch to `DatabaseConnectionTrait` or explicitly import
+`tideway::DatabaseConnection`; the original trait paths remain available.
+
 ## Feature-Gated Modules
 
 Feature-gated modules are explicit (`auth`, `database`, `openapi`, etc.).
