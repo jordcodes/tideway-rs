@@ -245,7 +245,8 @@ where
 
     /// Create an invitation.
     ///
-    /// Checks email format, rate limits, seat availability, pending invitation limit, and actor permissions.
+    /// Checks email format, organization existence, and actor permissions before
+    /// consuming rate-limit quota, then checks pending invitations and seat availability.
     #[instrument(skip(self, invitation_factory))]
     pub async fn invite<F>(
         &self,
@@ -257,9 +258,6 @@ where
     where
         F: FnOnce(InvitationCreateParams) -> I::Invitation,
     {
-        // Check rate limit first (before any other work)
-        self.rate_limiter.check_invitation_rate(org_id, actor_id)?;
-
         // Validate email format
         if !is_valid_email(email) {
             return Err(OrganizationError::invalid_email(email));
@@ -284,6 +282,9 @@ where
                 "can_manage_members",
             ));
         }
+
+        // Only authorized members may consume invitation quota.
+        self.rate_limiter.check_invitation_rate(org_id, actor_id)?;
 
         // Check if email already has pending invitation
         if self
