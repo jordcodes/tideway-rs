@@ -126,7 +126,7 @@ pub use lockout::{
 pub use deletion::test::InMemoryDeletionStore;
 pub use deletion::{
     AccountDeletionFlow, AccountDeletionStore, CleanupStats, DeletionConfig, DeletionRequest,
-    DeletionResult, PendingDeletion,
+    DeletionRequestBody, DeletionResult, PendingDeletion,
 };
 
 // Impersonation re-exports
@@ -134,6 +134,6 @@ pub use deletion::{
 pub use impersonation::test::InMemoryImpersonationStore;
 pub use impersonation::{
     BlockedAction, ImpersonationAuditEntry, ImpersonationClaims, ImpersonationConfig,
-    ImpersonationEvent, ImpersonationManager, ImpersonationRequest, ImpersonationSession,
-    ImpersonationStore,
+    ImpersonationEvent, ImpersonationManager, ImpersonationRequest, ImpersonationRequestBody,
+    ImpersonationSession, ImpersonationStore,
 };
