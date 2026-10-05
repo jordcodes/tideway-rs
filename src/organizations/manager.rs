@@ -200,6 +200,18 @@ where
         &self.config
     }
 
+    /// Check the user is below the `max_orgs_per_user` limit.
+    async fn check_can_own_another_org(&self, user_id: &str) -> Result<()> {
+        if let Some(max) = self.config.max_orgs_per_user {
+            let count = self.org_store.count_owned_by_user(user_id).await?;
+            if count >= max {
+                debug!(user_id, count, max, "Max organizations reached");
+                return Err(OrganizationError::max_orgs_reached(max));
+            }
+        }
+        Ok(())
+    }
+
     /// Create a new organization with the user as owner.
     ///
     /// Returns the store's Organization type.
@@ -225,14 +237,7 @@ where
             });
         }
 
-        // Check max orgs per user limit
-        if let Some(max) = self.config.max_orgs_per_user {
-            let count = self.org_store.count_owned_by_user(user_id).await?;
-            if count >= max {
-                debug!(user_id, count, max, "Max organizations reached");
-                return Err(OrganizationError::max_orgs_reached(max));
-            }
-        }
+        self.check_can_own_another_org(user_id).await?;
 
         // Generate or validate slug
         let slug = slug.map(|s| s.to_string()).unwrap_or_else(|| slugify(name));
@@ -428,6 +433,121 @@ where
         Ok(())
     }
 
+    /// Transfer ownership to another member.
+    ///
+    /// Promotes `new_owner_id`, demotes the current owner (`actor_id`), and sets the
+    /// organization's owner to `new_owner_id` so `max_orgs_per_user` counts the new owner.
+    /// Returns [`OrganizationError::MaxOrgsReached`] if the new owner is already at that limit.
+    /// `set_owner` receives the organization and the new owner's user ID and must return the
+    /// organization with its owner updated.
+    ///
+    /// The organization is updated first, then both memberships via
+    /// [`MembershipStore::update_memberships_atomic`]. If the membership update fails, the
+    /// organization update is reverted (a compensating write, not a database transaction).
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// manager.transfer_ownership(
+    ///     "org_123",
+    ///     "new_owner_id",
+    ///     "current_owner_id",
+    ///     |m| MyMembership { role: MyRole::Owner, ..m.clone() },
+    ///     |m| MyMembership { role: MyRole::Admin, ..m.clone() },
+    ///     |org, owner_id| MyOrganization { owner_id: owner_id.to_string(), ..org },
+    /// ).await?;
+    /// ```
+    #[instrument(skip(self, make_owner, demote_owner, set_owner))]
+    pub async fn transfer_ownership<F, G, H>(
+        &self,
+        org_id: &str,
+        new_owner_id: &str,
+        actor_id: &str,
+        make_owner: F,
+        demote_owner: G,
+        set_owner: H,
+    ) -> Result<O::Organization>
+    where
+        F: FnOnce(&M::Membership) -> M::Membership,
+        G: FnOnce(&M::Membership) -> M::Membership,
+        H: FnOnce(O::Organization, &str) -> O::Organization,
+    {
+        // Check actor has permission
+        let actor_membership = self
+            .membership_store
+            .get_membership(org_id, actor_id)
+            .await?
+            .ok_or(OrganizationError::NotMember)?;
+
+        let actor_role = self.membership_store.membership_role(&actor_membership);
+        if !self.membership_store.can_transfer_ownership(&actor_role) {
+            return Err(OrganizationError::insufficient_permission(
+                "can_transfer_ownership",
+            ));
+        }
+
+        // Check new owner is a member
+        let new_owner_membership = self
+            .membership_store
+            .get_membership(org_id, new_owner_id)
+            .await?
+            .ok_or(OrganizationError::NotMember)?;
+
+        let current = self
+            .org_store
+            .find_by_id(org_id)
+            .await?
+            .ok_or_else(|| OrganizationError::not_found(org_id))?;
+
+        if self.org_store.owner_id(&current) != new_owner_id {
+            self.check_can_own_another_org(new_owner_id).await?;
+        }
+
+        let updated = set_owner(current.clone(), new_owner_id);
+        if self.org_store.owner_id(&updated) != new_owner_id {
+            return Err(crate::error::TidewayError::internal(
+                "set_owner must set the organization's owner to the new owner",
+            )
+            .into());
+        }
+
+        // Prepare both membership updates
+        let demoted = demote_owner(&actor_membership);
+        let promoted = make_owner(&new_owner_membership);
+
+        self.org_store.update(&updated).await?;
+        if let Err(e) = self
+            .membership_store
+            .update_memberships_atomic(&[demoted, promoted])
+            .await
+        {
+            if let Err(revert_error) = self.org_store.update(&current).await {
+                return Err(crate::error::TidewayError::internal(format!(
+                    "Ownership transfer failed ({e}); reverting organization owner also failed ({revert_error})"
+                ))
+                .into());
+            }
+            return Err(e.into());
+        }
+
+        info!(
+            org_id,
+            new_owner_id,
+            former_owner = actor_id,
+            "Ownership transferred"
+        );
+
+        // Record audit event
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::OwnershipTransferred, org_id, actor_id)
+                    .with_target(new_owner_id),
+            )
+            .await;
+
+        Ok(updated)
+    }
+
     /// List organizations for a user.
     #[instrument(skip(self))]
     pub async fn list_for_user(&self, user_id: &str) -> Result<Vec<O::Organization>> {
@@ -477,11 +597,7 @@ where
                 required: "organization_creation".to_string(),
             });
         }
-        if let Some(max) = self.config.max_orgs_per_user
-            && self.org_store.count_owned_by_user(user_id).await? >= max
-        {
-            return Err(OrganizationError::max_orgs_reached(max));
-        }
+        self.check_can_own_another_org(user_id).await?;
 
         let slug = slug.map(str::to_string).unwrap_or_else(|| slugify(name));
         if !self.org_store.is_slug_available(&slug).await? {
@@ -515,6 +631,64 @@ where
             )
             .await;
         Ok(org)
+    }
+
+    /// Transfer ownership in one SeaORM transaction.
+    ///
+    /// Same checks as [`OrganizationManager::transfer_ownership`], but the organization's
+    /// owner and both memberships are updated together or not at all. The current owner
+    /// (`actor_id`) is given `former_owner_role`, which must not be `Owner`.
+    pub async fn transfer_ownership_atomic(
+        &self,
+        org_id: &str,
+        new_owner_id: &str,
+        actor_id: &str,
+        former_owner_role: super::types::DefaultOrgRole,
+    ) -> Result<super::sea_orm_store::SeaOrmOrganization> {
+        let actor_membership = self
+            .membership_store
+            .get_membership(org_id, actor_id)
+            .await?
+            .ok_or(OrganizationError::NotMember)?;
+        if !self
+            .membership_store
+            .can_transfer_ownership(&actor_membership.role)
+        {
+            return Err(OrganizationError::insufficient_permission(
+                "can_transfer_ownership",
+            ));
+        }
+        if !self
+            .membership_store
+            .is_member(org_id, new_owner_id)
+            .await?
+        {
+            return Err(OrganizationError::NotMember);
+        }
+
+        let current = self.get_or_error(org_id).await?;
+        if current.owner_id != new_owner_id {
+            self.check_can_own_another_org(new_owner_id).await?;
+        }
+
+        self.org_store
+            .transfer_ownership_atomic(org_id, actor_id, new_owner_id, former_owner_role)
+            .await?;
+
+        info!(
+            org_id,
+            new_owner_id,
+            former_owner = actor_id,
+            "Ownership transferred"
+        );
+        self.audit_store
+            .record(
+                OrgAuditEntry::new(OrgAuditEvent::OwnershipTransferred, org_id, actor_id)
+                    .with_target(new_owner_id),
+            )
+            .await;
+
+        self.get_or_error(org_id).await
     }
 }
 

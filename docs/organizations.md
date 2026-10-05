@@ -168,9 +168,13 @@ against a production-like copy before rollout. The migration can keep a legacy c
 
 ## Core Types
 
-- `OrganizationManager`: organization CRUD + owner bootstrap flow
+- `OrganizationManager`: organization CRUD, owner bootstrap flow, and `transfer_ownership`, which
+  swaps the owner and admin memberships and updates the organization's owner so
+  `max_orgs_per_user` counts the new owner (a new owner already at that limit gets
+  `MaxOrgsReached`); with the SeaORM store, `transfer_ownership_atomic` does this in one
+  transaction
 - `MembershipManager`: membership operations and permission checks; owners can only be created
-  through `transfer_ownership`, never `add_member` or `update_membership`
+  through `OrganizationManager::transfer_ownership`, never `add_member` or `update_membership`
 - `InvitationManager`: invitation issuance and acceptance
 - `InvitationRateLimiter`: zero-configuration, process-local invitation rate limiter
 - `InvitationRateLimitProvider`: asynchronous extension point for shared rate-limit backends

@@ -15,6 +15,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `TooManyRequests` (HTTP 429), and other 4xx statuses to `BadRequest` (HTTP 400) with a generic
   message. `BillingError` itself is unchanged, so handlers that match on it can still read
   `message`, `code`, and `http_status`.
+- Added `OrganizationManager::transfer_ownership`, which also sets the organization's owner to the
+  new owner. `MembershipManager::transfer_ownership` only swapped membership roles and left
+  `owner_id` unchanged, so `max_orgs_per_user` kept counting a transferred organization against
+  its former owner. The `MembershipManager` method is now deprecated. Organizations transferred
+  with it keep the stale `owner_id`; see `docs/upgrading.md` to find and fix them. With the
+  SeaORM store, `OrganizationManager::transfer_ownership_atomic` (backed by
+  `SeaOrmOrgStore::transfer_ownership_atomic`) does the whole transfer in one transaction. Both
+  methods return `MaxOrgsReached` if the new owner is already at `max_orgs_per_user`.
 - `RedisCache::clear()` no longer runs `FLUSHDB`. It previously wiped the whole Redis database,
   including `RedisJobQueue` jobs when the cache and job queue shared a database. `RedisCache`
   now stores keys under a `cache:` prefix (configurable with `with_prefix`), and `clear()`
@@ -71,6 +79,38 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   deliveries count against the same limit as other traffic, so review `max_requests` and
   `window_seconds` if webhook volume is high. Layers added with `App::layer` still apply only to
   registered modules. See `docs/upgrading.md`.
+
+- **Breaking:** the built-in metrics route (`/metrics` by default, or a custom metrics path) now
+  requires a bearer token and returns 404 unless one is configured. Set
+  `TIDEWAY_METRICS_BEARER_TOKEN` (fallback: `METRICS_BEARER_TOKEN`) or
+  `MetricsConfig::builder().bearer_token(...)`, and send the same token in your scraper's
+  `Authorization: Bearer` header. Requests with a missing or wrong token get 401. Metrics are
+  still collected when no token is set, but they cannot be scraped. Unknown HTTP methods are now
+  labelled `OTHER`. See `docs/upgrading.md`.
+- **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` instead of
+  `InvoiceList`, and `get_upcoming_invoice` returns `Option<Arc<Invoice>>` instead of
+  `Option<Invoice>`, so cache hits no longer copy the data. Callers that move fields out of the
+  result must borrow them (`for invoice in &invoices.invoices`), serialize with
+  `invoices.as_ref()`, or clone the inner value. The `InvoiceOperations` trait keeps its owned
+  return types. See `docs/billing.md`.
+- **Breaking:** the `imp_blocked` claim built by `ImpersonationClaims::from_session` now uses
+  the same action names as `validate_session` and `BlockedAction::matches`: `delete_account`,
+  `change_password`, `change_mfa`, `change_email`, `modify_billing`, `export_data`,
+  `make_purchase`, and `send_messages`. It previously held the lowercased variant names
+  (`deleteaccount`, `changepassword`, `changemfa`, ...), and custom actions appeared as
+  `custom("name")`. Custom actions are now the name as given, with its case preserved. Frontends
+  that read `imp_blocked` (for example `token.imp_blocked.includes("deleteaccount")`) to hide
+  actions during impersonation must switch to the new names, or they will stop hiding those
+  actions. Tokens issued before the upgrade still carry the old values until they expire, so
+  check for both forms during the rollout.
+- `RedisJobQueue` workers no longer use the blocking `BRPOPLPUSH`, which stalled the shared
+  Redis connection. An idle worker now sends `RPOPLPUSH` every 100 ms for up to 5 seconds per
+  dequeue, which works out to about 8–10 Redis commands per second per idle worker. Previously
+  it sent about one command every 6 seconds. With the default 4 workers, an idle instance now
+  sends about 35 commands per second (roughly 3 million per day) instead of under 1. If your
+  Redis provider bills per command or request, lower `worker_count`
+  (`TIDEWAY_JOBS_WORKER_COUNT`) on instances that do not need it, or run fewer job-processing
+  replicas.
 
 > **Billing behavior change:** `LiveStripeClient` usage-record errors now report Stripe's HTTP
 > status instead of a generic internal error. Applications using metered billing should review
@@ -231,6 +271,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Migration Notes
 
+- **Breaking:** apps that scrape metrics must set `TIDEWAY_METRICS_BEARER_TOKEN` and configure
+  the scraper to send it before deploying, or scrapes get 404 and dashboards go blank.
+- **Breaking:** callers of `CachedInvoiceManager::list_invoices` and `get_upcoming_invoice` must
+  handle the `Arc` return types.
+- **Breaking:** frontends that read the `imp_blocked` claim must compare against the snake_case
+  action names (`delete_account`, not `deleteaccount`).
+- Metered Redis users: expect many more commands from idle `RedisJobQueue` workers (about
+  8–10 per second per worker). Review `worker_count` before deploying.
 - **Breaking:** handlers using `Json<ImpersonationRequest>` or `Json<DeletionRequest>` no longer
   compile. Switch them to the `*Body` types and pass the authenticated actor ID to `into_request`.
   See `docs/upgrading.md`.

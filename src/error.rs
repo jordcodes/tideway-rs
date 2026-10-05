@@ -327,13 +327,23 @@ impl TidewayError {
 
         let body = Json(response);
 
-        // Log full error details server-side (not exposed to clients in production)
-        tracing::error!(
-            status = status.as_u16(),
-            error_id = %error_id,
-            error = %self, // Full error message for server logs
-            "Request failed"
-        );
+        // Log full error details server-side (not exposed to clients in production).
+        // Client errors are expected traffic, so keep them out of ERROR-level logs.
+        if status.is_server_error() {
+            tracing::error!(
+                status = status.as_u16(),
+                error_id = %error_id,
+                error = %self, // Full error message for server logs
+                "Request failed"
+            );
+        } else {
+            tracing::warn!(
+                status = status.as_u16(),
+                error_id = %error_id,
+                error = %self,
+                "Request failed"
+            );
+        }
 
         (status, body).into_response()
     }
@@ -1162,5 +1172,69 @@ mod tests {
                 .unwrap()
                 .contains("connection pool exhausted")
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let logs = CapturedLogs::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = logs.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn test_client_errors_are_not_logged_at_error_level() {
+        let errors = [
+            TidewayError::bad_request("bad input"),
+            TidewayError::unauthorized("no token"),
+            TidewayError::forbidden("nope"),
+            TidewayError::not_found("missing"),
+            TidewayError::conflict("exists"),
+            TidewayError::too_many_requests("slow down"),
+            TidewayError::RequestTimeout,
+        ];
+        for err in errors {
+            let status = err.status_code();
+            let logs = capture_logs(|| {
+                let _ = err.into_response_with_info(None, false);
+            });
+            assert!(logs.contains("Request failed"), "{status}: {logs}");
+            assert!(logs.contains(" WARN "), "{status}: {logs}");
+            assert!(!logs.contains("ERROR"), "{status}: {logs}");
+        }
+    }
+
+    #[test]
+    fn test_server_errors_are_logged_at_error_level() {
+        for err in [
+            TidewayError::internal("boom"),
+            TidewayError::service_unavailable("down"),
+        ] {
+            let status = err.status_code();
+            let logs = capture_logs(|| {
+                let _ = err.into_response_with_info(None, false);
+            });
+            assert!(logs.contains("ERROR"), "{status}: {logs}");
+            assert!(logs.contains("Request failed"), "{status}: {logs}");
+        }
     }
 }

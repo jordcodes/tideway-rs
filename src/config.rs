@@ -243,8 +243,9 @@ impl ConfigBuilder {
 
     /// Load configuration from environment variables with TIDEWAY_ prefix.
     ///
-    /// Compression settings are overridden only by valid, present environment
-    /// variables; other compression settings retain their current values.
+    /// Environment variables are applied on top of the builder's current
+    /// settings: only present variables override values, so settings made
+    /// earlier on the builder (e.g. a metrics bearer token) are preserved.
     pub fn from_env(mut self) -> Self {
         if let Some(host) = get_env_with_prefix("HOST") {
             self.config.server.host = host;
@@ -268,42 +269,42 @@ impl ConfigBuilder {
         }
 
         // Load CORS config
-        self.config.cors = CorsConfig::from_env();
+        self.config.cors = self.config.cors.with_env();
 
         // Load rate limit config
-        self.config.rate_limit = RateLimitConfig::from_env();
+        self.config.rate_limit = self.config.rate_limit.with_env();
 
         // Load compression config
         self.config.compression = self.config.compression.with_env();
 
         // Load security config
-        self.config.security = SecurityConfig::from_env();
+        self.config.security = self.config.security.with_env();
 
         // Load timeout config
-        self.config.timeout = TimeoutConfig::from_env();
+        self.config.timeout = self.config.timeout.with_env();
 
         // Load request logging config
-        self.config.request_logging = RequestLoggingConfig::from_env();
+        self.config.request_logging = self.config.request_logging.with_env();
 
         // Load OpenAPI config
         #[cfg(feature = "openapi")]
         {
-            self.config.openapi = OpenApiConfig::from_env();
+            self.config.openapi = self.config.openapi.with_env();
         }
 
         // Load metrics config
         #[cfg(feature = "metrics")]
         {
-            self.config.metrics = crate::metrics::MetricsConfig::from_env();
+            self.config.metrics = self.config.metrics.with_env();
         }
 
         // Load dev config
-        self.config.dev = DevConfig::from_env();
+        self.config.dev = self.config.dev.with_env();
 
         // Load jobs config
         #[cfg(feature = "jobs")]
         {
-            self.config.jobs = JobsConfig::from_env();
+            self.config.jobs = self.config.jobs.with_env();
         }
 
         self
