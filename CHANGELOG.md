@@ -25,6 +25,7 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 >   `Option<Invoice>`.
 >
 > Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
+> `CreateRefundRequest` has a new `idempotency_key` field,
 > `BillingEvent::OneTimeCheckoutCompleted` has a new field, `CreditTransactionKind` is
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
@@ -60,6 +61,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
   refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
+- **Breaking:** `CreateRefundRequest` has a new `idempotency_key: Option<String>` field.
+  Direct struct literals must add `idempotency_key: None`, use `..Default::default()`, or
+  switch to the `for_charge` / `for_payment_intent` builders. With `None`, a key is derived
+  from the charge/payment intent, amount, and reason and sent to Stripe to deduplicate refund
+  retries. Identical partial refunds within Stripe's 24-hour key window collapse into one;
+  use a distinct explicit key for each intentional repeat refund via `idempotency_key: Some(...)`
+  or `.with_idempotency_key(...)`, and reuse that key when retrying the same refund.
 - **Breaking:** `JobsConfig` has a new `shutdown_timeout_seconds` field (default 25, env
   `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`); struct literals must set it or use
   `..Default::default()`. On SIGTERM, `App::serve()` now stops accepting HTTP connections
