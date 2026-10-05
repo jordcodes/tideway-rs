@@ -455,36 +455,68 @@ impl App {
             )
         })?;
 
-        #[allow(unused_mut)] // Needed for worker_pool.take() when jobs feature is enabled
-        let mut app = self;
-
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
         tracing::info!("Server starting on http://{}", addr);
         tracing::info!("Health check available at http://{}/health", addr);
 
-        // Create shutdown future that also shuts down workers
-        #[cfg(feature = "jobs")]
-        let worker_pool = app.worker_pool.take();
+        self.serve_with_shutdown(listener, shutdown_signal()).await
+    }
 
-        let shutdown = async move {
-            shutdown_signal().await;
-            #[cfg(feature = "jobs")]
-            {
+    /// Serve on `listener` until `signal` resolves, then drain HTTP connections and
+    /// stop job workers concurrently.
+    ///
+    /// Workers get at most `jobs.shutdown_timeout_seconds` to finish, so a slow job
+    /// can neither keep the listener accepting traffic nor outlive the platform's
+    /// kill deadline.
+    async fn serve_with_shutdown<S>(
+        self,
+        listener: tokio::net::TcpListener,
+        signal: S,
+    ) -> std::io::Result<()>
+    where
+        S: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use futures::FutureExt;
+
+        #[allow(unused_mut)] // Needed for worker_pool.take() when jobs feature is enabled
+        let mut app = self;
+
+        let signal = signal.shared();
+
+        #[cfg(feature = "jobs")]
+        let workers = {
+            let worker_pool = app.worker_pool.take();
+            let timeout = std::time::Duration::from_secs(app.config.jobs.shutdown_timeout_seconds);
+            let signal = signal.clone();
+            tokio::spawn(async move {
                 if let Some(pool) = worker_pool {
-                    pool.shutdown().await;
+                    signal.await;
+                    pool.shutdown_with_timeout(timeout).await;
                 }
-            }
+            })
         };
 
         let final_router = app.into_router_with_middleware();
 
-        axum::serve(
+        let result = axum::serve(
             listener,
             final_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown)
-        .await
+        .with_graceful_shutdown(signal)
+        .await;
+
+        #[cfg(feature = "jobs")]
+        {
+            if result.is_ok() {
+                let _ = workers.await;
+            } else {
+                // The signal never fired, so the worker task would wait forever.
+                workers.abort();
+            }
+        }
+
+        result
     }
 }
 
@@ -688,6 +720,100 @@ mod tests {
         )
         .await
         .expect("shutdown should immediately hand graceful draining to Axum");
+    }
+
+    #[cfg(feature = "jobs")]
+    #[tokio::test]
+    async fn shutdown_stops_http_while_jobs_run_and_bounds_job_wait() {
+        use crate::jobs::InMemoryJobQueue;
+        use crate::traits::job::{Job, JobQueue};
+        use std::time::{Duration, Instant};
+
+        #[derive(Debug)]
+        struct StuckJob;
+
+        #[async_trait::async_trait]
+        impl Job for StuckJob {
+            fn job_type(&self) -> &str {
+                "stuck"
+            }
+            fn serialize(&self) -> crate::Result<serde_json::Value> {
+                Ok(serde_json::Value::Null)
+            }
+            async fn execute(&self, _ctx: &AppContext) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(e) => panic!("should bind ephemeral port: {}", e),
+        };
+        let addr = listener.local_addr().unwrap();
+
+        let started = Arc::new(tokio::sync::Notify::new());
+        let registry = Arc::new(JobRegistry::new());
+        {
+            let started = started.clone();
+            registry
+                .register("stuck", move |_, _| {
+                    let started = started.clone();
+                    Box::pin(async move {
+                        started.notify_one();
+                        std::future::pending::<crate::Result<()>>().await
+                    })
+                })
+                .await;
+        }
+
+        let queue = Arc::new(InMemoryJobQueue::new(0, 60));
+        queue.enqueue(&StuckJob).await.unwrap();
+
+        let mut config = Config::default();
+        config.jobs.enabled = true;
+        config.jobs.worker_count = 1;
+        config.jobs.shutdown_timeout_seconds = 2;
+        let app = App::with_config(config)
+            .register_module(PingModule)
+            .with_context(AppContext::builder().with_job_queue(queue).build())
+            .start_workers(registry);
+
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .expect("job should start");
+
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(app.serve_with_shutdown(listener, async move {
+            let _ = signal_rx.await;
+        }));
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("server should accept connections before shutdown");
+
+        signal_tx.send(()).unwrap();
+        let shutdown_started = Instant::now();
+
+        // The listener must close right away, not after the stuck job gives up.
+        let mut refused = false;
+        while shutdown_started.elapsed() < Duration::from_millis(1000) {
+            if tokio::net::TcpStream::connect(addr).await.is_err() {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            refused,
+            "server kept accepting connections while waiting for jobs"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("shutdown should not wait on a stuck job past its timeout")
+            .unwrap()
+            .unwrap();
+        assert!(shutdown_started.elapsed() >= Duration::from_secs(2));
     }
 
     #[tokio::test]

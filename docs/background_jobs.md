@@ -166,6 +166,7 @@ TIDEWAY_JOBS_REDIS_URL=redis://localhost:6379
 TIDEWAY_JOBS_WORKER_COUNT=4
 TIDEWAY_JOBS_MAX_RETRIES=3
 TIDEWAY_JOBS_RETRY_BACKOFF_SECONDS=60
+TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS=25
 ```
 
 Or programmatically:
@@ -182,6 +183,7 @@ let config = ConfigBuilder::new()
             worker_count: 4,
             max_retries: 3,
             retry_backoff_seconds: 60,
+            shutdown_timeout_seconds: 25,
         }
     )
     .build();
@@ -221,7 +223,9 @@ Workers automatically handle graceful shutdown:
 - Workers finish any dequeue already in progress, including execution and acknowledgement of a claimed job, then stop taking new work
 - Workers exit cleanly
 
-The `App::serve()` method handles worker shutdown automatically. When managing a worker pool directly, await `pool.shutdown()` before shutting down the queue so its retry scheduler and Redis heartbeat remain active while jobs finish. Shutdown waits for running handlers without a timeout.
+The `App::serve()` method handles worker shutdown automatically. On the shutdown signal it stops accepting HTTP connections immediately and drains in-flight requests while workers finish their current jobs in parallel. Workers get at most `shutdown_timeout_seconds` (default 25, env `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`); jobs still running after that are aborted and left for the queue's retry/recovery handling, so keep handlers idempotent. Under Kubernetes, keep this timeout below `terminationGracePeriodSeconds` (default 30) so the process exits before SIGKILL.
+
+When managing a worker pool directly, await `pool.shutdown_with_timeout(timeout)` (or `pool.shutdown()` to wait without a limit) before shutting down the queue so its retry scheduler and Redis heartbeat remain active while jobs finish.
 
 Handler panics are treated as job failures and follow the same retry limits and backoff as returned errors, including with Redis. The worker continues processing jobs. This requires unwinding panics (the default Rust panic strategy); process aborts cannot be caught.
 

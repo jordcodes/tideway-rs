@@ -18,6 +18,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
   refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
+- **Breaking:** `JobsConfig` has a new `shutdown_timeout_seconds` field (default 25, env
+  `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`); struct literals must set it or use
+  `..Default::default()`. On SIGTERM, `App::serve()` now stops accepting HTTP connections
+  immediately and shuts down job workers in parallel, aborting jobs still running after the
+  timeout. Previously it kept serving until every running job finished, with no limit, so under
+  Kubernetes a slow job could get the pod SIGKILLed mid-request. Added
+  `WorkerPool::shutdown_with_timeout`. See `docs/upgrading.md`.
 - `AccountDeletionFlow` no longer deletes an account when a cleanup step (session or refresh
   token revocation, trusted device removal, MFA or lockout clearing) fails. Previously these
   errors were silently ignored, so a store failure could leave sessions and refresh tokens valid
