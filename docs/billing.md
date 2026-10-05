@@ -1144,6 +1144,24 @@ The built-in `billing_processed_events` table belongs to one Tideway billing web
 an application also processes Stripe Connect or another independent Stripe webhook stream, give
 that consumer a separate idempotency table or use a store keyed by both consumer name and event ID.
 
+### Rotating webhook signing secrets
+
+`WebhookHandler` accepts a webhook signed with any configured secret. It checks every `v1`
+signature in the `Stripe-Signature` header, since Stripe sends one per active secret while a
+secret is being rolled. To rotate without downtime:
+
+1. Roll the secret in the Stripe Dashboard, keeping the old secret valid for a period.
+2. Deploy with both secrets configured:
+
+   ```rust
+   let handler = WebhookHandler::new(store, new_secret, plans)
+       .with_additional_secret(old_secret);
+   // or: WebhookHandler::with_secrets(store, [new_secret, old_secret], plans)?
+   ```
+
+3. After Stripe stops signing with the old secret, remove it and redeploy. Webhooks signed only
+   with a removed secret are rejected.
+
 ## Live Stripe Client
 
 The production client with resilience features:
