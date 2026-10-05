@@ -156,7 +156,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `CreditRevocation`, plus `CreditTransactionKind::Revoke`. Revocation amounts are cumulative, so
   retries are idempotent. Credits held by open reservations are taken back when the reservation is
   released; credits already spent are reported as `unrecovered_amount`. Custom `CreditStore`s
-  inherit a default that returns an error.
+  inherit a default that logs a warning and returns `None`, so refund and dispute webhooks still
+  succeed but revoke nothing until the store overrides `revoke`.
 - CLI: `migrations/m015_add_credit_revocation` adds the revocation columns, an index, and the
   `revoke` transaction kind. `tideway new` with `credits-seaorm` and `tideway add credits` generate
   it; rerunning `tideway add credits` on an existing app adds only this migration.
