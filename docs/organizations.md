@@ -47,6 +47,10 @@ tideway resource organization --profile tenant
 tideway resource project --profile owned
 ```
 
+In an app with organizations, generated `api` (default), `tenant`, and `owned` resources all
+require authentication and are scoped to the caller's organization membership. `owned` resources
+are additionally restricted to the user who created them.
+
 For frontend-only Vue organization helpers:
 
 ```bash

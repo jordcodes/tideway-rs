@@ -205,7 +205,8 @@ Set `TIDEWAY_TEST_DB_BACKEND=postgres_container` to run against a Docker contain
 the `test-containers` feature is enabled, or `TIDEWAY_TEST_DB_BACKEND=postgres` with
 `TEST_DATABASE_URL`/`TIDEWAY_TEST_DATABASE_URL` for local PostgreSQL.
 Use `--service` to generate a validating service layer on top of the repository, with input normalization and not-found handling for the service-backed path.
-On SaaS scaffolds with the shared request actor contract, generated `owned` and `admin` resources also move tenant/admin enforcement into the service layer instead of keeping it only in the route handlers.
+On SaaS scaffolds with organizations (auth plus `organization_member`), full-stack `api` and `tenant` resources are never public: they add an `organization_id` column, require a bearer access token on every route, resolve the caller's organization membership (honoring `x-organization-id`), and scope every list/get/update/delete to that organization. `organization_id` comes from the caller, not the request body. Records from other organizations return not found.
+On SaaS scaffolds with the shared request actor contract, generated `api`, `tenant`, `owned`, and `admin` resources also move tenant/admin enforcement into the service layer instead of keeping it only in the route handlers.
 Generated `owned` services keep cross-tenant lookups opaque, but return an explicit forbidden error when a record is in the caller's organization and owned by a different user.
 Those actor-aware service writes also generate a no-op audit hook seam with a structured event payload (`action`, `actor_id`, `organization_id`, `resource`, `resource_id`) so create/update/delete flows have one obvious place to attach activity logging, event publishing, or outbound side effects.
 Use `--id-type` to switch ID generation (int or uuid) for DB scaffolding. Use `--add-uuid` to automatically add the `uuid` dependency.
