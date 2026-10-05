@@ -17,6 +17,7 @@ pub struct RateLimitConfig {
     pub window_seconds: u64,
 
     /// Rate limiting strategy: "global" or "per_ip"
+    /// Per-IP quotas are shared by IPv6 /64 prefix, or by individual IPv4 /32 address.
     #[serde(default = "default_strategy")]
     pub strategy: String,
 

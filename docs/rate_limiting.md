@@ -72,7 +72,9 @@ RateLimitConfig::builder()
 
 ### Per-IP Rate Limiting
 
-Limits requests per IP address. Useful for protecting against individual abusive clients.
+Limits requests per IPv4 address (/32) or IPv6 subnet (/64). All IPv6 addresses in the same /64 share a quota and one stored key, preventing address rotation within that subnet from bypassing limits or growing the key store. IPv4-mapped IPv6 addresses share the corresponding IPv4 address's quota.
+
+The subnet key is derived after resolving the client address, including forwarded addresses from trusted proxies. Stale keys are cleaned up periodically; the number of active keys can still grow with traffic from distinct IPv4 addresses or IPv6 /64 prefixes.
 
 ```rust
 let rate_limit = RateLimitConfig::builder()
