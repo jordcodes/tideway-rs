@@ -48,6 +48,18 @@ pub enum TidewayError {
     #[cfg(feature = "database")]
     #[error("Database error: {0}")]
     Database(String),
+
+    /// A billing error that keeps the original [`BillingError`](crate::billing::BillingError).
+    ///
+    /// The HTTP status, client-facing message, and `Display` text come from `public`. Use
+    /// [`TidewayError::billing_error`] to read the original error, for example a Stripe
+    /// `message` and `code`.
+    #[cfg(feature = "billing")]
+    #[error("{public}")]
+    Billing {
+        public: Box<TidewayError>,
+        source: Box<crate::billing::BillingError>,
+    },
 }
 
 /// Error context for additional error information
@@ -382,6 +394,8 @@ impl TidewayError {
             Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.status_code(),
         }
     }
 
@@ -412,6 +426,9 @@ impl TidewayError {
 
             #[cfg(feature = "database")]
             Self::Database(_) => "Database error".to_string(),
+
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.safe_message(),
         }
     }
 
@@ -419,6 +436,32 @@ impl TidewayError {
     pub fn error_code(&self) -> Option<&str> {
         match self {
             Self::CodedBadRequest { code, .. } => Some(code),
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.error_code(),
+            _ => None,
+        }
+    }
+
+    /// Return the error that determines the HTTP status and client-facing message.
+    ///
+    /// This unwraps [`TidewayError::Billing`], so `matches!(err.public_error(),
+    /// TidewayError::NotFound(_))` works for Stripe errors too. Other errors return `self`.
+    pub fn public_error(&self) -> &TidewayError {
+        match self {
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.public_error(),
+            _ => self,
+        }
+    }
+
+    /// Return the original billing error, when this error was converted from one.
+    ///
+    /// Stripe API errors keep their full `message`, `code`, and `http_status` here even when
+    /// the client-facing message is generic.
+    #[cfg(feature = "billing")]
+    pub fn billing_error(&self) -> Option<&crate::billing::BillingError> {
+        match self {
+            Self::Billing { source, .. } => Some(source),
             _ => None,
         }
     }

@@ -660,7 +660,11 @@ where
             }
             Ok(Err(e)) => {
                 if !is_retryable_error(&e) || attempts >= config.max_retries {
-                    circuit_breaker.record_failure();
+                    match circuit_outcome(&e) {
+                        CircuitOutcome::Failure => circuit_breaker.record_failure(),
+                        CircuitOutcome::Healthy => circuit_breaker.record_success(),
+                        CircuitOutcome::Ignore => {}
+                    }
                     return Err(map_stripe_error(e, operation));
                 }
 
@@ -769,6 +773,37 @@ fn is_retryable_error(error: &stripe::StripeError) -> bool {
     }
 }
 
+/// How a final Stripe error affects the circuit breaker.
+#[derive(Debug, PartialEq, Eq)]
+enum CircuitOutcome {
+    /// Stripe is unavailable or overloaded.
+    Failure,
+    /// Stripe answered and rejected the request (card declined, bad parameters, ...).
+    Healthy,
+    /// The request failed locally before reaching Stripe.
+    Ignore,
+}
+
+/// Classify a final Stripe error for the circuit breaker.
+///
+/// Only provider failures open the circuit. A Stripe 4xx means Stripe is up, so card declines
+/// from users cannot block billing for everyone.
+fn circuit_outcome(error: &stripe::StripeError) -> CircuitOutcome {
+    match error {
+        stripe::StripeError::Stripe(request_error) => match request_error.http_status {
+            429 | 500..=599 => CircuitOutcome::Failure,
+            400..=499 => CircuitOutcome::Healthy,
+            _ => CircuitOutcome::Failure,
+        },
+        stripe::StripeError::Timeout | stripe::StripeError::ClientError(_) => {
+            CircuitOutcome::Failure
+        }
+        stripe::StripeError::QueryStringSerialize(_)
+        | stripe::StripeError::JSONSerialize(_)
+        | stripe::StripeError::UnsupportedVersion => CircuitOutcome::Ignore,
+    }
+}
+
 /// Calculate backoff delay with exponential backoff and jitter.
 #[inline]
 fn calculate_backoff_delay(attempt: u32, base_ms: u64, max_ms: u64) -> Duration {
@@ -798,7 +833,8 @@ fn map_stripe_error(error: stripe::StripeError, operation: &str) -> crate::error
                 .message
                 .clone()
                 .unwrap_or_else(|| "Unknown error".to_string());
-            let code = request_error.code.as_ref().map(|c| format!("{c:?}"));
+            // Stripe's snake_case code, e.g. `incorrect_cvc`.
+            let code = request_error.code.as_ref().map(ToString::to_string);
 
             BillingError::StripeApiError {
                 operation: operation.to_string(),
@@ -2485,13 +2521,47 @@ mod tests {
                     "create_customer",
                 )
             });
-            assert!(matches!(&err, crate::error::TidewayError::Internal(message)
-                if message == "Unable to process billing request. Please try again later."));
+            let crate::error::TidewayError::Billing { public, .. } = &err else {
+                panic!("expected TidewayError::Billing, got {err:?}");
+            };
+            assert!(
+                matches!(public.as_ref(), crate::error::TidewayError::Internal(message)
+                if message == "Unable to process billing request. Please try again later.")
+            );
             let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
             assert!(output.contains(raw_message), "missing diagnostic: {output}");
             assert!(output.contains("create_customer"));
             assert!(output.contains(&status.to_string()));
         }
+    }
+
+    #[tokio::test]
+    async fn stripe_card_error_reaches_user_and_keeps_original_error() {
+        let body = r#"{"error":{"type":"card_error","code":"incorrect_cvc","decline_code":null,
+            "message":"Your card's security code is incorrect.","param":"cvc"}}"#;
+        let resp = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(402)
+                .body(body)
+                .unwrap(),
+        );
+        let stripe_err = read_stripe_response(resp).await.unwrap_err();
+        let err = map_stripe_error(stripe_err, "pay_invoice");
+
+        assert_eq!(
+            err.to_string(),
+            "Bad request: Your card's security code is incorrect."
+        );
+        assert_eq!(err.error_code(), Some("incorrect_cvc"));
+        assert_eq!(
+            err.billing_error(),
+            Some(&BillingError::StripeApiError {
+                operation: "pay_invoice".to_string(),
+                message: "Your card's security code is incorrect.".to_string(),
+                code: Some("incorrect_cvc".to_string()),
+                http_status: Some(402),
+            })
+        );
     }
 
     #[test]
@@ -2739,6 +2809,73 @@ mod tests {
         cb.record_success();
         assert_eq!(cb.failure_count(), 0);
         assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    fn stripe_status_error(http_status: u16) -> stripe::StripeError {
+        stripe::StripeError::Stripe(stripe::RequestError {
+            http_status,
+            message: Some("Your card's security code is incorrect.".to_string()),
+            ..Default::default()
+        })
+    }
+
+    async fn fail_with(
+        config: &LiveStripeClientConfig,
+        cb: &CircuitBreaker,
+        make_error: fn() -> stripe::StripeError,
+    ) {
+        let result: Result<()> =
+            with_retry_cb(config, cb, "pay_invoice", || async { Err(make_error()) }).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn card_declines_do_not_open_circuit() {
+        let config = LiveStripeClientConfig {
+            max_retries: 0,
+            circuit_breaker: CircuitBreakerConfig::default().failure_threshold(2),
+            ..Default::default()
+        };
+        let cb = CircuitBreaker::new(config.circuit_breaker.clone());
+
+        for _ in 0..10 {
+            fail_with(&config, &cb, || stripe_status_error(402)).await;
+        }
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert_eq!(cb.failure_count(), 0);
+
+        // A Stripe 4xx shows Stripe is up, so it also clears earlier provider failures.
+        fail_with(&config, &cb, || stripe_status_error(503)).await;
+        assert_eq!(cb.failure_count(), 1);
+        fail_with(&config, &cb, || stripe_status_error(400)).await;
+        assert_eq!(cb.failure_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_failures_open_circuit() {
+        let config = LiveStripeClientConfig {
+            max_retries: 0,
+            circuit_breaker: CircuitBreakerConfig::default().failure_threshold(4),
+            ..Default::default()
+        };
+        let cb = CircuitBreaker::new(config.circuit_breaker.clone());
+
+        fail_with(&config, &cb, || stripe_status_error(500)).await;
+        fail_with(&config, &cb, || stripe_status_error(429)).await;
+        fail_with(&config, &cb, || stripe::StripeError::Timeout).await;
+        fail_with(&config, &cb, || {
+            stripe::StripeError::ClientError("connection refused".to_string())
+        })
+        .await;
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn local_errors_do_not_affect_circuit() {
+        assert_eq!(
+            circuit_outcome(&stripe::StripeError::UnsupportedVersion),
+            CircuitOutcome::Ignore
+        );
     }
 
     #[test]
@@ -3089,7 +3226,11 @@ mod tests {
                 .unwrap_err();
             // Stripe's message is logged, not returned to the caller.
             assert!(!err.to_string().contains("Invalid quantity"), "got: {err}");
-            assert!(matches!(err, crate::error::TidewayError::BadRequest(_)));
+            assert!(matches!(
+                err.billing_error(),
+                Some(BillingError::StripeApiError { message, .. }) if message.contains("Invalid quantity")
+            ));
+            assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
             assert_eq!(mock.seen.lock().unwrap().len(), 1);
         }
 

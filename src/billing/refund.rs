@@ -534,7 +534,10 @@ impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
 
         match owner {
             Ok(customer_id) if customer_id == sub.stripe_customer_id => Ok(refund),
-            Ok(_) | Err(crate::error::TidewayError::NotFound(_)) => Err(not_found()),
+            Ok(_) => Err(not_found()),
+            Err(e) if matches!(e.public_error(), crate::error::TidewayError::NotFound(_)) => {
+                Err(not_found())
+            }
             Err(e) => Err(e),
         }
     }
