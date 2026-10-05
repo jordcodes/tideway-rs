@@ -83,6 +83,14 @@ let store = InMemorySessionStore::new(Duration::from_secs(3600 * 24));
 
 **Note:** In-memory sessions are lost on server restart and don't work across multiple instances.
 
+The store automatically sweeps expired sessions on saves, at most once per minute,
+so abandoned sessions do not accumulate during normal session churn. Expiry uses
+each session's `expires_at`; valid sessions are preserved. Cleanup also releases
+excess map capacity after traffic spikes. No background task is started: to reclaim
+expired sessions while the store is idle, call `SessionStore::cleanup_expired()`
+periodically. Loading an expired session removes it immediately, and saving
+already-expired data removes that session instead of retaining it.
+
 ## SessionStore Trait
 
 The `SessionStore` trait abstracts session storage:
