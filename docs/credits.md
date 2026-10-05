@@ -160,6 +160,10 @@ is released instead of returning to the balance. Credits already committed canno
 the sink logs a warning with the unrecovered amount, which `CreditManager::revoke` also returns.
 Refunds of payments that did not buy a pack are passed through unchanged.
 
+Revocation needs a store that implements `CreditStore::revoke`. The in-memory and SeaORM stores do.
+A custom store that does not override it inherits a default that logs a warning and revokes
+nothing, so refund and dispute webhooks still succeed but customers keep the credits.
+
 The application remains responsible for authorizing checkout creation, obtaining the Stripe
 customer linked to that account, provider delivery, product wording, and deciding what counts as a
 successful billable operation.

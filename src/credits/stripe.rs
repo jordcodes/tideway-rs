@@ -602,6 +602,114 @@ mod tests {
         assert_eq!(available(&store).await, 100);
     }
 
+    /// A custom store written before `CreditStore::revoke` existed.
+    #[derive(Clone, Default)]
+    struct LegacyStore(MemoryCreditStore);
+
+    #[async_trait]
+    impl CreditStore for LegacyStore {
+        async fn grant(
+            &self,
+            request: &GrantCredits,
+            now: i64,
+        ) -> Result<crate::credits::CreditBucket> {
+            self.0.grant(request, now).await
+        }
+
+        async fn reserve(
+            &self,
+            request: &crate::credits::ReserveCredits,
+            reservation_expires_at: i64,
+            now: i64,
+        ) -> Result<crate::credits::CreditReservation> {
+            self.0.reserve(request, reservation_expires_at, now).await
+        }
+
+        async fn commit(
+            &self,
+            account_id: &str,
+            reservation_id: &str,
+            now: i64,
+        ) -> Result<crate::credits::CreditReservation> {
+            self.0.commit(account_id, reservation_id, now).await
+        }
+
+        async fn release(
+            &self,
+            account_id: &str,
+            reservation_id: &str,
+            now: i64,
+        ) -> Result<crate::credits::CreditReservation> {
+            self.0.release(account_id, reservation_id, now).await
+        }
+
+        async fn balance(
+            &self,
+            account_id: &str,
+            credit_type: &str,
+            now: i64,
+        ) -> Result<crate::credits::CreditBalance> {
+            self.0.balance(account_id, credit_type, now).await
+        }
+
+        async fn history(
+            &self,
+            account_id: &str,
+            credit_type: &str,
+            query: CreditHistoryQuery,
+        ) -> Result<Vec<crate::credits::CreditTransaction>> {
+            self.0.history(account_id, credit_type, query).await
+        }
+
+        async fn release_expired(&self, now: i64, limit: u64) -> Result<u64> {
+            self.0.release_expired(now, limit).await
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingSink(Arc<Mutex<Vec<String>>>);
+
+    #[async_trait]
+    impl BillingEventSink for RecordingSink {
+        async fn handle(&self, event: &BillingEvent) -> Result<()> {
+            let id = match event {
+                BillingEvent::OneTimeCheckoutCompleted { context, .. }
+                | BillingEvent::ChargeRefunded { context, .. }
+                | BillingEvent::ChargeDisputed { context, .. } => context.event_id.clone(),
+                _ => "other".to_string(),
+            };
+            self.0.lock().unwrap().push(id);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn store_without_revoke_does_not_fail_refund_or_dispute_webhooks() {
+        let store = LegacyStore::default();
+        let next = RecordingSink::default();
+        let sink = CreditTopUpEventSink::new(CreditManager::new(store.clone()), catalog())
+            .with_next(next.clone());
+        sink.handle(&checkout("evt_paid", "paid", Some("pi_1")))
+            .await
+            .unwrap();
+
+        sink.handle(&refund("evt_refund", "pi_1", 1_000))
+            .await
+            .unwrap();
+        // A refund of an ordinary subscription payment also reaches the store.
+        sink.handle(&refund("evt_sub_refund", "pi_subscription", 500))
+            .await
+            .unwrap();
+        sink.handle(&dispute("evt_dispute", "pi_1")).await.unwrap();
+
+        assert_eq!(
+            *next.0.lock().unwrap(),
+            ["evt_paid", "evt_refund", "evt_sub_refund", "evt_dispute"]
+        );
+        // The store cannot revoke, so the credits stay.
+        assert_eq!(available(&store.0).await, 100);
+    }
+
     #[tokio::test]
     async fn credits_held_at_refund_time_are_not_restored_on_release() {
         let store = MemoryCreditStore::new();
