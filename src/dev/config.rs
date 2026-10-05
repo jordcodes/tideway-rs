@@ -1,7 +1,8 @@
 //! Development mode configuration
 
-use crate::utils::get_env_with_prefix;
+use crate::utils::{get_env_with_prefix, is_production_like_environment};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Development mode configuration
 ///
@@ -54,10 +55,37 @@ impl DevConfig {
         }
     }
 
-    /// Check if dev mode is enabled
+    /// Check if dev mode is effectively enabled.
+    ///
+    /// Returns `false` in production-like environments (`ENV`, `ENVIRONMENT`,
+    /// `APP_ENV`, or `TIDEWAY_ENV` set to `prod`/`production`) even when
+    /// `enabled` is `true`, so dev diagnostics can never leak in production.
     pub fn is_dev_mode(&self) -> bool {
-        self.enabled
+        if !self.enabled {
+            return false;
+        }
+        if is_production_like_environment() {
+            tracing::warn!(
+                "Dev mode was requested but is disabled because the environment is production"
+            );
+            return false;
+        }
+        true
     }
+}
+
+/// Returns the config with all dev features turned off when dev mode is not
+/// effectively enabled (e.g. it was requested in a production environment).
+pub(crate) fn effective_config(config: Arc<DevConfig>) -> Arc<DevConfig> {
+    if config.is_dev_mode() {
+        return config;
+    }
+    Arc::new(DevConfig {
+        enabled: false,
+        include_stack_traces: false,
+        enable_request_dumper: false,
+        dump_path_pattern: config.dump_path_pattern.clone(),
+    })
 }
 
 /// Builder for DevConfig

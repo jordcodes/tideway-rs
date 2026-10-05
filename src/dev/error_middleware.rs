@@ -28,8 +28,13 @@ pub(crate) fn current_dev_response_config() -> ScopedDevResponseConfig {
 ///
 /// This layer intercepts errors and enhances them with stack traces
 /// and detailed information when dev mode is enabled.
+///
+/// The layer is inert in production-like environments (see
+/// [`DevConfig::is_dev_mode`](crate::dev::DevConfig::is_dev_mode)).
 pub fn build_dev_error_layer(config: Arc<crate::dev::DevConfig>) -> DevErrorLayer {
-    DevErrorLayer { config }
+    DevErrorLayer {
+        config: crate::dev::config::effective_config(config),
+    }
 }
 
 /// Development error layer
@@ -119,5 +124,5 @@ pub fn create_dev_error_response(
 
     let error_info = ErrorInfo::new().with_stack_trace(stack_trace.unwrap_or_default());
 
-    error.into_response_with_info(Some(error_info), config.enabled)
+    error.into_response_with_info(Some(error_info), config.is_dev_mode())
 }

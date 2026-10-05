@@ -567,7 +567,7 @@ let config = ConfigBuilder::new()
 `with_stack_traces(true)` adds stack traces to normal `TidewayError` responses during dev-mode requests.
 
 **Environment Variables:**
-- `TIDEWAY_DEV_MODE` - Enable dev mode (default: false)
+- `TIDEWAY_DEV_MODE` - Enable dev mode (default: false; ignored when `ENV`/`ENVIRONMENT`/`APP_ENV`/`TIDEWAY_ENV` is `production`)
 - `TIDEWAY_DEV_STACK_TRACES` - Include stack traces (default: false)
 - `TIDEWAY_DEV_DUMP_REQUESTS` - Enable request dumper (default: false)
 - `TIDEWAY_DEV_DUMP_PATH` - Path pattern to dump (default: all)
