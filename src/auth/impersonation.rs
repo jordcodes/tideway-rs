@@ -189,16 +189,21 @@ impl BlockedAction {
     /// Check if an action string matches this blocked action.
     #[must_use]
     pub fn matches(&self, action: &str) -> bool {
+        self.as_str() == action
+    }
+
+    /// Canonical action name used by session checks and token claims.
+    fn as_str(&self) -> &str {
         match self {
-            Self::DeleteAccount => action == "delete_account",
-            Self::ChangePassword => action == "change_password",
-            Self::ChangeMfa => action == "change_mfa",
-            Self::ChangeEmail => action == "change_email",
-            Self::ModifyBilling => action == "modify_billing",
-            Self::ExportData => action == "export_data",
-            Self::MakePurchase => action == "make_purchase",
-            Self::SendMessages => action == "send_messages",
-            Self::Custom(s) => action == s,
+            Self::DeleteAccount => "delete_account",
+            Self::ChangePassword => "change_password",
+            Self::ChangeMfa => "change_mfa",
+            Self::ChangeEmail => "change_email",
+            Self::ModifyBilling => "modify_billing",
+            Self::ExportData => "export_data",
+            Self::MakePurchase => "make_purchase",
+            Self::SendMessages => "send_messages",
+            Self::Custom(s) => s,
         }
     }
 }
@@ -319,7 +324,7 @@ impl ImpersonationClaims {
             imp_blocked: session
                 .blocked_actions
                 .iter()
-                .map(|a| format!("{a:?}").to_lowercase())
+                .map(|a| a.as_str().to_owned())
                 .collect(),
         }
     }
@@ -1373,6 +1378,57 @@ mod tests {
         let claims = ImpersonationClaims::from_session(&session);
         assert_eq!(claims.imp_session, "imp_123");
         assert_eq!(claims.imp_admin, "admin-1");
-        assert_eq!(claims.imp_blocked.len(), 2);
+        assert_eq!(claims.imp_blocked, ["delete_account", "change_password"]);
+    }
+
+    #[test]
+    fn test_claim_driven_action_checks() {
+        let actions = [
+            (BlockedAction::DeleteAccount, "delete_account"),
+            (BlockedAction::ChangePassword, "change_password"),
+            (BlockedAction::ChangeMfa, "change_mfa"),
+            (BlockedAction::ChangeEmail, "change_email"),
+            (BlockedAction::ModifyBilling, "modify_billing"),
+            (BlockedAction::ExportData, "export_data"),
+            (BlockedAction::MakePurchase, "make_purchase"),
+            (BlockedAction::SendMessages, "send_messages"),
+            (
+                BlockedAction::Custom("Manage_API_keys".into()),
+                "Manage_API_keys",
+            ),
+        ];
+        for (blocked_action, action_name) in actions {
+            let session = ImpersonationSession {
+                session_id: "imp_123".into(),
+                admin_id: "admin-1".into(),
+                target_user_id: "user-1".into(),
+                reason: None,
+                started_at: 0,
+                expires_at: 0,
+                blocked_actions: vec![blocked_action],
+            };
+            let claims = ImpersonationClaims::from_session(&session);
+            let json = serde_json::to_string(&claims).unwrap();
+            let token: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            // Equivalent to the frontend's decoded token.imp_blocked.includes(action).
+            let blocked_buttons = token["imp_blocked"].as_array().unwrap();
+            assert!(
+                blocked_buttons.contains(&serde_json::json!(action_name)),
+                "{action_name}"
+            );
+            assert!(!blocked_buttons.contains(&serde_json::json!("view_profile")));
+
+            // Claim-driven authorization must agree with server-side session checks.
+            let decoded: ImpersonationClaims = serde_json::from_str(&json).unwrap();
+            for action in [action_name, "view_profile"] {
+                assert_eq!(
+                    decoded.imp_blocked.iter().any(|blocked| blocked == action),
+                    session.is_action_blocked(action),
+                    "{action}"
+                );
+            }
+            assert_eq!(decoded.imp_blocked, [action_name]);
+        }
     }
 }
