@@ -29,6 +29,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
+- Stripe 4xx errors no longer expose Stripe's message (for example "No such price…" or test/live
+  mode mismatches) when converted to `TidewayError`. The full error is logged on the
+  `tideway::billing::stripe` target instead. Stripe 404 now maps to `NotFound` (HTTP 404), 429 to
+  `TooManyRequests` (HTTP 429), and other 4xx statuses to `BadRequest` (HTTP 400) with a generic
+  message. `BillingError` itself is unchanged, so handlers that match on it can still read
+  `message`, `code`, and `http_status`.
 - Added `OrganizationManager::transfer_ownership`, which also sets the organization's owner to the
   new owner. `MembershipManager::transfer_ownership` only swapped membership roles and left
   `owner_id` unchanged, so `max_orgs_per_user` kept counting a transferred organization against

@@ -3087,8 +3087,25 @@ mod tests {
                 .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
                 .await
                 .unwrap_err();
-            assert!(err.to_string().contains("Invalid quantity"), "got: {err}");
+            // Stripe's message is logged, not returned to the caller.
+            assert!(!err.to_string().contains("Invalid quantity"), "got: {err}");
+            assert!(matches!(err, crate::error::TidewayError::BadRequest(_)));
             assert_eq!(mock.seen.lock().unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn rate_limited_usage_record_maps_to_too_many_requests() {
+            let replies = (0..4)
+                .map(|_| Reply::Status(429, RATE_LIMITED))
+                .collect::<Vec<_>>();
+            let (base, _mock) = start_mock(replies).await;
+            let client = test_client(&base);
+
+            let err = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap_err();
+            assert_eq!(err.into_response().status(), StatusCode::TOO_MANY_REQUESTS);
         }
     }
 }

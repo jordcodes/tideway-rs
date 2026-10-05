@@ -330,7 +330,27 @@ impl From<BillingError> for crate::error::TidewayError {
                         "Unable to process billing request. Please try again later.".to_string(),
                     )
                 }
-                Some(400..=499) => crate::error::TidewayError::BadRequest(err.to_string()),
+                // Other 4xx messages describe server-side configuration (unknown price IDs,
+                // test/live mode mismatches, ...), so log them and return generic text.
+                Some(status @ 400..=499) => {
+                    tracing::warn!(
+                        target: "tideway::billing::stripe",
+                        error = %err,
+                        "Stripe rejected billing request"
+                    );
+                    match status {
+                        404 => crate::error::TidewayError::NotFound(
+                            "Billing resource not found".to_string(),
+                        ),
+                        429 => crate::error::TidewayError::TooManyRequests(
+                            "Billing provider rate limit exceeded. Please try again later."
+                                .to_string(),
+                        ),
+                        _ => crate::error::TidewayError::BadRequest(
+                            "Unable to process billing request".to_string(),
+                        ),
+                    }
+                }
                 _ => crate::error::TidewayError::Internal(err.to_string()),
             },
         }
@@ -423,6 +443,44 @@ mod tests {
             assert!(err.is_server_error());
             assert!(!err.is_retryable());
         }
+    }
+
+    fn stripe_error(status: u16, message: &str) -> BillingError {
+        BillingError::StripeApiError {
+            operation: "create_checkout_session".to_string(),
+            message: message.to_string(),
+            code: Some("resource_missing".to_string()),
+            http_status: Some(status),
+        }
+    }
+
+    #[test]
+    fn stripe_client_errors_do_not_leak_stripe_message() {
+        let raw = "No such price: 'price_live_123'; a similar object exists in live mode";
+        for status in [400, 402, 404, 408, 409, 429] {
+            let tideway_err: crate::error::TidewayError = stripe_error(status, raw).into();
+            let text = tideway_err.to_string();
+            assert!(
+                !text.contains("price_live_123") && !text.contains("live mode"),
+                "HTTP {status} leaked Stripe message: {text}"
+            );
+            assert!(!text.contains("resource_missing"), "HTTP {status}: {text}");
+        }
+    }
+
+    #[test]
+    fn stripe_client_errors_map_to_matching_statuses() {
+        let err: crate::error::TidewayError = stripe_error(404, "No such customer").into();
+        assert!(matches!(err, crate::error::TidewayError::NotFound(_)));
+
+        let err: crate::error::TidewayError = stripe_error(429, "Too many requests").into();
+        assert!(matches!(
+            err,
+            crate::error::TidewayError::TooManyRequests(_)
+        ));
+
+        let err: crate::error::TidewayError = stripe_error(400, "No such price").into();
+        assert!(matches!(err, crate::error::TidewayError::BadRequest(_)));
     }
 
     #[test]
