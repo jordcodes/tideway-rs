@@ -11,6 +11,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Security
 
+- `LoginFlow::verify_mfa` now rejects verification while the account is locked. Previously, MFA
+  tokens minted before a lockout could keep guessing codes and complete login after the account
+  locked.
 - `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize`. When a handler bound
   either type directly to a request body, the client controlled the acting admin (`admin_id`) or
   the account being deleted (`user_id`). That allowed impersonation through any admin's identity,

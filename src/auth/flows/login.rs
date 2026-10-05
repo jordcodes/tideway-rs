@@ -8,6 +8,7 @@
 //! - `auth.login.mfa_required` - MFA challenge issued
 //! - `auth.login.rate_limited` - Login blocked due to IP rate limiting
 //! - `auth.mfa.failed` - Failed MFA verification
+//! - `auth.mfa.locked` - MFA verification blocked due to account lockout
 //! - `auth.mfa.backup_used` - Backup code consumed
 //! - `auth.password.rehashed` - Password hash upgraded
 
@@ -429,6 +430,21 @@ where
             .await?
             .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))?;
 
+        // Check if locked - MFA tokens minted before a lockout must not bypass it
+        if let Some(until) = self.user_store.is_locked(&user).await?
+            && until > SystemTime::now()
+        {
+            tracing::warn!(
+                target: "auth.mfa.locked",
+                user_id = %user_id,
+                locked_until = ?until,
+                "MFA verification blocked: account locked"
+            );
+            return Ok(LoginResponse::error(
+                "Account temporarily locked. Try again later.",
+            ));
+        }
+
         #[cfg(feature = "auth-mfa")]
         {
             self.verify_mfa_code(&user, &req.code, false).await
@@ -589,6 +605,8 @@ mod tests {
         last_totp_step: Option<u64>,
     }
 
+    const TEST_MAX_FAILED_ATTEMPTS: u32 = 5;
+
     struct TestUserStore {
         users: RwLock<HashMap<String, TestUser>>,
     }
@@ -660,6 +678,9 @@ mod tests {
             let mut users = self.users.write().unwrap();
             if let Some(u) = users.get_mut(&user.email) {
                 u.failed_attempts += 1;
+                if u.failed_attempts >= TEST_MAX_FAILED_ATTEMPTS {
+                    u.locked_until = Some(SystemTime::now() + Duration::from_secs(900));
+                }
             }
             Ok(())
         }
@@ -1181,6 +1202,80 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+
+    #[cfg(feature = "auth-mfa")]
+    #[tokio::test]
+    async fn test_verify_mfa_blocked_when_account_locked() {
+        use crate::auth::mfa::{TotpConfig, TotpManager};
+
+        let user_store = TestUserStore::new();
+        let totp = TotpManager::new(TotpConfig::default());
+        let setup = totp.generate_setup("test@example.com").unwrap();
+
+        let mut user = create_test_user("test@example.com", "password123", true);
+        user.mfa_enabled = true;
+        user.totp_secret = Some(setup.secret.clone());
+        user_store.add_user(user);
+
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let token_issuer = TestTokenIssuer;
+        let config = LoginFlowConfig::new("TestApp");
+
+        let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
+
+        // Mint more MFA tokens than the lockout threshold before any failures.
+        let mut tokens = Vec::new();
+        for _ in 0..=TEST_MAX_FAILED_ATTEMPTS {
+            let response = flow
+                .login(LoginRequest {
+                    email: "test@example.com".to_string(),
+                    password: "password123".to_string(),
+                    remember_me: false,
+                    mfa_code: None,
+                })
+                .await
+                .unwrap();
+            tokens.push(get_mfa_token(&response).unwrap());
+        }
+
+        // Brute-force the code until the account locks.
+        let last_token = tokens.pop().unwrap();
+        for mfa_token in tokens {
+            let response = flow
+                .verify_mfa(MfaVerifyRequest {
+                    mfa_token,
+                    code: "000000".to_string(),
+                })
+                .await
+                .unwrap();
+            assert!(is_error(&response));
+        }
+
+        {
+            let users = flow.user_store.users.read().unwrap();
+            let user = users.get("test@example.com").unwrap();
+            assert_eq!(user.failed_attempts, TEST_MAX_FAILED_ATTEMPTS);
+            assert!(user.locked_until.is_some());
+        }
+
+        // A previously minted token with a valid code must not bypass the lockout.
+        let code = totp
+            .generate_current(&setup.secret, "test@example.com")
+            .unwrap();
+        let response = flow
+            .verify_mfa(MfaVerifyRequest {
+                mfa_token: last_token,
+                code,
+            })
+            .await
+            .unwrap();
+
+        assert!(!is_success(&response));
+        assert_eq!(
+            get_error_message(&response),
+            Some("Account temporarily locked. Try again later.".to_string())
+        );
     }
 
     #[tokio::test]
