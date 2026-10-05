@@ -69,9 +69,11 @@ fn feature_gate_warnings_mode_still_compiles() {
 #[test]
 fn isolated_feature_builds_stay_warning_free() {
     for feature in [
+        "admin",
         "auth",
         "billing",
         "database-sqlx",
+        "jobs",
         "openapi",
         "organizations",
         "websocket",
