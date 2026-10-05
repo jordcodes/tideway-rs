@@ -20,3 +20,6 @@ pub use config::{MetricsConfig, MetricsConfigBuilder};
 pub use handler::metrics_handler;
 #[cfg(feature = "metrics")]
 pub use middleware::build_metrics_layer;
+
+#[cfg(feature = "metrics")]
+pub(crate) use handler::authenticated_metrics_route;

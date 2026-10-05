@@ -2,7 +2,7 @@ use crate::utils::get_env_with_prefix;
 use serde::{Deserialize, Serialize};
 
 /// Metrics configuration for Tideway applications
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct MetricsConfig {
     /// Whether metrics collection is enabled
     #[serde(default = "default_enabled")]
@@ -11,6 +11,24 @@ pub struct MetricsConfig {
     /// Path for the metrics endpoint (default: /metrics)
     #[serde(default = "default_path")]
     pub path: String,
+
+    /// Bearer token required to scrape metrics. Without a nonempty token, no route is exposed.
+    /// Loaded from TIDEWAY_METRICS_BEARER_TOKEN (or METRICS_BEARER_TOKEN).
+    #[serde(default, skip_serializing)]
+    pub bearer_token: Option<String>,
+}
+
+impl std::fmt::Debug for MetricsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MetricsConfig")
+            .field("enabled", &self.enabled)
+            .field("path", &self.path)
+            .field(
+                "bearer_token",
+                &self.bearer_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .finish()
+    }
 }
 
 impl Default for MetricsConfig {
@@ -18,6 +36,7 @@ impl Default for MetricsConfig {
         Self {
             enabled: default_enabled(),
             path: default_path(),
+            bearer_token: None,
         }
     }
 }
@@ -39,6 +58,8 @@ impl MetricsConfig {
         if let Some(path) = get_env_with_prefix("METRICS_PATH") {
             config.path = path;
         }
+
+        config.bearer_token = get_env_with_prefix("METRICS_BEARER_TOKEN");
 
         config
     }
@@ -67,6 +88,12 @@ impl MetricsConfigBuilder {
         self
     }
 
+    /// Require this bearer token for the built-in scrape endpoint.
+    pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
+        self.config.bearer_token = Some(token.into());
+        self
+    }
+
     pub fn build(self) -> MetricsConfig {
         self.config
     }
@@ -89,6 +116,21 @@ fn default_path() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_token_is_not_exposed_in_debug_or_serialization() {
+        let config = MetricsConfig::builder()
+            .bearer_token("scrape-secret")
+            .build();
+        assert!(!format!("{config:?}").contains("scrape-secret"));
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains("scrape-secret")
+        );
+        let old_config: MetricsConfig = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(old_config.bearer_token.is_none());
+    }
 
     #[test]
     fn test_default_config() {

@@ -72,6 +72,14 @@ impl MetricsCollector {
         status: u16,
         duration: std::time::Duration,
     ) {
+        // Extension methods are attacker-controlled. Keep both vectors bounded to the
+        // nine standard HTTP methods plus one shared bucket for all other values.
+        let method = match method {
+            "GET" | "HEAD" | "POST" | "PUT" | "DELETE" | "CONNECT" | "OPTIONS" | "TRACE"
+            | "PATCH" => method,
+            _ => "OTHER",
+        };
+
         // Prefer route templates (MatchedPath) when available; otherwise normalize.
         let normalized_path = if path.contains(':') || path.contains('{') {
             path.to_string()
@@ -124,6 +132,30 @@ fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_standard_method_labels_are_preserved() {
+        let collector = MetricsCollector::new().unwrap();
+        let methods = [
+            "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH",
+        ];
+        for method in methods {
+            collector.record_request(method, "/test", 200, std::time::Duration::ZERO);
+        }
+        for family in collector.registry().gather() {
+            if family.name().starts_with("tideway_http_") {
+                assert_eq!(family.get_metric().len(), methods.len());
+                for metric in family.get_metric() {
+                    let label = metric
+                        .get_label()
+                        .iter()
+                        .find(|l| l.name() == "method")
+                        .unwrap();
+                    assert!(methods.contains(&label.value()));
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_metrics_collector_creation() {
