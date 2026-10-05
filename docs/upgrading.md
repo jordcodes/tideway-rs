@@ -160,6 +160,21 @@ as `duration_secs` (an integer). Code that builds the request structs directly o
 not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
 not affected.
 
+## Unreleased: impersonation opt-out always enforced
+
+`ImpersonationManager::start_impersonation` used to skip `ImpersonationStore::can_be_impersonated`
+whenever `allow_admin_impersonation` was enabled, so users who had opted out could still be
+impersonated. The two checks are now separate:
+
+- Admin targets are detected with `ImpersonationStore::is_admin` and rejected unless
+  `allow_admin_impersonation` is enabled.
+- `can_be_impersonated` is always enforced and should express per-user eligibility only (for
+  example, an opt-out flag). Rejections are logged with reason `target_opted_out`.
+
+If your store returns `false` from `can_be_impersonated` just because the user is an admin, admin
+impersonation stays blocked even with `allow_admin_impersonation(true)`. Remove the admin condition
+from `can_be_impersonated` if you rely on that setting. Stores that never enable it need no changes.
+
 ## Unreleased: organization owners only through ownership transfer
 
 `MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` now

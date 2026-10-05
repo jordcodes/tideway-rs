@@ -53,6 +53,9 @@ pub struct ImpersonationConfig {
     /// Whether to notify the user when impersonation ends.
     pub notify_on_end: bool,
     /// Whether admins can impersonate other admins.
+    ///
+    /// Does not override [`ImpersonationStore::can_be_impersonated`]; users
+    /// who opted out can never be impersonated.
     pub allow_admin_impersonation: bool,
     /// Actions blocked during impersonation.
     pub blocked_actions: Vec<BlockedAction>,
@@ -371,9 +374,12 @@ pub trait ImpersonationStore: Send + Sync {
     /// Check if a user is an admin who can impersonate.
     async fn is_admin(&self, user_id: &str) -> Result<bool>;
 
-    /// Check if a target user can be impersonated.
+    /// Check if a target user allows being impersonated (e.g. has not opted out).
     ///
-    /// Returns false if the user is an admin (unless config allows).
+    /// Always enforced, regardless of
+    /// [`ImpersonationConfig::allow_admin_impersonation`]. Admin targets are
+    /// checked separately via [`is_admin`](Self::is_admin), so do not return
+    /// false here just because the user is an admin.
     async fn can_be_impersonated(&self, user_id: &str) -> Result<bool>;
 
     /// Get the target user's email for notifications.
@@ -489,9 +495,9 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
             return Err(TidewayError::NotFound("Target user not found".into()));
         }
 
-        // Check if target can be impersonated
-        if !self.store.can_be_impersonated(&req.target_user_id).await?
-            && !self.config.allow_admin_impersonation
+        // Check if target is an admin (only allowed when configured)
+        if !self.config.allow_admin_impersonation
+            && self.store.is_admin(&req.target_user_id).await?
         {
             tracing::warn!(
                 target: "auth.impersonation.rejected",
@@ -502,6 +508,20 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
             );
             return Err(TidewayError::Forbidden(
                 "Cannot impersonate admin users".into(),
+            ));
+        }
+
+        // Per-user eligibility (e.g. opt-out) is always enforced
+        if !self.store.can_be_impersonated(&req.target_user_id).await? {
+            tracing::warn!(
+                target: "auth.impersonation.rejected",
+                admin_id = %req.admin_id,
+                target_user_id = %req.target_user_id,
+                reason = "target_opted_out",
+                "Impersonation rejected: target has opted out"
+            );
+            return Err(TidewayError::Forbidden(
+                "User has opted out of impersonation".into(),
             ));
         }
 
@@ -825,7 +845,7 @@ pub mod test {
     #[derive(Clone)]
     struct UserData {
         email: String,
-        is_admin: bool,
+        opted_out: bool,
     }
 
     impl InMemoryImpersonationStore {
@@ -841,7 +861,7 @@ pub mod test {
                 user_id.to_string(),
                 UserData {
                     email: email.to_string(),
-                    is_admin: false,
+                    opted_out: false,
                 },
             );
         }
@@ -852,10 +872,17 @@ pub mod test {
                 user_id.to_string(),
                 UserData {
                     email: email.to_string(),
-                    is_admin: true,
+                    opted_out: false,
                 },
             );
             self.admins.write().unwrap().push(user_id.to_string());
+        }
+
+        /// Mark a user as having opted out of impersonation.
+        pub fn opt_out_user(&self, user_id: &str) {
+            if let Some(user) = self.users.write().unwrap().get_mut(user_id) {
+                user.opted_out = true;
+            }
         }
 
         /// Get notifications sent.
@@ -876,13 +903,13 @@ pub mod test {
         }
 
         async fn can_be_impersonated(&self, user_id: &str) -> Result<bool> {
-            // Regular users can be impersonated, admins cannot by default
+            // Admin targets are gated by the manager via `is_admin`
             Ok(self
                 .users
                 .read()
                 .unwrap()
                 .get(user_id)
-                .map(|u| !u.is_admin)
+                .map(|u| !u.opted_out)
                 .unwrap_or(false))
         }
 
@@ -1080,6 +1107,73 @@ mod tests {
             .start_impersonation(body.into_request("user-1"))
             .await;
         assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_opted_out_user_rejected_even_with_admin_impersonation_allowed() {
+        let store = setup_store();
+        store.opt_out_user("user-1");
+        let config = ImpersonationConfig::default().allow_admin_impersonation(true);
+        let manager = ImpersonationManager::new(store, config);
+
+        let result = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "user-1".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await;
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_opted_out_user_rejected_with_default_config() {
+        let store = setup_store();
+        store.opt_out_user("user-1");
+        let manager = ImpersonationManager::new(store, ImpersonationConfig::default());
+
+        let result = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "user-1".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await;
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_admin_target_rejected_by_default() {
+        let manager = ImpersonationManager::new(setup_store(), ImpersonationConfig::default());
+
+        let result = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "admin-2".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await;
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_admin_target_allowed_when_configured() {
+        let config = ImpersonationConfig::default().allow_admin_impersonation(true);
+        let manager = ImpersonationManager::new(setup_store(), config);
+
+        let session = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "admin-2".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(session.target_user_id, "admin-2");
     }
 
     #[test]

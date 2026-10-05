@@ -1674,7 +1674,7 @@ let config = ImpersonationConfig::new()
     .max_duration(Duration::from_secs(30 * 60))  // 30 minutes
     .notify_user(true)                            // Email user on start
     .notify_on_end(true)                          // Email user on end
-    .allow_admin_impersonation(false)             // Can't impersonate other admins
+    .allow_admin_impersonation(false)             // Can't impersonate other admins (never overrides user opt-out)
     .require_reason(true)                         // Must provide reason
     .blocked_actions(vec![
         BlockedAction::DeleteAccount,
@@ -1695,6 +1695,9 @@ use async_trait::async_trait;
 impl ImpersonationStore for MyStore {
     // Required: Permission checks
     async fn is_admin(&self, user_id: &str) -> Result<bool>;
+    // Per-user eligibility (e.g. opt-out). Always enforced, even with
+    // `allow_admin_impersonation(true)`. Don't return false just because the
+    // user is an admin; admin targets are gated via `is_admin` + config.
     async fn can_be_impersonated(&self, user_id: &str) -> Result<bool>;
     async fn user_exists(&self, user_id: &str) -> Result<bool>;
     async fn get_user_email(&self, user_id: &str) -> Result<Option<String>>;
