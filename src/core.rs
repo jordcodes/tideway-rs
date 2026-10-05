@@ -392,7 +392,7 @@ impl App {
         if let Some(logging_layer) = build_request_logging_layer(&self.config.request_logging) {
             router = router.layer(logging_layer);
         }
-        if self.config.dev.enabled {
+        if self.config.dev.is_dev_mode() {
             let dev_config = Arc::new(self.config.dev.clone());
             router = router.layer(build_dev_error_layer(dev_config.clone()));
             if dev_config.enable_request_dumper {

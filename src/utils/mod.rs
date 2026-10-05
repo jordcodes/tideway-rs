@@ -5,4 +5,4 @@
 pub mod ensure;
 pub mod env;
 
-pub use env::get_env_with_prefix;
+pub use env::{get_env_with_prefix, is_production_like_environment};

@@ -18,6 +18,20 @@ pub fn get_env_with_prefix(key: &str) -> Option<String> {
         .ok()
 }
 
+/// Returns `true` when any of `ENV`, `ENVIRONMENT`, `APP_ENV`, or `TIDEWAY_ENV`
+/// (each with optional `TIDEWAY_` prefix) is set to `prod` or `production`.
+pub fn is_production_like_environment() -> bool {
+    [
+        get_env_with_prefix("ENV"),
+        get_env_with_prefix("ENVIRONMENT"),
+        get_env_with_prefix("APP_ENV"),
+        get_env_with_prefix("TIDEWAY_ENV"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|env_value| matches!(env_value.to_lowercase().as_str(), "prod" | "production"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,4 +1,4 @@
-use crate::utils::get_env_with_prefix;
+use crate::utils::{get_env_with_prefix, is_production_like_environment};
 use serde::{Deserialize, Serialize};
 
 /// X-Frame-Options header value
@@ -173,18 +173,6 @@ impl SecurityConfig {
 
 fn parse_bool_with_default(value: &str, default: bool) -> bool {
     value.parse().unwrap_or(default)
-}
-
-fn is_production_like_environment() -> bool {
-    [
-        get_env_with_prefix("ENV"),
-        get_env_with_prefix("ENVIRONMENT"),
-        get_env_with_prefix("APP_ENV"),
-        get_env_with_prefix("TIDEWAY_ENV"),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|env_value| matches!(env_value.to_lowercase().as_str(), "prod" | "production"))
 }
 
 /// Builder for SecurityConfig
