@@ -4,6 +4,7 @@
 
 use super::connection::Connection;
 use super::message::Message;
+use super::upgrade::UpgradeRequest;
 use crate::app::AppContext;
 use crate::error::Result;
 use async_trait::async_trait;
@@ -67,10 +68,16 @@ pub trait WebSocketHandler: Send + Sync + 'static {
 
     /// Optional: Validate connection before accepting
     ///
-    /// This is called during the WebSocket upgrade, before `on_connect`.
-    /// Return an error to reject the connection (e.g., authentication failure).
-    /// By default, all connections are accepted.
-    async fn on_upgrade(&self, _ctx: &AppContext) -> Result<()> {
+    /// This is called with the HTTP upgrade request, before the protocol switch and
+    /// before `on_connect`. Read headers, cookies, or the query string from `req` to
+    /// authenticate the client. Return an error to reject the connection; the error is
+    /// sent as the HTTP response (e.g. `TidewayError::unauthorized` → 401) and no
+    /// WebSocket is opened. A user ID or metadata set on `req` is copied to the
+    /// `Connection`. By default, all connections are accepted.
+    ///
+    /// Request headers remain available to later hooks via `Connection::headers`
+    /// and `Connection::cookie`.
+    async fn on_upgrade(&self, _req: &mut UpgradeRequest, _ctx: &AppContext) -> Result<()> {
         Ok(())
     }
 }

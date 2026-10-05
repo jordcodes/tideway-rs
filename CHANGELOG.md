@@ -78,6 +78,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Fixed
 
+- `WebSocketHandler::on_upgrade` is now called before a WebSocket upgrade is accepted. It was
+  never called before, so overriding it to authenticate connections had no effect. The hook now
+  takes an `UpgradeRequest` with the request headers, cookies, and URI
+  (`on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext)`). An error rejects the
+  upgrade and is sent as the HTTP response. A user ID or metadata set on the request is copied
+  to the `Connection`, and `Connection` now exposes `headers`, `header`, `cookie`, and `uri`.
+  Update any `on_upgrade` overrides to the new signature.
 - Concurrent first checkouts for the same billable entity no longer create duplicate Stripe
   customers. `CustomerManager::get_or_create_customer` keeps the first customer link and deletes
   the redundant Stripe customer it created.
@@ -173,6 +180,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - The organization owner fix has no signature changes, and `invitation_grants_owner` has a default,
   so custom `InvitationStore` implementations still compile. `add_member` and `invite` with an
   owner role now return `InsufficientPermission` for every actor, including owners.
+- `WebSocketHandler::on_upgrade` now takes `&mut UpgradeRequest` before `&AppContext`. Handlers
+  that do not override it still compile unchanged. `Connection` gains accessors only, and its
+  public constructor `Connection::channel` is unchanged.
 
 ### Migration Notes
 
@@ -193,6 +203,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - **Breaking:** code that constructs `BillingEvent::OneTimeCheckoutCompleted`, or destructures it
   without `..`, must handle the new `payment_intent_id` field.
 - **Breaking:** exhaustive matches on `CreditTransactionKind` must add a wildcard arm.
+- **Breaking:** `WebSocketHandler::on_upgrade` overrides must use the new signature
+  `on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext)`. The hook now runs on every
+  upgrade, so rejection logic that was previously dead code takes effect. See `docs/upgrading.md`.
 - Before deploying an app that uses `CreditTopUpEventSink`, check Stripe for failed top-up
   webhooks waiting to be retried. If one was already granted before the upgrade, its retry is
   granted again under the new key. Let retries finish first, or reverse the duplicate grant.
