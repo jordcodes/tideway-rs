@@ -597,4 +597,124 @@ mod websocket_tests {
         assert_eq!(String::from_utf8(payload).unwrap(), "alice|dark|room=lobby");
         assert_eq!(manager.connection_count(), 1);
     }
+
+    #[derive(Default)]
+    struct DisconnectCounter(std::sync::atomic::AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl crate::websocket::WebSocketHandler for DisconnectCounter {
+        async fn on_connect(
+            &self,
+            _conn: &mut Connection,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn on_message(
+            &self,
+            _conn: &mut Connection,
+            _msg: Message,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn on_disconnect(&self, _conn: &mut Connection, _ctx: &crate::AppContext) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    type ClientInbound = futures::channel::mpsc::UnboundedReceiver<axum::extract::ws::Message>;
+    type ClientOutbound = futures::channel::mpsc::UnboundedSender<
+        std::result::Result<axum::extract::ws::Message, axum::Error>,
+    >;
+
+    /// Run a connection over in-memory channels with a fast heartbeat.
+    fn spawn_test_connection(
+        handler: Arc<DisconnectCounter>,
+        manager: Arc<ConnectionManager>,
+    ) -> (tokio::task::JoinHandle<()>, ClientInbound, ClientOutbound) {
+        use crate::websocket::extractor::{Heartbeat, run_connection};
+        use futures::SinkExt;
+
+        let (server_tx, client_rx) = futures::channel::mpsc::unbounded();
+        let (client_tx, server_rx) = futures::channel::mpsc::unbounded();
+        let ctx = Arc::new(
+            crate::AppContext::builder()
+                .with_websocket_manager(manager.clone())
+                .build(),
+        );
+        let request = crate::websocket::UpgradeRequest::new(
+            axum::http::HeaderMap::new(),
+            "/ws".parse().unwrap(),
+        );
+        let heartbeat = Heartbeat {
+            interval: std::time::Duration::from_millis(10),
+            timeout: std::time::Duration::from_millis(50),
+        };
+        let task = tokio::spawn(run_connection(
+            server_tx.sink_map_err(|_| ()),
+            server_rx,
+            request,
+            handler,
+            manager,
+            ctx,
+            heartbeat,
+        ));
+        (task, client_rx, client_tx)
+    }
+
+    #[tokio::test]
+    async fn test_on_disconnect_runs_on_heartbeat_timeout() {
+        use std::sync::atomic::Ordering;
+
+        let manager = Arc::new(ConnectionManager::new());
+        let handler = Arc::new(DisconnectCounter::default());
+        // Keep both client ends open and never pong, so only the heartbeat can end it.
+        let (task, _client_rx, _client_tx) =
+            spawn_test_connection(handler.clone(), manager.clone());
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("heartbeat timeout must end the connection")
+            .unwrap();
+        assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+        assert_eq!(manager.connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_on_disconnect_runs_when_send_fails() {
+        use std::sync::atomic::Ordering;
+
+        let manager = Arc::new(ConnectionManager::new());
+        let handler = Arc::new(DisconnectCounter::default());
+        // Dropping the client's inbound side makes the first ping send fail.
+        let (task, client_rx, _client_tx) = spawn_test_connection(handler.clone(), manager.clone());
+        drop(client_rx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("send failure must end the connection")
+            .unwrap();
+        assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+        assert_eq!(manager.connection_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_on_disconnect_runs_once_on_client_close() {
+        use std::sync::atomic::Ordering;
+
+        let manager = Arc::new(ConnectionManager::new());
+        let handler = Arc::new(DisconnectCounter::default());
+        let (task, _client_rx, client_tx) = spawn_test_connection(handler.clone(), manager.clone());
+        drop(client_tx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("client close must end the connection")
+            .unwrap();
+        assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+        assert_eq!(manager.connection_count(), 0);
+    }
 }
