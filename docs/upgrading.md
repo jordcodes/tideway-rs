@@ -356,6 +356,26 @@ existing TTL. If several apps or caches share one Redis database, give each a di
 with `.with_prefix("myapp:cache:")`. An empty prefix is not supported: `clear()` returns an
 error rather than deleting every key in the database.
 
+> **Warning: stale reads during rolling deploys.** While 0.8.x and 0.9.0 pods share one Redis
+> database, each version reads and writes only its own keys: 0.8.x uses `user:1`, 0.9.0 uses
+> `cache:user:1`. `delete()` and `clear()` remove keys only in the calling version's namespace.
+> When a pod on one version invalidates an entry after a write, the other version's copy is not
+> removed, and pods on that version keep serving the old value until its TTL expires. The same
+> happens whenever you change the prefix passed to `with_prefix`.
+>
+> The stale window can last as long as the longest TTL you set (the cache's default TTL or an
+> explicit `ttl` passed to `set`), counted from the last write on the old version. Plan for it
+> in one of these ways:
+>
+> - Accept it if serving data up to one TTL old is acceptable for every cached value.
+> - Lower the TTLs on 0.8.x and let entries written with the old TTLs expire before starting
+>   the rollout. Raise them again once every pod runs 0.9.0.
+> - Avoid mixed versions: use a recreate or blue/green deploy, or point 0.9.0 at a separate
+>   Redis database.
+>
+> Once all pods run 0.9.0, invalidation works normally again. Keys left behind without the
+> prefix are never read and expire on their TTL.
+
 ## 0.8.x to 0.9.0: refund lookups scoped to the billable entity
 
 `SecureRefundManager::get_refund` returned any refund by ID, so a caller who knew another

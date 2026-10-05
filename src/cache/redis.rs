@@ -261,6 +261,31 @@ mod tests {
         assert_eq!(value, None);
     }
 
+    /// Documents the rolling-deploy caveat in `docs/upgrading.md`: a delete under one prefix
+    /// does not invalidate the same key cached under another prefix.
+    #[tokio::test]
+    #[ignore] // Requires Redis
+    async fn test_redis_cache_delete_does_not_cross_prefixes() {
+        // An empty prefix stores keys the way 0.8.x did.
+        let old = RedisCache::new("redis://127.0.0.1/", Duration::from_secs(60))
+            .unwrap()
+            .with_prefix("");
+        let new = RedisCache::new("redis://127.0.0.1/", Duration::from_secs(60)).unwrap();
+        let key = "tideway-test-rolling-deploy";
+
+        old.set(key, &"v1", None).await.unwrap();
+        new.set(key, &"v1", None).await.unwrap();
+
+        new.delete(key).await.unwrap();
+
+        let fresh: Option<String> = new.get(key).await.unwrap();
+        assert_eq!(fresh, None);
+        let stale: Option<String> = old.get(key).await.unwrap();
+        assert_eq!(stale.as_deref(), Some("v1"));
+
+        old.delete(key).await.unwrap();
+    }
+
     #[tokio::test]
     #[ignore] // Requires Redis
     async fn test_redis_cache_clear_keeps_other_keys() {
