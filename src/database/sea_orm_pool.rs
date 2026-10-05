@@ -1,9 +1,9 @@
 use crate::database::config::redact_database_url;
-use crate::database::connection::connect_options;
+use crate::database::connection::connect;
 use crate::error::{Result, TidewayError};
 use crate::traits::database::{DatabaseConnection, DatabasePool};
 use async_trait::async_trait;
-use sea_orm::{Database, DatabaseConnection as SeaOrmConnection};
+use sea_orm::DatabaseConnection as SeaOrmConnection;
 use std::sync::Arc;
 
 /// Wrapper around SeaORM connection to implement DatabaseConnection trait
@@ -90,11 +90,7 @@ impl SeaOrmPool {
             ));
         }
 
-        let opt = connect_options(config);
-
-        let conn = Database::connect(opt)
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to connect to database: {}", e)))?;
+        let conn = connect(config).await?;
 
         tracing::info!(
             "Database connected with {} max connections",
