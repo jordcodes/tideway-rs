@@ -52,6 +52,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   sessions, so paying in two tabs can no longer create two subscriptions.
 - A webhook for a second live subscription no longer silently replaces the stored subscription.
   Tideway keeps the stored one and emits `BillingEvent::DuplicateSubscription`.
+- A `customer.subscription.updated` webhook that Stripe delivers after
+  `customer.subscription.deleted` no longer recreates the deleted subscription as active (or
+  overwrites the entity's newer subscription). `SubscriptionManager::delete_subscription` now
+  records the deletion, and later syncs of that subscription are skipped. Only deletions processed
+  after upgrading are recorded; existing stored subscriptions are unchanged. Applications that
+  call `delete_subscription` directly (for example to clear a cached row) can no longer restore
+  that subscription with `sync_from_stripe`; its later syncs return
+  `SubscriptionSyncOutcome::Deleted`.
 - Stripe webhook verification now checks every `v1` signature in the `Stripe-Signature` header.
   It previously kept only the last one, so webhooks were rejected during a Stripe secret roll.
 - `LiveStripeClient::create_usage_record` sends one `Idempotency-Key` across all retry attempts,
@@ -75,6 +83,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   Custom clients inherit a no-op default.
 - `BillingEvent::DuplicateSubscription`, plus `SubscriptionManager::sync_from_stripe_checked`
   and `SubscriptionSyncOutcome` for callers that sync subscriptions themselves.
+- `SubscriptionSyncOutcome::Deleted`, plus `BillingStore::mark_subscription_deleted` and
+  `BillingStore::is_subscription_deleted`. The default implementations store a
+  `tideway:subscription_deleted:<id>` marker in processed-event storage, so no migration is
+  needed. `cleanup_old_events` also removes these markers, so keep its retention longer than
+  Stripe's webhook retry window (about three days).
 - `SubscriptionManager::cancel_duplicate_subscription` immediately cancels a reported duplicate.
   It never cancels the stored subscription or another entity's subscription, and does not refund.
 

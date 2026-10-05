@@ -310,6 +310,17 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 subscription: sub_data,
             },
             SubscriptionSyncOutcome::Saved { .. } => lifecycle_event,
+            SubscriptionSyncOutcome::Deleted {
+                stripe_subscription_id,
+            } => {
+                tracing::info!(
+                    target: "tideway::billing",
+                    event_id = %event.id,
+                    subscription_id = %stripe_subscription_id,
+                    "ignoring late webhook for a deleted Stripe subscription"
+                );
+                return Ok(WebhookOutcome::Processed);
+            }
         };
         self.event_sink.handle(&lifecycle_event).await?;
 
@@ -1152,6 +1163,98 @@ mod tests {
                 && subscription.id == "sub_second"
         ));
         assert_eq!(events[1].kind(), "duplicate_subscription");
+    }
+
+    fn subscription_event(event_id: &str, event_type: &str, subscription_id: &str) -> WebhookEvent {
+        let mut event = subscription_created_event(event_id, subscription_id);
+        event.event_type = event_type.to_string();
+        event
+    }
+
+    #[tokio::test]
+    async fn late_subscription_update_does_not_resurrect_deleted_subscription() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+
+        handler
+            .handle_event(subscription_created_event("evt_created", "sub_late"))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_event(
+                "evt_deleted",
+                "customer.subscription.deleted",
+                "sub_late",
+            ))
+            .await
+            .unwrap();
+        assert!(store.get_subscription("org-1").await.unwrap().is_none());
+
+        // Stripe delivers an older `updated` snapshot (still active) after the deletion.
+        assert_eq!(
+            handler
+                .handle_event(subscription_event(
+                    "evt_late_update",
+                    "customer.subscription.updated",
+                    "sub_late",
+                ))
+                .await
+                .unwrap(),
+            WebhookOutcome::Processed
+        );
+
+        assert!(
+            store.get_subscription("org-1").await.unwrap().is_none(),
+            "a late update must not recreate a deleted subscription"
+        );
+        let kinds: Vec<_> = sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.kind())
+            .collect();
+        assert_eq!(kinds, ["subscription_created", "subscription_deleted"]);
+    }
+
+    #[tokio::test]
+    async fn late_update_for_deleted_subscription_does_not_replace_new_subscription() {
+        let store = InMemoryBillingStore::new();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans());
+
+        handler
+            .handle_event(subscription_created_event("evt_old_created", "sub_old"))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_event(
+                "evt_old_deleted",
+                "customer.subscription.deleted",
+                "sub_old",
+            ))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_created_event("evt_new_created", "sub_new"))
+            .await
+            .unwrap();
+        let mut new_sub = store.get_subscription("org-1").await.unwrap().unwrap();
+        new_sub.cancel_at_period_end = true;
+        store.save_subscription("org-1", &new_sub).await.unwrap();
+
+        handler
+            .handle_event(subscription_event(
+                "evt_old_late_update",
+                "customer.subscription.updated",
+                "sub_old",
+            ))
+            .await
+            .unwrap();
+
+        let stored = store.get_subscription("org-1").await.unwrap().unwrap();
+        assert_eq!(stored.stripe_subscription_id, "sub_new");
     }
 
     #[tokio::test]
