@@ -391,6 +391,18 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   Code that used `add_member` to create co-owners must use `transfer_ownership` instead. See
   `docs/upgrading.md`.
 
+## [tideway-cli 0.9.0] - Unreleased
+
+### Changed
+
+- The CLI is now versioned with the framework: tideway-cli 0.9.0 follows 0.1.48 and is released
+  alongside Tideway 0.9.0. Newly generated applications use Tideway 0.9.0.
+
+### Migration Notes
+
+- Install with `cargo install tideway-cli --version 0.9.0 --locked`, then run
+  `tideway --json doctor --upgrade` before updating each application.
+
 ## [tideway-cli 0.1.48] - 2026-08-04
 
 > **Existing applications:** install this CLI and run `tideway --json doctor --upgrade` before

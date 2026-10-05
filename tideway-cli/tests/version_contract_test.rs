@@ -3,6 +3,8 @@
 //! Workspace builds read the framework version from the root `Cargo.toml`, while the published
 //! CLI falls back to `package.metadata.tideway_version`. If they drift, the published CLI
 //! scaffolds apps against a different (possibly semver-incompatible) Tideway release.
+//!
+//! Since 0.9.0 the CLI is versioned with the framework, so its package version must match too.
 
 use std::path::Path;
 
@@ -34,4 +36,17 @@ fn cli_metadata_tideway_version_matches_framework_version() {
         "tideway-cli `package.metadata.tideway_version` must match the framework version"
     );
     assert_eq!(tideway_cli::TIDEWAY_VERSION, framework_version);
+}
+
+#[test]
+fn cli_package_version_matches_framework_version() {
+    let cli_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let framework = read_manifest(&cli_dir.join("../Cargo.toml"));
+    let framework_version = str_at(&framework, &["package", "version"]);
+
+    assert_eq!(
+        env!("CARGO_PKG_VERSION"),
+        framework_version,
+        "tideway-cli is released alongside the framework and must share its version"
+    );
 }
