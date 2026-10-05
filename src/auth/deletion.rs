@@ -15,16 +15,15 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use tideway::auth::deletion::{AccountDeletionFlow, DeletionConfig, DeletionRequest};
+//! use tideway::auth::deletion::{AccountDeletionFlow, DeletionConfig, DeletionRequestBody};
 //!
 //! let flow = AccountDeletionFlow::new(store, DeletionConfig::default());
 //!
-//! // Request account deletion (with password verification)
-//! flow.request_deletion(DeletionRequest {
-//!     user_id: "user-123".to_string(),
-//!     password: "current-password".to_string(),
-//!     reason: Some("No longer using the service".to_string()),
-//! }).await?;
+//! // In a handler: the user ID comes from the authenticated session, and the
+//! // client body only carries the password and reason.
+//! async fn delete_account(user: AuthUser, Json(body): Json<DeletionRequestBody>) -> Result<_> {
+//!     flow.request_deletion(body.into_request(user.id)).await
+//! }
 //! ```
 
 use crate::error::{Result, TidewayError};
@@ -121,7 +120,11 @@ impl DeletionConfig {
 }
 
 /// Request to delete an account.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// Intentionally not `Deserialize`: `user_id` identifies the account being
+/// deleted and must come from the authenticated request context, never from
+/// client input. Deserialize request bodies into [`DeletionRequestBody`] instead.
+#[derive(Debug, Clone)]
 pub struct DeletionRequest {
     /// The user's ID.
     pub user_id: String,
@@ -129,6 +132,32 @@ pub struct DeletionRequest {
     pub password: Option<String>,
     /// Optional reason for deletion (for analytics).
     pub reason: Option<String>,
+}
+
+/// Client-supplied body for requesting account deletion.
+///
+/// Contains no user ID; pair it with the authenticated user's ID via
+/// [`DeletionRequestBody::into_request`]. Unknown fields (such as a smuggled
+/// `user_id`) are rejected.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeletionRequestBody {
+    /// The user's current password (for verification).
+    pub password: Option<String>,
+    /// Optional reason for deletion (for analytics).
+    pub reason: Option<String>,
+}
+
+impl DeletionRequestBody {
+    /// Build a [`DeletionRequest`] for the authenticated user.
+    #[must_use]
+    pub fn into_request(self, user_id: impl Into<String>) -> DeletionRequest {
+        DeletionRequest {
+            user_id: user_id.into(),
+            password: self.password,
+            reason: self.reason,
+        }
+    }
 }
 
 /// Result of a deletion request.
@@ -798,6 +827,46 @@ mod tests {
             let _ = password;
             "hash".to_string()
         }
+    }
+
+    // Autoref probe: the inherent method wins only when `T: DeserializeOwned`.
+    struct DeserializeProbe<T>(std::marker::PhantomData<T>);
+    impl<T: serde::de::DeserializeOwned> DeserializeProbe<T> {
+        // Only selected if `Deserialize` is reintroduced, which fails the test.
+        #[allow(dead_code)]
+        fn is_deserializable(&self) -> bool {
+            true
+        }
+    }
+    trait NotDeserializable {
+        fn is_deserializable(&self) -> bool {
+            false
+        }
+    }
+    impl<T> NotDeserializable for DeserializeProbe<T> {}
+
+    #[test]
+    fn test_deletion_request_is_not_deserializable() {
+        // user_id is the acting user and must come from authenticated context.
+        assert!(!DeserializeProbe::<DeletionRequest>(std::marker::PhantomData).is_deserializable());
+    }
+
+    #[test]
+    fn test_request_body_rejects_client_user_id() {
+        let err =
+            serde_json::from_str::<DeletionRequestBody>(r#"{"user_id":"victim","password":"pw"}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("user_id"));
+    }
+
+    #[test]
+    fn test_request_body_uses_authenticated_user_id() {
+        let body: DeletionRequestBody =
+            serde_json::from_str(r#"{"password":"pw","reason":"bye"}"#).unwrap();
+        let req = body.into_request("user-1");
+        assert_eq!(req.user_id, "user-1");
+        assert_eq!(req.password.as_deref(), Some("pw"));
+        assert_eq!(req.reason.as_deref(), Some("bye"));
     }
 
     #[test]
