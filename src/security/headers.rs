@@ -2,9 +2,10 @@ use super::config::{ReferrerPolicy, SecurityConfig, XFrameOptions};
 use axum::body::Body;
 use axum::{
     extract::Request,
-    http::{HeaderValue, Response},
+    http::{HeaderMap, HeaderValue, Response},
 };
 use futures::future::BoxFuture;
+use std::sync::Arc;
 use tower::Service;
 
 /// Build a Tower layer that adds security headers to responses
@@ -14,14 +15,14 @@ pub fn build_security_headers_layer(config: &SecurityConfig) -> Option<SecurityH
     }
 
     Some(SecurityHeadersLayer {
-        config: config.clone(),
+        headers: Arc::new(build_security_headers(config)),
     })
 }
 
 /// Tower layer that adds security headers
 #[derive(Clone)]
 pub struct SecurityHeadersLayer {
-    config: SecurityConfig,
+    headers: Arc<HeaderMap>,
 }
 
 impl<S> tower::Layer<S> for SecurityHeadersLayer {
@@ -30,7 +31,7 @@ impl<S> tower::Layer<S> for SecurityHeadersLayer {
     fn layer(&self, inner: S) -> Self::Service {
         SecurityHeadersService {
             inner,
-            config: self.config.clone(),
+            headers: self.headers.clone(),
         }
     }
 }
@@ -39,7 +40,7 @@ impl<S> tower::Layer<S> for SecurityHeadersLayer {
 #[derive(Clone)]
 pub struct SecurityHeadersService<S> {
     inner: S,
-    config: SecurityConfig,
+    headers: Arc<HeaderMap>,
 }
 
 impl<S> Service<Request> for SecurityHeadersService<S>
@@ -59,19 +60,21 @@ where
     }
 
     fn call(&mut self, req: Request) -> Self::Future {
-        let config = self.config.clone();
+        let headers = self.headers.clone();
         let fut = self.inner.call(req);
 
         Box::pin(async move {
             let mut response = fut.await?;
-            add_security_headers(&mut response, &config);
+            for (name, value) in headers.iter() {
+                response.headers_mut().insert(name.clone(), value.clone());
+            }
             Ok(response)
         })
     }
 }
 
-fn add_security_headers<B>(response: &mut Response<B>, config: &SecurityConfig) {
-    let headers = response.headers_mut();
+fn build_security_headers(config: &SecurityConfig) -> HeaderMap {
+    let mut headers = HeaderMap::new();
 
     // HSTS
     if config.hsts_max_age > 0 {
@@ -135,12 +138,22 @@ fn add_security_headers<B>(response: &mut Response<B>, config: &SecurityConfig) 
     {
         headers.insert("permissions-policy", header);
     }
+    headers
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::StatusCode;
+
+    #[test]
+    fn layer_and_services_share_prebuilt_headers() {
+        use tower::Layer;
+        let layer = build_security_headers_layer(&SecurityConfig::default()).unwrap();
+        let service = layer.layer(());
+        let clone = service.clone();
+        assert!(Arc::ptr_eq(&layer.headers, &service.headers));
+        assert!(Arc::ptr_eq(&service.headers, &clone.headers));
+    }
 
     #[test]
     fn test_disabled_security() {
@@ -160,12 +173,8 @@ mod tests {
             hsts_include_subdomains: true,
             ..Default::default()
         };
-        let mut response = Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::empty())
-            .unwrap();
-        add_security_headers(&mut response, &config);
-        assert!(response.headers().contains_key("strict-transport-security"));
+        let headers = build_security_headers(&config);
+        assert!(headers.contains_key("strict-transport-security"));
     }
 
     #[test]
@@ -175,13 +184,9 @@ mod tests {
             nosniff: true,
             ..Default::default()
         };
-        let mut response = Response::builder()
-            .status(StatusCode::OK)
-            .body(Body::empty())
-            .unwrap();
-        add_security_headers(&mut response, &config);
+        let headers = build_security_headers(&config);
         assert_eq!(
-            response.headers().get("x-content-type-options"),
+            headers.get("x-content-type-options"),
             Some(&HeaderValue::from_static("nosniff"))
         );
     }
