@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "development-tools"]
 rust-version = "1.88"
 
 [package.metadata]
-tideway_version = "0.8.0"
+tideway_version = "0.9.0"
 
 [[bin]]
 name = "tideway"

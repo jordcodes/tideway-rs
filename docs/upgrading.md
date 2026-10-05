@@ -88,7 +88,64 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
-## Unreleased: middleware on merged routers
+## 0.8.x to 0.9.0: breaking changes
+
+> **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update. Applications
+> using the APIs below no longer compile, so `cargo update` leaves a `^0.8` requirement on 0.8.x.
+> Change the dependency to `tideway = "0.9.0"` and fix the compile errors as described here.
+
+| Change | Fix |
+| --- | --- |
+| `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize` | Deserialize the `*Body` types; see [request bodies](#08x-to-090-impersonation-and-deletion-request-bodies) |
+| `WebSocketHandler::on_upgrade` takes `&mut UpgradeRequest` | Update overrides; see [WebSocket upgrade authentication](#08x-to-090-websocket-upgrade-authentication) |
+| `tideway::prelude` exports `DatabaseConnectionTrait` instead of `DatabaseConnection` | See [prelude database trait](#08x-to-090-prelude-database-trait) |
+| `CachedInvoiceManager` returns `Arc<InvoiceList>` and `Option<Arc<Invoice>>` | See [shared cached invoices](#08x-to-090-shared-cached-invoices) |
+| `SecureRefundManager::get_refund` takes the billable ID | See [refund lookups](#08x-to-090-refund-lookups-scoped-to-the-billable-entity) |
+| `BillingEvent::OneTimeCheckoutCompleted` field, `CreditTransactionKind` `#[non_exhaustive]`, `credits-seaorm` migration | See [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes) |
+| `JobsConfig` has a new `shutdown_timeout_seconds` field | Set it in struct literals or use `..Default::default()`; see [bounded job shutdown](#08x-to-090-bounded-job-shutdown) |
+
+The remaining 0.9.0 sections below describe behavior changes that need review but no code change.
+
+## 0.8.x to 0.9.0: prelude database trait
+
+`tideway::prelude` re-exports the database trait as `DatabaseConnectionTrait`, so a glob import of
+the prelude no longer collides with SeaORM's `DatabaseConnection` struct. Code that names the
+trait through the prelude must change:
+
+```rust,ignore
+// Before
+use tideway::prelude::DatabaseConnection;
+
+// After
+use tideway::prelude::DatabaseConnectionTrait;
+// or
+use tideway::DatabaseConnection;
+```
+
+The trait itself and its `tideway::DatabaseConnection` and `tideway::database` paths are unchanged.
+
+## 0.8.x to 0.9.0: shared cached invoices
+
+`CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>`, and
+`CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>`. Cache hits share the
+cached value instead of copying it, and a returned handle stays valid after invalidation.
+
+```rust,ignore
+// Before
+let invoices: InvoiceList = manager.list_invoices("org_123", params).await?;
+for invoice in invoices.invoices { /* owned Invoice */ }
+
+// After
+let invoices = manager.list_invoices("org_123", params).await?;
+for invoice in &invoices.invoices { /* &Invoice */ }
+let owned: InvoiceList = (*invoices).clone(); // only when ownership is required
+```
+
+To serialize a shared list, pass `invoices.as_ref()` to the serializer. Calls through the
+`InvoiceOperations` trait still return owned values and need no change. See
+[Billing](billing.md#cached-invoices).
+
+## 0.8.x to 0.9.0: middleware on merged routers
 
 Routes added with `App::merge_router` now pass through Tideway's middleware stack in `serve()`,
 `into_router_with_middleware()`, and `into_make_service_with_connect_info()`. Before this change,
@@ -132,7 +189,7 @@ Before deploying:
 Rollback: downgrading restores the old behavior, where merged routes bypass the middleware stack.
 No data or schema changes are involved.
 
-## Unreleased: impersonation and deletion request bodies
+## 0.8.x to 0.9.0: impersonation and deletion request bodies
 
 `ImpersonationRequest` and `DeletionRequest` no longer implement `Deserialize`. Their `admin_id`
 and `user_id` fields identify the acting user. Before this change, a handler that bound them
@@ -160,7 +217,7 @@ as `duration_secs` (an integer). Code that builds the request structs directly o
 not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
 not affected.
 
-## Unreleased: impersonation opt-out always enforced
+## 0.8.x to 0.9.0: impersonation opt-out always enforced
 
 `ImpersonationManager::start_impersonation` used to skip `ImpersonationStore::can_be_impersonated`
 whenever `allow_admin_impersonation` was enabled, so users who had opted out could still be
@@ -175,7 +232,7 @@ If your store returns `false` from `can_be_impersonated` just because the user i
 impersonation stays blocked even with `allow_admin_impersonation(true)`. Remove the admin condition
 from `can_be_impersonated` if you rely on that setting. Stores that never enable it need no changes.
 
-## Unreleased: organization owners only through ownership transfer
+## 0.8.x to 0.9.0: organization owners only through ownership transfer
 
 `MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` now
 reject memberships and invitations that grant the owner role. Before this change, they only checked
@@ -205,7 +262,7 @@ Before deploying:
 CLI-generated invitation and membership routes already reject the `owner` role and are not
 affected.
 
-## Unreleased: ownership transfer updates the organization owner
+## 0.8.x to 0.9.0: ownership transfer updates the organization owner
 
 `MembershipManager::transfer_ownership` only swapped membership roles. It never updated the
 organization's `owner_id`, which `OrganizationStore::count_owned_by_user` reads to enforce
@@ -259,7 +316,7 @@ WHERE o.owner_id <> m.user_id;
 
 Set `owner_id` to `owner_member` for each row in a reviewed data migration.
 
-## Unreleased: WebSocket upgrade authentication
+## 0.8.x to 0.9.0: WebSocket upgrade authentication
 
 `WebSocketHandler::on_upgrade` was never called, so overriding it to authenticate or reject
 WebSocket connections had no effect, and no hook could read request headers or cookies. The hook
@@ -286,7 +343,7 @@ Handlers that do not override `on_upgrade` need no changes. If you override it:
 Later hooks can read the upgrade request through `Connection::headers`, `header`, `cookie`, and
 `uri`. CLI-generated apps do not override `on_upgrade` and are not affected.
 
-## Unreleased: refund lookups scoped to the billable entity
+## 0.8.x to 0.9.0: refund lookups scoped to the billable entity
 
 `SecureRefundManager::get_refund` returned any refund by ID, so a caller who knew another
 organization's refund ID could read it. It now takes the billable entity and checks that the
@@ -304,7 +361,7 @@ A refund owned by another entity returns `BillingError::RefundNotFound` (404), t
 unknown ID. Pass the billable ID of the authenticated caller, not one taken from the request. For
 admin-only lookups that must read any refund, use `RefundManager::get_refund`, which is unchanged.
 
-## Unreleased: bounded job shutdown
+## 0.8.x to 0.9.0: bounded job shutdown
 
 `App::serve()` used to keep accepting HTTP connections on SIGTERM until every running job finished,
 with no time limit. Under Kubernetes, a slow job meant the pod was SIGKILLed while still serving
@@ -334,7 +391,7 @@ need no change. Before deploying:
 3. If you manage a `WorkerPool` directly, prefer `pool.shutdown_with_timeout(timeout)` over
    `pool.shutdown()`, which still waits without a limit.
 
-## Unreleased: scheduled JWKS refresh
+## 0.8.x to 0.9.0: scheduled JWKS refresh
 
 JWKS-backed verifiers (`JwtVerifier::from_jwks_url` and `from_jwks_url_with_client`) now
 re-fetch the key set every hour. Before this change, keys were fetched at startup and again only
@@ -359,7 +416,7 @@ Before deploying, check JWKS-backed verifiers:
 2. Choose a different interval with `.with_jwks_refresh_interval(duration)`, or keep the old
    behavior with `.without_scheduled_jwks_refresh()`.
 
-## Unreleased: credit top-up refunds and disputes
+## 0.8.x to 0.9.0: credit top-up refunds and disputes
 
 `CreditTopUpEventSink` now takes back prepaid credits when a Stripe payment is refunded or
 disputed, and no longer grants credits for checkouts a 100%-off promotion code made free. This
@@ -399,7 +456,7 @@ Rollback: the migration is additive and its down migration keeps the columns. Ol
 versions ignore the columns, so they return held credits from revoked grants to the balance, and
 their `history` fails for an account once it has a `revoke` entry.
 
-## Unreleased: usage-record retries and errors
+## 0.8.x to 0.9.0: usage-record retries and errors
 
 This release fixes possible double billing of metered usage. `LiveStripeClient::create_usage_record`
 now sends one idempotency key across all retry attempts, retries HTTP 429 and 5xx responses as
