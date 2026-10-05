@@ -61,14 +61,25 @@ impl CorsConfig {
     /// Validate combinations that browsers and `tower-http` cannot safely represent.
     pub fn validate(&self) -> crate::Result<()> {
         if self.enabled && self.allow_credentials {
-            if self.allowed_origins.iter().any(|origin| origin == "*") {
+            let has_wildcard = |values: &[String]| values.iter().any(|v| v.trim() == "*");
+            if has_wildcard(&self.allowed_origins) {
                 return Err(crate::TidewayError::bad_request(
                     "CORS wildcard origins cannot be combined with credentials",
                 ));
             }
-            if self.allowed_headers.iter().any(|header| header == "*") {
+            if has_wildcard(&self.allowed_headers) {
                 return Err(crate::TidewayError::bad_request(
                     "CORS wildcard headers cannot be combined with credentials",
+                ));
+            }
+            if has_wildcard(&self.allowed_methods) {
+                return Err(crate::TidewayError::bad_request(
+                    "CORS wildcard methods cannot be combined with credentials",
+                ));
+            }
+            if has_wildcard(&self.exposed_headers) {
+                return Err(crate::TidewayError::bad_request(
+                    "CORS wildcard exposed headers cannot be combined with credentials",
                 ));
             }
         }
