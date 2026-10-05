@@ -782,25 +782,14 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
     }
 }
 
-/// Generate a unique session ID.
+/// Generate an unguessable session ID from 256 bits of OS randomness.
 fn generate_session_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use rand::RngCore;
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    // Simple unique ID using timestamp + random suffix
-    format!("imp_{timestamp:x}_{:x}", random_u64())
-}
-
-/// Generate a random u64 for session IDs.
-fn random_u64() -> u64 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-
-    RandomState::new().build_hasher().finish()
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    format!("imp_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
 /// Truncate a string to a maximum length (UTF-8 safe).
@@ -1014,6 +1003,25 @@ mod tests {
         store.add_user("user-1", "user1@example.com");
         store.add_user("user-2", "user2@example.com");
         store
+    }
+
+    #[test]
+    fn test_session_id_is_256_bit_random_token() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        for _ in 0..2_000 {
+            let id = generate_session_id();
+            let token = id
+                .strip_prefix("imp_")
+                .expect("session ID keeps imp_ prefix");
+            let bytes = URL_SAFE_NO_PAD
+                .decode(token)
+                .expect("session ID token is base64url");
+            assert_eq!(bytes.len(), 32, "session ID must carry 256 random bits");
+            assert!(seen.insert(id), "session IDs must be unique");
+        }
     }
 
     // Autoref probe: the inherent method wins only when `T: DeserializeOwned`.
