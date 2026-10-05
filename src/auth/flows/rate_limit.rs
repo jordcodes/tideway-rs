@@ -167,8 +167,8 @@ pub type LoginRateLimiter = AuthRateLimiter;
 
 /// Trait for optional rate limiter in LoginFlow.
 pub trait OptionalRateLimiter: Send + Sync + Clone {
-    /// Check rate limit, returning error if blocked.
-    fn check_rate_limit(&self, ip: Option<&str>) -> Result<()>;
+    /// Check rate limit for a client key (usually an IP), returning error if blocked.
+    fn check_rate_limit(&self, key: Option<&str>) -> Result<()>;
 }
 
 /// No-op implementation when rate limiting is not configured.
@@ -178,24 +178,24 @@ impl OptionalRateLimiter for () {
     }
 }
 
+/// Shared bucket for attempts checked without any client key.
+const UNKNOWN_CLIENT_KEY: &str = "unknown-client";
+
 /// Wrapper to use a real LoginRateLimiter.
 #[derive(Clone)]
 pub struct WithRateLimiter(pub LoginRateLimiter);
 
 impl OptionalRateLimiter for WithRateLimiter {
-    fn check_rate_limit(&self, ip: Option<&str>) -> Result<()> {
-        let Some(ip) = ip else {
-            // No IP provided, allow the request
-            // (caller should provide IP when possible)
-            return Ok(());
-        };
+    fn check_rate_limit(&self, key: Option<&str>) -> Result<()> {
+        // Without a key, share one bucket rather than skipping the limiter entirely.
+        let key = key.unwrap_or(UNKNOWN_CLIENT_KEY);
 
-        match self.0.check(ip) {
+        match self.0.check(key) {
             Ok(()) => Ok(()),
             Err(retry_after) => {
                 tracing::warn!(
                     target: "auth.login.rate_limited",
-                    ip = %ip,
+                    key = %key,
                     retry_after_secs = retry_after,
                     max_attempts = self.0.config.max_attempts,
                     window_secs = self.0.config.window_seconds,
@@ -302,8 +302,10 @@ mod tests {
         // Third should be blocked
         assert!(limiter.check_rate_limit(Some("192.168.1.1")).is_err());
 
-        // No IP should be allowed
+        // Missing keys share a bucket instead of bypassing the limiter
         assert!(limiter.check_rate_limit(None).is_ok());
+        assert!(limiter.check_rate_limit(None).is_ok());
+        assert!(limiter.check_rate_limit(None).is_err());
     }
 
     #[test]
