@@ -99,7 +99,9 @@ impl WebhookRouter {
     {
         let event_id = event.event_id().to_string();
 
-        // Prevent concurrent duplicate processing in this process.
+        // Prevent concurrent duplicate processing in this process. The duplicate must not be
+        // acknowledged: if the in-flight attempt later fails, the provider's retry is the only
+        // remaining delivery of the event.
         let inserted = {
             let mut in_flight = self.in_flight.lock().map_err(|_| {
                 crate::error::TidewayError::internal("Webhook in-flight lock poisoned")
@@ -109,38 +111,33 @@ impl WebhookRouter {
         if !inserted {
             tracing::debug!(
                 event_id = event.event_id(),
-                "Skipping duplicate in-flight webhook event"
+                "Rejecting duplicate in-flight webhook event"
             );
-            return Ok(());
+            return Err(crate::error::TidewayError::service_unavailable(
+                "Webhook event is already being processed; retry shortly",
+            ));
         }
+        // Removes the event ID on every exit, including when this future is cancelled.
+        let _in_flight = InFlightGuard {
+            in_flight: Arc::clone(&self.in_flight),
+            event_id: event_id.clone(),
+        };
 
         // Atomically claim event processing in the backing store.
-        let claim = match idempotency_store.acquire_claim(&event_id).await {
-            Ok(crate::webhooks::ClaimOutcome::Acquired(claim)) => claim,
-            Ok(crate::webhooks::ClaimOutcome::AlreadyProcessed) => {
-                if let Ok(mut in_flight) = self.in_flight.lock() {
-                    in_flight.remove(&event_id);
-                }
+        let claim = match idempotency_store.acquire_claim(&event_id).await? {
+            crate::webhooks::ClaimOutcome::Acquired(claim) => claim,
+            crate::webhooks::ClaimOutcome::AlreadyProcessed => {
                 tracing::debug!(
                     event_id = event.event_id(),
                     "Skipping processed webhook event"
                 );
                 return Ok(());
             }
-            Ok(crate::webhooks::ClaimOutcome::InProgress { retry_after }) => {
-                if let Ok(mut in_flight) = self.in_flight.lock() {
-                    in_flight.remove(&event_id);
-                }
+            crate::webhooks::ClaimOutcome::InProgress { retry_after } => {
                 return Err(crate::error::TidewayError::service_unavailable(format!(
                     "Webhook event is already being processed; retry in {} seconds",
                     retry_after.as_secs().max(1)
                 )));
-            }
-            Err(error) => {
-                if let Ok(mut in_flight) = self.in_flight.lock() {
-                    in_flight.remove(&event_id);
-                }
-                return Err(error);
             }
         };
         // Validate event
@@ -152,24 +149,13 @@ impl WebhookRouter {
                     "Failed to release webhook claim after validation error"
                 );
             }
-            if let Ok(mut in_flight) = self.in_flight.lock() {
-                in_flight.remove(&event_id);
-            }
             return Err(e);
         }
 
         // Handle event
         match handler.handle(event).await {
             Ok(()) => {
-                if let Err(error) = idempotency_store.complete_claim(&claim).await {
-                    if let Ok(mut in_flight) = self.in_flight.lock() {
-                        in_flight.remove(&event_id);
-                    }
-                    return Err(error);
-                }
-                if let Ok(mut in_flight) = self.in_flight.lock() {
-                    in_flight.remove(&event_id);
-                }
+                idempotency_store.complete_claim(&claim).await?;
 
                 tracing::info!(
                     event_id = event.event_id(),
@@ -187,13 +173,27 @@ impl WebhookRouter {
                         "Failed to release webhook claim after handler error"
                     );
                 }
-                if let Ok(mut in_flight) = self.in_flight.lock() {
-                    in_flight.remove(&event_id);
-                }
                 handler.on_error(event, &e).await;
                 Err(e)
             }
         }
+    }
+}
+
+/// Releases an event ID from the router's in-flight set when dropped.
+struct InFlightGuard {
+    in_flight: Arc<Mutex<HashSet<String>>>,
+    event_id: String,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        // Recover from poisoning so a panicked handler cannot block future deliveries.
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        in_flight.remove(&self.event_id);
     }
 }
 
@@ -206,8 +206,10 @@ impl Default for WebhookRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::webhooks::idempotency::MemoryIdempotencyStore;
+    use crate::webhooks::idempotency::{IdempotencyStore, MemoryIdempotencyStore};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use tokio::sync::Notify;
 
     #[derive(serde::Deserialize)]
     struct TestEvent {
@@ -225,15 +227,52 @@ mod tests {
         }
     }
 
-    struct CountingHandler {
+    /// Signals `started` on every call, then blocks the first call until `release` fires.
+    /// The first call fails when `fail_first` is set; the first call never completes when
+    /// `hang_first` is set. Later calls succeed immediately.
+    struct GatedHandler {
         calls: Arc<AtomicUsize>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+        fail_first: bool,
+        hang_first: bool,
+    }
+
+    impl GatedHandler {
+        fn new(calls: &Arc<AtomicUsize>) -> Self {
+            Self {
+                calls: Arc::clone(calls),
+                started: Arc::new(Notify::new()),
+                release: Arc::new(Notify::new()),
+                fail_first: false,
+                hang_first: false,
+            }
+        }
     }
 
     #[async_trait]
-    impl WebhookHandler<TestEvent> for CountingHandler {
+    impl WebhookHandler<TestEvent> for GatedHandler {
         async fn handle(&self, _event: &TestEvent) -> Result<()> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            self.started.notify_one();
+            if call > 0 {
+                return Ok(());
+            }
+            if self.hang_first {
+                std::future::pending::<()>().await;
+            }
+            self.release.notified().await;
+            if self.fail_first {
+                return Err(crate::error::TidewayError::internal("first attempt failed"));
+            }
             Ok(())
+        }
+    }
+
+    fn test_event(id: &str) -> TestEvent {
+        TestEvent {
+            id: id.to_string(),
+            event_type: "test.event".to_string(),
         }
     }
 
@@ -242,21 +281,76 @@ mod tests {
         let router = WebhookRouter::new();
         let store = MemoryIdempotencyStore::new();
         let calls = Arc::new(AtomicUsize::new(0));
-        let handler = CountingHandler {
-            calls: Arc::clone(&calls),
-        };
-        let event = TestEvent {
-            id: "evt_same".to_string(),
-            event_type: "test.event".to_string(),
-        };
+        let handler = GatedHandler::new(&calls);
+        let event = test_event("evt_same");
 
-        let (r1, r2) = tokio::join!(
-            router.process(&event, &handler, &store),
-            router.process(&event, &handler, &store)
-        );
+        let (r1, r2) = tokio::join!(router.process(&event, &handler, &store), async {
+            handler.started.notified().await;
+            let duplicate = router.process(&event, &handler, &store).await;
+            handler.release.notify_one();
+            duplicate
+        });
 
         assert!(r1.is_ok());
-        assert!(r2.is_ok());
+        // The duplicate must be retryable (503), not acknowledged (200).
+        assert!(matches!(
+            r2,
+            Err(crate::error::TidewayError::ServiceUnavailable(_))
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_of_failed_delivery_is_not_lost() {
+        let router = WebhookRouter::new();
+        let store = MemoryIdempotencyStore::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler = GatedHandler {
+            fail_first: true,
+            ..GatedHandler::new(&calls)
+        };
+        let event = test_event("evt_fails_first");
+
+        let (first, duplicate) = tokio::join!(router.process(&event, &handler, &store), async {
+            handler.started.notified().await;
+            let duplicate = router.process(&event, &handler, &store).await;
+            handler.release.notify_one();
+            duplicate
+        });
+
+        assert!(first.is_err());
+        assert!(
+            duplicate.is_err(),
+            "duplicate acknowledged while the first attempt was still running"
+        );
+
+        // The provider's retry is processed because nothing acknowledged the event.
+        router.process(&event, &handler, &store).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(store.is_processed("evt_fails_first").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_delivery_releases_in_flight_event() {
+        let router = WebhookRouter::new();
+        // A zero TTL lets the abandoned store claim be reclaimed immediately, isolating the
+        // router's in-flight bookkeeping.
+        let store = MemoryIdempotencyStore::new().with_claim_ttl(Duration::ZERO);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let handler = GatedHandler {
+            hang_first: true,
+            ..GatedHandler::new(&calls)
+        };
+        let event = test_event("evt_cancelled");
+
+        // Drop the delivery future once the handler is running, as a client disconnect would.
+        tokio::select! {
+            _ = router.process(&event, &handler, &store) => panic!("handler should not complete"),
+            _ = handler.started.notified() => {}
+        }
+
+        assert!(router.in_flight.lock().unwrap().is_empty());
+        router.process(&event, &handler, &store).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

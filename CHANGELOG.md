@@ -9,6 +9,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- `WebhookRouter::process` now returns a `ServiceUnavailable` (503) error for a duplicate
+  delivery of an event that is still being processed in the same instance. It previously
+  returned `Ok` (200), so the provider stopped retrying and the event was lost if the first
+  attempt then failed. A delivery whose future is cancelled (for example on client disconnect)
+  now releases its event ID; previously the ID stayed in the in-flight set and every later
+  delivery of that event was silently skipped until restart.
 - JWKS-backed `JwtVerifier`s now re-fetch keys in the background on a schedule (hourly by
   default; configure with `with_jwks_refresh_interval` or opt out with
   `without_scheduled_jwks_refresh`) so rotated and revoked keys take effect. Previously keys
