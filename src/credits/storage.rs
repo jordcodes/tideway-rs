@@ -38,6 +38,9 @@ pub trait CreditStore: Send + Sync {
         now: i64,
     ) -> Result<CreditReservation>;
 
+    /// Read the requested account/type balance without persisting expiry. Expired holds
+    /// count as available only while their buckets remain valid; use `release_expired`
+    /// to persist cleanup and its ledger entries.
     async fn balance(&self, account_id: &str, credit_type: &str, now: i64)
     -> Result<CreditBalance>;
 

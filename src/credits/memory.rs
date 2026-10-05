@@ -22,6 +22,7 @@ pub struct MemoryCreditStore {
 struct State {
     buckets: HashMap<String, CreditBucket>,
     grants_by_key: HashMap<OperationKey, String>,
+    buckets_by_account_type: HashMap<(String, String), Vec<String>>,
     reservations: HashMap<String, CreditReservation>,
     reservations_by_key: HashMap<OperationKey, String>,
     transactions: Vec<CreditTransaction>,
@@ -104,6 +105,11 @@ impl CreditStore for MemoryCreditStore {
             created_at: now,
         };
         state.grants_by_key.insert(key, bucket.id.clone());
+        state
+            .buckets_by_account_type
+            .entry((request.account_id.clone(), request.credit_type.clone()))
+            .or_default()
+            .push(bucket.id.clone());
         state.buckets.insert(bucket.id.clone(), bucket.clone());
         state.transactions.push(CreditTransaction {
             id: uuid::Uuid::new_v4().to_string(),
@@ -277,18 +283,42 @@ impl CreditStore for MemoryCreditStore {
         credit_type: &str,
         now: i64,
     ) -> Result<CreditBalance> {
-        let mut state = self.lock()?;
-        release_expired_locked(&mut state, now, u64::MAX)?;
+        let state = self.lock()?;
         let mut by_source = HashMap::<CreditSource, u64>::new();
-        for bucket in state.buckets.values().filter(|bucket| {
-            bucket.account_id == account_id
-                && bucket.credit_type == credit_type
-                && bucket.expires_at.is_none_or(|expiry| expiry > now)
-        }) {
+        let bucket_ids = state
+            .buckets_by_account_type
+            .get(&(account_id.to_string(), credit_type.to_string()));
+        for bucket in bucket_ids
+            .into_iter()
+            .flatten()
+            .filter_map(|id| state.buckets.get(id))
+            .filter(|bucket| bucket.expires_at.is_none_or(|expiry| expiry > now))
+        {
             let source_total = by_source.entry(bucket.source).or_default();
             *source_total = source_total
                 .checked_add(bucket.remaining_amount)
                 .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
+        }
+        // Expired holds are available immediately, but cleanup is left to mutations or
+        // release_expired. Allocations from expired buckets never become available again.
+        for reservation in state.reservations.values().filter(|reservation| {
+            reservation.account_id == account_id
+                && reservation.credit_type == credit_type
+                && reservation.status == ReservationStatus::Reserved
+                && reservation.expires_at <= now
+        }) {
+            for allocation in &reservation.allocations {
+                let bucket = state
+                    .buckets
+                    .get(&allocation.bucket_id)
+                    .ok_or_else(|| TidewayError::internal("Credit allocation bucket is missing"))?;
+                if bucket.expires_at.is_none_or(|expiry| expiry > now) {
+                    let total = by_source.entry(bucket.source).or_default();
+                    *total = total
+                        .checked_add(allocation.amount)
+                        .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
+                }
+            }
         }
         let available = by_source.values().try_fold(0u64, |total, amount| {
             total
@@ -302,6 +332,7 @@ impl CreditStore for MemoryCreditStore {
                 reservation.account_id == account_id
                     && reservation.credit_type == credit_type
                     && reservation.status == ReservationStatus::Reserved
+                    && reservation.expires_at > now
             })
             .try_fold(0u64, |total, reservation| {
                 total
@@ -516,6 +547,11 @@ mod tests {
             order: ConsumptionOrder::AllowanceFirst,
             metadata: serde_json::json!({}),
         }
+    }
+
+    #[tokio::test]
+    async fn balance_is_read_only_and_accounts_for_expired_holds() {
+        super::super::balance_tests::assert_read_only_balance(&MemoryCreditStore::new()).await;
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use sea_orm::entity::prelude::*;
-use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::{Alias, Expr, JoinType, Query, UnionType};
 use sea_orm::{
     ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set,
     TransactionTrait,
@@ -459,44 +459,85 @@ impl CreditStore for SeaOrmCreditStore {
         credit_type: &str,
         now: i64,
     ) -> Result<CreditBalance> {
-        self.release_expired_for(account_id, credit_type, now)
-            .await?;
-        let models = bucket::Entity::find()
-            .filter(bucket::Column::AccountId.eq(account_id))
-            .filter(bucket::Column::CreditType.eq(credit_type))
-            .filter(
+        let active_buckets = sea_orm::Condition::all()
+            .add(bucket::Column::AccountId.eq(account_id))
+            .add(bucket::Column::CreditType.eq(credit_type))
+            .add(
                 sea_orm::Condition::any()
                     .add(bucket::Column::ExpiresAt.is_null())
                     .add(bucket::Column::ExpiresAt.gt(now)),
+            );
+        let held_reservations = sea_orm::Condition::all()
+            .add(reservation::Column::AccountId.eq(account_id))
+            .add(reservation::Column::CreditType.eq(credit_type))
+            .add(reservation::Column::Status.eq("reserved"));
+
+        // Read the stored amounts, recoverable expired allocations, and live holds in one
+        // snapshot. Only mutations / maintenance persist reservation expiry. UNION ALL keeps
+        // separate amounts so Rust can retain checked u64 totals without SQL SUM overflow.
+        let expired_allocations = Query::select()
+            .column((bucket::Entity, bucket::Column::Source))
+            .column((allocation::Entity, allocation::Column::Amount))
+            .from(allocation::Entity)
+            .join(
+                JoinType::InnerJoin,
+                bucket::Entity,
+                Expr::col((allocation::Entity, allocation::Column::BucketId))
+                    .equals((bucket::Entity, bucket::Column::Id)),
             )
-            .all(&self.db)
+            .join(
+                JoinType::InnerJoin,
+                reservation::Entity,
+                Expr::col((allocation::Entity, allocation::Column::ReservationId))
+                    .equals((reservation::Entity, reservation::Column::Id)),
+            )
+            .cond_where(active_buckets.clone())
+            .cond_where(held_reservations.clone())
+            .and_where(reservation::Column::ExpiresAt.lte(now))
+            .to_owned();
+        let live_holds = Query::select()
+            .expr(Expr::val(Option::<String>::None))
+            .column(reservation::Column::Amount)
+            .from(reservation::Entity)
+            .cond_where(held_reservations)
+            .and_where(reservation::Column::ExpiresAt.gt(now))
+            .to_owned();
+        let query = Query::select()
+            .column(bucket::Column::Source)
+            .expr_as(
+                Expr::col(bucket::Column::RemainingAmount),
+                Alias::new("amount"),
+            )
+            .from(bucket::Entity)
+            .cond_where(active_buckets)
+            .union(UnionType::All, expired_allocations)
+            .union(UnionType::All, live_holds)
+            .to_owned();
+        let rows = self
+            .db
+            .query_all(self.db.get_database_backend().build(&query))
             .await
             .map_err(db_error)?;
         let mut by_source = std::collections::HashMap::<CreditSource, u64>::new();
-        for model in models {
-            let source = parse_source(&model.source)?;
-            let entry = by_source.entry(source).or_default();
-            *entry = entry
-                .checked_add(to_u64(model.remaining_amount)?)
-                .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
+        let mut reserved = 0u64;
+        for row in rows {
+            let amount = to_u64(row.try_get("", "amount").map_err(db_error)?)?;
+            let source: Option<String> = row.try_get("", "source").map_err(db_error)?;
+            if let Some(source) = source {
+                let entry = by_source.entry(parse_source(&source)?).or_default();
+                *entry = entry
+                    .checked_add(amount)
+                    .ok_or_else(|| TidewayError::internal("Credit balance overflow"))?;
+            } else {
+                reserved = reserved
+                    .checked_add(amount)
+                    .ok_or_else(|| TidewayError::internal("Reserved credit balance overflow"))?;
+            }
         }
         let available = by_source.values().try_fold(0u64, |total, amount| {
             total
                 .checked_add(*amount)
                 .ok_or_else(|| TidewayError::internal("Credit balance overflow"))
-        })?;
-        let reserved_models = reservation::Entity::find()
-            .filter(reservation::Column::AccountId.eq(account_id))
-            .filter(reservation::Column::CreditType.eq(credit_type))
-            .filter(reservation::Column::Status.eq("reserved"))
-            .filter(reservation::Column::ExpiresAt.gt(now))
-            .all(&self.db)
-            .await
-            .map_err(db_error)?;
-        let reserved = reserved_models.iter().try_fold(0u64, |total, model| {
-            total
-                .checked_add(to_u64(model.amount)?)
-                .ok_or_else(|| TidewayError::internal("Reserved credit balance overflow"))
         })?;
         Ok(CreditBalance {
             account_id: account_id.to_string(),
@@ -966,6 +1007,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn balance_succeeds_when_expiry_writes_are_forbidden() {
+        let store = store().await;
+        store
+            .grant(&grant("org-1", 10, CreditSource::Purchased, "purchase"), 10)
+            .await
+            .unwrap();
+        store
+            .reserve(&reserve("org-1", 10, "hold"), 25, 20)
+            .await
+            .unwrap();
+        // These guards reject the bucket/reservation updates and ledger insertion that
+        // expiry used to perform, even if an implementation were to swallow the error.
+        store
+            .db
+            .execute_unprepared(
+                r#"
+            CREATE TRIGGER forbid_bucket_update BEFORE UPDATE ON credit_buckets
+            BEGIN SELECT RAISE(ABORT, 'balance must not update buckets'); END;
+            CREATE TRIGGER forbid_reservation_update BEFORE UPDATE ON credit_reservations
+            BEGIN SELECT RAISE(ABORT, 'balance must not update reservations'); END;
+            CREATE TRIGGER forbid_transaction_insert BEFORE INSERT ON credit_transactions
+            BEGIN SELECT RAISE(ABORT, 'balance must not insert transactions'); END;
+        "#,
+            )
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let balance = store.balance("org-1", "sms", 25).await.unwrap();
+            assert_eq!((balance.available, balance.reserved), (10, 0));
+        }
+        assert_eq!(
+            bucket::Entity::find()
+                .one(&store.db)
+                .await
+                .unwrap()
+                .unwrap()
+                .remaining_amount,
+            0
+        );
+        assert_eq!(
+            reservation::Entity::find()
+                .one(&store.db)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "reserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn balance_is_read_only_and_accounts_for_expired_holds() {
+        super::super::balance_tests::assert_read_only_balance(&store().await).await;
+    }
+
+    #[tokio::test]
     async fn grant_and_reservation_are_idempotent() {
         let store = store().await;
         let first = store
@@ -1046,7 +1143,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_holds_are_released_before_balance_or_reserve() {
+    async fn expired_holds_are_available_before_cleanup() {
         let store = store().await;
         store
             .grant(&grant("org-1", 10, CreditSource::Allowance, "period-1"), 10)
@@ -1085,7 +1182,10 @@ mod tests {
             .await
             .unwrap();
 
-        store.balance("org-1", "sms", 30).await.unwrap();
+        store
+            .reserve(&reserve("org-1", 1, "new-hold"), 100, 30)
+            .await
+            .unwrap();
 
         let first_status = reservation::Entity::find_by_id(&first.id)
             .one(&store.db)
