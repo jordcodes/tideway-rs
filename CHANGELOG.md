@@ -95,8 +95,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` and
   `CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>`, so cache hits
   share the cached value instead of copying it. Callers that bind the result to an owned
-  `InvoiceList` or `Invoice`, or move fields out of it, must borrow instead or clone explicitly.
-  The `InvoiceOperations` trait keeps its owned return types. See `docs/upgrading.md`.
+  `InvoiceList` or `Invoice`, or move fields out of it, must borrow instead
+  (`for invoice in &invoices.invoices`), serialize with `invoices.as_ref()`, or clone explicitly.
+  The `InvoiceOperations` trait keeps its owned return types. See `docs/upgrading.md` and
+  `docs/billing.md`.
 - The rate-limit middleware now sustains `max_requests` per `window_seconds`. Previously it
   allowed a burst of `max_requests` and then refilled only one request per window, so the
   default "100 per 60s" became 1 request per minute after the first burst (server-wide in
@@ -122,12 +124,6 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `Authorization: Bearer` header. Requests with a missing or wrong token get 401. Metrics are
   still collected when no token is set, but they cannot be scraped. Unknown HTTP methods are now
   labelled `OTHER`. See `docs/upgrading.md`.
-- **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` instead of
-  `InvoiceList`, and `get_upcoming_invoice` returns `Option<Arc<Invoice>>` instead of
-  `Option<Invoice>`, so cache hits no longer copy the data. Callers that move fields out of the
-  result must borrow them (`for invoice in &invoices.invoices`), serialize with
-  `invoices.as_ref()`, or clone the inner value. The `InvoiceOperations` trait keeps its owned
-  return types. See `docs/billing.md`.
 - **Breaking:** the `imp_blocked` claim built by `ImpersonationClaims::from_session` now uses
   the same action names as `validate_session` and `BlockedAction::matches`: `delete_account`,
   `change_password`, `change_mfa`, `change_email`, `modify_billing`, `export_data`,
