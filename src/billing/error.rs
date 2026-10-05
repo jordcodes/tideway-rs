@@ -317,6 +317,19 @@ impl From<BillingError> for crate::error::TidewayError {
 
             // Map Stripe API errors based on HTTP status
             BillingError::StripeApiError { http_status, .. } => match http_status {
+                // Stripe credentials and permissions belong to the server, not the user.
+                // Keep diagnostics in operator logs, even if callers display this error
+                // directly or enable development responses.
+                Some(401 | 403) => {
+                    tracing::error!(
+                        target: "tideway::billing::stripe",
+                        error = %err,
+                        "Stripe authentication or permission failure"
+                    );
+                    crate::error::TidewayError::Internal(
+                        "Unable to process billing request. Please try again later.".to_string(),
+                    )
+                }
                 Some(400..=499) => crate::error::TidewayError::BadRequest(err.to_string()),
                 _ => crate::error::TidewayError::Internal(err.to_string()),
             },
@@ -358,7 +371,7 @@ impl BillingError {
             | Self::SubscriptionNotPaused { .. }
             | Self::SubscriptionAlreadyPaused { .. } => true,
             Self::StripeApiError { http_status, .. } => {
-                matches!(http_status, Some(400..=499))
+                matches!(http_status, Some(400..=499)) && !matches!(http_status, Some(401 | 403))
             }
             _ => false,
         }
@@ -373,7 +386,7 @@ impl BillingError {
             | Self::Internal { .. }
             | Self::RefundFailed { .. } => true,
             Self::StripeApiError { http_status, .. } => {
-                matches!(http_status, Some(500..=599) | None)
+                matches!(http_status, Some(401 | 403 | 500..=599) | None)
             }
             _ => false,
         }
@@ -396,6 +409,21 @@ impl BillingError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stripe_auth_errors_are_non_retryable_server_errors() {
+        for status in [401, 403] {
+            let err = BillingError::StripeApiError {
+                operation: "create_customer".to_string(),
+                message: "Invalid API Key provided".to_string(),
+                code: None,
+                http_status: Some(status),
+            };
+            assert!(!err.is_client_error());
+            assert!(err.is_server_error());
+            assert!(!err.is_retryable());
+        }
+    }
 
     #[test]
     fn test_error_display() {

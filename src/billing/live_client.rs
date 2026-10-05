@@ -1282,12 +1282,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
         // First, verify the subscription is not already paused
         let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
             .await
-            .map_err(|e| BillingError::StripeApiError {
-                operation: "get_subscription_for_pause".to_string(),
-                message: e.to_string(),
-                code: None,
-                http_status: None,
-            })?;
+            .map_err(|e| map_stripe_error(e, "get_subscription_for_pause"))?;
 
         if current.pause_collection.is_some() {
             return Err(BillingError::SubscriptionAlreadyPaused {
@@ -1330,12 +1325,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
         // First, verify the subscription is actually paused
         let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
             .await
-            .map_err(|e| BillingError::StripeApiError {
-                operation: "get_subscription_for_resume".to_string(),
-                message: e.to_string(),
-                code: None,
-                http_status: None,
-            })?;
+            .map_err(|e| map_stripe_error(e, "get_subscription_for_resume"))?;
 
         if current.pause_collection.is_none() {
             return Err(BillingError::SubscriptionNotPaused {
@@ -2448,6 +2438,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stripe_auth_errors_preserve_operator_logs() {
+        #[derive(Clone, Default)]
+        struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogBuffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        for status in [401, 403] {
+            let logs = LogBuffer::default();
+            let writer = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish();
+            let raw_message = "Invalid API Key provided: sk_test_private";
+            let err = tracing::subscriber::with_default(subscriber, || {
+                map_stripe_error(
+                    stripe::StripeError::Stripe(stripe::RequestError {
+                        http_status: status,
+                        message: Some(raw_message.to_string()),
+                        ..Default::default()
+                    }),
+                    "create_customer",
+                )
+            });
+            assert!(matches!(&err, crate::error::TidewayError::Internal(message)
+                if message == "Unable to process billing request. Please try again later."));
+            let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+            assert!(output.contains(raw_message), "missing diagnostic: {output}");
+            assert!(output.contains("create_customer"));
+            assert!(output.contains(&status.to_string()));
+        }
+    }
+
+    #[test]
     fn test_validate_api_key_valid() {
         assert!(validate_api_key("sk_test_1234567890abcdef").is_ok());
         assert!(validate_api_key("sk_live_1234567890abcdef").is_ok());
@@ -2953,6 +2987,42 @@ mod tests {
                 seen[0].peer, seen[1].peer,
                 "retry should reuse the pooled HTTP connection"
             );
+        }
+
+        #[tokio::test]
+        async fn stripe_auth_errors_are_hidden_from_users() {
+            for (status, body) in [
+                (
+                    401,
+                    r#"{"error":{"type":"invalid_request_error","message":"Invalid API Key provided: sk_test_private"}}"#,
+                ),
+                (
+                    403,
+                    r#"{"error":{"type":"invalid_request_error","message":"This API key does not have permissions for this account"}}"#,
+                ),
+            ] {
+                let (base, mock) = start_mock(vec![Reply::Status(status, body)]).await;
+                let err = test_client(&base)
+                    .create_usage_record(
+                        "si_test123",
+                        5,
+                        Some(1_700_000_000),
+                        UsageAction::Increment,
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(mock.seen.lock().unwrap().len(), 1);
+                assert!(!err.to_string().contains("API"));
+                assert!(!err.to_string().contains("sk_test_private"));
+
+                let response = err.into_response();
+                assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(json["error"], "Internal server error");
+            }
         }
 
         #[tokio::test]
