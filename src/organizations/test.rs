@@ -1285,6 +1285,98 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
+    async fn test_invite_unauthorized_requests_preserve_quota() {
+        use crate::organizations::{InvitationRateLimitConfig, InvitationRateLimiter};
+
+        for actor in ["outsider", "member"] {
+            let store = InMemoryOrgStore::new();
+            let org_manager = OrganizationManager::new(
+                store.clone(),
+                store.clone(),
+                UnlimitedSeats,
+                OrganizationConfig::default(),
+            );
+            let org = org_manager
+                .create(
+                    "owner",
+                    "Test Org",
+                    None,
+                    "owner@example.com",
+                    make_org,
+                    |p| make_membership(p, DefaultOrgRole::Owner),
+                )
+                .await
+                .unwrap();
+            for (user_id, role) in [
+                ("member", DefaultOrgRole::Member),
+                ("admin", DefaultOrgRole::Admin),
+            ] {
+                store.insert_membership(TestMembership {
+                    org_id: org.id.clone(),
+                    user_id: user_id.to_string(),
+                    role,
+                    joined_at: 0,
+                });
+            }
+            let manager = InvitationManager::new_without_seats(
+                store.clone(),
+                store.clone(),
+                store.clone(),
+                InvitationConfig::default(),
+            )
+            .with_rate_limiter(InvitationRateLimiter::new(
+                InvitationRateLimitConfig::new(2, 10, 3600),
+            ));
+
+            // Rejected actors must not consume quota, even with repeated attempts.
+            for _ in 0..3 {
+                let error = manager
+                    .invite(&org.id, "invitee@example.com", actor, |_| {
+                        panic!("unauthorized request reached the invitation factory")
+                    })
+                    .await
+                    .unwrap_err();
+                match actor {
+                    "outsider" => assert!(matches!(error, OrganizationError::NotMember)),
+                    _ => assert!(matches!(
+                        error,
+                        OrganizationError::InsufficientPermission { .. }
+                    )),
+                }
+            }
+            assert_eq!(store.count_pending(&org.id).await.unwrap(), 0);
+
+            // Authorized members retain the full organization allowance.
+            for actor in ["owner", "admin"] {
+                manager
+                    .invite(&org.id, &format!("{actor}@example.com"), actor, |p| {
+                        TestInvitation {
+                            id: p.id,
+                            org_id: p.org_id,
+                            email: p.email,
+                            role: DefaultOrgRole::Member,
+                            invited_by: p.invited_by,
+                            token: p.token,
+                            expires_at: p.expires_at,
+                            created_at: p.created_at,
+                            accepted: false,
+                            revoked: false,
+                        }
+                    })
+                    .await
+                    .unwrap();
+            }
+            let result = manager
+                .invite(&org.id, "over-limit@example.com", "owner", |_| {
+                    panic!("rate-limited request reached the invitation factory")
+                })
+                .await;
+            assert!(matches!(result, Err(OrganizationError::RateLimited { .. })));
+            assert_eq!(store.count_pending(&org.id).await.unwrap(), 2);
+        }
+    }
+
+    #[tokio::test]
     async fn test_invite_requires_permission() {
         let store = InMemoryOrgStore::new();
         let org_manager = OrganizationManager::new(
