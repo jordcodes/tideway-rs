@@ -8,6 +8,7 @@ use super::manager::{ConnectionHandle, ConnectionManager};
 use super::message::Message;
 use super::traits::WebSocketHandler;
 use crate::app::AppContext;
+use crate::error::Result;
 use axum::{
     Router,
     extract::{State, ws::WebSocketUpgrade},
@@ -102,13 +103,10 @@ async fn handle_socket<H: WebSocketHandler>(
     }
 
     // Call on_connect handler
-    {
-        let mut conn = conn_handle.write().await;
-        if let Err(e) = handler.on_connect(&mut conn, &ctx).await {
-            tracing::error!(conn_id = %conn_id, error = %e, "Error in on_connect");
-            let _ = manager.unregister(&conn_id).await;
-            return;
-        }
+    if let Err(e) = run_on_connect(&*handler, &conn_handle, &manager, &ctx).await {
+        tracing::error!(conn_id = %conn_id, error = %e, "Error in on_connect");
+        let _ = manager.unregister(&conn_id).await;
+        return;
     }
 
     // Use a oneshot channel to coordinate cleanup
@@ -122,7 +120,7 @@ async fn handle_socket<H: WebSocketHandler>(
 
     // Spawn heartbeat task to detect dead connections
     let heartbeat_task = {
-        let conn_handle = conn_handle.clone();
+        let tx = tx.clone();
         let manager = manager.clone();
         let conn_id = conn_id.clone();
         let last_pong = last_pong.clone();
@@ -144,10 +142,8 @@ async fn handle_socket<H: WebSocketHandler>(
                     break;
                 }
 
-                // Send ping
-                if let Ok(conn_guard) = conn_handle.try_read() {
-                    let _ = conn_guard.send(Message::Ping(vec![])).await;
-                }
+                // Send ping without the connection lock, which handlers may hold
+                let _ = tx.try_send(Message::Ping(vec![]));
             }
         })
     };
@@ -211,11 +207,10 @@ async fn handle_socket<H: WebSocketHandler>(
                         }
 
                         // Call on_message handler
+                        if let Err(e) =
+                            run_on_message(&*handler, &conn_handle, msg, &manager, &ctx).await
                         {
-                            let mut conn = conn_handle.write().await;
-                            if let Err(e) = handler.on_message(&mut conn, msg, &ctx).await {
-                                tracing::error!(conn_id = %conn_id, error = %e, "Error in on_message");
-                            }
+                            tracing::error!(conn_id = %conn_id, error = %e, "Error in on_message");
                         }
                     }
                     Err(e) => {
@@ -268,4 +263,32 @@ async fn handle_socket<H: WebSocketHandler>(
         // Cleanup hasn't happened yet, do it now
         let _ = manager.unregister(&conn_id).await;
     }
+}
+
+// Handlers run under the connection's write lock to get `&mut Connection`, so the
+// manager must not lock connections while broadcasting. User IDs set by a handler
+// are synced here, after it returns, because the manager cannot read them sooner.
+pub(crate) async fn run_on_connect<H: WebSocketHandler>(
+    handler: &H,
+    conn_handle: &ConnectionHandle,
+    manager: &ConnectionManager,
+    ctx: &AppContext,
+) -> Result<()> {
+    let mut conn = conn_handle.write().await;
+    let result = handler.on_connect(&mut conn, ctx).await;
+    manager.sync_user(conn.id(), conn.user_id());
+    result
+}
+
+pub(crate) async fn run_on_message<H: WebSocketHandler>(
+    handler: &H,
+    conn_handle: &ConnectionHandle,
+    msg: Message,
+    manager: &ConnectionManager,
+    ctx: &AppContext,
+) -> Result<()> {
+    let mut conn = conn_handle.write().await;
+    let result = handler.on_message(&mut conn, msg, ctx).await;
+    manager.sync_user(conn.id(), conn.user_id());
+    result
 }

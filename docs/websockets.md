@@ -201,6 +201,9 @@ let manager = ctx.websocket_manager()?;
 manager.broadcast_text_to_user("user-123", "You have a new message!").await?;
 ```
 
+The manager syncs a connection's `user_id` after each `on_connect` and `on_message` call, so a
+user ID set in a handler takes effect for user broadcasts once that handler returns.
+
 ## Examples
 
 See the following examples for complete implementations:
