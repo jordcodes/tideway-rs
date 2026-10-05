@@ -241,7 +241,10 @@ impl ConfigBuilder {
         self
     }
 
-    /// Load configuration from environment variables with TIDEWAY_ prefix
+    /// Load configuration from environment variables with TIDEWAY_ prefix.
+    ///
+    /// Compression settings are overridden only by valid, present environment
+    /// variables; other compression settings retain their current values.
     pub fn from_env(mut self) -> Self {
         if let Some(host) = get_env_with_prefix("HOST") {
             self.config.server.host = host;
@@ -271,7 +274,7 @@ impl ConfigBuilder {
         self.config.rate_limit = RateLimitConfig::from_env();
 
         // Load compression config
-        self.config.compression = CompressionConfig::from_env();
+        self.config.compression = self.config.compression.with_env();
 
         // Load security config
         self.config.security = SecurityConfig::from_env();
