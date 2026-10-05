@@ -93,6 +93,20 @@ enum LimiterState {
     PerIp(Arc<KeyedLimiter>),
 }
 
+/// Build a quota allowing `max_requests` per `window_seconds`.
+///
+/// Governor's `with_period` is the interval to replenish a *single* cell, so the
+/// window is divided by `max_requests` to sustain the configured rate. The burst
+/// lets a fresh client spend the whole window's allowance at once.
+fn build_quota(config: &RateLimitConfig) -> Quota {
+    let max_requests = NonZeroU32::new(config.max_requests.max(1)).unwrap_or(NonZeroU32::MIN);
+    let window = std::time::Duration::from_secs(config.window_seconds.max(1));
+
+    Quota::with_period(window / max_requests.get())
+        .unwrap_or_else(|| Quota::per_second(max_requests))
+        .allow_burst(max_requests)
+}
+
 /// Rate limiter state and configuration
 #[derive(Clone)]
 struct RateLimitState {
@@ -104,13 +118,7 @@ struct RateLimitState {
 
 impl RateLimitState {
     fn new(config: RateLimitConfig) -> Self {
-        let max_requests = NonZeroU32::new(config.max_requests.max(1)).unwrap_or(NonZeroU32::MIN);
-
-        // Create quota: max_requests per window_seconds
-        let quota =
-            Quota::with_period(std::time::Duration::from_secs(config.window_seconds.max(1)))
-                .unwrap_or_else(|| Quota::per_second(max_requests))
-                .allow_burst(max_requests);
+        let quota = build_quota(&config);
 
         let limiter = if config.strategy == "per_ip" {
             LimiterState::PerIp(Arc::new(RateLimiter::keyed(quota)))
@@ -415,6 +423,46 @@ mod tests {
         // Even a different IP should be blocked
         let result = state.check_rate_limit(Some(ip("192.168.1.2")));
         assert!(result.is_err(), "Global limit should block all IPs");
+    }
+
+    #[test]
+    fn test_quota_sustains_configured_rate() {
+        let mut config = test_config();
+        config.max_requests = 100;
+        config.window_seconds = 60;
+        let quota = build_quota(&config);
+
+        assert_eq!(quota.burst_size().get(), 100);
+        // 100 per 60s means one cell every 600ms, not one per 60s.
+        assert_eq!(
+            quota.replenish_interval(),
+            std::time::Duration::from_millis(600)
+        );
+    }
+
+    #[test]
+    fn test_global_limit_replenishes_at_configured_rate() {
+        let mut config = test_config();
+        config.strategy = "global".to_string();
+        config.max_requests = 20;
+        config.window_seconds = 1;
+        let state = RateLimitState::new(config);
+
+        for _ in 0..20 {
+            state.check_rate_limit(None).unwrap();
+        }
+        assert!(state.check_rate_limit(None).is_err());
+
+        // 20 per second replenishes one request every 50ms. Before the fix,
+        // the limiter refilled only one request per full window.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let allowed = (0..20)
+            .filter(|_| state.check_rate_limit(None).is_ok())
+            .count();
+        assert!(
+            allowed >= 3,
+            "expected sustained refill after 250ms, got {allowed}"
+        );
     }
 
     #[test]

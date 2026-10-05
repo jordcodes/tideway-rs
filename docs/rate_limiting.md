@@ -50,6 +50,12 @@ let app = App::with_config(config);
 | `trusted_proxies` | `Vec<String>` | empty | Proxy IP/CIDR allowlist for forwarded headers |
 | `trust_proxy` | `bool` | `false` | Legacy switch; no longer enables header trust by itself |
 
+Limits are enforced as a token bucket (GCRA): a client may burst up to `max_requests` at once,
+and capacity refills continuously at `max_requests / window_seconds` (one request every 600ms
+for the default 100 per 60s). A client that starts with a full bucket can therefore make up to
+about `2 × max_requests` requests in its first window; after that, sustained traffic is held to
+`max_requests` per window.
+
 ### Builder Methods
 
 ```rust
