@@ -428,7 +428,10 @@ where
         // the invitation can never succeed and would otherwise block re-inviting.
         let role = self.membership_store.membership_role(&membership);
         if self.membership_store.is_owner(&role) {
-            warn!(org_id, invitation_id, "Rejected invitation granting owner role");
+            warn!(
+                org_id,
+                invitation_id, "Rejected invitation granting owner role"
+            );
             let _ = self.invitation_store.release_claim(&invitation_id).await;
             let _ = self.invitation_store.mark_revoked(&invitation_id).await;
             return Err(OrganizationError::insufficient_permission(

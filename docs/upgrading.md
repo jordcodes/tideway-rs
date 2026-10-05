@@ -147,6 +147,33 @@ Before deploying:
 CLI-generated invitation and membership routes already reject the `owner` role and are not
 affected.
 
+## Unreleased: WebSocket upgrade authentication
+
+`WebSocketHandler::on_upgrade` was never called, so overriding it to authenticate or reject
+WebSocket connections had no effect, and no hook could read request headers or cookies. The hook
+now runs before every upgrade and receives the request:
+
+```rust
+// Before
+async fn on_upgrade(&self, ctx: &AppContext) -> Result<()>;
+
+// After
+async fn on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext) -> Result<()>;
+```
+
+Handlers that do not override `on_upgrade` need no changes. If you override it:
+
+1. Update the signature and import `tideway::websocket::UpgradeRequest`.
+2. Review what the override returns. It now runs on every upgrade, and an error rejects the
+   connection with that error's HTTP response (for example 401 for `TidewayError::unauthorized`).
+   An override that always returned an error now blocks every connection.
+3. Optionally move authentication out of `on_connect` into `on_upgrade`. Read credentials with
+   `req.cookie(..)`, `req.header(..)`, or `req.uri().query()`, and call `req.set_user_id(..)` so
+   `on_connect` sees `conn.user_id()`.
+
+Later hooks can read the upgrade request through `Connection::headers`, `header`, `cookie`, and
+`uri`. CLI-generated apps do not override `on_upgrade` and are not affected.
+
 ## Unreleased: scheduled JWKS refresh
 
 JWKS-backed verifiers (`JwtVerifier::from_jwks_url` and `from_jwks_url_with_client`) now

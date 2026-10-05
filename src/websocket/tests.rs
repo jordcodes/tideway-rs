@@ -496,4 +496,105 @@ mod websocket_tests {
         manager.broadcast_text_to_user("bob", "gone").await.unwrap();
         assert!(rx.try_recv().is_err());
     }
+
+    struct CookieAuthHandler;
+
+    #[async_trait::async_trait]
+    impl crate::websocket::WebSocketHandler for CookieAuthHandler {
+        async fn on_upgrade(
+            &self,
+            req: &mut crate::websocket::UpgradeRequest,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            if req.cookie("session") != Some("good") {
+                return Err(TidewayError::unauthorized("invalid session"));
+            }
+            let user = req.header("x-user").unwrap_or("anonymous").to_string();
+            req.set_user_id(user);
+            Ok(())
+        }
+
+        async fn on_connect(
+            &self,
+            conn: &mut Connection,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            let greeting = format!(
+                "{}|{}|{}",
+                conn.user_id().unwrap_or_default(),
+                conn.cookie("theme").unwrap_or_default(),
+                conn.uri().query().unwrap_or_default(),
+            );
+            conn.send_text(greeting).await
+        }
+
+        async fn on_message(
+            &self,
+            _conn: &mut Connection,
+            _msg: Message,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn on_disconnect(&self, _conn: &mut Connection, _ctx: &crate::AppContext) {}
+    }
+
+    async fn ws_handshake(
+        addr: std::net::SocketAddr,
+        extra_headers: &str,
+    ) -> (String, tokio::net::TcpStream) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = format!(
+            "GET /ws?room=lobby HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n\
+             Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n{extra_headers}\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(stream.read_u8().await.unwrap());
+        }
+        (String::from_utf8(head).unwrap(), stream)
+    }
+
+    #[tokio::test]
+    async fn test_on_upgrade_authenticates_from_request_metadata() {
+        use tokio::io::AsyncReadExt;
+
+        let manager = Arc::new(ConnectionManager::new());
+        let ctx = crate::AppContext::builder()
+            .with_websocket_manager(manager.clone())
+            .build();
+        let app = crate::websocket::ws("/ws", CookieAuthHandler, manager.clone()).with_state(ctx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        // Missing or wrong session cookie: rejected with an HTTP error, no upgrade.
+        let (head, _) = ws_handshake(addr, "").await;
+        assert!(head.starts_with("HTTP/1.1 401"), "{head}");
+        let (head, _) = ws_handshake(addr, "Cookie: session=bad\r\n").await;
+        assert!(head.starts_with("HTTP/1.1 401"), "{head}");
+        assert_eq!(manager.connection_count(), 0);
+
+        // Valid cookie: accepted, and on_connect sees the identity and request metadata.
+        let (head, mut stream) = ws_handshake(
+            addr,
+            "Cookie: theme=dark; session=good\r\nX-User: alice\r\n",
+        )
+        .await;
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+
+        let mut frame_head = [0u8; 2];
+        stream.read_exact(&mut frame_head).await.unwrap();
+        assert_eq!(frame_head[0], 0x81, "expected a final text frame");
+        let mut payload = vec![0u8; (frame_head[1] & 0x7f) as usize];
+        stream.read_exact(&mut payload).await.unwrap();
+        assert_eq!(String::from_utf8(payload).unwrap(), "alice|dark|room=lobby");
+        assert_eq!(manager.connection_count(), 1);
+    }
 }

@@ -55,6 +55,7 @@ mod manager;
 mod message;
 mod room;
 mod traits;
+mod upgrade;
 
 #[cfg(test)]
 mod tests;
@@ -65,3 +66,4 @@ pub use manager::{ConnectionHandle, ConnectionManager, ConnectionMetrics};
 pub use message::{CloseFrame, Message};
 pub use room::Room;
 pub use traits::WebSocketHandler;
+pub use upgrade::UpgradeRequest;

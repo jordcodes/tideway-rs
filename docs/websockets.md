@@ -74,11 +74,13 @@ tideway = { path = "../tideway", features = ["websocket"] }
 
 When a client connects, the following happens:
 
-1. WebSocket upgrade is accepted
-2. Connection is created with a unique ID
-3. Connection is registered with the `ConnectionManager`
-4. `on_connect` handler is called
-5. Send/receive tasks are spawned
+1. `on_upgrade` is called with the HTTP upgrade request; returning an error rejects it
+2. WebSocket upgrade is accepted
+3. Connection is created with a unique ID, the request headers and URI, and any user ID or
+   metadata set in `on_upgrade`
+4. Connection is registered with the `ConnectionManager`
+5. `on_connect` handler is called
+6. Send/receive tasks are spawned
 
 ### 2. Message Handling
 
@@ -96,6 +98,39 @@ When a connection closes:
 2. `on_disconnect` handler is called
 3. Connection is unregistered from the manager
 4. Connection is removed from all rooms
+
+## Authentication
+
+Override `on_upgrade` to authenticate a client before the WebSocket is opened. It receives an
+`UpgradeRequest` with the request headers, cookies, and URI. Returning an error sends that error
+as the HTTP response (for example `TidewayError::unauthorized` returns 401) and no connection is
+created.
+
+```rust
+use tideway::websocket::UpgradeRequest;
+use tideway::TidewayError;
+
+#[async_trait]
+impl WebSocketHandler for ChatHandler {
+    async fn on_upgrade(&self, req: &mut UpgradeRequest, _ctx: &AppContext) -> Result<()> {
+        let token = req
+            .cookie("session")
+            .ok_or_else(|| TidewayError::unauthorized("Missing session"))?;
+        let user_id = verify_session(token)?;
+        req.set_user_id(user_id);
+        Ok(())
+    }
+
+    // on_connect, on_message, on_disconnect ...
+}
+```
+
+The user ID and metadata set on the request are copied to the `Connection`, so `on_connect` can
+use `conn.user_id()` directly. Later hooks can also read the upgrade request through
+`conn.headers()`, `conn.header(name)`, `conn.cookie(name)`, and `conn.uri()`.
+
+Browsers cannot set custom headers on WebSocket requests, so use a cookie or a query parameter
+(`req.uri().query()`) to pass credentials from a browser.
 
 ## Sending Messages
 

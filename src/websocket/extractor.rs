@@ -7,11 +7,14 @@ use super::connection::Connection;
 use super::manager::{ConnectionHandle, ConnectionManager};
 use super::message::Message;
 use super::traits::WebSocketHandler;
+use super::upgrade::UpgradeRequest;
 use crate::app::AppContext;
 use crate::error::Result;
 use axum::{
     Router,
     extract::{State, ws::WebSocketUpgrade},
+    http::{HeaderMap, Uri},
+    response::IntoResponse,
     routing::get,
 };
 use futures::SinkExt;
@@ -59,13 +62,23 @@ where
     Router::new().route(
         path,
         get(
-            move |upgrade: WebSocketUpgrade, State(ctx): State<AppContext>| {
+            move |upgrade: WebSocketUpgrade,
+                  State(ctx): State<AppContext>,
+                  headers: HeaderMap,
+                  uri: Uri| {
                 let handler = handler.clone();
                 let manager = manager.clone();
                 let ctx = Arc::new(ctx);
 
                 async move {
-                    upgrade.on_upgrade(move |socket| handle_socket(socket, handler, manager, ctx))
+                    let mut request = UpgradeRequest::new(headers, uri);
+                    // Reject before switching protocols so the client gets a normal HTTP error.
+                    if let Err(e) = handler.on_upgrade(&mut request, &ctx).await {
+                        return e.into_response();
+                    }
+                    upgrade.on_upgrade(move |socket| {
+                        handle_socket(socket, request, handler, manager, ctx)
+                    })
                 }
             },
         ),
@@ -75,6 +88,7 @@ where
 /// Handle a WebSocket connection lifecycle
 async fn handle_socket<H: WebSocketHandler>(
     socket: axum::extract::ws::WebSocket,
+    request: UpgradeRequest,
     handler: Arc<H>,
     manager: Arc<ConnectionManager>,
     ctx: Arc<AppContext>,
@@ -89,10 +103,9 @@ async fn handle_socket<H: WebSocketHandler>(
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
     // Create connection wrapper
-    let conn_handle: ConnectionHandle = Arc::new(tokio::sync::RwLock::new(Connection::new(
-        conn_id.clone(),
-        tx.clone(),
-    )));
+    let conn_handle: ConnectionHandle = Arc::new(tokio::sync::RwLock::new(
+        Connection::from_upgrade(conn_id.clone(), tx.clone(), request),
+    ));
 
     // Register connection with manager (check connection limit)
     if let Err(e) = manager.register(conn_handle.clone()).await {
