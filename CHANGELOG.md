@@ -13,6 +13,19 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 > status instead of a generic internal error. Applications using metered billing should review
 > the Compatibility notes below and `docs/upgrading.md`.
 
+### Security
+
+- `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize`. When a handler bound
+  either type directly to a request body, the client controlled the acting admin (`admin_id`) or
+  the account being deleted (`user_id`). That allowed impersonation through any admin's identity,
+  and deletion of arbitrary accounts when password verification was disabled.
+
+### Added
+
+- `ImpersonationRequestBody` and `DeletionRequestBody` are safe deserializable request bodies with
+  no actor field and `deny_unknown_fields`. Their `into_request(actor_id)` method combines the body
+  with the authenticated user's ID.
+
 ### Fixed
 
 - `LiveStripeClient::create_usage_record` sends one `Idempotency-Key` across all retry attempts,
@@ -23,7 +36,7 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Compatibility
 
-- No public API or signature changes.
+- The usage-record fix has no public API or signature changes.
 - Non-2xx responses from `create_usage_record` and `list_usage_records` now return
   `BillingError::StripeApiError { http_status, message, code }` instead of
   `BillingError::Internal("HTTP client error: HTTP …")`. Through the existing `TidewayError`
@@ -32,6 +45,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   message. 5xx errors remain `Internal`.
 - Rate-limited or 5xx usage-record calls now take longer to fail: up to `max_retries` additional
   attempts with exponential backoff (4 attempts total by default).
+
+### Migration Notes
+
+- **Breaking:** handlers using `Json<ImpersonationRequest>` or `Json<DeletionRequest>` no longer
+  compile. Switch them to the `*Body` types and pass the authenticated actor ID to `into_request`.
+  See `docs/upgrading.md`.
 
 ## [tideway-cli 0.1.48] - 2026-08-04
 
