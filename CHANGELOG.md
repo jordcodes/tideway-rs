@@ -9,6 +9,30 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+> **Billing behavior change:** `LiveStripeClient` usage-record errors now report Stripe's HTTP
+> status instead of a generic internal error. Applications using metered billing should review
+> the Compatibility notes below and `docs/upgrading.md`.
+
+### Fixed
+
+- `LiveStripeClient::create_usage_record` sends one `Idempotency-Key` across all retry attempts,
+  so a request that timed out after reaching Stripe can no longer be recorded (and billed) twice.
+- Usage-record calls now retry HTTP 429 and 5xx responses, matching timeouts and every other
+  `LiveStripeClient` operation. Other 4xx responses still fail immediately.
+- Usage-record calls reuse one pooled HTTP client instead of building a new client per attempt.
+
+### Compatibility
+
+- No public API or signature changes.
+- Non-2xx responses from `create_usage_record` and `list_usage_records` now return
+  `BillingError::StripeApiError { http_status, message, code }` instead of
+  `BillingError::Internal("HTTP client error: HTTP …")`. Through the existing `TidewayError`
+  mapping, Stripe 4xx errors (including 401/403, and 429 after retries are exhausted) now surface
+  as `BadRequest` (HTTP 400) with Stripe's message instead of `Internal` (HTTP 500) with a hidden
+  message. 5xx errors remain `Internal`.
+- Rate-limited or 5xx usage-record calls now take longer to fail: up to `max_retries` additional
+  attempts with exponential backoff (4 attempts total by default).
+
 ## [tideway-cli 0.1.48] - 2026-08-04
 
 > **Existing applications:** install this CLI and run `tideway --json doctor --upgrade` before
