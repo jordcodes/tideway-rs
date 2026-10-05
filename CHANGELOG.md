@@ -123,6 +123,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   result must borrow them (`for invoice in &invoices.invoices`), serialize with
   `invoices.as_ref()`, or clone the inner value. The `InvoiceOperations` trait keeps its owned
   return types. See `docs/billing.md`.
+- **Breaking:** `allow_admin_impersonation` no longer overrides a user's opt-out.
+  `ImpersonationManager::start_impersonation` now always enforces
+  `ImpersonationStore::can_be_impersonated`, returning `Forbidden` when it returns `false`,
+  even with `allow_admin_impersonation(true)`. The setting only permits admin targets;
+  admin status is checked separately with `is_admin`. Custom stores must remove admin-only
+  restrictions from `can_be_impersonated` if they rely on this setting, while preserving
+  per-user eligibility checks. See
+  [the upgrade guide](docs/upgrading.md#08x-to-090-impersonation-opt-out-always-enforced).
 - **Breaking:** the `imp_blocked` claim built by `ImpersonationClaims::from_session` now uses
   the same action names as `validate_session` and `BlockedAction::matches`: `delete_account`,
   `change_password`, `change_mfa`, `change_email`, `modify_billing`, `export_data`,
@@ -148,6 +156,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Security
 
+- Impersonation session IDs now use 256 bits of OS randomness, replacing the timestamp and
+  non-cryptographic hash suffix. The `imp_` prefix remains, followed by an unpadded base64url
+  token. Treat session IDs as opaque strings rather than parsing the previous format.
 - `SessionManager` can now revoke refresh tokens along with sessions. Attach the refresh token
   store shared with `TokenRefreshFlow` via `SessionManager::with_refresh_token_store`, and
   `revoke_session`, `revoke_other_sessions`, `revoke_all_sessions`, and session-limit eviction
