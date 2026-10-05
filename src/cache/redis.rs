@@ -8,31 +8,29 @@ use std::time::Duration;
 /// Redis cache implementation
 #[derive(Clone)]
 pub struct RedisCache {
-    client: redis::Client,
+    connection: crate::redis_connection::SharedRedisConnection,
     default_ttl: Duration,
     /// Cached health status (updated by ping operations)
     health_status: Arc<AtomicBool>,
 }
 
 impl RedisCache {
-    /// Create a new Redis cache from a connection URL
+    /// Create a new Redis cache from a connection URL.
+    ///
+    /// The connection manager is initialized on first use and shared by clones.
     pub fn new(url: &str, default_ttl: Duration) -> Result<Self> {
-        let client = redis::Client::open(url)
-            .map_err(|e| TidewayError::internal(format!("Failed to create Redis client: {}", e)))?;
+        let connection = crate::redis_connection::SharedRedisConnection::new(url)?;
 
         Ok(Self {
-            client,
+            connection,
             default_ttl,
             health_status: Arc::new(AtomicBool::new(true)),
         })
     }
 
-    /// Get a connection from the Redis client
-    async fn get_connection(&self) -> Result<redis::aio::MultiplexedConnection> {
-        self.client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to get Redis connection: {}", e)))
+    /// Clone the shared connection manager
+    async fn get_connection(&self) -> Result<redis::aio::ConnectionManager> {
+        self.connection.get().await
     }
 
     /// Ping Redis and update health status
