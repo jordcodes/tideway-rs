@@ -201,4 +201,39 @@ impl WorkerPool {
 
         tracing::info!("Worker pool shut down");
     }
+
+    /// Shutdown all workers, aborting any still running after `timeout`
+    ///
+    /// Returns `true` if every worker stopped within the timeout. Jobs whose
+    /// workers are aborted are left claimed and are recovered by the queue
+    /// backend's normal retry/visibility handling, so handlers should be idempotent.
+    pub async fn shutdown_with_timeout(self, timeout: Duration) -> bool {
+        tracing::info!(
+            timeout_secs = timeout.as_secs_f64(),
+            "Shutting down worker pool..."
+        );
+
+        for shutdown_tx in self.shutdown_txs {
+            let _ = shutdown_tx.try_send(());
+        }
+
+        let abort_handles: Vec<_> = self.workers.iter().map(|w| w.abort_handle()).collect();
+        let finished = tokio::time::timeout(timeout, futures::future::join_all(self.workers))
+            .await
+            .is_ok();
+
+        if finished {
+            tracing::info!("Worker pool shut down");
+        } else {
+            let still_running = abort_handles.iter().filter(|h| !h.is_finished()).count();
+            tracing::warn!(
+                still_running,
+                "Worker pool shutdown timed out; aborting running jobs"
+            );
+            for handle in abort_handles {
+                handle.abort();
+            }
+        }
+        finished
+    }
 }

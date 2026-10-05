@@ -236,6 +236,36 @@ A refund owned by another entity returns `BillingError::RefundNotFound` (404), t
 unknown ID. Pass the billable ID of the authenticated caller, not one taken from the request. For
 admin-only lookups that must read any refund, use `RefundManager::get_refund`, which is unchanged.
 
+## Unreleased: bounded job shutdown
+
+`App::serve()` used to keep accepting HTTP connections on SIGTERM until every running job finished,
+with no time limit. Under Kubernetes, a slow job meant the pod was SIGKILLed while still serving
+traffic. The listener now closes as soon as the signal arrives, in-flight requests drain while
+workers stop in parallel, and workers get at most `jobs.shutdown_timeout_seconds` (default 25)
+before running jobs are aborted.
+
+`JobsConfig` has a new public field, so constructing it as a full struct literal no longer compiles:
+
+```rust
+// Before
+JobsConfig { enabled: true, /* ... */ retry_backoff_seconds: 60 }
+
+// After: set the field, or fill the rest from the defaults
+JobsConfig { enabled: true, /* ... */ retry_backoff_seconds: 60, shutdown_timeout_seconds: 25 }
+JobsConfig { enabled: true, ..Default::default() }
+```
+
+Configs loaded with `JobsConfig::from_env()` or deserialized with serde pick up the default and
+need no change. Before deploying:
+
+1. Set `shutdown_timeout_seconds` (or `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`) a few seconds below
+   your platform's kill deadline, such as Kubernetes `terminationGracePeriodSeconds` (default 30).
+   Raise both together if jobs legitimately need longer to finish.
+2. Make sure job handlers are idempotent. A job aborted at the timeout stays claimed and is run
+   again through the queue's normal retry handling.
+3. If you manage a `WorkerPool` directly, prefer `pool.shutdown_with_timeout(timeout)` over
+   `pool.shutdown()`, which still waits without a limit.
+
 ## Unreleased: scheduled JWKS refresh
 
 JWKS-backed verifiers (`JwtVerifier::from_jwks_url` and `from_jwks_url_with_client`) now
