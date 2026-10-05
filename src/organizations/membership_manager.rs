@@ -173,6 +173,14 @@ where
             joined_at: now,
         });
 
+        // Prevent creating owners via add_member (must use transfer_ownership)
+        let role = self.membership_store.membership_role(&membership);
+        if self.membership_store.is_owner(&role) {
+            return Err(OrganizationError::insufficient_permission(
+                "cannot add member as owner, use transfer_ownership instead",
+            ));
+        }
+
         // Persist membership
         self.membership_store.add_member(&membership).await?;
 

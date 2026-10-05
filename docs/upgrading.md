@@ -116,6 +116,37 @@ as `duration_secs` (an integer). Code that builds the request structs directly o
 not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
 not affected.
 
+## Unreleased: organization owners only through ownership transfer
+
+`MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` now
+reject memberships and invitations that grant the owner role. Before this change, they only checked
+that the actor could manage members, so an admin could add or invite a new owner. Owners can now
+only be created with `MembershipManager::transfer_ownership`, which already applied to
+`update_membership`.
+
+No public signatures change, and no migration is required. Behavior changes:
+
+- `add_member` returns `InsufficientPermission` when the membership factory produces an owner
+  role. This applies to every actor, including existing owners.
+- `invite` returns `InsufficientPermission` for owner-role invitations when the store implements
+  `InvitationStore::invitation_grants_owner`. The in-memory and SeaORM stores do.
+- `accept` returns `InsufficientPermission` when the membership factory produces an owner role,
+  whatever the store. The invitation is revoked rather than left pending, so the invitee's email
+  can be invited again with a valid role.
+
+Before deploying:
+
+1. Search for `add_member` calls that pass an owner role, for example to seed co-owners. Use
+   `transfer_ownership` instead.
+2. Check for pending owner-role invitations. They fail once the release is deployed. With the
+   SeaORM store, find them with `role = 'owner' AND status = 'pending'` on
+   `organization_invitations`, then revoke them and reissue them with a non-owner role.
+3. If you implement `InvitationStore` yourself, override `invitation_grants_owner` so owner-role
+   invitations are rejected when created, not only when accepted.
+
+CLI-generated invitation and membership routes already reject the `owner` role and are not
+affected.
+
 ## Unreleased: usage-record retries and errors
 
 This release fixes possible double billing of metered usage. `LiveStripeClient::create_usage_record`

@@ -151,7 +151,9 @@ For a custom persistent `InvitationStore`:
 - compare the authenticated account's normalized email with the invitation email;
 - scope list/revoke operations by organization and return not-found for cross-organization IDs;
 - rotate tokens on resend, rate limit delivery, and recheck seats when reactivating an expired invite;
-- never grant the owner role through a normal invitation;
+- never grant the owner role through a normal invitation; override `invitation_grants_owner` so
+  `InvitationManager::invite` rejects owner invitations at creation (acceptance rejects them
+  regardless and revokes the invitation);
 - avoid returning or logging token digests in API responses.
 
 If an application currently stores raw pending tokens, plan that migration explicitly. Either
@@ -163,7 +165,8 @@ against a production-like copy before rollout. The migration can keep a legacy c
 ## Core Types
 
 - `OrganizationManager`: organization CRUD + owner bootstrap flow
-- `MembershipManager`: membership operations and permission checks
+- `MembershipManager`: membership operations and permission checks; owners can only be created
+  through `transfer_ownership`, never `add_member` or `update_membership`
 - `InvitationManager`: invitation issuance and acceptance
 - `InvitationRateLimiter`: zero-configuration, process-local invitation rate limiter
 - `InvitationRateLimitProvider`: asynchronous extension point for shared rate-limit backends

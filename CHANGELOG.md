@@ -45,6 +45,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - Seat counts that would overflow `u32` (`extra_seats + count`, or included plus extra seats) are
   now rejected with `BadRequest` before Stripe is called, instead of panicking or wrapping. Seat
   totals computed from stored data saturate.
+- `MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` no
+  longer create organization owners. Previously they only checked that the actor could manage
+  members, so an admin could add or invite a member with the owner role. Owners can now only be
+  created through `transfer_ownership`. Accepting an owner-role invitation fails and revokes it.
 
 ### Fixed
 
@@ -83,6 +87,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   and `SubscriptionSyncOutcome` for callers that sync subscriptions themselves.
 - `SubscriptionManager::cancel_duplicate_subscription` immediately cancels a reported duplicate.
   It never cancels the stored subscription or another entity's subscription, and does not refund.
+- `InvitationStore::invitation_grants_owner` lets `InvitationManager::invite` reject owner-role
+  invitations at creation. The in-memory and SeaORM stores implement it. Custom stores inherit a
+  default that returns `false`; owner invitations from those stores are still rejected at `accept`.
 
 ### Changed
 
@@ -101,6 +108,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   message. 5xx errors remain `Internal`.
 - Rate-limited or 5xx usage-record calls now take longer to fail: up to `max_retries` additional
   attempts with exponential backoff (4 attempts total by default).
+- The organization owner fix has no signature changes, and `invitation_grants_owner` has a default,
+  so custom `InvitationStore` implementations still compile. `add_member` and `invite` with an
+  owner role now return `InsufficientPermission` for every actor, including owners.
 
 ### Migration Notes
 
@@ -112,6 +122,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - Handle `BillingEvent::DuplicateSubscription` in your event sink to cancel or refund duplicates.
   The duplicate's later `customer.subscription.updated` events emit it again; deduplicate by
   subscription ID.
+- Pending owner-role invitations created before this release fail when accepted and are revoked.
+  Code that used `add_member` to create co-owners must use `transfer_ownership` instead. See
+  `docs/upgrading.md`.
 
 ## [tideway-cli 0.1.48] - 2026-08-04
 
