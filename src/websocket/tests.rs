@@ -6,6 +6,60 @@ mod websocket_tests {
     use std::sync::Arc;
     use tokio::sync::mpsc;
 
+    #[test]
+    fn test_outbound_conversion_reuses_payload_allocation() {
+        use crate::websocket::CloseFrame;
+
+        let text = "broadcast payload".repeat(128);
+        let ptr = text.as_ptr();
+        let axum::extract::ws::Message::Text(converted) = Message::Text(text).into_axum() else {
+            panic!("expected text");
+        };
+        assert_eq!(converted.as_str().as_ptr(), ptr);
+
+        let reason = String::from("connection closed");
+        let ptr = reason.as_ptr();
+        let axum::extract::ws::Message::Close(Some(converted)) =
+            Message::Close(Some(CloseFrame { code: 1000, reason })).into_axum()
+        else {
+            panic!("expected close frame");
+        };
+        assert_eq!(converted.reason.as_str().as_ptr(), ptr);
+    }
+
+    #[tokio::test]
+    async fn test_room_membership_lifecycle_with_contended_local_state() {
+        let manager = ConnectionManager::new();
+        let (conn, _rx) = Connection::channel("departing", 16);
+        let conn = Arc::new(tokio::sync::RwLock::new(conn));
+        manager.register(conn.clone()).await.unwrap();
+        let (other, _other_rx) = Connection::channel("remaining", 16);
+        manager
+            .register(Arc::new(tokio::sync::RwLock::new(other)))
+            .await
+            .unwrap();
+        manager.add_to_room("remaining", "shared");
+        manager.add_to_room("remaining", "unrelated");
+
+        let guard = conn.write().await;
+        manager.add_to_room("departing", "shared");
+        manager.add_to_room("departing", "private");
+        manager.add_to_room("departing", "left");
+        manager.remove_from_room("departing", "left");
+        assert!(manager.room_members("left").is_empty());
+        drop(guard);
+
+        manager.unregister("departing").await;
+        // Late joins must not recreate memberships after disconnect.
+        manager.add_to_room("departing", "late");
+        manager.add_to_room("unknown", "unknown");
+        assert_eq!(manager.room_count(), 2);
+        assert_eq!(manager.room_members("shared"), vec!["remaining"]);
+        assert_eq!(manager.room_members("unrelated"), vec!["remaining"]);
+        manager.unregister("remaining").await;
+        assert_eq!(manager.room_count(), 0);
+    }
+
     #[tokio::test]
     async fn test_connection_manager_register_unregister() {
         let manager = ConnectionManager::new();

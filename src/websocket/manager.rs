@@ -38,6 +38,8 @@ pub struct ConnectionManager {
     connections: Arc<DashMap<String, ConnectionHandle>>,
     /// Map of room name to set of connection IDs
     rooms: Arc<DashMap<String, HashSet<String>>>,
+    /// Authoritative reverse room index, independent of connection-lock contention.
+    connection_rooms: Arc<DashMap<String, HashSet<String>>>,
     /// Map of user ID to set of connection IDs (for user-specific broadcasting)
     users: Arc<DashMap<String, HashSet<String>>>,
     /// Maximum number of connections allowed (0 = unlimited)
@@ -64,6 +66,7 @@ impl ConnectionManager {
         Self {
             connections: Arc::new(DashMap::new()),
             rooms: Arc::new(DashMap::new()),
+            connection_rooms: Arc::new(DashMap::new()),
             users: Arc::new(DashMap::new()),
             max_connections,
             active_count: Arc::new(AtomicU64::new(0)),
@@ -158,36 +161,25 @@ impl ConnectionManager {
                 }
             }
 
-            // Remove from all rooms
-            for room_name in conn_guard.rooms() {
-                if let Some(mut room_conns) = self.rooms.get_mut(room_name) {
-                    room_conns.remove(conn_id);
-                    if room_conns.is_empty() {
-                        drop(room_conns);
-                        self.rooms.remove(room_name);
-                    }
-                }
-            }
             drop(conn_guard);
 
-            // Ensure no stale room memberships remain even if local room state was
-            // out-of-sync due lock contention in add/remove room updates.
-            self.remove_connection_from_all_rooms(conn_id);
+            // Removing the connection above excludes concurrent room updates. Only
+            // visit its indexed rooms, even when connection-local updates were skipped.
+            if let Some((_, rooms)) = self.connection_rooms.remove(conn_id) {
+                for room in rooms {
+                    self.remove_room_member(conn_id, &room);
+                }
+            }
         }
     }
 
-    fn remove_connection_from_all_rooms(&self, conn_id: &str) {
-        let room_names: Vec<String> = self.rooms.iter().map(|entry| entry.key().clone()).collect();
-
-        for room_name in room_names {
-            if let Some(mut room_conns) = self.rooms.get_mut(&room_name) {
-                room_conns.remove(conn_id);
-                if room_conns.is_empty() {
-                    drop(room_conns);
-                    self.rooms.remove(&room_name);
-                }
-            }
-        }
+    fn remove_room_member(&self, conn_id: &str, room: &str) {
+        // Remove empty rooms atomically with membership changes so a concurrent
+        // join cannot be lost between checking emptiness and removing the room.
+        self.rooms.remove_if_mut(room, |_, members| {
+            members.remove(conn_id);
+            members.is_empty()
+        });
     }
 
     /// Get a connection by ID
@@ -197,8 +189,8 @@ impl ConnectionManager {
 
     /// Broadcast a message to all connections
     ///
-    /// This method clones the message for each connection. For large messages,
-    /// consider using `broadcast_with` to avoid cloning.
+    /// This method clones the message once for each connection. Conversion to
+    /// the outbound WebSocket frame consumes that clone without copying its payload.
     pub async fn broadcast(&self, msg: Message) -> Result<()> {
         self.total_broadcasts.fetch_add(1, Ordering::Relaxed);
         let mut errors = Vec::new();
@@ -398,35 +390,41 @@ impl ConnectionManager {
         self.broadcast_text_to_user(user_id, json).await
     }
 
-    /// Add a connection to a room
+    /// Add a registered connection to a room. Unknown connection IDs are ignored.
     pub fn add_to_room(&self, conn_id: &str, room: &str) {
+        // Keep the map guard until both indexes are updated: unregister must
+        // remove this entry before cleaning memberships. Lock order is always
+        // connections -> connection_rooms -> rooms; no guards cross an await.
+        let Some(conn) = self.connections.get(conn_id) else {
+            return;
+        };
+        let mut memberships = self
+            .connection_rooms
+            .entry(conn_id.to_string())
+            .or_default();
+        memberships.insert(room.to_string());
         self.rooms
             .entry(room.to_string())
             .or_default()
             .insert(conn_id.to_string());
 
-        // Also update the connection's local state
-        if let Some(conn) = self.connections.get(conn_id)
-            && let Ok(mut conn_guard) = conn.try_write()
-        {
+        // Local state is best effort; cleanup relies on the reverse index.
+        if let Ok(mut conn_guard) = conn.try_write() {
             conn_guard.join_room(room);
         }
     }
 
     /// Remove a connection from a room
     pub fn remove_from_room(&self, conn_id: &str, room: &str) {
-        if let Some(mut room_conns) = self.rooms.get_mut(room) {
-            room_conns.remove(conn_id);
-            if room_conns.is_empty() {
-                drop(room_conns);
-                self.rooms.remove(room);
-            }
+        let Some(conn) = self.connections.get(conn_id) else {
+            return;
+        };
+        if let Some(mut memberships) = self.connection_rooms.get_mut(conn_id) {
+            memberships.remove(room);
+            self.remove_room_member(conn_id, room);
         }
 
-        // Also update the connection's local state
-        if let Some(conn) = self.connections.get(conn_id)
-            && let Ok(mut conn_guard) = conn.try_write()
-        {
+        if let Ok(mut conn_guard) = conn.try_write() {
             conn_guard.leave_room(room);
         }
     }
@@ -558,5 +556,35 @@ pub struct ConnectionMetrics {
 impl Default for ConnectionManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unregister_does_not_lock_unrelated_rooms() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let manager = ConnectionManager::new();
+        let (conn, _rx) = Connection::channel("departing", 1);
+        runtime
+            .block_on(manager.register(Arc::new(tokio::sync::RwLock::new(conn))))
+            .unwrap();
+        manager
+            .rooms
+            .insert("unrelated".into(), HashSet::from(["other".into()]));
+        let room_guard = manager.rooms.get_mut("unrelated").unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker_manager = manager.clone();
+        let worker = std::thread::spawn(move || {
+            runtime.block_on(worker_manager.unregister("departing"));
+            done_tx.send(()).unwrap();
+        });
+        let result = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+        // Release the lock before joining so a regression fails instead of hanging.
+        drop(room_guard);
+        worker.join().unwrap();
+        result.expect("disconnect must not access unrelated rooms");
     }
 }
