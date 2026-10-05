@@ -25,10 +25,16 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 >   `Option<Invoice>`.
 >
 > Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
+> `CreateRefundRequest` has a new `idempotency_key` field,
 > `BillingEvent::OneTimeCheckoutCompleted` and `Refund` have new fields, `CreditTransactionKind` is
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
+- `ConfigBuilder::from_env()` now applies environment variables on top of existing builder
+  values instead of replacing configured settings with defaults. Values set on the builder
+  survive when the corresponding environment variables are absent; present environment
+  variables still override them. Applications upgrading to 0.9.0 that relied on `from_env()`
+  resetting settings should explicitly reset those values or start with `ConfigBuilder::new()`.
 - Stripe 4xx errors no longer expose Stripe's message (for example "No such price…" or test/live
   mode mismatches) when converted to `TidewayError`. The full error is logged on the
   `tideway::billing::stripe` target instead. Stripe 404 now maps to `NotFound` (HTTP 404), 429 to
@@ -55,6 +61,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   (`get_refund(billable_id, refund_id)`) and returns `RefundNotFound` (404) unless the refund's
   charge or payment intent belongs to that entity's Stripe customer. Previously it returned any
   refund by ID, so one organization could read another's refunds. See `docs/upgrading.md`.
+- **Breaking:** `CreateRefundRequest` has a new `idempotency_key: Option<String>` field.
+  Direct struct literals must add `idempotency_key: None`, use `..Default::default()`, or
+  switch to the `for_charge` / `for_payment_intent` builders. With `None`, a key is derived
+  from the charge/payment intent, amount, and reason and sent to Stripe to deduplicate refund
+  retries. Identical partial refunds within Stripe's 24-hour key window collapse into one;
+  use a distinct explicit key for each intentional repeat refund via `idempotency_key: Some(...)`
+  or `.with_idempotency_key(...)`, and reuse that key when retrying the same refund.
 - **Breaking:** `Refund` has a new `replayed` field, true when Stripe returned a cached refund
   for a repeated idempotency key (its `Idempotent-Replayed` header) instead of issuing a new one.
   Previously an identical refund within 24 hours silently returned the first refund. Struct
@@ -95,8 +108,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` and
   `CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>`, so cache hits
   share the cached value instead of copying it. Callers that bind the result to an owned
-  `InvoiceList` or `Invoice`, or move fields out of it, must borrow instead or clone explicitly.
-  The `InvoiceOperations` trait keeps its owned return types. See `docs/upgrading.md`.
+  `InvoiceList` or `Invoice`, or move fields out of it, must borrow instead
+  (`for invoice in &invoices.invoices`), serialize with `invoices.as_ref()`, or clone explicitly.
+  The `InvoiceOperations` trait keeps its owned return types. See `docs/upgrading.md` and
+  `docs/billing.md`.
 - The rate-limit middleware now sustains `max_requests` per `window_seconds`. Previously it
   allowed a burst of `max_requests` and then refilled only one request per window, so the
   default "100 per 60s" became 1 request per minute after the first burst (server-wide in
@@ -122,12 +137,6 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `Authorization: Bearer` header. Requests with a missing or wrong token get 401. Metrics are
   still collected when no token is set, but they cannot be scraped. Unknown HTTP methods are now
   labelled `OTHER`. See `docs/upgrading.md`.
-- **Breaking:** `CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>` instead of
-  `InvoiceList`, and `get_upcoming_invoice` returns `Option<Arc<Invoice>>` instead of
-  `Option<Invoice>`, so cache hits no longer copy the data. Callers that move fields out of the
-  result must borrow them (`for invoice in &invoices.invoices`), serialize with
-  `invoices.as_ref()`, or clone the inner value. The `InvoiceOperations` trait keeps its owned
-  return types. See `docs/billing.md`.
 - **Breaking:** the `imp_blocked` claim built by `ImpersonationClaims::from_session` now uses
   the same action names as `validate_session` and `BlockedAction::matches`: `delete_account`,
   `change_password`, `change_mfa`, `change_email`, `modify_billing`, `export_data`,
@@ -314,6 +323,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Migration Notes
 
+- **Logging / alerting:** `TidewayError` 4xx responses (including 401, 403, and 429) now log
+  at `WARN` instead of `ERROR`; 5xx responses remain at `ERROR`. Review log filters and
+  alerting rules that relied on `ERROR`-level logs for these client errors and include `WARN`
+  where needed. Stripe upstream 4xx diagnostics also log at `WARN` on the
+  `tideway::billing::stripe` target, except upstream 401/403 credential or permission failures,
+  which remain at `ERROR` and map to HTTP 500.
 - **Breaking:** apps that scrape metrics must set `TIDEWAY_METRICS_BEARER_TOKEN` and configure
   the scraper to send it before deploying, or scrapes get 404 and dashboards go blank.
 - **Breaking:** callers of `CachedInvoiceManager::list_invoices` and `get_upcoming_invoice` must
