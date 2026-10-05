@@ -308,6 +308,26 @@ where
 
         let user_id = self.user_store.user_id(&user);
 
+        // Validate credentials before exposing account status. Locked and unverified
+        // accounts must perform password work and return the same error as missing
+        // accounts when the password is incorrect.
+        let hash = self.user_store.get_password_hash(&user).await?;
+        if !self
+            .password_hasher
+            .verify_async(&req.password, &hash)
+            .await?
+        {
+            self.user_store.record_failed_attempt(&user).await?;
+            tracing::warn!(
+                target: "auth.login.failed",
+                user_id = %user_id,
+                email = %email,
+                reason = "invalid_password",
+                "Login failed: invalid password"
+            );
+            return Ok(LoginResponse::error("Invalid credentials"));
+        }
+
         // Check if locked
         if let Some(until) = self.user_store.is_locked(&user).await?
             && until > SystemTime::now()
@@ -335,24 +355,6 @@ where
             return Ok(LoginResponse::error(
                 "Please verify your email before logging in.",
             ));
-        }
-
-        // Verify password
-        let hash = self.user_store.get_password_hash(&user).await?;
-        if !self
-            .password_hasher
-            .verify_async(&req.password, &hash)
-            .await?
-        {
-            self.user_store.record_failed_attempt(&user).await?;
-            tracing::warn!(
-                target: "auth.login.failed",
-                user_id = %user_id,
-                email = %email,
-                reason = "invalid_password",
-                "Login failed: invalid password"
-            );
-            return Ok(LoginResponse::error("Invalid credentials"));
         }
 
         // Rehash if needed (transparent upgrade)
@@ -892,6 +894,52 @@ mod tests {
                 .unwrap()
                 .contains("Invalid credentials")
         );
+    }
+
+    async fn assert_wrong_password_hides_account_status(locked: bool, verified: bool) {
+        let user_store = TestUserStore::new();
+        let mut user = create_test_user("test@example.com", "password123", verified);
+        if locked {
+            user.locked_until = Some(SystemTime::now() + Duration::from_secs(3600));
+        }
+        user_store.add_user(user);
+        let flow = LoginFlow::new(
+            user_store,
+            InMemoryMfaTokenStore::new(),
+            TestTokenIssuer,
+            LoginFlowConfig::new("TestApp").require_verification(true),
+        );
+
+        let mut responses = Vec::new();
+        for email in ["missing@example.com", "test@example.com"] {
+            let response = flow
+                .login(LoginRequest {
+                    email: email.to_string(),
+                    password: "wrongpassword".to_string(),
+                    remember_me: false,
+                    mfa_code: None,
+                })
+                .await
+                .unwrap();
+            responses.push(serde_json::to_value(response).unwrap());
+        }
+        assert_eq!(responses[0], responses[1]);
+        assert_eq!(responses[1]["message"], "Invalid credentials");
+
+        // Check the failed-password path ran instead of relying on flaky wall-clock
+        // thresholds to detect an early return that skips password verification.
+        let users = flow.user_store.users.read().unwrap();
+        assert_eq!(users["test@example.com"].failed_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn test_login_wrong_password_hides_locked_account() {
+        assert_wrong_password_hides_account_status(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn test_login_wrong_password_hides_unverified_account() {
+        assert_wrong_password_hides_account_status(false, false).await;
     }
 
     #[tokio::test]
