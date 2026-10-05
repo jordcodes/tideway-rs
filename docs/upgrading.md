@@ -180,8 +180,7 @@ from `can_be_impersonated` if you rely on that setting. Stores that never enable
 `MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` now
 reject memberships and invitations that grant the owner role. Before this change, they only checked
 that the actor could manage members, so an admin could add or invite a new owner. Owners can now
-only be created with `MembershipManager::transfer_ownership`, which already applied to
-`update_membership`.
+only be created with `transfer_ownership`, which already applied to `update_membership`.
 
 No public signatures change, and no migration is required. Behavior changes:
 
@@ -205,6 +204,60 @@ Before deploying:
 
 CLI-generated invitation and membership routes already reject the `owner` role and are not
 affected.
+
+## Unreleased: ownership transfer updates the organization owner
+
+`MembershipManager::transfer_ownership` only swapped membership roles. It never updated the
+organization's `owner_id`, which `OrganizationStore::count_owned_by_user` reads to enforce
+`max_orgs_per_user`. After a transfer, the organization still counted against the former owner and
+not the new one.
+
+Use the new `OrganizationManager::transfer_ownership`. It takes the same `make_owner` and
+`demote_owner` closures plus a `set_owner` closure that returns the organization with its owner
+set, and returns the updated organization:
+
+```rust
+org_manager
+    .transfer_ownership(
+        &org_id,
+        &new_owner_id,
+        &actor_id,
+        |m| MyMembership { role: MyRole::Owner, ..m.clone() },
+        |m| MyMembership { role: MyRole::Admin, ..m.clone() },
+        |org, owner_id| MyOrganization { owner_id: owner_id.to_string(), ..org },
+    )
+    .await?;
+```
+
+It updates the organization first, then the memberships, and reverts the organization if the
+membership update fails. `set_owner` must set the owner to the ID it receives, otherwise the
+transfer fails without writing anything. `MembershipManager::transfer_ownership` still works but
+is deprecated.
+
+With the built-in SeaORM store, prefer `transfer_ownership_atomic`, which updates the organization
+and both memberships in one transaction. It takes the role to give the former owner:
+
+```rust
+org_manager
+    .transfer_ownership_atomic(&org_id, &new_owner_id, &actor_id, DefaultOrgRole::Admin)
+    .await?;
+```
+
+Both methods now enforce `max_orgs_per_user` for the new owner: if they already own the maximum
+number of organizations, the transfer returns `MaxOrgsReached` and nothing is written. Handle that
+error wherever you expose ownership transfer.
+
+Organizations transferred with the old method still have the former owner's ID. Find them by
+comparing `owner_id` with the owner membership; with the SeaORM store:
+
+```sql
+SELECT o.id, o.owner_id, m.user_id AS owner_member
+FROM organizations o
+JOIN organization_members m ON m.org_id = o.id AND m.role = 'owner'
+WHERE o.owner_id <> m.user_id;
+```
+
+Set `owner_id` to `owner_member` for each row in a reviewed data migration.
 
 ## Unreleased: WebSocket upgrade authentication
 

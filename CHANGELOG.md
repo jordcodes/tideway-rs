@@ -9,6 +9,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- Added `OrganizationManager::transfer_ownership`, which also sets the organization's owner to the
+  new owner. `MembershipManager::transfer_ownership` only swapped membership roles and left
+  `owner_id` unchanged, so `max_orgs_per_user` kept counting a transferred organization against
+  its former owner. The `MembershipManager` method is now deprecated. Organizations transferred
+  with it keep the stale `owner_id`; see `docs/upgrading.md` to find and fix them. With the
+  SeaORM store, `OrganizationManager::transfer_ownership_atomic` (backed by
+  `SeaOrmOrgStore::transfer_ownership_atomic`) does the whole transfer in one transaction. Both
+  methods return `MaxOrgsReached` if the new owner is already at `max_orgs_per_user`.
 - `RedisCache::clear()` no longer runs `FLUSHDB`. It previously wiped the whole Redis database,
   including `RedisJobQueue` jobs when the cache and job queue shared a database. `RedisCache`
   now stores keys under a `cache:` prefix (configurable with `with_prefix`), and `clear()`

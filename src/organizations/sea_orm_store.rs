@@ -482,6 +482,102 @@ impl SeaOrmOrgStore {
 
         Ok(())
     }
+
+    /// Transfer ownership in one database transaction.
+    ///
+    /// Sets the organization's `owner_id` to `new_owner_id`, gives `former_owner_id` the
+    /// `former_owner_role`, and makes `new_owner_id` an owner. Nothing is written unless all
+    /// three updates apply. Returns a conflict error if `former_owner_id` is no longer an owner
+    /// or `new_owner_id` is no longer a member when the transaction runs.
+    ///
+    /// This does not check permissions or limits; use
+    /// [`OrganizationManager::transfer_ownership_atomic`](super::OrganizationManager::transfer_ownership_atomic).
+    pub async fn transfer_ownership_atomic(
+        &self,
+        org_id: &str,
+        former_owner_id: &str,
+        new_owner_id: &str,
+        former_owner_role: DefaultOrgRole,
+    ) -> Result<()> {
+        if former_owner_role == DefaultOrgRole::Owner {
+            return Err(TidewayError::bad_request(
+                "The former owner must be given a non-owner role",
+            ));
+        }
+
+        tracing::debug!(
+            org_id = %org_id,
+            former_owner_id = %former_owner_id,
+            new_owner_id = %new_owner_id,
+            "transferring ownership atomically"
+        );
+
+        let txn = self
+            .db
+            .begin()
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        let org_result = organization::Entity::update_many()
+            .col_expr(organization::Column::OwnerId, Expr::value(new_owner_id))
+            .col_expr(
+                organization::Column::UpdatedAt,
+                Expr::value(u64_to_i64(current_timestamp())),
+            )
+            .filter(organization::Column::Id.eq(org_id))
+            .exec(&txn)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        if org_result.rows_affected != 1 {
+            return Err(TidewayError::not_found("Organization not found"));
+        }
+
+        let demote_result = membership::Entity::update_many()
+            .col_expr(
+                membership::Column::Role,
+                Expr::value(former_owner_role.as_str()),
+            )
+            .filter(membership::Column::OrgId.eq(org_id))
+            .filter(membership::Column::UserId.eq(former_owner_id))
+            .filter(membership::Column::Role.eq(DefaultOrgRole::Owner.as_str()))
+            .exec(&txn)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        if demote_result.rows_affected != 1 {
+            return Err(TidewayError::conflict(
+                "The current owner is no longer the organization owner",
+            ));
+        }
+
+        let promote_result = membership::Entity::update_many()
+            .col_expr(
+                membership::Column::Role,
+                Expr::value(DefaultOrgRole::Owner.as_str()),
+            )
+            .filter(membership::Column::OrgId.eq(org_id))
+            .filter(membership::Column::UserId.eq(new_owner_id))
+            .exec(&txn)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        if promote_result.rows_affected != 1 {
+            return Err(TidewayError::conflict(
+                "The new owner is no longer a member of the organization",
+            ));
+        }
+
+        txn.commit()
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        tracing::info!(
+            org_id = %org_id,
+            former_owner_id = %former_owner_id,
+            new_owner_id = %new_owner_id,
+            "ownership transferred atomically"
+        );
+
+        Ok(())
+    }
 }
 
 // =============================================================================
