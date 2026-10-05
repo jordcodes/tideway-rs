@@ -463,6 +463,8 @@ fn parse_invoice_id(id: &str) -> Result<stripe::InvoiceId> {
 // Live Stripe Client
 // ============================================================================
 
+const STRIPE_API_BASE: &str = "https://api.stripe.com";
+
 /// Live Stripe client for production use.
 ///
 /// Implements all Stripe client traits with:
@@ -491,6 +493,10 @@ pub struct LiveStripeClient {
     config: LiveStripeClientConfig,
     api_key: SecretString,
     circuit_breaker: Arc<CircuitBreaker>,
+    /// Shared HTTP client for raw REST calls, reused across requests and retries.
+    http: reqwest::Client,
+    /// Base URL for raw REST calls the async-stripe crate doesn't cover (usage records).
+    usage_api_base: String,
 }
 
 impl LiveStripeClient {
@@ -526,7 +532,16 @@ impl LiveStripeClient {
             config,
             api_key,
             circuit_breaker,
+            http: reqwest::Client::new(),
+            usage_api_base: STRIPE_API_BASE.to_string(),
         })
+    }
+
+    /// Point raw REST calls at a different base URL (e.g. a local test server).
+    #[cfg(test)]
+    fn with_usage_api_base(mut self, base: impl Into<String>) -> Self {
+        self.usage_api_base = base.into();
+        self
     }
 
     /// Create a client with default configuration.
@@ -700,6 +715,36 @@ fn log_retry(
 async fn sleep_with_backoff(attempts: u32, config: &LiveStripeClientConfig) {
     let delay = calculate_backoff_delay(attempts, config.base_delay_ms, config.max_delay_ms);
     tokio::time::sleep(delay).await;
+}
+
+/// Read the JSON body of a raw Stripe REST response.
+///
+/// Non-2xx responses become `StripeError::Stripe` with the HTTP status set, so
+/// `is_retryable_error` treats them the same as errors from async-stripe calls.
+async fn read_stripe_response(
+    resp: reqwest::Response,
+) -> std::result::Result<serde_json::Value, stripe::StripeError> {
+    #[derive(serde::Deserialize)]
+    struct ErrorBody {
+        error: stripe::RequestError,
+    }
+
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let mut error = serde_json::from_str::<ErrorBody>(&body)
+            .map(|b| b.error)
+            .unwrap_or_else(|_| stripe::RequestError {
+                message: Some(format!("HTTP {status}: {body}")),
+                ..Default::default()
+            });
+        error.http_status = status;
+        return Err(stripe::StripeError::Stripe(error));
+    }
+
+    resp.json()
+        .await
+        .map_err(|e| stripe::StripeError::ClientError(format!("JSON parse error: {e}")))
 }
 
 /// Check if an error is retryable.
@@ -2215,8 +2260,8 @@ impl StripeUsageClient for LiveStripeClient {
         // Use Stripe's REST API directly for usage records
         // The async-stripe crate doesn't fully expose usage record creation
         let url = format!(
-            "https://api.stripe.com/v1/subscription_items/{}/usage_records",
-            subscription_item_id
+            "{}/v1/subscription_items/{}/usage_records",
+            self.usage_api_base, subscription_item_id
         );
 
         let form = vec![
@@ -2225,38 +2270,27 @@ impl StripeUsageClient for LiveStripeClient {
             ("action", action.as_str().to_string()),
         ];
 
+        // One key for every attempt: a timed-out request may still have reached
+        // Stripe, and the shared key lets Stripe drop the duplicate on retry.
+        let idempotency_key = Self::generate_idempotency_key("create_usage_record");
+
         let response: serde_json::Value = with_retry_cb(
             &self.config,
             &self.circuit_breaker,
             "create_usage_record",
             || {
-                let url = url.clone();
-                let form_data = form.clone();
-                let api_key = self.api_key.expose_secret().to_string();
+                let request = self
+                    .http
+                    .post(&url)
+                    .basic_auth(self.api_key.expose_secret(), None::<&str>)
+                    .header("Idempotency-Key", &idempotency_key)
+                    .form(&form);
                 async move {
-                    let client = reqwest::Client::new();
-                    let resp = client
-                        .post(&url)
-                        .basic_auth(&api_key, None::<&str>)
-                        .form(&form_data)
+                    let resp = request
                         .send()
                         .await
                         .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
-
-                    if !resp.status().is_success() {
-                        let status = resp.status().as_u16();
-                        let body = resp.text().await.unwrap_or_default();
-                        return Err(stripe::StripeError::ClientError(format!(
-                            "HTTP {}: {}",
-                            status, body
-                        )));
-                    }
-
-                    let body: serde_json::Value = resp.json().await.map_err(|e| {
-                        stripe::StripeError::ClientError(format!("JSON parse error: {}", e))
-                    })?;
-
-                    Ok(body)
+                    read_stripe_response(resp).await
                 }
             },
         )
@@ -2295,8 +2329,8 @@ impl StripeUsageClient for LiveStripeClient {
 
         // Use Stripe's REST API directly
         let url = format!(
-            "https://api.stripe.com/v1/subscription_items/{}/usage_record_summaries",
-            subscription_item_id
+            "{}/v1/subscription_items/{}/usage_record_summaries",
+            self.usage_api_base, subscription_item_id
         );
 
         let response: serde_json::Value = with_retry_cb(
@@ -2304,31 +2338,16 @@ impl StripeUsageClient for LiveStripeClient {
             &self.circuit_breaker,
             "list_usage_records",
             || {
-                let url = url.clone();
-                let api_key = self.api_key.expose_secret().to_string();
+                let request = self
+                    .http
+                    .get(&url)
+                    .basic_auth(self.api_key.expose_secret(), None::<&str>);
                 async move {
-                    let client = reqwest::Client::new();
-                    let resp = client
-                        .get(&url)
-                        .basic_auth(&api_key, None::<&str>)
+                    let resp = request
                         .send()
                         .await
                         .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
-
-                    if !resp.status().is_success() {
-                        let status = resp.status().as_u16();
-                        let body = resp.text().await.unwrap_or_default();
-                        return Err(stripe::StripeError::ClientError(format!(
-                            "HTTP {}: {}",
-                            status, body
-                        )));
-                    }
-
-                    let body: serde_json::Value = resp.json().await.map_err(|e| {
-                        stripe::StripeError::ClientError(format!("JSON parse error: {}", e))
-                    })?;
-
-                    Ok(body)
+                    read_stripe_response(resp).await
                 }
             },
         )
@@ -2735,5 +2754,165 @@ mod tests {
     fn test_client_circuit_state() {
         let client = LiveStripeClient::with_default_config("sk_test_12345678901234567890").unwrap();
         assert_eq!(client.circuit_state(), CircuitState::Closed);
+    }
+
+    mod usage_http {
+        use super::*;
+        use axum::extract::{ConnectInfo, State};
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::response::IntoResponse;
+        use std::collections::VecDeque;
+        use std::net::SocketAddr;
+        use std::sync::Mutex;
+
+        #[derive(Clone)]
+        enum Reply {
+            Hang(Duration),
+            Status(u16, &'static str),
+        }
+
+        #[derive(Debug)]
+        struct SeenRequest {
+            idempotency_key: Option<String>,
+            peer: SocketAddr,
+        }
+
+        #[derive(Clone, Default)]
+        struct MockStripe {
+            replies: Arc<Mutex<VecDeque<Reply>>>,
+            seen: Arc<Mutex<Vec<SeenRequest>>>,
+        }
+
+        const USAGE_RECORD_OK: &str = r#"{"id":"mbur_123","object":"usage_record"}"#;
+        const RATE_LIMITED: &str =
+            r#"{"error":{"type":"invalid_request_error","message":"Too many requests"}}"#;
+        const BAD_REQUEST: &str =
+            r#"{"error":{"type":"invalid_request_error","message":"Invalid quantity"}}"#;
+
+        async fn handle(
+            State(mock): State<MockStripe>,
+            ConnectInfo(peer): ConnectInfo<SocketAddr>,
+            headers: HeaderMap,
+        ) -> axum::response::Response {
+            mock.seen.lock().unwrap().push(SeenRequest {
+                idempotency_key: headers
+                    .get("idempotency-key")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string),
+                peer,
+            });
+            let reply = mock
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Reply::Status(200, USAGE_RECORD_OK));
+            match reply {
+                Reply::Hang(d) => {
+                    tokio::time::sleep(d).await;
+                    (StatusCode::OK, USAGE_RECORD_OK).into_response()
+                }
+                Reply::Status(code, body) => (
+                    StatusCode::from_u16(code).unwrap(),
+                    [("content-type", "application/json")],
+                    body,
+                )
+                    .into_response(),
+            }
+        }
+
+        async fn start_mock(replies: Vec<Reply>) -> (String, MockStripe) {
+            let mock = MockStripe {
+                replies: Arc::new(Mutex::new(replies.into())),
+                ..Default::default()
+            };
+            let app = axum::Router::new()
+                .route(
+                    "/v1/subscription_items/{id}/usage_records",
+                    axum::routing::post(handle),
+                )
+                .with_state(mock.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            (format!("http://{addr}"), mock)
+        }
+
+        fn test_client(base: &str) -> LiveStripeClient {
+            let config = LiveStripeClientConfig::new()
+                .max_retries(3)
+                .base_delay_ms(1)
+                .max_delay_ms(5)
+                .timeout_seconds(1)
+                .disable_circuit_breaker();
+            LiveStripeClient::new("sk_test_12345678901234567890", config)
+                .unwrap()
+                .with_usage_api_base(base)
+        }
+
+        #[tokio::test]
+        async fn timeout_retry_reuses_same_idempotency_key() {
+            let (base, mock) = start_mock(vec![Reply::Hang(Duration::from_secs(3))]).await;
+            let client = test_client(&base);
+
+            let result = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap();
+            assert_eq!(result.id, "mbur_123");
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(
+                seen.len(),
+                2,
+                "expected one timed-out attempt and one retry"
+            );
+            let first_key = seen[0]
+                .idempotency_key
+                .as_deref()
+                .expect("usage record request must carry an Idempotency-Key");
+            assert!(!first_key.is_empty());
+            assert_eq!(seen[1].idempotency_key.as_deref(), Some(first_key));
+        }
+
+        #[tokio::test]
+        async fn rate_limited_usage_record_is_retried_on_same_connection() {
+            let (base, mock) = start_mock(vec![Reply::Status(429, RATE_LIMITED)]).await;
+            let client = test_client(&base);
+
+            let result = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap();
+            assert_eq!(result.id, "mbur_123");
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2, "429 should be retried once then succeed");
+            assert_eq!(seen[0].idempotency_key, seen[1].idempotency_key);
+            assert_eq!(
+                seen[0].peer, seen[1].peer,
+                "retry should reuse the pooled HTTP connection"
+            );
+        }
+
+        #[tokio::test]
+        async fn client_error_usage_record_is_not_retried() {
+            let (base, mock) = start_mock(vec![Reply::Status(400, BAD_REQUEST)]).await;
+            let client = test_client(&base);
+
+            let err = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("Invalid quantity"), "got: {err}");
+            assert_eq!(mock.seen.lock().unwrap().len(), 1);
+        }
     }
 }
