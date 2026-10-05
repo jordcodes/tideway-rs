@@ -315,45 +315,76 @@ impl From<BillingError> for crate::error::TidewayError {
                 crate::error::TidewayError::Internal(err.to_string())
             }
 
-            // Map Stripe API errors based on HTTP status
-            BillingError::StripeApiError { http_status, .. } => match http_status {
-                // Stripe credentials and permissions belong to the server, not the user.
-                // Keep diagnostics in operator logs, even if callers display this error
-                // directly or enable development responses.
-                Some(401 | 403) => {
-                    tracing::error!(
-                        target: "tideway::billing::stripe",
-                        error = %err,
-                        "Stripe authentication or permission failure"
-                    );
-                    crate::error::TidewayError::Internal(
-                        "Unable to process billing request. Please try again later.".to_string(),
-                    )
-                }
-                // Other 4xx messages describe server-side configuration (unknown price IDs,
-                // test/live mode mismatches, ...), so log them and return generic text.
-                Some(status @ 400..=499) => {
-                    tracing::warn!(
-                        target: "tideway::billing::stripe",
-                        error = %err,
-                        "Stripe rejected billing request"
-                    );
-                    match status {
-                        404 => crate::error::TidewayError::NotFound(
-                            "Billing resource not found".to_string(),
-                        ),
-                        429 => crate::error::TidewayError::TooManyRequests(
-                            "Billing provider rate limit exceeded. Please try again later."
-                                .to_string(),
-                        ),
-                        _ => crate::error::TidewayError::BadRequest(
-                            "Unable to process billing request".to_string(),
-                        ),
-                    }
-                }
-                _ => crate::error::TidewayError::Internal(err.to_string()),
+            // Keep the original Stripe error so handlers can still read its message and code.
+            BillingError::StripeApiError { .. } => crate::error::TidewayError::Billing {
+                public: Box::new(stripe_public_error(&err)),
+                source: Box::new(err),
             },
         }
+    }
+}
+
+/// Map a `StripeApiError` to the error shown to API clients, based on HTTP status.
+fn stripe_public_error(err: &BillingError) -> crate::error::TidewayError {
+    let BillingError::StripeApiError {
+        message,
+        code,
+        http_status,
+        ..
+    } = err
+    else {
+        return crate::error::TidewayError::Internal(err.to_string());
+    };
+
+    match http_status {
+        // Stripe credentials and permissions belong to the server, not the user.
+        // Keep diagnostics in operator logs, even if callers display this error
+        // directly or enable development responses.
+        Some(401 | 403) => {
+            tracing::error!(
+                target: "tideway::billing::stripe",
+                error = %err,
+                "Stripe authentication or permission failure"
+            );
+            crate::error::TidewayError::Internal(
+                "Unable to process billing request. Please try again later.".to_string(),
+            )
+        }
+        // 402 is Stripe's `card_error`. Its message is written for end users ("Your card's
+        // security code is incorrect."), so pass it through with the Stripe code. Without a
+        // code the body could not be parsed as a Stripe error, so fall through to generic text.
+        Some(402) if code.is_some() => {
+            tracing::info!(
+                target: "tideway::billing::stripe",
+                error = %err,
+                "Stripe declined card"
+            );
+            crate::error::TidewayError::CodedBadRequest {
+                code: code.clone().unwrap_or_default(),
+                message: message.clone(),
+            }
+        }
+        // Other 4xx messages describe server-side configuration (unknown price IDs,
+        // test/live mode mismatches, ...), so log them and return generic text.
+        Some(status @ 400..=499) => {
+            tracing::warn!(
+                target: "tideway::billing::stripe",
+                error = %err,
+                "Stripe rejected billing request"
+            );
+            match status {
+                404 => {
+                    crate::error::TidewayError::NotFound("Billing resource not found".to_string())
+                }
+                429 => crate::error::TidewayError::TooManyRequests(
+                    "Billing provider rate limit exceeded. Please try again later.".to_string(),
+                ),
+                _ => crate::error::TidewayError::BadRequest(
+                    "Unable to process billing request".to_string(),
+                ),
+            }
+        }
+        _ => crate::error::TidewayError::Internal(err.to_string()),
     }
 }
 
@@ -454,10 +485,17 @@ mod tests {
         }
     }
 
+    fn public_error(err: BillingError) -> crate::error::TidewayError {
+        match err.into() {
+            crate::error::TidewayError::Billing { public, .. } => *public,
+            other => panic!("expected TidewayError::Billing, got {other:?}"),
+        }
+    }
+
     #[test]
     fn stripe_client_errors_do_not_leak_stripe_message() {
         let raw = "No such price: 'price_live_123'; a similar object exists in live mode";
-        for status in [400, 402, 404, 408, 409, 429] {
+        for status in [400, 404, 408, 409, 429] {
             let tideway_err: crate::error::TidewayError = stripe_error(status, raw).into();
             let text = tideway_err.to_string();
             assert!(
@@ -465,22 +503,75 @@ mod tests {
                 "HTTP {status} leaked Stripe message: {text}"
             );
             assert!(!text.contains("resource_missing"), "HTTP {status}: {text}");
+            assert_eq!(tideway_err.error_code(), None, "HTTP {status}");
         }
     }
 
     #[test]
     fn stripe_client_errors_map_to_matching_statuses() {
-        let err: crate::error::TidewayError = stripe_error(404, "No such customer").into();
+        let err = public_error(stripe_error(404, "No such customer"));
         assert!(matches!(err, crate::error::TidewayError::NotFound(_)));
 
-        let err: crate::error::TidewayError = stripe_error(429, "Too many requests").into();
+        let err = public_error(stripe_error(429, "Too many requests"));
         assert!(matches!(
             err,
             crate::error::TidewayError::TooManyRequests(_)
         ));
 
-        let err: crate::error::TidewayError = stripe_error(400, "No such price").into();
+        let err = public_error(stripe_error(400, "No such price"));
         assert!(matches!(err, crate::error::TidewayError::BadRequest(_)));
+
+        let err = public_error(stripe_error(500, "Something went wrong"));
+        assert!(matches!(err, crate::error::TidewayError::Internal(_)));
+    }
+
+    fn card_error(code: Option<&str>) -> BillingError {
+        BillingError::StripeApiError {
+            operation: "pay_invoice".to_string(),
+            message: "Your card's security code is incorrect.".to_string(),
+            code: code.map(str::to_string),
+            http_status: Some(402),
+        }
+    }
+
+    #[test]
+    fn stripe_card_errors_pass_through_message_and_code() {
+        let err: crate::error::TidewayError = card_error(Some("incorrect_cvc")).into();
+        assert_eq!(
+            err.to_string(),
+            "Bad request: Your card's security code is incorrect."
+        );
+        assert_eq!(err.error_code(), Some("incorrect_cvc"));
+        assert!(matches!(
+            public_error(card_error(Some("incorrect_cvc"))),
+            crate::error::TidewayError::CodedBadRequest { .. }
+        ));
+    }
+
+    #[test]
+    fn stripe_402_without_code_uses_generic_message() {
+        let err: crate::error::TidewayError = card_error(None).into();
+        assert_eq!(
+            err.to_string(),
+            "Bad request: Unable to process billing request"
+        );
+        assert_eq!(err.error_code(), None);
+    }
+
+    #[test]
+    fn original_stripe_error_is_available_from_tideway_error() {
+        let raw = "No such price: 'price_live_123'";
+        for original in [stripe_error(400, raw), card_error(Some("incorrect_cvc"))] {
+            let err: crate::error::TidewayError = original.clone().into();
+            assert_eq!(err.billing_error(), Some(&original));
+        }
+
+        let err: crate::error::TidewayError = card_error(Some("incorrect_cvc")).into();
+        let Some(BillingError::StripeApiError { message, code, .. }) = err.billing_error() else {
+            panic!("expected StripeApiError");
+        };
+        assert_eq!(message, "Your card's security code is incorrect.");
+        assert_eq!(code.as_deref(), Some("incorrect_cvc"));
     }
 
     #[test]

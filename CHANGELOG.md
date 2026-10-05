@@ -37,10 +37,21 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   resetting settings should explicitly reset those values or start with `ConfigBuilder::new()`.
 - Stripe 4xx errors no longer expose Stripe's message (for example "No such price…" or test/live
   mode mismatches) when converted to `TidewayError`. The full error is logged on the
-  `tideway::billing::stripe` target instead. Stripe 404 now maps to `NotFound` (HTTP 404), 429 to
-  `TooManyRequests` (HTTP 429), and other 4xx statuses to `BadRequest` (HTTP 400) with a generic
-  message. `BillingError` itself is unchanged, so handlers that match on it can still read
-  `message`, `code`, and `http_status`.
+  `tideway::billing::stripe` target instead. Stripe 404 now maps to HTTP 404, 429 to HTTP 429, and
+  other 4xx statuses to HTTP 400 with a generic message. Stripe 402 card errors are the exception:
+  users see Stripe's message (for example "Your card's security code is incorrect.") and the
+  response `code` is Stripe's code (for example `incorrect_cvc`).
+- Stripe API errors now convert to the new `TidewayError::Billing { public, source }` variant, so
+  apps can read the original `BillingError::StripeApiError` (`message`, `code`, `http_status`)
+  with `TidewayError::billing_error()`, including from `LiveStripeClient` calls. Code that matched
+  Stripe failures as `TidewayError::NotFound`, `Internal`, and so on should match on
+  `err.public_error()` instead. `StripeApiError::code` is now Stripe's snake_case code
+  (`incorrect_cvc`) instead of the Rust variant name (`IncorrectCvc`). See `docs/upgrading.md`.
+- `LiveStripeClient`'s circuit breaker now counts only provider failures (Stripe 5xx, 429 after
+  retries, timeouts, and connection errors). Previously every failed call counted, so five
+  consecutive card declines (`failure_threshold` default) opened the circuit and failed all Stripe
+  calls for `open_duration_seconds`. A Stripe 4xx now resets the failure count and closes a
+  half-open circuit, because Stripe answered.
 - Added `OrganizationManager::transfer_ownership`, which also sets the organization's owner to the
   new owner. `MembershipManager::transfer_ownership` only swapped membership roles and left
   `owner_id` unchanged, so `max_orgs_per_user` kept counting a transferred organization against

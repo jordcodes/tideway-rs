@@ -500,7 +500,8 @@ usage-record calls does change:
 | --- | --- | --- |
 | 429 | `Internal` (500), not retried | Retried; after the last attempt, `BadRequest` (400) |
 | 5xx | `Internal` (500), not retried | Retried; after the last attempt, `Internal` (500) |
-| Other 4xx (incl. 401/403) | `Internal` (500), message hidden | `BadRequest` (400), Stripe's message shown |
+| 401/403 | `Internal` (500), message hidden | `Internal` (500), generic message |
+| Other 4xx | `Internal` (500), message hidden | See [Stripe API errors](#08x-to-090-stripe-api-errors) |
 
 The underlying error is now `BillingError::StripeApiError` with `http_status` set, matching every
 other `LiveStripeClient` operation, rather than `BillingError::Internal`.
@@ -509,10 +510,38 @@ Before deploying, check applications that record usage:
 
 1. Search for code that matches the `"HTTP client error: HTTP"` message text or relies on
    usage-record failures being `Internal`. Branch on `StripeApiError::http_status` instead.
-2. If usage-record errors reach API clients, confirm that showing Stripe's 4xx message is
-   acceptable, or map the error in the handler.
+2. If usage-record errors reach API clients, review the client-facing text described in
+   [Stripe API errors](#08x-to-090-stripe-api-errors).
 3. If usage is recorded on a latency-sensitive path, note that 429 and 5xx failures now take up to
    `max_retries` backoff delays before they are returned.
+
+## 0.8.x to 0.9.0: Stripe API errors
+
+`BillingError::StripeApiError` (returned by every `LiveStripeClient` call) now converts to
+`TidewayError::Billing { public, source }`. `public` sets the HTTP status and client-facing message;
+`source` is the original `BillingError`:
+
+| Stripe status | HTTP status | Client-facing message |
+| --- | --- | --- |
+| 402 `card_error` | 400 | Stripe's message (for example "Your card's security code is incorrect."), with Stripe's `code` (for example `incorrect_cvc`) in the response `code` field |
+| 401/403 | 500 | Generic |
+| 404 | 404 | Generic ("Billing resource not found") |
+| 429 | 429 | Generic |
+| Other 4xx | 400 | Generic ("Unable to process billing request") |
+| 5xx, timeouts | 500 | Generic in production |
+
+Stripe's `code` is now its snake_case value (`incorrect_cvc`) instead of the Rust variant name
+(`IncorrectCvc`).
+
+Before deploying, search for code that matches Stripe failures by variant, such as
+`matches!(err, TidewayError::NotFound(_))` or `Err(TidewayError::Internal(_))`. Those matches no
+longer apply to Stripe errors. Match on `err.public_error()` instead, or read the original error:
+
+```rust
+if let Some(BillingError::StripeApiError { message, code, http_status, .. }) = err.billing_error() {
+    // Full Stripe message and code, also for 4xx errors whose client-facing text is generic.
+}
+```
 
 ## 0.7.x to 0.8.0 / CLI 0.1.48: recoverable password resets
 
