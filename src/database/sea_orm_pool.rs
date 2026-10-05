@@ -1,10 +1,10 @@
 use crate::database::config::redact_database_url;
+use crate::database::connection::connect_options;
 use crate::error::{Result, TidewayError};
 use crate::traits::database::{DatabaseConnection, DatabasePool};
 use async_trait::async_trait;
-use sea_orm::{ConnectOptions, Database, DatabaseConnection as SeaOrmConnection};
+use sea_orm::{Database, DatabaseConnection as SeaOrmConnection};
 use std::sync::Arc;
-use std::time::Duration;
 
 /// Wrapper around SeaORM connection to implement DatabaseConnection trait
 pub struct SeaOrmConnectionWrapper {
@@ -90,12 +90,7 @@ impl SeaOrmPool {
             ));
         }
 
-        let mut opt = ConnectOptions::new(&config.url);
-        opt.max_connections(config.max_connections)
-            .min_connections(config.min_connections)
-            .connect_timeout(Duration::from_secs(config.connect_timeout))
-            .idle_timeout(Duration::from_secs(config.idle_timeout))
-            .sqlx_logging(true);
+        let opt = connect_options(config);
 
         let conn = Database::connect(opt)
             .await
