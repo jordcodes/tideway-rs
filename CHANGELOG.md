@@ -9,6 +9,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+- `AccountDeletionFlow` no longer deletes an account when a cleanup step (session or refresh
+  token revocation, trusted device removal, MFA or lockout clearing) fails. Previously these
+  errors were silently ignored, so a store failure could leave sessions and refresh tokens valid
+  after the account was deleted. Immediate deletions now return the error; scheduled deletions
+  stay pending and are retried by the next `process_due_deletions` run.
 - `WebhookRouter::process` now returns a `ServiceUnavailable` (503) error for a duplicate
   delivery of an event that is still being processed in the same instance. It previously
   returned `Ok` (200), so the provider stopped retrying and the event was lost if the first

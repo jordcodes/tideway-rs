@@ -1536,6 +1536,11 @@ impl AccountDeletionStore for MyStore {
 }
 ```
 
+If any cleanup method returns an error, the deletion is aborted before the account is
+deleted, so sessions and tokens can never outlive the account. `request_deletion` returns the
+error; `process_due_deletions` logs it (`auth.deletion.cleanup_failed`) and leaves the
+deletion pending so the next run retries it. Keep cleanup methods idempotent.
+
 ### Usage
 
 ```rust
