@@ -168,6 +168,11 @@ impl App {
     /// Note: This accepts `Router<()>` - routers that have already had their state provided.
     /// These routers will be merged after `with_state` is called in `serve()`.
     /// For routers that need `AppContext`, use `register_module` instead.
+    ///
+    /// Merged routes receive Tideway's full middleware stack in `serve()` and
+    /// `into_router_with_middleware()`, including rate limiting (sharing the same
+    /// budget as module routes), timeouts, body limits, and security headers.
+    /// Layers added with [`App::layer`] apply only to registered modules.
     pub fn merge_router(mut self, router: Router) -> Self {
         self.extra_routers.push(router);
         self
@@ -316,13 +321,16 @@ impl App {
     /// example per-IP rate limiting), pair the returned router with
     /// `Router::into_make_service_with_connect_info`, or use
     /// `App::into_make_service_with_connect_info()` for the exact `serve()` path.
-    pub fn into_router_with_middleware(self) -> Router {
-        let app = self.with_middleware();
-        apply_global_layers_with_config(
-            build_stateful_router(app.router, app.context, app.extra_routers),
-            &app.global_layers,
-            &app.config.cors,
-        )
+    pub fn into_router_with_middleware(mut self) -> Router {
+        let router = build_stateful_router(
+            std::mem::take(&mut self.router),
+            self.context.clone(),
+            std::mem::take(&mut self.extra_routers),
+        );
+        // Apply middleware after merging so routers added with `merge_router`
+        // receive the same stack as registered modules.
+        let router = self.apply_middleware(router);
+        apply_global_layers_with_config(router, &self.global_layers, &self.config.cors)
     }
 
     /// Convert the App into an axum make-service with Tideway's middleware stack
@@ -347,10 +355,8 @@ impl App {
         self.into_router()
     }
 
-    /// Apply middleware stack and prepare for serving
-    fn with_middleware(mut self) -> Self {
-        let mut router = self.router;
-
+    /// Apply Tideway's middleware stack to the fully merged application router
+    fn apply_middleware(&self, mut router: Router) -> Router {
         // Router::layer wraps the existing router: add layers INNERMOST FIRST.
         // Request execution order (outer to inner): metrics, tracing, dev logging,
         // request logging, security headers, compression, rate limit, timeout,
@@ -417,8 +423,7 @@ impl App {
             router = router.layer(build_metrics_layer(collector.clone()));
         }
 
-        self.router = router;
-        self
+        router
     }
 
     /// Start background job workers if jobs are enabled
@@ -452,7 +457,7 @@ impl App {
         })?;
 
         #[allow(unused_mut)] // Needed for worker_pool.take() when jobs feature is enabled
-        let mut app = self.with_middleware();
+        let mut app = self;
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
@@ -473,11 +478,7 @@ impl App {
             }
         };
 
-        let final_router = apply_global_layers_with_config(
-            build_stateful_router(app.router, app.context, app.extra_routers),
-            &app.global_layers,
-            &app.config.cors,
-        );
+        let final_router = app.into_router_with_middleware();
 
         axum::serve(
             listener,

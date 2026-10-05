@@ -34,6 +34,17 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `max_requests` or `window_seconds` around the old behavior, review those values. See
   `docs/rate_limiting.md` for burst semantics.
 
+- Routes added with `App::merge_router` now pass through Tideway's middleware stack in
+  `serve()` and `into_router_with_middleware()`: rate limiting, request timeouts, body size
+  limits, compression, security headers, request logging, tracing, and metrics. Previously the
+  stack was applied before merged routers were added, so they only received request IDs, CORS,
+  and global layers. This affects the CLI template's billing routes (including
+  `/billing/webhook` and `/admin/billing`), OpenAPI routers, and WebSocket routers. Merged routes
+  share the application's rate-limit budget; in `global` rate-limit mode, Stripe webhook
+  deliveries count against the same limit as other traffic, so review `max_requests` and
+  `window_seconds` if webhook volume is high. Layers added with `App::layer` still apply only to
+  registered modules. See `docs/upgrading.md`.
+
 > **Billing behavior change:** `LiveStripeClient` usage-record errors now report Stripe's HTTP
 > status instead of a generic internal error. Applications using metered billing should review
 > the Compatibility notes below and `docs/upgrading.md`.

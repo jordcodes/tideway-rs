@@ -88,6 +88,50 @@ Upgrade doctor checks inspect `Cargo.toml`, application source, and migration so
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
 
+## Unreleased: middleware on merged routers
+
+Routes added with `App::merge_router` now pass through Tideway's middleware stack in `serve()`,
+`into_router_with_middleware()`, and `into_make_service_with_connect_info()`. Before this change,
+the stack was applied before merged routers were added, so those routes only received request IDs,
+CORS, and `with_global_layer` layers. CLI-generated apps mount every billing router this way,
+including `/billing/webhook` and `/admin/billing`, so those routes had no rate limit, timeout, or
+security headers.
+
+No public signatures change, and no migration is required. Behavior changes on merged routes:
+
+| Middleware | Before | Now |
+| --- | --- | --- |
+| Rate limiting | Not applied | Applied, sharing the app's limit with module routes |
+| Request timeout | Not applied | Slow handlers return `408` after `timeout_seconds` |
+| Body size limit | Not applied | Extractors enforce `max_body_size` unless the router sets its own `DefaultBodyLimit` |
+| Security headers, compression | Not applied | Applied |
+| Request logging, tracing, metrics | Not recorded | Recorded |
+| Request IDs, CORS, global layers | Applied | Unchanged |
+
+`App::layer` still applies only to registered modules, and `into_router()` still applies no
+middleware.
+
+Before deploying:
+
+1. Review rate limits for webhook traffic. With the `global` strategy, Stripe webhook deliveries
+   now count against the same limit as all other requests, so a burst of events can be rejected
+   with `429` or use up the limit for normal traffic. Stripe retries rejected deliveries, so
+   events are delayed rather than lost. Raise `max_requests` if webhook volume is high, or use
+   the `per_ip` strategy. With `per_ip` behind a proxy or load balancer, configure `trust_proxy`
+   and `trusted_proxies`, otherwise every request shares the proxy's address. See
+   [Rate limiting](rate_limiting.md).
+2. Find handlers mounted with `merge_router` that can take longer than `timeout_seconds` before
+   responding, such as long-polling or slow exports. They now return `408`. The timeout covers
+   producing the response only, so streamed bodies and WebSocket connections are not cut off after
+   the response starts or the upgrade completes.
+3. Check merged routes that accept large uploads, which now count against `max_body_size`. Raise
+   the limit or set `DefaultBodyLimit` on that router.
+4. Remove workarounds added for this bug. Rate limiters or security header layers added directly to
+   a merged router now run alongside Tideway's, so requests must pass both rate limits.
+
+Rollback: downgrading restores the old behavior, where merged routes bypass the middleware stack.
+No data or schema changes are involved.
+
 ## Unreleased: impersonation and deletion request bodies
 
 `ImpersonationRequest` and `DeletionRequest` no longer implement `Deserialize`. Their `admin_id`
