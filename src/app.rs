@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::observability::ErrorReporter;
+
 #[cfg(feature = "metrics")]
 use crate::metrics::MetricsCollector;
 #[cfg(feature = "cache")]
@@ -12,6 +14,8 @@ use crate::traits::job::JobQueue;
 use crate::traits::mailer::Mailer;
 #[cfg(feature = "sessions")]
 use crate::traits::session::SessionStore;
+#[cfg(feature = "storage")]
+use crate::traits::storage::FileStorage;
 #[cfg(feature = "websocket")]
 use crate::websocket::ConnectionManager;
 
@@ -43,11 +47,17 @@ pub struct AppContext {
     #[cfg(feature = "email")]
     pub(crate) mailer: Option<Arc<dyn Mailer>>,
 
+    #[cfg(feature = "storage")]
+    pub(crate) storage: Option<Arc<dyn FileStorage>>,
+
     /// Authentication provider (application-specific)
     ///
     /// Note: Stored as `Arc<dyn Any>` due to AuthProvider's associated types.
     /// Applications should downcast to their concrete auth provider type when needed.
     pub(crate) auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
+
+    /// Error tracker hook for 5xx responses, panics and failed jobs
+    pub(crate) error_reporter: Option<Arc<dyn ErrorReporter>>,
 }
 
 /// Internal request-extension wrapper for typed auth-provider lookup.
@@ -72,7 +82,10 @@ impl AppContext {
             metrics: None,
             #[cfg(feature = "email")]
             mailer: None,
+            #[cfg(feature = "storage")]
+            storage: None,
             auth_provider: None,
+            error_reporter: None,
         }
     }
 
@@ -98,7 +111,10 @@ impl AppContext {
             metrics: self.metrics.clone(),
             #[cfg(feature = "email")]
             mailer: self.mailer.clone(),
+            #[cfg(feature = "storage")]
+            storage: self.storage.clone(),
             auth_provider: self.auth_provider.clone(),
+            error_reporter: self.error_reporter.clone(),
         }
     }
 
@@ -200,6 +216,25 @@ impl AppContext {
         self.mailer.as_ref()
     }
 
+    /// Get the file storage, returning an error if not configured
+    #[cfg(feature = "storage")]
+    pub fn storage(&self) -> crate::error::Result<&Arc<dyn FileStorage>> {
+        self.storage
+            .as_ref()
+            .ok_or_else(|| crate::error::TidewayError::internal("File storage not configured"))
+    }
+
+    /// Get the file storage as an Option
+    #[cfg(feature = "storage")]
+    pub fn storage_opt(&self) -> Option<&Arc<dyn FileStorage>> {
+        self.storage.as_ref()
+    }
+
+    /// Get the error reporter as an Option
+    pub fn error_reporter_opt(&self) -> Option<&Arc<dyn ErrorReporter>> {
+        self.error_reporter.as_ref()
+    }
+
     /// Get the auth provider, downcast to the concrete type
     ///
     /// # Example
@@ -274,7 +309,12 @@ pub struct AppContextBuilder {
     #[cfg(feature = "email")]
     mailer: Option<Arc<dyn Mailer>>,
 
+    #[cfg(feature = "storage")]
+    storage: Option<Arc<dyn FileStorage>>,
+
     auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
+
+    error_reporter: Option<Arc<dyn ErrorReporter>>,
 }
 
 impl AppContextBuilder {
@@ -294,7 +334,10 @@ impl AppContextBuilder {
             metrics: None,
             #[cfg(feature = "email")]
             mailer: None,
+            #[cfg(feature = "storage")]
+            storage: None,
             auth_provider: None,
+            error_reporter: None,
         }
     }
 
@@ -382,6 +425,28 @@ impl AppContextBuilder {
         self
     }
 
+    /// Set the file storage backend
+    ///
+    /// # Example
+    /// ```ignore
+    /// use tideway::storage::{LocalStorage, ObjectStorage, R2Config};
+    ///
+    /// // For development
+    /// let storage = Arc::new(LocalStorage::new("./uploads", "http://localhost:8000/files", secret)?);
+    ///
+    /// // For production (requires `storage-s3`)
+    /// let storage = Arc::new(ObjectStorage::r2(R2Config::from_env()?)?);
+    ///
+    /// let context = AppContext::builder()
+    ///     .with_storage(storage)
+    ///     .build();
+    /// ```
+    #[cfg(feature = "storage")]
+    pub fn with_storage(mut self, storage: Arc<dyn FileStorage>) -> Self {
+        self.storage = Some(storage);
+        self
+    }
+
     /// Set the auth provider
     ///
     /// # Example
@@ -408,6 +473,22 @@ impl AppContextBuilder {
         }
     }
 
+    /// Set the error reporter that receives 5xx responses, handler panics and
+    /// failed jobs.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let context = AppContext::builder()
+    ///     .with_error_reporter(Arc::new(|event: &tideway::ErrorEvent| {
+    ///         sentry::capture_message(&event.message, sentry::Level::Error);
+    ///     }))
+    ///     .build();
+    /// ```
+    pub fn with_error_reporter(mut self, reporter: Arc<dyn ErrorReporter>) -> Self {
+        self.error_reporter = Some(reporter);
+        self
+    }
+
     pub fn build(self) -> AppContext {
         AppContext {
             #[cfg(feature = "database")]
@@ -424,7 +505,10 @@ impl AppContextBuilder {
             metrics: self.metrics,
             #[cfg(feature = "email")]
             mailer: self.mailer,
+            #[cfg(feature = "storage")]
+            storage: self.storage,
             auth_provider: self.auth_provider,
+            error_reporter: self.error_reporter,
         }
     }
 }

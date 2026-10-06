@@ -9,20 +9,28 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 use super::error::BillingError;
-use super::events::{BillingEvent, BillingEventContext, BillingEventSink, NoOpBillingEventSink};
+use super::events::{
+    BillingEvent, BillingEventContext, BillingEventSink, InvoiceSummary, NoOpBillingEventSink,
+};
 use super::plans::Plans;
 use super::storage::BillingStore;
-use super::subscription::{StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata};
+use super::subscription::{
+    StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata, SubscriptionSyncOutcome,
+};
 
 /// Webhook handler for Stripe events.
 ///
 /// Handles webhook signature verification, idempotency, and event processing.
 ///
-/// The webhook secret is stored using [`SecretString`] to prevent accidental
+/// Webhook secrets are stored using [`SecretString`] to prevent accidental
 /// exposure in logs or debug output.
+///
+/// Multiple signing secrets can be configured so that Stripe secrets can be
+/// rotated without downtime: a webhook is accepted if it is signed with any
+/// configured secret.
 pub struct WebhookHandler<S: BillingStore, E: BillingEventSink = NoOpBillingEventSink> {
     store: S,
-    webhook_secret: SecretString,
+    webhook_secrets: Vec<SecretString>,
     plans: Plans,
     event_sink: E,
 }
@@ -31,14 +39,41 @@ impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
     /// Create a new webhook handler.
     ///
     /// The webhook secret is stored securely and won't be exposed in debug output.
+    /// Use [`with_additional_secret`](Self::with_additional_secret) to accept
+    /// another secret while rotating.
     #[must_use]
     pub fn new(store: S, webhook_secret: impl Into<SecretString>, plans: Plans) -> Self {
         Self {
             store,
-            webhook_secret: webhook_secret.into(),
+            webhook_secrets: vec![webhook_secret.into()],
             plans,
             event_sink: NoOpBillingEventSink,
         }
+    }
+
+    /// Create a webhook handler that accepts signatures from any of the given secrets.
+    ///
+    /// # Errors
+    /// Returns an error if `webhook_secrets` is empty.
+    pub fn with_secrets<I>(store: S, webhook_secrets: I, plans: Plans) -> Result<Self>
+    where
+        I: IntoIterator,
+        I::Item: Into<SecretString>,
+    {
+        let webhook_secrets: Vec<SecretString> =
+            webhook_secrets.into_iter().map(Into::into).collect();
+        if webhook_secrets.is_empty() {
+            return Err(crate::error::TidewayError::Internal(
+                "At least one Stripe webhook secret is required".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            store,
+            webhook_secrets,
+            plans,
+            event_sink: NoOpBillingEventSink,
+        })
     }
 }
 
@@ -48,10 +83,20 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
     pub fn with_event_sink<E2: BillingEventSink>(self, event_sink: E2) -> WebhookHandler<S, E2> {
         WebhookHandler {
             store: self.store,
-            webhook_secret: self.webhook_secret,
+            webhook_secrets: self.webhook_secrets,
             plans: self.plans,
             event_sink,
         }
+    }
+
+    /// Also accept webhooks signed with `webhook_secret`.
+    ///
+    /// Use this during secret rotation to keep the previous secret valid until
+    /// it is removed from configuration.
+    #[must_use]
+    pub fn with_additional_secret(mut self, webhook_secret: impl Into<SecretString>) -> Self {
+        self.webhook_secrets.push(webhook_secret.into());
+        self
     }
 
     /// Verify the webhook signature and parse the event.
@@ -79,25 +124,40 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             ));
         }
 
-        // Compute expected signature
+        // Stripe sends one v1 signature per active secret during a roll, so skip
+        // malformed entries rather than letting one block a valid signature.
+        let provided_signatures: Vec<Vec<u8>> = sig_parts
+            .signatures
+            .iter()
+            .filter_map(|signature| hex::decode(signature).ok())
+            .collect();
+        if provided_signatures.is_empty() {
+            return Err(crate::error::TidewayError::BadRequest(
+                "Invalid signature format".to_string(),
+            ));
+        }
+
         let signed_payload = format!(
             "{}.{}",
             sig_parts.timestamp,
             String::from_utf8_lossy(payload)
         );
-        let expected_sig = compute_signature(
-            self.webhook_secret.expose_secret(),
-            signed_payload.as_bytes(),
-        )?;
 
-        // Verify signature matches (constant-time comparison)
-        let expected_bytes = hex::decode(&expected_sig)
-            .map_err(|_| crate::error::TidewayError::Internal("Hex decode error".to_string()))?;
-        let provided_bytes = hex::decode(&sig_parts.signature).map_err(|_| {
-            crate::error::TidewayError::BadRequest("Invalid signature format".to_string())
-        })?;
+        // Accept the webhook if any configured secret produced any provided
+        // signature (constant-time comparison for each pair).
+        let mut matched = false;
+        for secret in &self.webhook_secrets {
+            let expected_sig =
+                compute_signature(secret.expose_secret(), signed_payload.as_bytes())?;
+            let expected_bytes = hex::decode(&expected_sig).map_err(|_| {
+                crate::error::TidewayError::Internal("Hex decode error".to_string())
+            })?;
+            for provided_bytes in &provided_signatures {
+                matched |= expected_bytes.ct_eq(provided_bytes).unwrap_u8() == 1;
+            }
+        }
 
-        if expected_bytes.ct_eq(&provided_bytes).unwrap_u8() != 1 {
+        if !matched {
             return Err(crate::error::TidewayError::BadRequest(
                 "Invalid webhook signature".to_string(),
             ));
@@ -149,8 +209,11 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 self.handle_subscription_updated(&event).await
             }
             "customer.subscription.deleted" => self.handle_subscription_deleted(&event).await,
+            "customer.subscription.trial_will_end" => self.handle_trial_will_end(&event).await,
             "invoice.paid" => self.handle_invoice_paid(&event).await,
             "invoice.payment_failed" => self.handle_payment_failed(&event).await,
+            "charge.refunded" => self.handle_charge_refunded(&event).await,
+            "charge.dispute.created" => self.handle_charge_disputed(&event).await,
             _ => unreachable!("unsupported event types return before claiming idempotency"),
         };
 
@@ -199,6 +262,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                         .get("payment_status")
                         .and_then(serde_json::Value::as_str)
                         .map(String::from),
+                    payment_intent_id: value_id(session.get("payment_intent")),
                 })
                 .await?;
             return Ok(WebhookOutcome::Processed);
@@ -214,6 +278,50 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             })
             .await?;
 
+        Ok(WebhookOutcome::Processed)
+    }
+
+    /// Handle charge.refunded event.
+    async fn handle_charge_refunded(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let charge = event.data.object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid event data".to_string())
+        })?;
+        let charge_id = value_id(charge.get("id")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing charge ID".to_string())
+        })?;
+        self.event_sink
+            .handle(&BillingEvent::ChargeRefunded {
+                context: event_context(event),
+                charge_id,
+                payment_intent_id: value_id(charge.get("payment_intent")),
+                customer_id: value_id(charge.get("customer")),
+                amount: required_amount(charge, "amount")?,
+                amount_refunded: required_amount(charge, "amount_refunded")?,
+            })
+            .await?;
+        Ok(WebhookOutcome::Processed)
+    }
+
+    /// Handle charge.dispute.created event.
+    async fn handle_charge_disputed(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let dispute = event.data.object.as_object().ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Invalid event data".to_string())
+        })?;
+        let dispute_id = value_id(dispute.get("id")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing dispute ID".to_string())
+        })?;
+        let charge_id = value_id(dispute.get("charge")).ok_or_else(|| {
+            crate::error::TidewayError::BadRequest("Missing disputed charge ID".to_string())
+        })?;
+        self.event_sink
+            .handle(&BillingEvent::ChargeDisputed {
+                context: event_context(event),
+                dispute_id,
+                charge_id,
+                payment_intent_id: value_id(dispute.get("payment_intent")),
+                amount: required_amount(dispute, "amount")?,
+            })
+            .await?;
         Ok(WebhookOutcome::Processed)
     }
 
@@ -238,7 +346,32 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
             NullSubscriptionClient,
             self.plans.clone(),
         );
-        sub_manager.sync_from_stripe(sub_data).await?;
+        let lifecycle_event = match sub_manager
+            .sync_from_stripe_checked(sub_data.clone())
+            .await?
+        {
+            SubscriptionSyncOutcome::Duplicate {
+                billable_id,
+                existing,
+            } => BillingEvent::DuplicateSubscription {
+                context: event_context(event),
+                billable_id,
+                existing_subscription_id: existing.stripe_subscription_id,
+                subscription: sub_data,
+            },
+            SubscriptionSyncOutcome::Saved { .. } => lifecycle_event,
+            SubscriptionSyncOutcome::Deleted {
+                stripe_subscription_id,
+            } => {
+                tracing::info!(
+                    target: "tideway::billing",
+                    event_id = %event.id,
+                    subscription_id = %stripe_subscription_id,
+                    "ignoring late webhook for a deleted Stripe subscription"
+                );
+                return Ok(WebhookOutcome::Processed);
+            }
+        };
         self.event_sink.handle(&lifecycle_event).await?;
 
         Ok(WebhookOutcome::Processed)
@@ -277,6 +410,20 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
         Ok(WebhookOutcome::Processed)
     }
 
+    /// Handle customer.subscription.trial_will_end event.
+    ///
+    /// Notification only: the trial's state changes arrive as `customer.subscription.updated`.
+    async fn handle_trial_will_end(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let subscription = self.parse_subscription_data(&event.data.object)?;
+        self.event_sink
+            .handle(&BillingEvent::TrialWillEnd {
+                context: event_context(event),
+                subscription,
+            })
+            .await?;
+        Ok(WebhookOutcome::Processed)
+    }
+
     /// Handle invoice.paid event.
     async fn handle_invoice_paid(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
         // Invoice paid - subscription period updated
@@ -289,6 +436,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 invoice_id: value_id(event.data.object.get("id")),
                 subscription_id: value_id(event.data.object.get("subscription")),
                 customer_id: value_id(event.data.object.get("customer")),
+                invoice: invoice_summary(&event.data.object),
             })
             .await?;
 
@@ -306,6 +454,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 invoice_id: value_id(event.data.object.get("id")),
                 subscription_id: value_id(event.data.object.get("subscription")),
                 customer_id: value_id(event.data.object.get("customer")),
+                invoice: invoice_summary(&event.data.object),
             })
             .await?;
 
@@ -474,6 +623,29 @@ fn event_context(event: &WebhookEvent) -> BillingEventContext {
     }
 }
 
+fn invoice_summary(invoice: &serde_json::Value) -> InvoiceSummary {
+    let string = |key: &str| {
+        invoice
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(String::from)
+    };
+    InvoiceSummary {
+        number: string("number"),
+        customer_email: string("customer_email"),
+        amount_due: invoice
+            .get("amount_due")
+            .and_then(serde_json::Value::as_u64),
+        amount_paid: invoice
+            .get("amount_paid")
+            .and_then(serde_json::Value::as_u64),
+        currency: string("currency"),
+        hosted_invoice_url: string("hosted_invoice_url"),
+        billing_reason: string("billing_reason"),
+    }
+}
+
 fn value_id(value: Option<&serde_json::Value>) -> Option<String> {
     value.and_then(|value| {
         value
@@ -481,6 +653,13 @@ fn value_id(value: Option<&serde_json::Value>) -> Option<String> {
             .or_else(|| value.get("id").and_then(serde_json::Value::as_str))
             .map(String::from)
     })
+}
+
+fn required_amount(object: &serde_json::Map<String, serde_json::Value>, key: &str) -> Result<u64> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| crate::error::TidewayError::BadRequest(format!("Missing or invalid {key}")))
 }
 
 fn metadata_value(
@@ -530,7 +709,7 @@ pub enum WebhookOutcome {
 /// Parsed signature header parts.
 struct SignatureParts {
     timestamp: i64,
-    signature: String,
+    signatures: Vec<String>,
 }
 
 fn is_supported_event_type(event_type: &str) -> bool {
@@ -541,15 +720,18 @@ fn is_supported_event_type(event_type: &str) -> bool {
             | "customer.subscription.created"
             | "customer.subscription.updated"
             | "customer.subscription.deleted"
+            | "customer.subscription.trial_will_end"
             | "invoice.paid"
             | "invoice.payment_failed"
+            | "charge.refunded"
+            | "charge.dispute.created"
     )
 }
 
 /// Parse the Stripe-Signature header.
 fn parse_signature_header(header: &str) -> Result<SignatureParts> {
     let mut timestamp = None;
-    let mut signature = None;
+    let mut signatures = Vec::new();
 
     for part in header.split(',') {
         let (key, value) = part.split_once('=').ok_or_else(|| {
@@ -558,18 +740,24 @@ fn parse_signature_header(header: &str) -> Result<SignatureParts> {
 
         match key.trim() {
             "t" => timestamp = value.parse().ok(),
-            "v1" => signature = Some(value.to_string()),
+            // Stripe sends multiple v1 signatures while a secret is being rolled.
+            "v1" => signatures.push(value.to_string()),
             _ => {} // Ignore other versions
         }
     }
 
+    let timestamp = timestamp.ok_or_else(|| {
+        crate::error::TidewayError::BadRequest("Missing timestamp in signature".to_string())
+    })?;
+    if signatures.is_empty() {
+        return Err(crate::error::TidewayError::BadRequest(
+            "Missing v1 signature".to_string(),
+        ));
+    }
+
     Ok(SignatureParts {
-        timestamp: timestamp.ok_or_else(|| {
-            crate::error::TidewayError::BadRequest("Missing timestamp in signature".to_string())
-        })?,
-        signature: signature.ok_or_else(|| {
-            crate::error::TidewayError::BadRequest("Missing v1 signature".to_string())
-        })?,
+        timestamp,
+        signatures,
     })
 }
 
@@ -701,7 +889,7 @@ mod tests {
         let header = "t=1234567890,v1=abc123def456";
         let parts = parse_signature_header(header).unwrap();
         assert_eq!(parts.timestamp, 1234567890);
-        assert_eq!(parts.signature, "abc123def456");
+        assert_eq!(parts.signatures, vec!["abc123def456".to_string()]);
     }
 
     #[test]
@@ -763,6 +951,143 @@ mod tests {
 
         let result = handler.verify_signature(payload.as_bytes(), &signature);
         assert!(result.is_err());
+    }
+
+    fn now_timestamp() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    fn v1_signature(secret: &str, payload: &[u8], timestamp: i64) -> String {
+        let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(payload));
+        compute_signature(secret, signed_payload.as_bytes()).unwrap()
+    }
+
+    const ROTATION_PAYLOAD: &str =
+        r#"{"id":"evt_rotate","type":"test","data":{"object":{}},"created":1234567890}"#;
+
+    #[test]
+    fn test_parse_signature_header_keeps_all_v1_signatures() {
+        let parts = parse_signature_header("t=1234567890,v1=aaaa,v0=bbbb,v1=cccc").unwrap();
+        assert_eq!(parts.timestamp, 1234567890);
+        assert_eq!(
+            parts.signatures,
+            vec!["aaaa".to_string(), "cccc".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_parse_signature_header_requires_v1() {
+        assert!(parse_signature_header("t=1234567890,v0=bbbb").is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_accepts_non_final_v1_during_stripe_roll() {
+        // During a secret roll Stripe sends one v1 per active secret.
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_old",
+            create_test_plans(),
+        );
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+        let header = format!(
+            "t={},v1={},v1={}",
+            timestamp,
+            v1_signature("whsec_old", payload, timestamp),
+            v1_signature("whsec_new", payload, timestamp)
+        );
+
+        assert!(handler.verify_signature(payload, &header).is_ok());
+    }
+
+    #[test]
+    fn test_verify_signature_accepts_any_configured_secret() {
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_new",
+            create_test_plans(),
+        )
+        .with_additional_secret("whsec_old");
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+
+        for secret in ["whsec_new", "whsec_old"] {
+            let header = create_test_signature(secret, payload, timestamp);
+            assert!(
+                handler.verify_signature(payload, &header).is_ok(),
+                "signature from {secret} should be accepted"
+            );
+        }
+
+        let unknown = create_test_signature("whsec_unknown", payload, timestamp);
+        assert!(handler.verify_signature(payload, &unknown).is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_rejects_removed_secret() {
+        let handler = WebhookHandler::with_secrets(
+            InMemoryBillingStore::new(),
+            ["whsec_new"],
+            create_test_plans(),
+        )
+        .unwrap();
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+
+        let old = create_test_signature("whsec_old", payload, timestamp);
+        assert!(handler.verify_signature(payload, &old).is_err());
+
+        let new = create_test_signature("whsec_new", payload, timestamp);
+        assert!(handler.verify_signature(payload, &new).is_ok());
+    }
+
+    #[test]
+    fn test_with_secrets_rejects_empty_list() {
+        let result = WebhookHandler::with_secrets(
+            InMemoryBillingStore::new(),
+            Vec::<String>::new(),
+            create_test_plans(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_skips_malformed_v1_entries() {
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_test",
+            create_test_plans(),
+        );
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+        let header = format!(
+            "t={},v1=not_hex,v1={}",
+            timestamp,
+            v1_signature("whsec_test", payload, timestamp)
+        );
+
+        assert!(handler.verify_signature(payload, &header).is_ok());
+    }
+
+    #[test]
+    fn test_verify_signature_all_malformed_keeps_format_error() {
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_test",
+            create_test_plans(),
+        );
+        let header = format!("t={},v1=not_hex,v1=zz", now_timestamp());
+
+        let err = handler
+            .verify_signature(ROTATION_PAYLOAD.as_bytes(), &header)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid signature format"),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -836,6 +1161,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invoice_events_carry_customer_facing_details() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let event = WebhookEvent {
+            id: "evt_invoice_failed".to_string(),
+            event_type: "invoice.payment_failed".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "in_123",
+                    "customer": "cus_123",
+                    "number": "ACME-0001",
+                    "customer_email": "payer@example.com",
+                    "amount_due": 4900,
+                    "amount_paid": 0,
+                    "currency": "usd",
+                    "hosted_invoice_url": "https://invoice.stripe.com/i/abc",
+                    "billing_reason": "subscription_cycle"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert_eq!(
+            handler.handle_event(event).await.unwrap(),
+            WebhookOutcome::Processed
+        );
+        let events = sink.events.lock().unwrap();
+        let BillingEvent::InvoicePaymentFailed { invoice, .. } = &events[0] else {
+            panic!("expected payment failed event, got {:?}", events[0]);
+        };
+        assert_eq!(invoice.number.as_deref(), Some("ACME-0001"));
+        assert_eq!(invoice.customer_email.as_deref(), Some("payer@example.com"));
+        assert_eq!(invoice.amount_due, Some(4900));
+        assert_eq!(invoice.amount_paid, Some(0));
+        assert_eq!(invoice.currency.as_deref(), Some("usd"));
+        assert_eq!(
+            invoice.hosted_invoice_url.as_deref(),
+            Some("https://invoice.stripe.com/i/abc")
+        );
+        assert_eq!(
+            invoice.billing_reason.as_deref(),
+            Some("subscription_cycle")
+        );
+    }
+
+    #[tokio::test]
+    async fn trial_will_end_is_delivered_with_subscription_state() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let event = WebhookEvent {
+            id: "evt_trial".to_string(),
+            event_type: "customer.subscription.trial_will_end".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "sub_123",
+                    "customer": "cus_123",
+                    "status": "trialing",
+                    "trial_end": 1_700_259_200u64,
+                    "items": {"data": [{"id": "si_1", "price": {"id": "price_starter"}, "quantity": 1}]},
+                    "metadata": {"billable_id": "org_1"}
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert_eq!(
+            handler.handle_event(event).await.unwrap(),
+            WebhookOutcome::Processed
+        );
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "trial_will_end");
+        let BillingEvent::TrialWillEnd { subscription, .. } = &events[0] else {
+            panic!("expected trial will end event");
+        };
+        assert_eq!(subscription.plan_id, "starter");
+        assert_eq!(subscription.trial_end, Some(1_700_259_200));
+        assert_eq!(subscription.metadata.billable_id.as_deref(), Some("org_1"));
+    }
+
+    #[cfg(feature = "email")]
+    #[tokio::test]
+    async fn payment_failed_webhook_sends_lifecycle_email() {
+        use crate::billing::LifecycleEmailBillingSink;
+        use crate::email::{EmailBranding, LifecycleEmailer};
+        use crate::traits::mailer::{Email, Mailer};
+
+        #[derive(Default)]
+        struct RecordingMailer(std::sync::Mutex<Vec<Email>>);
+
+        #[async_trait::async_trait]
+        impl Mailer for RecordingMailer {
+            async fn send(&self, email: &Email) -> Result<()> {
+                self.0.lock().unwrap().push(email.clone());
+                Ok(())
+            }
+
+            fn is_healthy(&self) -> bool {
+                true
+            }
+        }
+
+        let mailer = Arc::new(RecordingMailer::default());
+        let emailer = LifecycleEmailer::direct(
+            mailer.clone(),
+            "billing@acme.test",
+            EmailBranding::new("Acme"),
+        );
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_test",
+            create_test_plans(),
+        )
+        .with_event_sink(LifecycleEmailBillingSink::new(
+            emailer,
+            "https://acme.test/billing",
+        ));
+        let event = WebhookEvent {
+            id: "evt_failed_email".to_string(),
+            event_type: "invoice.payment_failed".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "in_123",
+                    "customer": "cus_123",
+                    "customer_email": "payer@example.com",
+                    "amount_due": 4900,
+                    "currency": "usd"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        handler.handle_event(event.clone()).await.unwrap();
+        // Stripe redelivery is deduplicated, so the customer gets one email.
+        handler.handle_event(event).await.unwrap();
+
+        let sent = mailer.0.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, vec!["payer@example.com".to_string()]);
+        assert!(sent[0].text.as_deref().unwrap().contains("USD 49.00"));
+    }
+
+    #[tokio::test]
     async fn one_time_checkout_is_delivered_with_trusted_metadata() {
         let store = InMemoryBillingStore::new();
         let sink = RecordingEventSink::default();
@@ -850,6 +1322,7 @@ mod tests {
                     "mode": "payment",
                     "customer": "cus_123",
                     "payment_status": "paid",
+                    "payment_intent": "pi_123",
                     "metadata": {
                         "billable_id": "org-1",
                         "billable_type": "credit_top_up",
@@ -873,13 +1346,236 @@ mod tests {
                 billable_type: Some(billable_type),
                 plan_id: Some(plan_id),
                 payment_status: Some(payment_status),
+                payment_intent_id: Some(payment_intent_id),
                 ..
             } if checkout_session_id == "cs_topup"
                 && billable_id == "org-1"
                 && billable_type == "credit_top_up"
                 && plan_id == "sms_100"
                 && payment_status == "paid"
+                && payment_intent_id == "pi_123"
         ));
+    }
+
+    #[tokio::test]
+    async fn refunds_and_disputes_are_delivered_once() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let refund = WebhookEvent {
+            id: "evt_refund".to_string(),
+            event_type: "charge.refunded".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "ch_123",
+                    "object": "charge",
+                    "amount": 1000,
+                    "amount_refunded": 400,
+                    "customer": "cus_123",
+                    "payment_intent": "pi_123"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+        let dispute = WebhookEvent {
+            id: "evt_dispute".to_string(),
+            event_type: "charge.dispute.created".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "dp_123",
+                    "object": "dispute",
+                    "amount": 1000,
+                    "charge": "ch_123",
+                    "payment_intent": "pi_123"
+                }),
+            },
+            created: 1_700_000_001,
+        };
+
+        for event in [refund.clone(), dispute.clone()] {
+            assert_eq!(
+                handler.handle_event(event).await.unwrap(),
+                WebhookOutcome::Processed
+            );
+        }
+        assert_eq!(
+            handler.handle_event(refund).await.unwrap(),
+            WebhookOutcome::AlreadyProcessed
+        );
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[0],
+            BillingEvent::ChargeRefunded {
+                charge_id,
+                payment_intent_id: Some(payment_intent_id),
+                customer_id: Some(customer_id),
+                amount: 1000,
+                amount_refunded: 400,
+                ..
+            } if charge_id == "ch_123" && payment_intent_id == "pi_123" && customer_id == "cus_123"
+        ));
+        assert!(matches!(
+            &events[1],
+            BillingEvent::ChargeDisputed {
+                dispute_id,
+                charge_id,
+                payment_intent_id: Some(payment_intent_id),
+                amount: 1000,
+                ..
+            } if dispute_id == "dp_123" && charge_id == "ch_123" && payment_intent_id == "pi_123"
+        ));
+        assert_eq!(events[1].kind(), "charge_disputed");
+    }
+
+    fn subscription_created_event(event_id: &str, subscription_id: &str) -> WebhookEvent {
+        WebhookEvent {
+            id: event_id.to_string(),
+            event_type: "customer.subscription.created".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": subscription_id,
+                    "customer": "cus_123",
+                    "status": "active",
+                    "items": {"data": [{"id": "si_base", "price": {"id": "price_starter"}}]},
+                    "metadata": {"billable_id": "org-1", "billable_type": "org"}
+                }),
+            },
+            created: 1_700_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn second_live_subscription_emits_duplicate_event_and_keeps_first() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+
+        handler
+            .handle_event(subscription_created_event("evt_first", "sub_first"))
+            .await
+            .unwrap();
+        assert_eq!(
+            handler
+                .handle_event(subscription_created_event("evt_second", "sub_second"))
+                .await
+                .unwrap(),
+            WebhookOutcome::Processed
+        );
+
+        let stored = store.get_subscription("org-1").await.unwrap().unwrap();
+        assert_eq!(stored.stripe_subscription_id, "sub_first");
+        let events = sink.events.lock().unwrap();
+        assert!(matches!(
+            &events[0],
+            BillingEvent::SubscriptionCreated { .. }
+        ));
+        assert!(matches!(
+            &events[1],
+            BillingEvent::DuplicateSubscription {
+                billable_id,
+                existing_subscription_id,
+                subscription,
+                ..
+            } if billable_id == "org-1"
+                && existing_subscription_id == "sub_first"
+                && subscription.id == "sub_second"
+        ));
+        assert_eq!(events[1].kind(), "duplicate_subscription");
+    }
+
+    fn subscription_event(event_id: &str, event_type: &str, subscription_id: &str) -> WebhookEvent {
+        let mut event = subscription_created_event(event_id, subscription_id);
+        event.event_type = event_type.to_string();
+        event
+    }
+
+    #[tokio::test]
+    async fn late_subscription_update_does_not_resurrect_deleted_subscription() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+
+        handler
+            .handle_event(subscription_created_event("evt_created", "sub_late"))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_event(
+                "evt_deleted",
+                "customer.subscription.deleted",
+                "sub_late",
+            ))
+            .await
+            .unwrap();
+        assert!(store.get_subscription("org-1").await.unwrap().is_none());
+
+        // Stripe delivers an older `updated` snapshot (still active) after the deletion.
+        assert_eq!(
+            handler
+                .handle_event(subscription_event(
+                    "evt_late_update",
+                    "customer.subscription.updated",
+                    "sub_late",
+                ))
+                .await
+                .unwrap(),
+            WebhookOutcome::Processed
+        );
+
+        assert!(
+            store.get_subscription("org-1").await.unwrap().is_none(),
+            "a late update must not recreate a deleted subscription"
+        );
+        let kinds: Vec<_> = sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| e.kind())
+            .collect();
+        assert_eq!(kinds, ["subscription_created", "subscription_deleted"]);
+    }
+
+    #[tokio::test]
+    async fn late_update_for_deleted_subscription_does_not_replace_new_subscription() {
+        let store = InMemoryBillingStore::new();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans());
+
+        handler
+            .handle_event(subscription_created_event("evt_old_created", "sub_old"))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_event(
+                "evt_old_deleted",
+                "customer.subscription.deleted",
+                "sub_old",
+            ))
+            .await
+            .unwrap();
+        handler
+            .handle_event(subscription_created_event("evt_new_created", "sub_new"))
+            .await
+            .unwrap();
+        let mut new_sub = store.get_subscription("org-1").await.unwrap().unwrap();
+        new_sub.cancel_at_period_end = true;
+        store.save_subscription("org-1", &new_sub).await.unwrap();
+
+        handler
+            .handle_event(subscription_event(
+                "evt_old_late_update",
+                "customer.subscription.updated",
+                "sub_old",
+            ))
+            .await
+            .unwrap();
+
+        let stored = store.get_subscription("org-1").await.unwrap().unwrap();
+        assert_eq!(stored.stripe_subscription_id, "sub_new");
     }
 
     #[tokio::test]

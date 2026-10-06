@@ -538,6 +538,42 @@ fn check_upgrade_readiness(
         }
     }
 
+    if tideway_features.contains("credits-seaorm")
+        || any_rs_file_contains(&src_dir, "SeaOrmCreditStore")
+    {
+        if credit_revocation_schema_ready(project_dir) {
+            report.push_upgrade_info(
+                "TW-UPGRADE-CREDIT-REVOCATION-SCHEMA-READY",
+                "migration/src/",
+                "credit_buckets includes revoked_amount and pending_revocation",
+            );
+        } else {
+            report.push_upgrade_warning(
+                "TW-UPGRADE-CREDIT-REVOCATION-SCHEMA",
+                "migration/src/",
+                "SeaOrmCreditStore requires credit_buckets.revoked_amount, credit_buckets.pending_revocation, and the revoke transaction kind; run `tideway add credits`, review the additive migration, and apply it before deploying",
+            );
+        }
+    }
+
+    if tideway_features.contains("api-keys-seaorm")
+        || any_rs_file_contains(&src_dir, "SeaOrmApiKeyStore")
+    {
+        if api_keys_schema_ready(project_dir) {
+            report.push_upgrade_info(
+                "TW-UPGRADE-API-KEYS-SCHEMA-READY",
+                "migration/src/",
+                "An api_keys migration is present",
+            );
+        } else {
+            report.push_upgrade_warning(
+                "TW-UPGRADE-API-KEYS-SCHEMA",
+                "migration/src/",
+                "SeaOrmApiKeyStore requires the api_keys table; run `tideway add api-keys`, review the additive migration, and apply it before deploying",
+            );
+        }
+    }
+
     let missing_claim_methods = custom_billing_store_missing_claim_methods(&src_dir);
     if billing_enabled && !missing_claim_methods.is_empty() {
         report.push_upgrade_warning(
@@ -739,6 +775,30 @@ fn billing_customer_schema_ready(project_dir: &Path) -> bool {
         }
     }
     false
+}
+
+fn api_keys_schema_ready(project_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(project_dir.join("migration").join("src")) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        fs::read_to_string(entry.path())
+            .is_ok_and(|contents| crate::commands::add::api_keys_schema_defined(&contents))
+    })
+}
+
+fn credit_revocation_schema_ready(project_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(project_dir.join("migration").join("src")) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        fs::read_to_string(entry.path()).is_ok_and(|contents| {
+            (contents.contains("RevokedAmount") || contents.contains("revoked_amount"))
+                && (contents.contains("PendingRevocation")
+                    || contents.contains("pending_revocation"))
+                && contents.contains("revoke")
+        })
+    })
 }
 
 fn custom_billing_store_missing_subscription_cas(src_dir: &Path) -> bool {

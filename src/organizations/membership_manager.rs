@@ -173,6 +173,14 @@ where
             joined_at: now,
         });
 
+        // Prevent creating owners via add_member (must use transfer_ownership)
+        let role = self.membership_store.membership_role(&membership);
+        if self.membership_store.is_owner(&role) {
+            return Err(OrganizationError::insufficient_permission(
+                "cannot add member as owner, use transfer_ownership instead",
+            ));
+        }
+
         // Persist membership
         self.membership_store.add_member(&membership).await?;
 
@@ -339,6 +347,14 @@ where
     }
 
     /// Transfer ownership to another member.
+    ///
+    /// This only swaps membership roles. It does not update the organization's owner, so
+    /// `max_orgs_per_user` keeps counting the organization against the former owner. Use
+    /// [`OrganizationManager::transfer_ownership`](super::OrganizationManager::transfer_ownership)
+    /// instead.
+    #[deprecated(
+        note = "does not update the organization's owner_id; use OrganizationManager::transfer_ownership"
+    )]
     #[instrument(skip(self, make_owner, demote_owner))]
     pub async fn transfer_ownership<F, G>(
         &self,

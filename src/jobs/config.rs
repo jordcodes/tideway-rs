@@ -41,6 +41,13 @@ pub struct JobsConfig {
     /// Base retry backoff in seconds (exponential backoff: base * 2^retry_count)
     #[serde(default = "default_retry_backoff_seconds")]
     pub retry_backoff_seconds: u64,
+
+    /// Maximum seconds to wait for running jobs during shutdown before aborting them.
+    ///
+    /// Keep this below the platform's kill deadline (Kubernetes defaults
+    /// `terminationGracePeriodSeconds` to 30).
+    #[serde(default = "default_shutdown_timeout_seconds")]
+    pub shutdown_timeout_seconds: u64,
 }
 
 impl Default for JobsConfig {
@@ -52,6 +59,7 @@ impl Default for JobsConfig {
             worker_count: default_worker_count(),
             max_retries: default_max_retries(),
             retry_backoff_seconds: default_retry_backoff_seconds(),
+            shutdown_timeout_seconds: default_shutdown_timeout_seconds(),
         }
     }
 }
@@ -59,7 +67,12 @@ impl Default for JobsConfig {
 impl JobsConfig {
     /// Load jobs configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(self) -> Self {
+        let mut config = self;
 
         if let Some(enabled) = get_env_with_prefix("JOBS_ENABLED") {
             config.enabled = enabled.parse().unwrap_or(false);
@@ -95,6 +108,12 @@ impl JobsConfig {
             config.retry_backoff_seconds = b;
         }
 
+        if let Some(timeout) = get_env_with_prefix("JOBS_SHUTDOWN_TIMEOUT_SECONDS")
+            && let Ok(t) = timeout.parse()
+        {
+            config.shutdown_timeout_seconds = t;
+        }
+
         config
     }
 }
@@ -113,4 +132,8 @@ fn default_max_retries() -> u32 {
 
 fn default_retry_backoff_seconds() -> u64 {
     60
+}
+
+fn default_shutdown_timeout_seconds() -> u64 {
+    25
 }

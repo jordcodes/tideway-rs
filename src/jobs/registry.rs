@@ -67,14 +67,17 @@ impl JobRegistry {
     ///
     /// Returns an error if the job type is not registered.
     pub async fn execute(&self, data: JobData, ctx: Arc<AppContext>) -> Result<()> {
-        let handlers = self.handlers.read().await;
-        let handler = handlers.get(&data.job_type).ok_or_else(|| {
-            TidewayError::internal(format!(
-                "No handler registered for job type: {}",
-                data.job_type
-            ))
-        })?;
+        let handler = {
+            let handlers = self.handlers.read().await;
+            handlers.get(&data.job_type).cloned().ok_or_else(|| {
+                TidewayError::internal(format!(
+                    "No handler registered for job type: {}",
+                    data.job_type
+                ))
+            })?
+        };
 
+        // Release the registry lock before invoking or awaiting user code.
         handler(data, ctx).await
     }
 

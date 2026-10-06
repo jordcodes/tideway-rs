@@ -2107,3 +2107,100 @@ tideway = { version = "0.7", features = ["database"] }
         report.fixes()
     );
 }
+
+#[test]
+fn test_doctor_upgrade_reports_credit_revocation_schema() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["credits-seaorm"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write main");
+    fs::write(
+        project_dir.join("migration/src/m013_create_credit_ledger.rs"),
+        "enum CreditBuckets { Table, RemainingAmount }\n",
+    )
+    .expect("write legacy migration");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(report.findings().iter().any(|finding| {
+        finding.code == Some("TW-UPGRADE-CREDIT-REVOCATION-SCHEMA")
+            && finding.message.contains("tideway add credits")
+    }));
+
+    fs::write(
+        project_dir.join("migration/src/m014_add_credit_revocation.rs"),
+        "CreditBuckets::RevokedAmount; CreditBuckets::PendingRevocation; \"revoke\";\n",
+    )
+    .expect("write revocation migration");
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("reanalyze upgrade");
+    assert!(
+        report
+            .findings()
+            .iter()
+            .any(|finding| finding.code == Some("TW-UPGRADE-CREDIT-REVOCATION-SCHEMA-READY"))
+    );
+    assert!(
+        !report
+            .findings()
+            .iter()
+            .any(|finding| finding.code == Some("TW-UPGRADE-CREDIT-REVOCATION-SCHEMA"))
+    );
+}
+
+#[test]
+fn test_doctor_upgrade_reports_missing_api_keys_schema() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        format!(
+            r#"[package]
+name = "upgrade_app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tideway = {{ version = "{}", features = ["api-keys-seaorm"] }}
+"#,
+            tideway_cli::TIDEWAY_VERSION
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write main");
+
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("analyze upgrade");
+    assert!(report.findings().iter().any(|finding| {
+        finding.code == Some("TW-UPGRADE-API-KEYS-SCHEMA")
+            && finding.message.contains("tideway add api-keys")
+    }));
+
+    fs::write(
+        project_dir.join("migration/src/m016_create_api_keys.rs"),
+        "ApiKeys::Table; ApiKeys::KeyHash;\n",
+    )
+    .expect("write api keys migration");
+    let report = analyze_project_with_upgrade(project_dir, false, true).expect("reanalyze upgrade");
+    let codes: Vec<_> = report.findings().iter().filter_map(|f| f.code).collect();
+    assert!(
+        codes.contains(&"TW-UPGRADE-API-KEYS-SCHEMA-READY"),
+        "{codes:?}"
+    );
+    assert!(!codes.contains(&"TW-UPGRADE-API-KEYS-SCHEMA"), "{codes:?}");
+}

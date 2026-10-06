@@ -53,9 +53,12 @@ pub mod audit;
 pub mod checkout;
 pub mod client;
 pub mod customer;
+#[cfg(feature = "email")]
+pub mod emails;
 pub mod entitlements;
 pub mod error;
 pub mod events;
+pub mod flags;
 pub mod invoice;
 pub mod live_client;
 pub mod payment;
@@ -92,7 +95,7 @@ pub use customer::{
 pub use subscription::{
     ProrationBehavior, ReconcileDifference, ReconcileResult, StripeSubscriptionClient,
     StripeSubscriptionData, Subscription, SubscriptionManager, SubscriptionMetadata,
-    UpdateSubscriptionRequest,
+    SubscriptionSyncOutcome, UpdateSubscriptionRequest,
 };
 
 // Checkout exports
@@ -112,7 +115,13 @@ pub use portal::{
 pub use webhook::{WebhookEvent, WebhookEventData, WebhookHandler, WebhookOutcome};
 
 // Billing lifecycle event exports
-pub use events::{BillingEvent, BillingEventContext, BillingEventSink, NoOpBillingEventSink};
+pub use events::{
+    BillingEvent, BillingEventContext, BillingEventSink, InvoiceSummary, NoOpBillingEventSink,
+};
+
+// Billing lifecycle email exports
+#[cfg(feature = "email")]
+pub use emails::{BillingEmailRecipients, LifecycleEmailBillingSink};
 
 // Invoice exports
 pub use invoice::{
@@ -144,6 +153,12 @@ pub use refund::{
 pub use entitlements::{
     CachedEntitlementsManager, EntitlementLimits, Entitlements, EntitlementsManager,
     FeatureCheckResult, require_feature, require_seat,
+};
+
+// Feature flag exports
+pub use flags::{
+    FeatureFlag, FeatureFlagManager, FeatureFlagStore, FlagEvaluation, FlagReason,
+    InMemoryFeatureFlagStore, RolloutScope, evaluate_flag, rollout_bucket,
 };
 
 // Audit exports

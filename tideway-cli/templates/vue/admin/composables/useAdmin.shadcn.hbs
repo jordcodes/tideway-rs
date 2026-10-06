@@ -154,7 +154,7 @@ export function useAdmin() {
   // Impersonation
   async function startImpersonation(
     userId: string,
-    reason?: string
+    reason: string
   ): Promise<ImpersonationSession | null> {
     isLoading.value = true
     error.value = null
@@ -162,7 +162,7 @@ export function useAdmin() {
     try {
       const response = await api.post<ImpersonationSession>(
         `/admin/users/${userId}/impersonate`,
-        { reason }
+        { target_user_id: userId, reason }
       )
 
       // Store original tokens
@@ -178,13 +178,12 @@ export function useAdmin() {
       impersonationInfo.value = info
       localStorage.setItem('impersonation_info', JSON.stringify(info))
 
-      // Set impersonation tokens as active tokens
+      // Impersonation issues only a session-bound access token. Remove the
+      // admin's refresh token so an expired session can't silently refresh.
       if (response.access_token) {
         localStorage.setItem('access_token', response.access_token)
       }
-      if (response.refresh_token) {
-        localStorage.setItem('refresh_token', response.refresh_token)
-      }
+      localStorage.removeItem('refresh_token')
 
       return info
     } catch (e) {
@@ -199,30 +198,33 @@ export function useAdmin() {
     isLoading.value = true
     error.value = null
 
+    let ended = true
     try {
-      // Call backend to end impersonation
+      // End the session server-side; the impersonation token stops working.
       await api.post('/admin/impersonation/end', {})
-
-      // Restore original tokens
-      const info = impersonationInfo.value
-      if (info?.original_access_token) {
-        localStorage.setItem('access_token', info.original_access_token)
-      }
-      if (info?.original_refresh_token) {
-        localStorage.setItem('refresh_token', info.original_refresh_token)
-      }
-
-      // Clear impersonation info
-      impersonationInfo.value = null
-      localStorage.removeItem('impersonation_info')
-
-      return true
     } catch (e) {
+      // The session may already have expired. Still drop the token locally.
+      ended = false
       error.value = e instanceof Error ? e.message : 'Failed to end impersonation'
-      return false
-    } finally {
-      isLoading.value = false
     }
+
+    // Restore original tokens
+    const info = impersonationInfo.value
+    if (info?.original_access_token) {
+      localStorage.setItem('access_token', info.original_access_token)
+    } else {
+      localStorage.removeItem('access_token')
+    }
+    if (info?.original_refresh_token) {
+      localStorage.setItem('refresh_token', info.original_refresh_token)
+    }
+
+    // Clear impersonation info
+    impersonationInfo.value = null
+    localStorage.removeItem('impersonation_info')
+    isLoading.value = false
+
+    return ended
   }
 
   return {

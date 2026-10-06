@@ -132,6 +132,15 @@ pub trait InvitationStore: Send + Sync {
 
     // === Optional methods with defaults ===
 
+    /// Check if the invitation would grant the owner role.
+    ///
+    /// Used to reject owner invitations at creation time. Override this when your
+    /// role type can represent an owner; acceptance also rejects owner memberships
+    /// regardless of this method.
+    fn invitation_grants_owner(&self, _inv: &Self::Invitation) -> bool {
+        false
+    }
+
     /// Find pending invitation by email for an organization.
     async fn find_pending_by_email(
         &self,

@@ -463,6 +463,12 @@ fn parse_invoice_id(id: &str) -> Result<stripe::InvoiceId> {
 // Live Stripe Client
 // ============================================================================
 
+const STRIPE_API_BASE: &str = "https://api.stripe.com";
+
+/// API version for raw REST calls, matching the version async-stripe pins, so
+/// responses deserialize into its types.
+const STRIPE_API_VERSION: stripe::ApiVersion = stripe::ApiVersion::V2023_10_16;
+
 /// Live Stripe client for production use.
 ///
 /// Implements all Stripe client traits with:
@@ -491,6 +497,11 @@ pub struct LiveStripeClient {
     config: LiveStripeClientConfig,
     api_key: SecretString,
     circuit_breaker: Arc<CircuitBreaker>,
+    /// Shared HTTP client for raw REST calls, reused across requests and retries.
+    http: reqwest::Client,
+    /// Base URL for raw REST calls the async-stripe crate doesn't cover (usage
+    /// records, and refund creation, which needs the `Idempotent-Replayed` header).
+    rest_api_base: String,
 }
 
 impl LiveStripeClient {
@@ -526,7 +537,16 @@ impl LiveStripeClient {
             config,
             api_key,
             circuit_breaker,
+            http: reqwest::Client::new(),
+            rest_api_base: STRIPE_API_BASE.to_string(),
         })
+    }
+
+    /// Point raw REST calls at a different base URL (e.g. a local test server).
+    #[cfg(test)]
+    fn with_rest_api_base(mut self, base: impl Into<String>) -> Self {
+        self.rest_api_base = base.into();
+        self
     }
 
     /// Create a client with default configuration.
@@ -638,7 +658,11 @@ where
             }
             Ok(Err(e)) => {
                 if !is_retryable_error(&e) || attempts >= config.max_retries {
-                    circuit_breaker.record_failure();
+                    match circuit_outcome(&e) {
+                        CircuitOutcome::Failure => circuit_breaker.record_failure(),
+                        CircuitOutcome::Healthy => circuit_breaker.record_success(),
+                        CircuitOutcome::Ignore => {}
+                    }
                     return Err(map_stripe_error(e, operation));
                 }
 
@@ -702,6 +726,36 @@ async fn sleep_with_backoff(attempts: u32, config: &LiveStripeClientConfig) {
     tokio::time::sleep(delay).await;
 }
 
+/// Read the JSON body of a raw Stripe REST response.
+///
+/// Non-2xx responses become `StripeError::Stripe` with the HTTP status set, so
+/// `is_retryable_error` treats them the same as errors from async-stripe calls.
+async fn read_stripe_response(
+    resp: reqwest::Response,
+) -> std::result::Result<serde_json::Value, stripe::StripeError> {
+    #[derive(serde::Deserialize)]
+    struct ErrorBody {
+        error: stripe::RequestError,
+    }
+
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        let mut error = serde_json::from_str::<ErrorBody>(&body)
+            .map(|b| b.error)
+            .unwrap_or_else(|_| stripe::RequestError {
+                message: Some(format!("HTTP {status}: {body}")),
+                ..Default::default()
+            });
+        error.http_status = status;
+        return Err(stripe::StripeError::Stripe(error));
+    }
+
+    resp.json()
+        .await
+        .map_err(|e| stripe::StripeError::ClientError(format!("JSON parse error: {e}")))
+}
+
 /// Check if an error is retryable.
 #[inline]
 fn is_retryable_error(error: &stripe::StripeError) -> bool {
@@ -714,6 +768,37 @@ fn is_retryable_error(error: &stripe::StripeError) -> bool {
         stripe::StripeError::Timeout => true,
         // Other errors are generally not retryable
         _ => false,
+    }
+}
+
+/// How a final Stripe error affects the circuit breaker.
+#[derive(Debug, PartialEq, Eq)]
+enum CircuitOutcome {
+    /// Stripe is unavailable or overloaded.
+    Failure,
+    /// Stripe answered and rejected the request (card declined, bad parameters, ...).
+    Healthy,
+    /// The request failed locally before reaching Stripe.
+    Ignore,
+}
+
+/// Classify a final Stripe error for the circuit breaker.
+///
+/// Only provider failures open the circuit. A Stripe 4xx means Stripe is up, so card declines
+/// from users cannot block billing for everyone.
+fn circuit_outcome(error: &stripe::StripeError) -> CircuitOutcome {
+    match error {
+        stripe::StripeError::Stripe(request_error) => match request_error.http_status {
+            429 | 500..=599 => CircuitOutcome::Failure,
+            400..=499 => CircuitOutcome::Healthy,
+            _ => CircuitOutcome::Failure,
+        },
+        stripe::StripeError::Timeout | stripe::StripeError::ClientError(_) => {
+            CircuitOutcome::Failure
+        }
+        stripe::StripeError::QueryStringSerialize(_)
+        | stripe::StripeError::JSONSerialize(_)
+        | stripe::StripeError::UnsupportedVersion => CircuitOutcome::Ignore,
     }
 }
 
@@ -746,7 +831,8 @@ fn map_stripe_error(error: stripe::StripeError, operation: &str) -> crate::error
                 .message
                 .clone()
                 .unwrap_or_else(|| "Unknown error".to_string());
-            let code = request_error.code.as_ref().map(|c| format!("{c:?}"));
+            // Stripe's snake_case code, e.g. `incorrect_cvc`.
+            let code = request_error.code.as_ref().map(ToString::to_string);
 
             BillingError::StripeApiError {
                 operation: operation.to_string(),
@@ -1006,6 +1092,59 @@ impl StripeCheckoutClient for LiveStripeClient {
             })?,
         })
     }
+
+    async fn expire_open_subscription_checkouts(&self, customer_id: &str) -> Result<()> {
+        let customer_id = parse_customer_id(customer_id)?;
+
+        let mut params = stripe::ListCheckoutSessions::new();
+        params.customer = Some(customer_id);
+        params.status = Some(stripe::CheckoutSessionStatus::Open);
+        params.limit = Some(100);
+
+        let sessions = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "list_checkout_sessions",
+            || {
+                let client = self.client.clone();
+                let params = params.clone();
+                async move { stripe::CheckoutSession::list(&client, &params).await }
+            },
+        )
+        .await?;
+
+        for session in sessions
+            .data
+            .into_iter()
+            .filter(|session| session.mode == stripe::CheckoutSessionMode::Subscription)
+        {
+            let client = self.idempotent_client("expire_checkout_session");
+            let path = format!("/checkout/sessions/{}/expire", session.id);
+            let expired = with_retry_cb(
+                &self.config,
+                &self.circuit_breaker,
+                "expire_checkout_session",
+                || {
+                    let client = client.clone();
+                    let path = path.clone();
+                    async move { client.post::<stripe::CheckoutSession>(&path).await }
+                },
+            )
+            .await;
+
+            // A session completed or expired since listing can no longer be expired
+            if let Err(error) = expired {
+                tracing::warn!(
+                    target: "tideway::billing",
+                    checkout_session_id = %session.id,
+                    error = %error,
+                    "failed to expire open subscription checkout session"
+                );
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -1184,12 +1323,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
         // First, verify the subscription is not already paused
         let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
             .await
-            .map_err(|e| BillingError::StripeApiError {
-                operation: "get_subscription_for_pause".to_string(),
-                message: e.to_string(),
-                code: None,
-                http_status: None,
-            })?;
+            .map_err(|e| map_stripe_error(e, "get_subscription_for_pause"))?;
 
         if current.pause_collection.is_some() {
             return Err(BillingError::SubscriptionAlreadyPaused {
@@ -1232,12 +1366,7 @@ impl StripeSubscriptionClient for LiveStripeClient {
         // First, verify the subscription is actually paused
         let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
             .await
-            .map_err(|e| BillingError::StripeApiError {
-                operation: "get_subscription_for_resume".to_string(),
-                message: e.to_string(),
-                code: None,
-                http_status: None,
-            })?;
+            .map_err(|e| map_stripe_error(e, "get_subscription_for_resume"))?;
 
         if current.pause_collection.is_none() {
             return Err(BillingError::SubscriptionNotPaused {
@@ -1492,49 +1621,78 @@ impl StripePaymentMethodClient for LiveStripeClient {
 
 impl StripeRefundClient for LiveStripeClient {
     async fn create_refund(&self, request: CreateRefundRequest) -> Result<Refund> {
-        let client = self.idempotent_client("create_refund");
+        // Deterministic per request so caller retries don't refund twice.
+        let idempotency_key = request.idempotency_key();
 
-        let mut params = stripe::CreateRefund::new();
+        let mut form = Vec::new();
 
         if let Some(ref charge_id) = request.charge_id {
-            params.charge = Some(
-                charge_id
-                    .parse()
-                    .map_err(|_| BillingError::ChargeNotFound {
-                        charge_id: charge_id.clone(),
-                    })?,
-            );
+            charge_id
+                .parse::<stripe::ChargeId>()
+                .map_err(|_| BillingError::ChargeNotFound {
+                    charge_id: charge_id.clone(),
+                })?;
+            form.push(("charge", charge_id.clone()));
         }
 
         if let Some(ref pi_id) = request.payment_intent_id {
-            params.payment_intent =
-                Some(pi_id.parse().map_err(|_| BillingError::RefundFailed {
+            pi_id
+                .parse::<stripe::PaymentIntentId>()
+                .map_err(|_| BillingError::RefundFailed {
                     reason: format!("Invalid payment intent ID: {}", pi_id),
-                })?);
+                })?;
+            form.push(("payment_intent", pi_id.clone()));
         }
 
         if let Some(amount) = request.amount {
-            params.amount = Some(amount);
+            form.push(("amount", amount.to_string()));
         }
 
         if let Some(reason) = request.reason {
-            params.reason = Some(match reason {
-                RefundReason::Duplicate => stripe::RefundReasonFilter::Duplicate,
-                RefundReason::Fraudulent => stripe::RefundReasonFilter::Fraudulent,
-                RefundReason::RequestedByCustomer => {
-                    stripe::RefundReasonFilter::RequestedByCustomer
-                }
-            });
+            form.push(("reason", reason.as_str().to_string()));
         }
 
-        let refund = with_retry_cb(&self.config, &self.circuit_breaker, "create_refund", || {
-            let client = client.clone();
-            let params = params.clone();
-            async move { stripe::Refund::create(&client, params).await }
-        })
-        .await?;
+        // Raw REST call because async-stripe doesn't expose response headers, and
+        // `Idempotent-Replayed` is how Stripe reports a cached response.
+        let url = format!("{}/v1/refunds", self.rest_api_base);
+        let attempts = std::sync::atomic::AtomicU32::new(0);
 
-        Ok(map_refund(refund))
+        let (body, replayed) =
+            with_retry_cb(&self.config, &self.circuit_breaker, "create_refund", || {
+                // A replay on a retry may be of our own timed-out first attempt,
+                // so only a replay on the first attempt is reported.
+                let first_attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+                let request = self
+                    .http
+                    .post(&url)
+                    .basic_auth(self.api_key.expose_secret(), None::<&str>)
+                    .header("Idempotency-Key", &idempotency_key)
+                    .header("Stripe-Version", STRIPE_API_VERSION.as_str())
+                    .form(&form);
+                async move {
+                    let resp = request
+                        .send()
+                        .await
+                        .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
+                    let replayed = resp
+                        .headers()
+                        .get("idempotent-replayed")
+                        .is_some_and(|v| v.as_bytes().eq_ignore_ascii_case(b"true"));
+                    let body = read_stripe_response(resp).await?;
+                    Ok((body, first_attempt && replayed))
+                }
+            })
+            .await?;
+
+        let refund: stripe::Refund =
+            serde_json::from_value(body).map_err(|e| BillingError::Internal {
+                message: format!("Failed to parse Stripe refund: {e}"),
+            })?;
+
+        Ok(Refund {
+            replayed,
+            ..map_refund(refund)
+        })
     }
 
     async fn get_refund(&self, refund_id: &str) -> Result<Refund> {
@@ -1682,6 +1840,7 @@ fn map_refund(refund: stripe::Refund) -> Refund {
         created: refund.created as u64,
         charge_id,
         payment_intent_id,
+        replayed: false,
     }
 }
 
@@ -2215,8 +2374,8 @@ impl StripeUsageClient for LiveStripeClient {
         // Use Stripe's REST API directly for usage records
         // The async-stripe crate doesn't fully expose usage record creation
         let url = format!(
-            "https://api.stripe.com/v1/subscription_items/{}/usage_records",
-            subscription_item_id
+            "{}/v1/subscription_items/{}/usage_records",
+            self.rest_api_base, subscription_item_id
         );
 
         let form = vec![
@@ -2225,38 +2384,27 @@ impl StripeUsageClient for LiveStripeClient {
             ("action", action.as_str().to_string()),
         ];
 
+        // One key for every attempt: a timed-out request may still have reached
+        // Stripe, and the shared key lets Stripe drop the duplicate on retry.
+        let idempotency_key = Self::generate_idempotency_key("create_usage_record");
+
         let response: serde_json::Value = with_retry_cb(
             &self.config,
             &self.circuit_breaker,
             "create_usage_record",
             || {
-                let url = url.clone();
-                let form_data = form.clone();
-                let api_key = self.api_key.expose_secret().to_string();
+                let request = self
+                    .http
+                    .post(&url)
+                    .basic_auth(self.api_key.expose_secret(), None::<&str>)
+                    .header("Idempotency-Key", &idempotency_key)
+                    .form(&form);
                 async move {
-                    let client = reqwest::Client::new();
-                    let resp = client
-                        .post(&url)
-                        .basic_auth(&api_key, None::<&str>)
-                        .form(&form_data)
+                    let resp = request
                         .send()
                         .await
                         .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
-
-                    if !resp.status().is_success() {
-                        let status = resp.status().as_u16();
-                        let body = resp.text().await.unwrap_or_default();
-                        return Err(stripe::StripeError::ClientError(format!(
-                            "HTTP {}: {}",
-                            status, body
-                        )));
-                    }
-
-                    let body: serde_json::Value = resp.json().await.map_err(|e| {
-                        stripe::StripeError::ClientError(format!("JSON parse error: {}", e))
-                    })?;
-
-                    Ok(body)
+                    read_stripe_response(resp).await
                 }
             },
         )
@@ -2295,8 +2443,8 @@ impl StripeUsageClient for LiveStripeClient {
 
         // Use Stripe's REST API directly
         let url = format!(
-            "https://api.stripe.com/v1/subscription_items/{}/usage_record_summaries",
-            subscription_item_id
+            "{}/v1/subscription_items/{}/usage_record_summaries",
+            self.rest_api_base, subscription_item_id
         );
 
         let response: serde_json::Value = with_retry_cb(
@@ -2304,31 +2452,16 @@ impl StripeUsageClient for LiveStripeClient {
             &self.circuit_breaker,
             "list_usage_records",
             || {
-                let url = url.clone();
-                let api_key = self.api_key.expose_secret().to_string();
+                let request = self
+                    .http
+                    .get(&url)
+                    .basic_auth(self.api_key.expose_secret(), None::<&str>);
                 async move {
-                    let client = reqwest::Client::new();
-                    let resp = client
-                        .get(&url)
-                        .basic_auth(&api_key, None::<&str>)
+                    let resp = request
                         .send()
                         .await
                         .map_err(|e| stripe::StripeError::ClientError(e.to_string()))?;
-
-                    if !resp.status().is_success() {
-                        let status = resp.status().as_u16();
-                        let body = resp.text().await.unwrap_or_default();
-                        return Err(stripe::StripeError::ClientError(format!(
-                            "HTTP {}: {}",
-                            status, body
-                        )));
-                    }
-
-                    let body: serde_json::Value = resp.json().await.map_err(|e| {
-                        stripe::StripeError::ClientError(format!("JSON parse error: {}", e))
-                    })?;
-
-                    Ok(body)
+                    read_stripe_response(resp).await
                 }
             },
         )
@@ -2374,6 +2507,84 @@ impl StripeUsageClient for LiveStripeClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stripe_auth_errors_preserve_operator_logs() {
+        #[derive(Clone, Default)]
+        struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogBuffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        for status in [401, 403] {
+            let logs = LogBuffer::default();
+            let writer = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(move || writer.clone())
+                .finish();
+            let raw_message = "Invalid API Key provided: sk_test_private";
+            let err = tracing::subscriber::with_default(subscriber, || {
+                map_stripe_error(
+                    stripe::StripeError::Stripe(stripe::RequestError {
+                        http_status: status,
+                        message: Some(raw_message.to_string()),
+                        ..Default::default()
+                    }),
+                    "create_customer",
+                )
+            });
+            let crate::error::TidewayError::Billing { public, .. } = &err else {
+                panic!("expected TidewayError::Billing, got {err:?}");
+            };
+            assert!(
+                matches!(public.as_ref(), crate::error::TidewayError::Internal(message)
+                if message == "Unable to process billing request. Please try again later.")
+            );
+            let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+            assert!(output.contains(raw_message), "missing diagnostic: {output}");
+            assert!(output.contains("create_customer"));
+            assert!(output.contains(&status.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn stripe_card_error_reaches_user_and_keeps_original_error() {
+        let body = r#"{"error":{"type":"card_error","code":"incorrect_cvc","decline_code":null,
+            "message":"Your card's security code is incorrect.","param":"cvc"}}"#;
+        let resp = reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(402)
+                .body(body)
+                .unwrap(),
+        );
+        let stripe_err = read_stripe_response(resp).await.unwrap_err();
+        let err = map_stripe_error(stripe_err, "pay_invoice");
+
+        assert_eq!(
+            err.to_string(),
+            "Bad request: Your card's security code is incorrect."
+        );
+        assert_eq!(err.error_code(), Some("incorrect_cvc"));
+        assert_eq!(
+            err.billing_error(),
+            Some(&BillingError::StripeApiError {
+                operation: "pay_invoice".to_string(),
+                message: "Your card's security code is incorrect.".to_string(),
+                code: Some("incorrect_cvc".to_string()),
+                http_status: Some(402),
+            })
+        );
+    }
 
     #[test]
     fn test_validate_api_key_valid() {
@@ -2622,6 +2833,73 @@ mod tests {
         assert_eq!(cb.state(), CircuitState::Closed);
     }
 
+    fn stripe_status_error(http_status: u16) -> stripe::StripeError {
+        stripe::StripeError::Stripe(stripe::RequestError {
+            http_status,
+            message: Some("Your card's security code is incorrect.".to_string()),
+            ..Default::default()
+        })
+    }
+
+    async fn fail_with(
+        config: &LiveStripeClientConfig,
+        cb: &CircuitBreaker,
+        make_error: fn() -> stripe::StripeError,
+    ) {
+        let result: Result<()> =
+            with_retry_cb(config, cb, "pay_invoice", || async { Err(make_error()) }).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn card_declines_do_not_open_circuit() {
+        let config = LiveStripeClientConfig {
+            max_retries: 0,
+            circuit_breaker: CircuitBreakerConfig::default().failure_threshold(2),
+            ..Default::default()
+        };
+        let cb = CircuitBreaker::new(config.circuit_breaker.clone());
+
+        for _ in 0..10 {
+            fail_with(&config, &cb, || stripe_status_error(402)).await;
+        }
+        assert_eq!(cb.state(), CircuitState::Closed);
+        assert_eq!(cb.failure_count(), 0);
+
+        // A Stripe 4xx shows Stripe is up, so it also clears earlier provider failures.
+        fail_with(&config, &cb, || stripe_status_error(503)).await;
+        assert_eq!(cb.failure_count(), 1);
+        fail_with(&config, &cb, || stripe_status_error(400)).await;
+        assert_eq!(cb.failure_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_failures_open_circuit() {
+        let config = LiveStripeClientConfig {
+            max_retries: 0,
+            circuit_breaker: CircuitBreakerConfig::default().failure_threshold(4),
+            ..Default::default()
+        };
+        let cb = CircuitBreaker::new(config.circuit_breaker.clone());
+
+        fail_with(&config, &cb, || stripe_status_error(500)).await;
+        fail_with(&config, &cb, || stripe_status_error(429)).await;
+        fail_with(&config, &cb, || stripe::StripeError::Timeout).await;
+        fail_with(&config, &cb, || {
+            stripe::StripeError::ClientError("connection refused".to_string())
+        })
+        .await;
+        assert_eq!(cb.state(), CircuitState::Open);
+    }
+
+    #[test]
+    fn local_errors_do_not_affect_circuit() {
+        assert_eq!(
+            circuit_outcome(&stripe::StripeError::UnsupportedVersion),
+            CircuitOutcome::Ignore
+        );
+    }
+
     #[test]
     fn test_circuit_breaker_disabled() {
         let config = CircuitBreakerConfig::disabled();
@@ -2735,5 +3013,335 @@ mod tests {
     fn test_client_circuit_state() {
         let client = LiveStripeClient::with_default_config("sk_test_12345678901234567890").unwrap();
         assert_eq!(client.circuit_state(), CircuitState::Closed);
+    }
+
+    mod usage_http {
+        use super::*;
+        use axum::extract::{ConnectInfo, State};
+        use axum::http::{HeaderMap, StatusCode};
+        use axum::response::IntoResponse;
+        use std::collections::VecDeque;
+        use std::net::SocketAddr;
+        use std::sync::Mutex;
+
+        #[derive(Clone)]
+        enum Reply {
+            Hang(Duration),
+            Status(u16, &'static str),
+            /// 200 with `Idempotent-Replayed: true`, as Stripe sends for a cached response.
+            Replayed(&'static str),
+        }
+
+        #[derive(Debug)]
+        struct SeenRequest {
+            idempotency_key: Option<String>,
+            stripe_version: Option<String>,
+            body: String,
+            peer: SocketAddr,
+        }
+
+        #[derive(Clone, Default)]
+        struct MockStripe {
+            replies: Arc<Mutex<VecDeque<Reply>>>,
+            seen: Arc<Mutex<Vec<SeenRequest>>>,
+        }
+
+        const USAGE_RECORD_OK: &str = r#"{"id":"mbur_123","object":"usage_record"}"#;
+        const REFUND_OK: &str = r#"{"id":"re_123","object":"refund","amount":500,"currency":"usd","created":1700000000,"status":"succeeded","charge":"ch_test123"}"#;
+        const RATE_LIMITED: &str =
+            r#"{"error":{"type":"invalid_request_error","message":"Too many requests"}}"#;
+        const BAD_REQUEST: &str =
+            r#"{"error":{"type":"invalid_request_error","message":"Invalid quantity"}}"#;
+
+        async fn handle(
+            State(mock): State<MockStripe>,
+            ConnectInfo(peer): ConnectInfo<SocketAddr>,
+            headers: HeaderMap,
+            body: String,
+        ) -> axum::response::Response {
+            let header = |name: &str| {
+                headers
+                    .get(name)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string)
+            };
+            mock.seen.lock().unwrap().push(SeenRequest {
+                idempotency_key: header("idempotency-key"),
+                stripe_version: header("stripe-version"),
+                body,
+                peer,
+            });
+            let reply = mock
+                .replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Reply::Status(200, USAGE_RECORD_OK));
+            match reply {
+                Reply::Hang(d) => {
+                    tokio::time::sleep(d).await;
+                    (StatusCode::OK, USAGE_RECORD_OK).into_response()
+                }
+                Reply::Status(code, body) => (
+                    StatusCode::from_u16(code).unwrap(),
+                    [("content-type", "application/json")],
+                    body,
+                )
+                    .into_response(),
+                Reply::Replayed(body) => (
+                    StatusCode::OK,
+                    [
+                        ("content-type", "application/json"),
+                        ("idempotent-replayed", "true"),
+                    ],
+                    body,
+                )
+                    .into_response(),
+            }
+        }
+
+        async fn start_mock(replies: Vec<Reply>) -> (String, MockStripe) {
+            let mock = MockStripe {
+                replies: Arc::new(Mutex::new(replies.into())),
+                ..Default::default()
+            };
+            let app = axum::Router::new()
+                .route(
+                    "/v1/subscription_items/{id}/usage_records",
+                    axum::routing::post(handle),
+                )
+                .route("/v1/refunds", axum::routing::post(handle))
+                .with_state(mock.clone());
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+                .unwrap();
+            });
+            (format!("http://{addr}"), mock)
+        }
+
+        fn test_client(base: &str) -> LiveStripeClient {
+            let config = LiveStripeClientConfig::new()
+                .max_retries(3)
+                .base_delay_ms(1)
+                .max_delay_ms(5)
+                .timeout_seconds(1)
+                .disable_circuit_breaker();
+            LiveStripeClient::new("sk_test_12345678901234567890", config)
+                .unwrap()
+                .with_rest_api_base(base)
+        }
+
+        #[tokio::test]
+        async fn timeout_retry_reuses_same_idempotency_key() {
+            let (base, mock) = start_mock(vec![Reply::Hang(Duration::from_secs(3))]).await;
+            let client = test_client(&base);
+
+            let result = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap();
+            assert_eq!(result.id, "mbur_123");
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(
+                seen.len(),
+                2,
+                "expected one timed-out attempt and one retry"
+            );
+            let first_key = seen[0]
+                .idempotency_key
+                .as_deref()
+                .expect("usage record request must carry an Idempotency-Key");
+            assert!(!first_key.is_empty());
+            assert_eq!(seen[1].idempotency_key.as_deref(), Some(first_key));
+        }
+
+        #[tokio::test]
+        async fn repeated_refund_requests_reuse_same_idempotency_key() {
+            let (base, mock) = start_mock(vec![
+                Reply::Status(200, REFUND_OK),
+                Reply::Replayed(REFUND_OK),
+                Reply::Status(200, REFUND_OK),
+            ])
+            .await;
+            let client = test_client(&base);
+
+            // Simulate a caller retrying the same refund (e.g. a double-submit).
+            let mut replayed = Vec::new();
+            for _ in 0..2 {
+                let refund = client
+                    .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(500))
+                    .await
+                    .unwrap();
+                assert_eq!(refund.id, "re_123");
+                replayed.push(refund.replayed);
+            }
+            assert_eq!(
+                replayed,
+                [false, true],
+                "Stripe's replay must be reported, not silent"
+            );
+            // A different refund must not share the key.
+            client
+                .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(700))
+                .await
+                .unwrap();
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 3);
+            let first_key = seen[0]
+                .idempotency_key
+                .as_deref()
+                .expect("refund request must carry an Idempotency-Key");
+            assert_eq!(
+                seen[1].idempotency_key.as_deref(),
+                Some(first_key),
+                "retrying the same refund must reuse its idempotency key"
+            );
+            assert_ne!(seen[2].idempotency_key.as_deref(), Some(first_key));
+        }
+
+        #[tokio::test]
+        async fn refund_request_sends_params_and_pinned_api_version() {
+            let (base, mock) = start_mock(vec![Reply::Status(200, REFUND_OK)]).await;
+            let refund = test_client(&base)
+                .create_refund(
+                    CreateRefundRequest::for_charge("ch_test123")
+                        .with_amount(500)
+                        .with_reason(RefundReason::RequestedByCustomer)
+                        .with_idempotency_key("ticket_42"),
+                )
+                .await
+                .unwrap();
+            assert_eq!(refund.amount, 500);
+            assert_eq!(refund.charge_id.as_deref(), Some("ch_test123"));
+            assert!(!refund.replayed);
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].idempotency_key.as_deref(), Some("ticket_42"));
+            assert_eq!(
+                seen[0].stripe_version.as_deref(),
+                Some(STRIPE_API_VERSION.as_str())
+            );
+            assert_eq!(
+                seen[0].body,
+                "charge=ch_test123&amount=500&reason=requested_by_customer"
+            );
+        }
+
+        #[tokio::test]
+        async fn refund_replayed_only_on_internal_retry_is_not_reported() {
+            // The first attempt may have reached Stripe before timing out, so the
+            // retry's replay can be of this same call and must not be flagged.
+            let (base, mock) = start_mock(vec![
+                Reply::Hang(Duration::from_secs(3)),
+                Reply::Replayed(REFUND_OK),
+            ])
+            .await;
+            let refund = test_client(&base)
+                .create_refund(CreateRefundRequest::for_charge("ch_test123").with_amount(500))
+                .await
+                .unwrap();
+            assert_eq!(refund.id, "re_123");
+            assert!(!refund.replayed);
+            assert_eq!(mock.seen.lock().unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn rate_limited_usage_record_is_retried_on_same_connection() {
+            let (base, mock) = start_mock(vec![Reply::Status(429, RATE_LIMITED)]).await;
+            let client = test_client(&base);
+
+            let result = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap();
+            assert_eq!(result.id, "mbur_123");
+
+            let seen = mock.seen.lock().unwrap();
+            assert_eq!(seen.len(), 2, "429 should be retried once then succeed");
+            assert_eq!(seen[0].idempotency_key, seen[1].idempotency_key);
+            assert_eq!(
+                seen[0].peer, seen[1].peer,
+                "retry should reuse the pooled HTTP connection"
+            );
+        }
+
+        #[tokio::test]
+        async fn stripe_auth_errors_are_hidden_from_users() {
+            for (status, body) in [
+                (
+                    401,
+                    r#"{"error":{"type":"invalid_request_error","message":"Invalid API Key provided: sk_test_private"}}"#,
+                ),
+                (
+                    403,
+                    r#"{"error":{"type":"invalid_request_error","message":"This API key does not have permissions for this account"}}"#,
+                ),
+            ] {
+                let (base, mock) = start_mock(vec![Reply::Status(status, body)]).await;
+                let err = test_client(&base)
+                    .create_usage_record(
+                        "si_test123",
+                        5,
+                        Some(1_700_000_000),
+                        UsageAction::Increment,
+                    )
+                    .await
+                    .unwrap_err();
+                assert_eq!(mock.seen.lock().unwrap().len(), 1);
+                assert!(!err.to_string().contains("API"));
+                assert!(!err.to_string().contains("sk_test_private"));
+
+                let response = err.into_response();
+                assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+                let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                    .await
+                    .unwrap();
+                let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(json["error"], "Internal server error");
+            }
+        }
+
+        #[tokio::test]
+        async fn client_error_usage_record_is_not_retried() {
+            let (base, mock) = start_mock(vec![Reply::Status(400, BAD_REQUEST)]).await;
+            let client = test_client(&base);
+
+            let err = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap_err();
+            // Stripe's message is logged, not returned to the caller.
+            assert!(!err.to_string().contains("Invalid quantity"), "got: {err}");
+            assert!(matches!(
+                err.billing_error(),
+                Some(BillingError::StripeApiError { message, .. }) if message.contains("Invalid quantity")
+            ));
+            assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+            assert_eq!(mock.seen.lock().unwrap().len(), 1);
+        }
+
+        #[tokio::test]
+        async fn rate_limited_usage_record_maps_to_too_many_requests() {
+            let replies = (0..4)
+                .map(|_| Reply::Status(429, RATE_LIMITED))
+                .collect::<Vec<_>>();
+            let (base, _mock) = start_mock(replies).await;
+            let client = test_client(&base);
+
+            let err = client
+                .create_usage_record("si_test123", 5, Some(1_700_000_000), UsageAction::Increment)
+                .await
+                .unwrap_err();
+            assert_eq!(err.into_response().status(), StatusCode::TOO_MANY_REQUESTS);
+        }
     }
 }

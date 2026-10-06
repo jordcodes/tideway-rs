@@ -560,6 +560,43 @@ impl BillingStore for SeaOrmBillingStore {
         Ok(())
     }
 
+    async fn link_stripe_customer_if_absent(
+        &self,
+        billable_id: &str,
+        billable_type: &str,
+        customer_id: &str,
+    ) -> Result<String> {
+        let now = chrono::Utc::now().fixed_offset();
+
+        let customer = billing_customer::ActiveModel {
+            billable_id: Set(billable_id.to_string()),
+            billable_type: Set(billable_type.to_string()),
+            stripe_customer_id: Set(customer_id.to_string()),
+            created_at: Set(now),
+            updated_at: Set(now),
+        };
+
+        // Keep the first link on conflict; concurrent callers then read the winner.
+        billing_customer::Entity::insert(customer)
+            .on_conflict(
+                OnConflict::column(billing_customer::Column::BillableId)
+                    .do_nothing()
+                    .to_owned(),
+            )
+            .do_nothing()
+            .exec(&self.db)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        self.get_stripe_customer_id(billable_id)
+            .await?
+            .ok_or_else(|| {
+                TidewayError::Database(format!(
+                    "billing customer link for {billable_id} missing after insert"
+                ))
+            })
+    }
+
     // -------------------------------------------------------------------------
     // Subscription Tracking
     // -------------------------------------------------------------------------
@@ -1315,6 +1352,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn link_stripe_customer_if_absent_keeps_first_link() {
+        let store = SeaOrmBillingStore::new(setup_billing_schema_db(true).await);
+
+        let first = store
+            .link_stripe_customer_if_absent("org_123", "organization", "cus_first")
+            .await
+            .expect("first link should insert");
+        let second = store
+            .link_stripe_customer_if_absent("org_123", "organization", "cus_second")
+            .await
+            .expect("second link should return the existing customer");
+
+        assert_eq!(first, "cus_first");
+        assert_eq!(second, "cus_first");
+        assert_eq!(
+            store.get_stripe_customer_id("org_123").await.unwrap(),
+            Some("cus_first".to_string())
+        );
+    }
+
+    #[tokio::test]
     async fn schema_validation_reports_missing_customer_contract_columns() {
         let store = SeaOrmBillingStore::new(setup_billing_schema_db(false).await);
 
@@ -1322,6 +1380,19 @@ mod tests {
 
         assert!(error.contains("billing_customers.billable_type"));
         assert!(error.contains("billing_customers.updated_at"));
+    }
+
+    #[tokio::test]
+    async fn deleted_subscription_marker_persists_without_claiming_events() {
+        let store = SeaOrmBillingStore::new(setup_billing_events_db().await);
+
+        assert!(!store.is_subscription_deleted("sub_123").await.unwrap());
+        store.mark_subscription_deleted("sub_123").await.unwrap();
+        store.mark_subscription_deleted("sub_123").await.unwrap();
+
+        assert!(store.is_subscription_deleted("sub_123").await.unwrap());
+        assert!(!store.is_subscription_deleted("sub_other").await.unwrap());
+        assert!(!store.is_event_processed("sub_123").await.unwrap());
     }
 
     #[tokio::test]

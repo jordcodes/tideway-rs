@@ -2,7 +2,7 @@
 //!
 //! Uses the governor crate for a production-grade rate limiter with:
 //! - Lock-free atomic operations (GCRA algorithm)
-//! - Per-IP rate limiting with keyed rate limiters
+//! - Per-IP rate limiting keyed by IPv4 /32 or IPv6 /64
 //! - Automatic cleanup of stale entries via periodic shrinking
 //! - High performance under concurrent load
 
@@ -27,13 +27,33 @@ use std::{
 };
 use tower::{Layer, Service};
 
-/// Shrink the keyed state store every N requests to prevent unbounded memory growth.
+/// Remove stale keys every N requests to reduce memory usage.
 /// This is a balance between memory efficiency and performance overhead.
 const SHRINK_INTERVAL: u64 = 1000;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 enum ClientKey {
     Ip(std::net::IpAddr),
     Unknown,
+}
+
+impl From<std::net::IpAddr> for ClientKey {
+    fn from(ip: std::net::IpAddr) -> Self {
+        use std::net::{IpAddr, Ipv6Addr};
+
+        let ip = match ip {
+            IpAddr::V4(ip) => IpAddr::V4(ip),
+            IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+                Some(ip) => IpAddr::V4(ip),
+                None => {
+                    // Rotating interface identifiers within a /64 must not
+                    // create fresh quotas or additional state-store entries.
+                    let prefix = u128::from(ip) & (u128::MAX << 64);
+                    IpAddr::V6(Ipv6Addr::from(prefix))
+                }
+            },
+        };
+        Self::Ip(ip)
+    }
 }
 
 /// Custom error response for rate limit exceeded
@@ -73,6 +93,20 @@ enum LimiterState {
     PerIp(Arc<KeyedLimiter>),
 }
 
+/// Build a quota allowing `max_requests` per `window_seconds`.
+///
+/// Governor's `with_period` is the interval to replenish a *single* cell, so the
+/// window is divided by `max_requests` to sustain the configured rate. The burst
+/// lets a fresh client spend the whole window's allowance at once.
+fn build_quota(config: &RateLimitConfig) -> Quota {
+    let max_requests = NonZeroU32::new(config.max_requests.max(1)).unwrap_or(NonZeroU32::MIN);
+    let window = std::time::Duration::from_secs(config.window_seconds.max(1));
+
+    Quota::with_period(window / max_requests.get())
+        .unwrap_or_else(|| Quota::per_second(max_requests))
+        .allow_burst(max_requests)
+}
+
 /// Rate limiter state and configuration
 #[derive(Clone)]
 struct RateLimitState {
@@ -84,13 +118,7 @@ struct RateLimitState {
 
 impl RateLimitState {
     fn new(config: RateLimitConfig) -> Self {
-        let max_requests = NonZeroU32::new(config.max_requests.max(1)).unwrap_or(NonZeroU32::MIN);
-
-        // Create quota: max_requests per window_seconds
-        let quota =
-            Quota::with_period(std::time::Duration::from_secs(config.window_seconds.max(1)))
-                .unwrap_or_else(|| Quota::per_second(max_requests))
-                .allow_burst(max_requests);
+        let quota = build_quota(&config);
 
         let limiter = if config.strategy == "per_ip" {
             LimiterState::PerIp(Arc::new(RateLimiter::keyed(quota)))
@@ -123,13 +151,13 @@ impl RateLimitState {
         match &self.limiter {
             LimiterState::PerIp(limiter) => {
                 // Periodically shrink the state store to remove stale entries
-                // This prevents unbounded memory growth from many unique IPs
+                // Active prefixes still retain their quota state.
                 let count = self.request_count.fetch_add(1, Ordering::Relaxed);
                 if count.is_multiple_of(SHRINK_INTERVAL) && count > 0 {
                     limiter.retain_recent();
                 }
 
-                let key = ip.map(ClientKey::Ip).unwrap_or(ClientKey::Unknown);
+                let key = ip.map(ClientKey::from).unwrap_or(ClientKey::Unknown);
                 match limiter.check_key(&key) {
                     Ok(_) => Ok(()),
                     Err(not_until) => {
@@ -324,6 +352,64 @@ mod tests {
     }
 
     #[test]
+    fn test_ipv6_subnet_shares_quota() {
+        let state = RateLimitState::new(test_config());
+        for address in [
+            "2001:db8:1234:5678::",
+            "2001:db8:1234:5678::1",
+            "2001:db8:1234:5678:abcd::",
+            "2001:db8:1234:5678:ffff:ffff:ffff:fffe",
+            "2001:db8:1234:5678:ffff:ffff:ffff:ffff",
+        ] {
+            assert!(state.check_rate_limit(Some(ip(address))).is_ok());
+        }
+        assert!(
+            state
+                .check_rate_limit(Some(ip("2001:db8:1234:5678::2")))
+                .is_err()
+        );
+        assert!(
+            state
+                .check_rate_limit(Some(ip("2001:db8:1234:5679::2")))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_ipv6_address_rotation_keeps_one_key() {
+        let state = RateLimitState::new(test_config());
+        let prefix = u128::from(
+            "2001:db8:1234:5678::"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap(),
+        );
+        // Cross several cleanup intervals while rotating all four host segments.
+        for host in 0..10_000_u64 {
+            let host_bits = host * 0x0001_0001_0001_0001;
+            let address = std::net::Ipv6Addr::from(prefix | u128::from(host_bits));
+            let _ = state.check_rate_limit(Some(address.into()));
+        }
+        let LimiterState::PerIp(limiter) = &state.limiter else {
+            panic!("expected per-IP limiter");
+        };
+        assert_eq!(limiter.len(), 1, "one /64 must occupy only one key");
+    }
+
+    #[test]
+    fn test_ipv4_mapped_ipv6_shares_ipv4_quota() {
+        let state = RateLimitState::new(test_config());
+        for _ in 0..5 {
+            assert!(state.check_rate_limit(Some(ip("192.0.2.1"))).is_ok());
+        }
+        assert!(
+            state
+                .check_rate_limit(Some(ip("::ffff:192.0.2.1")))
+                .is_err()
+        );
+        assert!(state.check_rate_limit(Some(ip("::ffff:192.0.2.2"))).is_ok());
+    }
+
+    #[test]
     fn test_global_rate_limiting() {
         let mut config = test_config();
         config.strategy = "global".to_string();
@@ -337,6 +423,46 @@ mod tests {
         // Even a different IP should be blocked
         let result = state.check_rate_limit(Some(ip("192.168.1.2")));
         assert!(result.is_err(), "Global limit should block all IPs");
+    }
+
+    #[test]
+    fn test_quota_sustains_configured_rate() {
+        let mut config = test_config();
+        config.max_requests = 100;
+        config.window_seconds = 60;
+        let quota = build_quota(&config);
+
+        assert_eq!(quota.burst_size().get(), 100);
+        // 100 per 60s means one cell every 600ms, not one per 60s.
+        assert_eq!(
+            quota.replenish_interval(),
+            std::time::Duration::from_millis(600)
+        );
+    }
+
+    #[test]
+    fn test_global_limit_replenishes_at_configured_rate() {
+        let mut config = test_config();
+        config.strategy = "global".to_string();
+        config.max_requests = 20;
+        config.window_seconds = 1;
+        let state = RateLimitState::new(config);
+
+        for _ in 0..20 {
+            state.check_rate_limit(None).unwrap();
+        }
+        assert!(state.check_rate_limit(None).is_err());
+
+        // 20 per second replenishes one request every 50ms. Before the fix,
+        // the limiter refilled only one request per full window.
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let allowed = (0..20)
+            .filter(|_| state.check_rate_limit(None).is_ok())
+            .count();
+        assert!(
+            allowed >= 3,
+            "expected sustained refill after 250ms, got {allowed}"
+        );
     }
 
     #[test]

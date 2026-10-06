@@ -10,6 +10,7 @@ Follow these conventions to work efficiently and safely.
 - Run the app:
   - `tideway dev --fix-env`
   - `tideway migrate` for DB migrations
+  - `tideway seed` for idempotent dev/demo data (`src/bin/seed.rs`)
 
 ## File Map
 - Core framework: `src/`
@@ -27,6 +28,8 @@ Follow these conventions to work efficiently and safely.
 
 ## Patterns
 - DB-backed resources: `routes` → `repositories` → `services`.
+- Org-scoped SaaS resources authorize through `src/policies/<name>.rs` (`tideway::policy`);
+  change access by editing its role grants, not by bypassing the `*_authorized` service methods.
 - Use `paginate` + `search (q)` for list endpoints when DB-backed.
 - Avoid breaking changes to generated paths; prefer additive updates.
 
@@ -43,3 +46,6 @@ Follow these conventions to work efficiently and safely.
 ## Testing
 - CLI tests: `cargo test -p tideway-cli`
 - Full test suite: `cargo test`
+- Feature-gated code (auth, billing, Redis, jobs, email, metrics, ...) is not covered by
+  `cargo test`. Also run `cargo test -p tideway --all-features`; CI runs both via
+  `scripts/verify.sh`.

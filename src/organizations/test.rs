@@ -461,6 +461,10 @@ impl InvitationStore for InMemoryOrgStore {
         inv.role
     }
 
+    fn invitation_grants_owner(&self, inv: &Self::Invitation) -> bool {
+        matches!(inv.role, DefaultOrgRole::Owner)
+    }
+
     fn invitation_token(&self, inv: &Self::Invitation) -> String {
         inv.token.clone()
     }
@@ -511,6 +515,14 @@ mod tests {
             user_id: p.user_id,
             role,
             joined_at: p.joined_at,
+        }
+    }
+
+    /// Helper to set a test organization's owner.
+    fn set_test_org_owner(org: TestOrganization, owner_id: &str) -> TestOrganization {
+        TestOrganization {
+            owner_id: owner_id.to_string(),
+            ..org
         }
     }
 
@@ -1110,7 +1122,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_transfer_ownership_requires_permission() {
+    async fn test_add_member_cannot_create_owner() {
         let store = InMemoryOrgStore::new();
         let org_manager = OrganizationManager::new(
             store.clone(),
@@ -1119,6 +1131,364 @@ mod tests {
             OrganizationConfig::default(),
         );
         let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+
+        mem_manager
+            .add_member(&org.id, "admin", "owner", |p| {
+                make_membership(p, DefaultOrgRole::Admin)
+            })
+            .await
+            .unwrap();
+
+        // Admin tries to add a new owner - should fail
+        let result = mem_manager
+            .add_member(&org.id, "new_owner", "admin", |p| {
+                make_membership(p, DefaultOrgRole::Owner)
+            })
+            .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::InsufficientPermission { .. }
+        ));
+        assert!(!mem_manager.is_member(&org.id, "new_owner").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_transfer_ownership_updates_owner_and_org_limits() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::new().max_orgs_per_user(Some(1)),
+        );
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        store.insert_membership(TestMembership {
+            org_id: org.id.clone(),
+            user_id: "member".to_string(),
+            role: DefaultOrgRole::Member,
+            joined_at: 0,
+        });
+
+        let updated = org_manager
+            .transfer_ownership(
+                &org.id,
+                "member",
+                "owner",
+                |m| TestMembership {
+                    role: DefaultOrgRole::Owner,
+                    ..m.clone()
+                },
+                |m| TestMembership {
+                    role: DefaultOrgRole::Admin,
+                    ..m.clone()
+                },
+                set_test_org_owner,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(updated.owner_id, "member");
+        let stored = org_manager.get_or_error(&org.id).await.unwrap();
+        assert_eq!(stored.owner_id, "member");
+        let new_owner = store.get_membership(&org.id, "member").await.unwrap();
+        assert_eq!(new_owner.unwrap().role, DefaultOrgRole::Owner);
+        let former_owner = store.get_membership(&org.id, "owner").await.unwrap();
+        assert_eq!(former_owner.unwrap().role, DefaultOrgRole::Admin);
+
+        assert_eq!(store.count_owned_by_user("owner").await.unwrap(), 0);
+        assert_eq!(store.count_owned_by_user("member").await.unwrap(), 1);
+
+        // The former owner is back under the limit; the new owner is at it.
+        org_manager
+            .create(
+                "owner",
+                "Second Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        let result = org_manager
+            .create(
+                "member",
+                "Third Org",
+                None,
+                "member@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::MaxOrgsReached { limit: 1 }
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_ownership_rejects_new_owner_at_org_limit() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::new().max_orgs_per_user(Some(1)),
+        );
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        org_manager
+            .create(
+                "member",
+                "Member Org",
+                None,
+                "member@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        store.insert_membership(TestMembership {
+            org_id: org.id.clone(),
+            user_id: "member".to_string(),
+            role: DefaultOrgRole::Member,
+            joined_at: 0,
+        });
+
+        let result = org_manager
+            .transfer_ownership(
+                &org.id,
+                "member",
+                "owner",
+                |m| TestMembership {
+                    role: DefaultOrgRole::Owner,
+                    ..m.clone()
+                },
+                |m| TestMembership {
+                    role: DefaultOrgRole::Admin,
+                    ..m.clone()
+                },
+                set_test_org_owner,
+            )
+            .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::MaxOrgsReached { limit: 1 }
+        ));
+        let stored = org_manager.get_or_error(&org.id).await.unwrap();
+        assert_eq!(stored.owner_id, "owner");
+        let member = store.get_membership(&org.id, "member").await.unwrap();
+        assert_eq!(member.unwrap().role, DefaultOrgRole::Member);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_ownership_rejects_set_owner_that_ignores_new_owner() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        store.insert_membership(TestMembership {
+            org_id: org.id.clone(),
+            user_id: "member".to_string(),
+            role: DefaultOrgRole::Member,
+            joined_at: 0,
+        });
+
+        let result = org_manager
+            .transfer_ownership(
+                &org.id,
+                "member",
+                "owner",
+                |m| TestMembership {
+                    role: DefaultOrgRole::Owner,
+                    ..m.clone()
+                },
+                |m| TestMembership {
+                    role: DefaultOrgRole::Admin,
+                    ..m.clone()
+                },
+                |org, _| org,
+            )
+            .await;
+
+        assert!(result.is_err());
+        let stored = org_manager.get_or_error(&org.id).await.unwrap();
+        assert_eq!(stored.owner_id, "owner");
+        let member = store.get_membership(&org.id, "member").await.unwrap();
+        assert_eq!(member.unwrap().role, DefaultOrgRole::Member);
+    }
+
+    /// Membership store whose atomic update always fails.
+    struct FailingAtomicUpdateStore(InMemoryOrgStore);
+
+    #[async_trait]
+    impl MembershipStore for FailingAtomicUpdateStore {
+        type Membership = TestMembership;
+        type Role = DefaultOrgRole;
+
+        async fn add_member(&self, m: &Self::Membership) -> Result<()> {
+            self.0.add_member(m).await
+        }
+        async fn remove_member(&self, org_id: &str, user_id: &str) -> Result<()> {
+            self.0.remove_member(org_id, user_id).await
+        }
+        async fn get_membership(
+            &self,
+            org_id: &str,
+            user_id: &str,
+        ) -> Result<Option<Self::Membership>> {
+            self.0.get_membership(org_id, user_id).await
+        }
+        async fn list_members(&self, org_id: &str) -> Result<Vec<Self::Membership>> {
+            self.0.list_members(org_id).await
+        }
+        async fn update_membership(&self, m: &Self::Membership) -> Result<()> {
+            self.0.update_membership(m).await
+        }
+        fn membership_user_id(&self, m: &Self::Membership) -> String {
+            self.0.membership_user_id(m)
+        }
+        fn membership_org_id(&self, m: &Self::Membership) -> String {
+            self.0.membership_org_id(m)
+        }
+        fn membership_role(&self, m: &Self::Membership) -> Self::Role {
+            self.0.membership_role(m)
+        }
+        fn can_manage_members(&self, role: &Self::Role) -> bool {
+            self.0.can_manage_members(role)
+        }
+        fn can_manage_settings(&self, role: &Self::Role) -> bool {
+            self.0.can_manage_settings(role)
+        }
+        fn can_delete_org(&self, role: &Self::Role) -> bool {
+            self.0.can_delete_org(role)
+        }
+        fn can_transfer_ownership(&self, role: &Self::Role) -> bool {
+            self.0.can_transfer_ownership(role)
+        }
+        fn is_owner(&self, role: &Self::Role) -> bool {
+            MembershipStore::is_owner(&self.0, role)
+        }
+        async fn list_user_memberships(&self, user_id: &str) -> Result<Vec<Self::Membership>> {
+            self.0.list_user_memberships(user_id).await
+        }
+        async fn update_memberships_atomic(&self, _: &[Self::Membership]) -> Result<()> {
+            Err(crate::error::TidewayError::Database(
+                "write failed".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transfer_ownership_reverts_owner_when_membership_update_fails() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            FailingAtomicUpdateStore(store.clone()),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        store.insert_membership(TestMembership {
+            org_id: org.id.clone(),
+            user_id: "member".to_string(),
+            role: DefaultOrgRole::Member,
+            joined_at: 0,
+        });
+
+        let result = org_manager
+            .transfer_ownership(
+                &org.id,
+                "member",
+                "owner",
+                |m| TestMembership {
+                    role: DefaultOrgRole::Owner,
+                    ..m.clone()
+                },
+                |m| TestMembership {
+                    role: DefaultOrgRole::Admin,
+                    ..m.clone()
+                },
+                set_test_org_owner,
+            )
+            .await;
+
+        assert!(matches!(result.unwrap_err(), OrganizationError::Storage(_)));
+        let stored = org_manager.get_or_error(&org.id).await.unwrap();
+        assert_eq!(stored.owner_id, "owner");
+        assert_eq!(store.count_owned_by_user("owner").await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_transfer_ownership_requires_permission() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
 
         let org = org_manager
             .create(
@@ -1147,7 +1517,7 @@ mod tests {
         });
 
         // Admin tries to transfer ownership - should fail
-        let result = mem_manager
+        let result = org_manager
             .transfer_ownership(
                 &org.id,
                 "member",
@@ -1160,6 +1530,7 @@ mod tests {
                     role: DefaultOrgRole::Admin,
                     ..m.clone()
                 },
+                set_test_org_owner,
             )
             .await;
 
@@ -1178,7 +1549,6 @@ mod tests {
             UnlimitedSeats,
             OrganizationConfig::default(),
         );
-        let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
 
         let org = org_manager
             .create(
@@ -1193,7 +1563,7 @@ mod tests {
             .unwrap();
 
         // Try to transfer to non-member - should fail
-        let result = mem_manager
+        let result = org_manager
             .transfer_ownership(
                 &org.id,
                 "non_member",
@@ -1206,6 +1576,7 @@ mod tests {
                     role: DefaultOrgRole::Admin,
                     ..m.clone()
                 },
+                set_test_org_owner,
             )
             .await;
 
@@ -1283,6 +1654,98 @@ mod tests {
     // =========================================================================
     // Invitation Manager Tests
     // =========================================================================
+
+    #[tokio::test]
+    async fn test_invite_unauthorized_requests_preserve_quota() {
+        use crate::organizations::{InvitationRateLimitConfig, InvitationRateLimiter};
+
+        for actor in ["outsider", "member"] {
+            let store = InMemoryOrgStore::new();
+            let org_manager = OrganizationManager::new(
+                store.clone(),
+                store.clone(),
+                UnlimitedSeats,
+                OrganizationConfig::default(),
+            );
+            let org = org_manager
+                .create(
+                    "owner",
+                    "Test Org",
+                    None,
+                    "owner@example.com",
+                    make_org,
+                    |p| make_membership(p, DefaultOrgRole::Owner),
+                )
+                .await
+                .unwrap();
+            for (user_id, role) in [
+                ("member", DefaultOrgRole::Member),
+                ("admin", DefaultOrgRole::Admin),
+            ] {
+                store.insert_membership(TestMembership {
+                    org_id: org.id.clone(),
+                    user_id: user_id.to_string(),
+                    role,
+                    joined_at: 0,
+                });
+            }
+            let manager = InvitationManager::new_without_seats(
+                store.clone(),
+                store.clone(),
+                store.clone(),
+                InvitationConfig::default(),
+            )
+            .with_rate_limiter(InvitationRateLimiter::new(
+                InvitationRateLimitConfig::new(2, 10, 3600),
+            ));
+
+            // Rejected actors must not consume quota, even with repeated attempts.
+            for _ in 0..3 {
+                let error = manager
+                    .invite(&org.id, "invitee@example.com", actor, |_| {
+                        panic!("unauthorized request reached the invitation factory")
+                    })
+                    .await
+                    .unwrap_err();
+                match actor {
+                    "outsider" => assert!(matches!(error, OrganizationError::NotMember)),
+                    _ => assert!(matches!(
+                        error,
+                        OrganizationError::InsufficientPermission { .. }
+                    )),
+                }
+            }
+            assert_eq!(store.count_pending(&org.id).await.unwrap(), 0);
+
+            // Authorized members retain the full organization allowance.
+            for actor in ["owner", "admin"] {
+                manager
+                    .invite(&org.id, &format!("{actor}@example.com"), actor, |p| {
+                        TestInvitation {
+                            id: p.id,
+                            org_id: p.org_id,
+                            email: p.email,
+                            role: DefaultOrgRole::Member,
+                            invited_by: p.invited_by,
+                            token: p.token,
+                            expires_at: p.expires_at,
+                            created_at: p.created_at,
+                            accepted: false,
+                            revoked: false,
+                        }
+                    })
+                    .await
+                    .unwrap();
+            }
+            let result = manager
+                .invite(&org.id, "over-limit@example.com", "owner", |_| {
+                    panic!("rate-limited request reached the invitation factory")
+                })
+                .await;
+            assert!(matches!(result, Err(OrganizationError::RateLimited { .. })));
+            assert_eq!(store.count_pending(&org.id).await.unwrap(), 2);
+        }
+    }
 
     #[tokio::test]
     async fn test_invite_requires_permission() {
@@ -1521,6 +1984,94 @@ mod tests {
             result.unwrap_err(),
             OrganizationError::InvitationExpired
         ));
+    }
+
+    #[tokio::test]
+    async fn test_accept_does_not_log_invitation_token() {
+        #[derive(Clone, Default)]
+        struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogBuffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+        let inv_manager = InvitationManager::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            InvitationConfig::default(),
+        );
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+
+        let secret_token = "inv_secret_token_do_not_log";
+        store.insert_invitation(TestInvitation {
+            id: "inv_1".to_string(),
+            org_id: org.id.clone(),
+            email: "invitee@example.com".to_string(),
+            role: DefaultOrgRole::Member,
+            invited_by: "owner".to_string(),
+            token: secret_token.to_string(),
+            expires_at: u64::MAX,
+            created_at: 0,
+            accepted: false,
+            revoked: false,
+        });
+
+        let logs = LogBuffer::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        inv_manager
+            .accept(secret_token, "invitee", |inv, p| TestMembership {
+                org_id: p.org_id,
+                user_id: p.user_id,
+                role: inv.role,
+                joined_at: p.joined_at,
+            })
+            .await
+            .unwrap();
+
+        let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("Invitation accepted"),
+            "expected accept logs: {output}"
+        );
+        assert!(
+            !output.contains(secret_token),
+            "invitation token leaked into logs: {output}"
+        );
     }
 
     #[tokio::test]
@@ -1769,6 +2320,154 @@ mod tests {
 
         assert_eq!(membership.role, DefaultOrgRole::Member);
         assert!(mem_manager.is_member(&org.id, "invitee").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_invite_cannot_grant_owner() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+        let inv_manager = InvitationManager::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            InvitationConfig::default(),
+        );
+        let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+
+        mem_manager
+            .add_member(&org.id, "admin", "owner", |p| {
+                make_membership(p, DefaultOrgRole::Admin)
+            })
+            .await
+            .unwrap();
+
+        // Admin tries to invite someone as owner - should fail
+        let result = inv_manager
+            .invite(&org.id, "invitee@example.com", "admin", |p| {
+                TestInvitation {
+                    id: p.id,
+                    org_id: p.org_id,
+                    email: p.email,
+                    role: DefaultOrgRole::Owner,
+                    invited_by: p.invited_by,
+                    token: p.token,
+                    expires_at: p.expires_at,
+                    created_at: p.created_at,
+                    accepted: false,
+                    revoked: false,
+                }
+            })
+            .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::InsufficientPermission { .. }
+        ));
+        assert!(inv_manager.list_pending(&org.id).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_accept_owner_invitation_is_rejected_and_revoked() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+        let inv_manager = InvitationManager::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            InvitationConfig::default(),
+        );
+        let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
+
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+
+        // Insert an owner-role invitation directly, bypassing invite-time checks
+        store.insert_invitation(TestInvitation {
+            id: "inv_owner".to_string(),
+            org_id: org.id.clone(),
+            email: "invitee@example.com".to_string(),
+            role: DefaultOrgRole::Owner,
+            invited_by: "owner".to_string(),
+            token: "owner_token".to_string(),
+            expires_at: u64::MAX,
+            created_at: 0,
+            accepted: false,
+            revoked: false,
+        });
+
+        let result = inv_manager
+            .accept("owner_token", "invitee", |inv, p| TestMembership {
+                org_id: p.org_id,
+                user_id: p.user_id,
+                role: inv.role,
+                joined_at: p.joined_at,
+            })
+            .await;
+
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::InsufficientPermission { .. }
+        ));
+        assert!(!mem_manager.is_member(&org.id, "invitee").await.unwrap());
+
+        // The invalid invitation is revoked rather than left pending
+        let invitation = InvitationStore::find_by_id(&store, "inv_owner")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(invitation.revoked);
+
+        // The same email can be re-invited with a valid role
+        inv_manager
+            .invite(&org.id, "invitee@example.com", "owner", |p| {
+                TestInvitation {
+                    id: p.id,
+                    org_id: p.org_id,
+                    email: p.email,
+                    role: DefaultOrgRole::Member,
+                    invited_by: p.invited_by,
+                    token: p.token,
+                    expires_at: p.expires_at,
+                    created_at: p.created_at,
+                    accepted: false,
+                    revoked: false,
+                }
+            })
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

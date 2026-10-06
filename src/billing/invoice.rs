@@ -346,6 +346,8 @@ pub trait StripeInvoiceClient: Send + Sync {
 ///
 /// Both [`InvoiceManager`] and [`CachedInvoiceManager`] implement this trait,
 /// allowing them to be used interchangeably in application code.
+/// This trait returns owned values. For shared results without copying cached
+/// invoices, use the inherent methods on [`CachedInvoiceManager`] directly.
 ///
 /// # Example
 ///
@@ -721,7 +723,7 @@ struct InvoiceCache {
     /// Uses Arc to avoid cloning large invoice lists on cache hits.
     lists: std::collections::HashMap<ListCacheKey, CacheEntry<std::sync::Arc<InvoiceList>>>,
     /// Cache of upcoming invoices keyed by billable_id.
-    upcoming: std::collections::HashMap<String, CacheEntry<Option<Invoice>>>,
+    upcoming: std::collections::HashMap<String, CacheEntry<Option<std::sync::Arc<Invoice>>>>,
 }
 
 struct CacheEntry<T> {
@@ -851,12 +853,14 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
 
     /// List invoices with caching.
     ///
+    /// Returns a shared handle; cache hits do not copy the invoice list.
+    /// The result remains valid after cache invalidation or eviction.
     /// Set `params.force_refresh = true` to bypass the cache and fetch fresh data.
     pub async fn list_invoices(
         &self,
         billable_id: &str,
         params: InvoiceListParams,
-    ) -> Result<InvoiceList> {
+    ) -> Result<std::sync::Arc<InvoiceList>> {
         self.maybe_cleanup().await;
 
         // Build structured cache key (force_refresh not part of key)
@@ -870,14 +874,14 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
             {
                 tracing::debug!(billable_id = %billable_id, "invoice list cache hit");
                 // Clone the Arc, not the underlying data
-                return Ok((*entry.data).clone());
+                return Ok(std::sync::Arc::clone(&entry.data));
             }
         } else {
             tracing::debug!(billable_id = %billable_id, "force refresh requested");
         }
 
         // Fetch from API
-        let result = self.inner.list_invoices(billable_id, params).await?;
+        let result = std::sync::Arc::new(self.inner.list_invoices(billable_id, params).await?);
 
         // Store in cache (wrap in Arc)
         {
@@ -886,7 +890,7 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
             cache.lists.insert(
                 cache_key,
                 CacheEntry {
-                    data: std::sync::Arc::new(result.clone()),
+                    data: std::sync::Arc::clone(&result),
                     expires_at: now + self.ttl,
                     last_accessed: now,
                 },
@@ -904,9 +908,15 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
 
     /// Get upcoming invoice with caching.
     ///
+    /// Returns a shared handle without copying the cached invoice. The result
+    /// remains valid after cache invalidation or eviction.
+    ///
     /// See [`InvoiceManager::get_upcoming_invoice`] for important limitations
     /// regarding the `LiveStripeClient` implementation.
-    pub async fn get_upcoming_invoice(&self, billable_id: &str) -> Result<Option<Invoice>> {
+    pub async fn get_upcoming_invoice(
+        &self,
+        billable_id: &str,
+    ) -> Result<Option<std::sync::Arc<Invoice>>> {
         self.maybe_cleanup().await;
 
         // Check cache
@@ -921,7 +931,11 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         }
 
         // Fetch from API
-        let result = self.inner.get_upcoming_invoice(billable_id).await?;
+        let result = self
+            .inner
+            .get_upcoming_invoice(billable_id)
+            .await?
+            .map(std::sync::Arc::new);
 
         // Store in cache
         {
@@ -970,7 +984,9 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for CachedInvoic
         billable_id: &str,
         params: InvoiceListParams,
     ) -> Result<InvoiceList> {
-        self.list_invoices(billable_id, params).await
+        self.list_invoices(billable_id, params)
+            .await
+            .map(|list| (*list).clone())
     }
 
     async fn get_invoice(&self, billable_id: &str, invoice_id: &str) -> Result<Invoice> {
@@ -978,7 +994,9 @@ impl<S: BillingStore, C: StripeInvoiceClient> InvoiceOperations for CachedInvoic
     }
 
     async fn get_upcoming_invoice(&self, billable_id: &str) -> Result<Option<Invoice>> {
-        self.get_upcoming_invoice(billable_id).await
+        self.get_upcoming_invoice(billable_id)
+            .await
+            .map(|invoice| invoice.map(|invoice| (*invoice).clone()))
     }
 
     async fn get_invoice_line_items(
@@ -1368,6 +1386,77 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result2.invoices.len(), 1);
+        assert!(std::sync::Arc::ptr_eq(&result1, &result2));
+
+        let refreshed = cached
+            .list_invoices(
+                "org_123",
+                InvoiceListParams {
+                    force_refresh: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&result1, &refreshed));
+        let hit = cached
+            .list_invoices("org_123", Default::default())
+            .await
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&refreshed, &hit));
+        cached.clear().await;
+        assert_eq!(result1.invoices[0].id, "in_1");
+    }
+
+    #[tokio::test]
+    async fn test_cached_upcoming_invoice_shares_allocation() {
+        let store = InMemoryBillingStore::new();
+        store
+            .set_stripe_customer_id("org_123", "org", "cus_test")
+            .await
+            .unwrap();
+        let client = MockStripeInvoiceClient::new();
+        client.set_upcoming(Some(MockStripeInvoiceClient::create_test_invoice(
+            "in_upcoming",
+            "cus_test",
+            InvoiceStatus::Draft,
+        )));
+        let cached = CachedInvoiceManager::new(
+            InvoiceManager::new(store, client.clone()),
+            std::time::Duration::from_secs(60),
+        );
+        let first = cached
+            .get_upcoming_invoice("org_123")
+            .await
+            .unwrap()
+            .unwrap();
+        client.set_upcoming(None);
+        let hit = cached
+            .get_upcoming_invoice("org_123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &hit));
+
+        cached.invalidate("org_123").await;
+        assert!(
+            cached
+                .get_upcoming_invoice("org_123")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(first.id, "in_upcoming");
+
+        // An absent upcoming invoice is cached as well.
+        client.set_upcoming(Some((*first).clone()));
+        assert!(
+            cached
+                .get_upcoming_invoice("org_123")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

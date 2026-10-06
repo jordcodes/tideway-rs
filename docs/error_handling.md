@@ -273,6 +273,10 @@ TIDEWAY_DEV_MODE=true
 TIDEWAY_DEV_STACK_TRACES=true
 ```
 
+Dev mode is ignored (with a warning logged) when `ENV`, `ENVIRONMENT`, `APP_ENV`, or
+`TIDEWAY_ENV` is set to `prod` or `production`, so internal error details, stack traces,
+and request dumps are never exposed in production even if dev mode is misconfigured.
+
 ## Best Practices
 
 1. **Specific Errors**: Use the most specific error type

@@ -4,7 +4,9 @@
 //! with additional state, metadata, and room tracking.
 
 use super::message::Message;
+use super::upgrade::{UpgradeRequest, cookie_from_headers};
 use crate::error::{Result, TidewayError};
+use axum::http::{HeaderMap, Uri};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tokio::sync::mpsc;
@@ -24,6 +26,10 @@ pub struct Connection {
     rooms: HashSet<String>,
     /// Channel sender for sending messages to the WebSocket
     sender: mpsc::Sender<Message>,
+    /// Headers from the upgrade request
+    headers: HeaderMap,
+    /// URI from the upgrade request
+    uri: Uri,
 }
 
 impl Connection {
@@ -44,12 +50,51 @@ impl Connection {
             metadata: HashMap::new(),
             rooms: HashSet::new(),
             sender,
+            headers: HeaderMap::new(),
+            uri: Uri::default(),
+        }
+    }
+
+    /// Create a connection from an accepted upgrade request, keeping its
+    /// headers, URI, and any user ID or metadata set by `on_upgrade`.
+    pub(crate) fn from_upgrade(
+        id: String,
+        sender: mpsc::Sender<Message>,
+        request: UpgradeRequest,
+    ) -> Self {
+        let (headers, uri, user_id, metadata) = request.into_parts();
+        Self {
+            user_id,
+            metadata,
+            headers,
+            uri,
+            ..Self::new(id, sender)
         }
     }
 
     /// Get the connection ID
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Get the headers from the upgrade request
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    /// Get a header from the upgrade request, if present and valid UTF-8
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).and_then(|value| value.to_str().ok())
+    }
+
+    /// Get a cookie value from the upgrade request
+    pub fn cookie(&self, name: &str) -> Option<&str> {
+        cookie_from_headers(&self.headers, name)
+    }
+
+    /// Get the URI of the upgrade request
+    pub fn uri(&self) -> &Uri {
+        &self.uri
     }
 
     /// Get the user ID if set

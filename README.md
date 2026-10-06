@@ -4,14 +4,14 @@
 [![Documentation](https://docs.rs/tideway/badge.svg)](https://docs.rs/tideway)
 [![License](https://img.shields.io/crates/l/tideway.svg)](https://github.com/jordcodes/tideway-rs)
 
-**Tideway** is a batteries-included Rust web framework built on [Axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs/). It provides opinionated defaults for building SaaS applications quickly while maintaining the performance and flexibility you expect from Rust. The primary CLI path and tested scaffolds target backend/API workflows; frontend helpers are advanced and currently Vue-focused.
+**Tideway** is a batteries-included Rust web framework built on [Axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs/). It provides opinionated defaults for building SaaS applications quickly while maintaining the performance and flexibility you expect from Rust. The primary CLI path and tested scaffolds target backend/API workflows; frontend helpers are advanced: Vue components for every module, React/Next.js auth components, and `tideway generate client` for a typed TypeScript client from your OpenAPI spec.
 
 ## Features
 
 - **Fast & Reliable**: Built on Axum and Tokio for maximum performance
 - **Batteries Included**: Pre-configured logging, tracing, error handling, and health checks
 - **Modular Architecture**: Organize your application into reusable route modules
-- **Trait-Based Extensibility**: Swap database, cache, session, and email implementations easily
+- **Trait-Based Extensibility**: Swap database, cache, session, email, and file storage implementations easily
 - **Production Middleware**: Compression, security headers, timeouts, and Prometheus metrics
 - **Request Validation**: Type-safe validation with custom validators and extractors
 - **Enhanced Error Handling**: Rich error responses with context, IDs, and dev-mode stack traces
@@ -37,6 +37,8 @@ Feature flags are opt-in unless marked Default.
 | `openapi` | `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
 | `validation` | `validation` | `docs/validation.md` | `examples/validation_example.rs` | — |
 | `metrics` | `metrics` | `README.md#built-in-middleware` | `tests/metrics_integration_test.rs` | — |
+| `otel` | `observability::otel` | `docs/observability.md` | `tests/otel_export_test.rs` | OTLP trace export, enabled by `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `sentry` | `observability` | `docs/observability.md` | `tests/sentry_reporter_test.rs` | Sentry issues for 5xx errors, panics, and failed jobs, enabled by `SENTRY_DSN` |
 | `cache` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
 | `cache-redis` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
 | `sessions` | `session` | `docs/sessions.md` | `examples/sessions_example.rs` | — |
@@ -44,9 +46,12 @@ Feature flags are opt-in unless marked Default.
 | `jobs-redis` | `jobs` | `docs/background_jobs.md` | — | — |
 | `websocket` | `websocket` | `docs/websockets.md` | `examples/websocket_chat.rs` | — |
 | `email` | `email` | `docs/email.md` | `examples/email_example.rs` | — |
+| `storage` | `storage` | `docs/storage.md` | `tests/storage_test.rs` | Local filesystem + in-memory, presigned uploads |
+| `storage-s3` | `storage` | `docs/storage.md` | `tests/storage_test.rs` | AWS S3, Cloudflare R2, S3-compatible |
 | `auth` | `auth` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-mfa` | `auth::mfa` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-breach` | `auth::breach` | `docs/auth.md` | — | — |
+| `auth-oauth` | `auth::oauth` | `docs/auth.md` | `tests/oauth_test.rs` | Google, GitHub, and OIDC social login |
 | `test-auth-bypass` | `auth` | `docs/auth.md` | `tests/auth_integration_test.rs` | Tests only |
 | `billing` | `billing` | `docs/billing.md` | — | — |
 | `billing-seaorm` | `billing` | `docs/billing.md` | — | — |
@@ -143,6 +148,10 @@ If you prefer integrating Tideway directly as a dependency (without CLI scaffold
 
 #### Installation
 
+> **Upgrading from Tideway 0.8.x?** Tideway 0.9.0 has breaking API changes, so `cargo update` does
+> not move `^0.8` applications to it. Change the dependency to `0.9.0` and follow the
+> [0.9.0 upgrade guide](docs/upgrading.md#08x-to-090-breaking-changes).
+>
 > **Upgrading an existing application from Tideway 0.7.x?** Tideway 0.8.0 is a migration release,
 > not a drop-in dependency update for applications using authentication or password reset. Run
 > `tideway --json doctor --upgrade` before changing the dependency, apply the required database and
@@ -152,7 +161,7 @@ Add Tideway to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = "0.8.0"
+tideway = "0.9.0"
 tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
 ```
 
@@ -210,6 +219,7 @@ Canonical onboarding path:
 - `tideway dev --fix-env`
 - `tideway resource <name>`
 - `tideway migrate`
+- `tideway seed` (optional demo data from `src/bin/seed.rs`)
 
 For advanced/manual composition patterns, see `docs/module_contracts.md`.
 
@@ -567,7 +577,7 @@ let config = ConfigBuilder::new()
 `with_stack_traces(true)` adds stack traces to normal `TidewayError` responses during dev-mode requests.
 
 **Environment Variables:**
-- `TIDEWAY_DEV_MODE` - Enable dev mode (default: false)
+- `TIDEWAY_DEV_MODE` - Enable dev mode (default: false; ignored when `ENV`/`ENVIRONMENT`/`APP_ENV`/`TIDEWAY_ENV` is `production`)
 - `TIDEWAY_DEV_STACK_TRACES` - Include stack traces (default: false)
 - `TIDEWAY_DEV_DUMP_REQUESTS` - Enable request dumper (default: false)
 - `TIDEWAY_DEV_DUMP_PATH` - Path pattern to dump (default: all)
@@ -773,6 +783,27 @@ All requests automatically include:
 10. **Request Logging**: Structured request/response logging
 11. **Metrics**: Prometheus metrics collection (optional, uses route templates when available)
 
+For the built-in application routes, middleware runs from outermost to innermost:
+request ID generation → response ID propagation → CORS → user global layers →
+metrics → tracing → development logging → request logging → security headers →
+compression → rate limiting → timeout → body size limit → auth provider bridge → handler.
+Optional layers run only when enabled. Responses unwind the stack in reverse, so
+logging and metrics include rate-limit (429) and timeout (408) responses. Request IDs
+also wrap extra routers and early responses from CORS or global layers; extra routers
+retain their own application middleware.
+
+Metrics collection requires the `metrics` feature and `MetricsConfig::builder().enabled(true)`
+(or `TIDEWAY_METRICS_ENABLED=true` when loading environment configuration). To expose the
+scrape endpoint, also set `.bearer_token("your-secret")` or `TIDEWAY_METRICS_BEARER_TOKEN`.
+Scrapers must send `Authorization: Bearer <your-secret>`; missing or invalid credentials
+receive `401`. Without a nonempty token, collection continues but no scrape route is added.
+This applies to custom metrics paths too. Use a secret supplied at deployment and configure
+Prometheus `authorization.credentials_file` with the matching token.
+
+HTTP method labels preserve GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, and PATCH;
+all other method names share the `OTHER` label. Manually mounted `metrics_handler` routes
+must be protected by application authentication.
+
 ## Dependency Injection
 
 Tideway provides `AppContext` for dependency injection:
@@ -916,6 +947,7 @@ cargo test
 - [x] Request/response logging
 - [x] Timeout middleware
 - [x] Prometheus metrics
+- [x] OpenTelemetry (OTLP) trace export, Sentry error reporting, and an error reporting hook
 - [x] Global request body size limit (DoS protection)
 - [x] Trait-based database abstraction (SeaORM)
 - [x] Trait-based caching (in-memory, Redis)

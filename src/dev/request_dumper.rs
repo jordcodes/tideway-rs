@@ -8,8 +8,13 @@ use std::sync::Arc;
 use tower::Service;
 
 /// Build a request dumper layer
+///
+/// The layer is inert in production-like environments (see
+/// [`DevConfig::is_dev_mode`](crate::dev::DevConfig::is_dev_mode)).
 pub fn build_request_dumper_layer(config: Arc<crate::dev::DevConfig>) -> RequestDumperLayer {
-    RequestDumperLayer { config }
+    RequestDumperLayer {
+        config: crate::dev::config::effective_config(config),
+    }
 }
 
 /// Request dumper layer

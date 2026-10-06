@@ -13,7 +13,9 @@ use crate::commands::app_builder::{
 };
 use crate::commands::file_ops::{ensure_module_decl, to_pascal_case, write_file_with_force};
 use crate::commands::messaging::GREENFIELD_NEW_APP_FIRST;
-use crate::commands::migration_naming::{MigrationName, is_migration_module, next_migration_name};
+use crate::commands::migration_naming::{
+    MigrationName, following_migration_name, is_migration_module, next_migration_name,
+};
 use crate::templates::{BackendTemplateContext, BackendTemplateEngine};
 use crate::{
     CommandRuntime, TIDEWAY_VERSION, ensure_dir, error_contract, print_info, print_success,
@@ -50,9 +52,17 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
     }
     let credits_migration = if args.feature == AddFeature::Credits {
         validate_credits_preconditions(&project_dir)?;
-        let migration = plan_credits_migration(&project_dir)?;
+        let ledger = plan_credits_migration(&project_dir)?;
+        let revocation = plan_credit_revocation_migration(&project_dir, &ledger)?;
         ensure_migration_json_feature(&project_dir.join("migration/Cargo.toml"))?;
-        Some(migration)
+        Some((ledger, revocation))
+    } else {
+        None
+    };
+
+    let api_keys_migration = if args.feature == AddFeature::ApiKeys {
+        validate_api_keys_preconditions(&project_dir)?;
+        Some(plan_api_keys_migration(&project_dir)?)
     } else {
         None
     };
@@ -114,14 +124,20 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
     }
 
     if args.feature == AddFeature::Credits {
-        let migration = scaffold_credits(
+        let (ledger, revocation) =
+            credits_migration.expect("credits migration is planned before mutation");
+        let (ledger, revocation) = scaffold_credits(
             &project_dir,
             &project_name,
             &project_name_pascal,
-            credits_migration.expect("credits migration is planned before mutation"),
+            ledger,
+            revocation,
         )?;
         print_info(&format!(
-            "Credits ledger migration ready: migration/src/{migration}.rs"
+            "Credits ledger migration ready: migration/src/{ledger}.rs"
+        ));
+        print_info(&format!(
+            "Credit revocation migration ready: migration/src/{revocation}.rs"
         ));
         if args.wire {
             print_info(
@@ -130,6 +146,37 @@ pub fn run_with_runtime(args: AddArgs, runtime: CommandRuntime) -> Result<()> {
         } else {
             print_info(
                 "Next step: run migrations, then construct CreditManager<SeaOrmCreditStore>",
+            );
+        }
+    }
+
+    if args.feature == AddFeature::ApiKeys {
+        let plan = api_keys_migration.expect("api keys migration is planned before mutation");
+        let (migration, routes) = scaffold_api_keys(
+            &project_dir,
+            &project_name,
+            &project_name_pascal,
+            plan,
+            args.force,
+        )?;
+        print_info(&format!(
+            "API keys migration ready: migration/src/{migration}.rs"
+        ));
+        if routes {
+            print_info("API key management routes created in src/api_keys/");
+            if args.wire {
+                wire_api_keys_in_main(&project_dir)?;
+            } else {
+                print_info(
+                    "Next steps: register ApiKeyModule and `.with_global_layer(Extension(api_key_module.extension()))` in main.rs",
+                );
+            }
+        } else {
+            print_info(
+                "Skipped management routes: they require the DB-backed auth and organizations scaffolds (`tideway add organizations --db`).",
+            );
+            print_info(
+                "Next step: run migrations, then construct ApiKeyManager<SeaOrmApiKeyStore> and install ApiKeyExtension",
             );
         }
     }
@@ -236,7 +283,10 @@ fn update_cargo_toml(path: &Path, contents: &str, feature: AddFeature) -> Result
             })));
     }
 
-    if feature == AddFeature::Auth || feature == AddFeature::Organizations {
+    if feature == AddFeature::Auth
+        || feature == AddFeature::Organizations
+        || feature == AddFeature::ApiKeys
+    {
         deps_table
             .entry("async-trait")
             .or_insert(toml_edit::value("0.1"));
@@ -286,6 +336,11 @@ fn tideway_features_for_add(feature: AddFeature) -> Vec<String> {
             "database".to_string(),
             "credits".to_string(),
             "credits-seaorm".to_string(),
+        ],
+        AddFeature::ApiKeys => vec![
+            "auth".to_string(),
+            "database".to_string(),
+            "api-keys-seaorm".to_string(),
         ],
         AddFeature::BillingSchema => Vec::new(),
         _ => vec![feature.to_string()],
@@ -357,8 +412,9 @@ fn scaffold_credits(
     project_dir: &Path,
     project_name: &str,
     project_name_pascal: &str,
-    migration_plan: MigrationPlan,
-) -> Result<String> {
+    ledger_plan: MigrationPlan,
+    revocation_plan: MigrationPlan,
+) -> Result<(String, String)> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
         project_crate: project_name.replace('-', "_"),
@@ -383,24 +439,159 @@ fn scaffold_credits(
         has_database_feature: true,
         has_billing_feature: false,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: false,
         has_config: false,
     };
     let engine = BackendTemplateEngine::new(context)?;
     let migrations_dir = project_dir.join("migration/src");
+    let mut modules = Vec::new();
+    for (plan, template) in [
+        (ledger_plan, "migrations/m013_create_credit_ledger"),
+        (revocation_plan, "migrations/m015_add_credit_revocation"),
+    ] {
+        let migration = match plan {
+            MigrationPlan::Existing(existing) => existing,
+            MigrationPlan::Create(migration) => {
+                write_file(
+                    &migrations_dir.join(&migration.file),
+                    &engine.render(template)?,
+                )?;
+                migration.module
+            }
+        };
+        ensure_migration_registered(&migrations_dir.join("lib.rs"), &migration)?;
+        modules.push(migration);
+    }
+    let revocation = modules.pop().expect("revocation migration planned");
+    let ledger = modules.pop().expect("ledger migration planned");
+    Ok((ledger, revocation))
+}
+
+fn validate_api_keys_preconditions(project_dir: &Path) -> Result<()> {
+    let migration_lib = project_dir.join("migration/src/lib.rs");
+    let migration_cargo = project_dir.join("migration/Cargo.toml");
+    if !migration_lib.exists() || !migration_cargo.exists() {
+        return Err(anyhow::anyhow!(error_contract(
+            "API keys require an existing SeaORM migration crate",
+            "SeaOrmApiKeyStore needs the api_keys table.",
+            "Add Tideway database support first, then run `tideway add api-keys` again.",
+        )));
+    }
+    Ok(())
+}
+
+fn plan_api_keys_migration(project_dir: &Path) -> Result<MigrationPlan> {
+    let migrations_dir = project_dir.join("migration/src");
+    match find_api_keys_migration(&migrations_dir)? {
+        Some(existing) => Ok(MigrationPlan::Existing(existing)),
+        None => Ok(MigrationPlan::Create(next_migration_name(
+            &migrations_dir,
+            "create_api_keys",
+            16,
+        )?)),
+    }
+}
+
+fn find_api_keys_migration(migrations_dir: &Path) -> Result<Option<String>> {
+    for entry in fs::read_dir(migrations_dir)
+        .with_context(|| format!("Failed to read {}", migrations_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !is_migration_module(module) {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        if api_keys_schema_defined(&contents) {
+            return Ok(Some(module.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+pub(crate) fn api_keys_schema_defined(contents: &str) -> bool {
+    let generated = contents.contains("ApiKeys::Table") && contents.contains("KeyHash");
+    let raw_sql = contents.contains("api_keys") && contents.contains("key_hash");
+    generated || raw_sql
+}
+
+/// Returns the migration module and whether management routes were scaffolded.
+fn scaffold_api_keys(
+    project_dir: &Path,
+    project_name: &str,
+    project_name_pascal: &str,
+    migration_plan: MigrationPlan,
+    force: bool,
+) -> Result<(String, bool)> {
+    let src_dir = project_dir.join("src");
+    let has_org_scaffold = src_dir.join("auth/actor.rs").exists()
+        && src_dir.join("entities/organization_member.rs").exists();
+    let context = BackendTemplateContext {
+        project_name: project_name.to_string(),
+        project_crate: project_name.replace('-', "_"),
+        project_name_pascal: project_name_pascal.to_string(),
+        has_organizations: has_org_scaffold,
+        has_invitations: false,
+        database: "postgres".to_string(),
+        database_url: format!(
+            "postgres://postgres:postgres@localhost:5432/{}",
+            project_name
+        ),
+        is_sqlite_database: false,
+        tideway_version: TIDEWAY_VERSION.to_string(),
+        tideway_features: tideway_features_for_add(AddFeature::ApiKeys),
+        has_tideway_features: true,
+        has_auth_feature: true,
+        has_auth_mfa_feature: false,
+        has_database_feature: true,
+        has_billing_feature: false,
+        has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
+        needs_arc: false,
+        has_config: false,
+    };
+    let engine = BackendTemplateEngine::new(context)?;
+
+    let migrations_dir = project_dir.join("migration/src");
     let migration = match migration_plan {
         MigrationPlan::Existing(existing) => existing,
         MigrationPlan::Create(migration) => {
-            let migration_path = migrations_dir.join(&migration.file);
             write_file(
-                &migration_path,
-                &engine.render("migrations/m013_create_credit_ledger")?,
+                &migrations_dir.join(&migration.file),
+                &engine.render("migrations/m016_create_api_keys")?,
             )?;
             migration.module
         }
     };
     ensure_migration_registered(&migrations_dir.join("lib.rs"), &migration)?;
-    Ok(migration)
+
+    if !has_org_scaffold {
+        return Ok((migration, false));
+    }
+
+    let api_keys_dir = src_dir.join("api_keys");
+    ensure_dir(&api_keys_dir)
+        .with_context(|| format!("Failed to create {}", api_keys_dir.display()))?;
+    write_file_with_force(
+        &api_keys_dir.join("mod.rs"),
+        &engine.render("api_keys/mod")?,
+        force,
+    )?;
+    write_file_with_force(
+        &api_keys_dir.join("routes.rs"),
+        &engine.render("api_keys/routes")?,
+        force,
+    )?;
+    Ok((migration, true))
 }
 
 #[derive(Clone, Debug)]
@@ -419,6 +610,48 @@ fn plan_credits_migration(project_dir: &Path) -> Result<MigrationPlan> {
             13,
         )?)),
     }
+}
+
+fn plan_credit_revocation_migration(
+    project_dir: &Path,
+    ledger: &MigrationPlan,
+) -> Result<MigrationPlan> {
+    let migrations_dir = project_dir.join("migration/src");
+    if let Some(existing) = find_credit_revocation_migration(&migrations_dir)? {
+        return Ok(MigrationPlan::Existing(existing));
+    }
+    let name = match ledger {
+        MigrationPlan::Create(ledger) => {
+            following_migration_name(&migrations_dir, ledger, "add_credit_revocation")?
+        }
+        MigrationPlan::Existing(_) => {
+            next_migration_name(&migrations_dir, "add_credit_revocation", 13)?
+        }
+    };
+    Ok(MigrationPlan::Create(name))
+}
+
+fn find_credit_revocation_migration(migrations_dir: &Path) -> Result<Option<String>> {
+    for entry in fs::read_dir(migrations_dir)
+        .with_context(|| format!("Failed to read {}", migrations_dir.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
+            continue;
+        }
+        let Some(module) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        if !is_migration_module(module) || !module.contains("add_credit_revocation") {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read {}", path.display()))?;
+        if contents.contains("PendingRevocation") || contents.contains("pending_revocation") {
+            return Ok(Some(module.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 fn plan_billing_schema_migration(project_dir: &Path) -> Result<MigrationPlan> {
@@ -489,6 +722,8 @@ fn scaffold_billing_schema_repair(
         has_database_feature: true,
         has_billing_feature: true,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: false,
         has_config: false,
     };
@@ -661,6 +896,8 @@ fn scaffold_auth(
         has_database_feature: false,
         has_billing_feature: false,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: true,
         has_config: false,
     };
@@ -928,6 +1165,8 @@ fn scaffold_organizations(
         has_database_feature: true,
         has_billing_feature: false,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: true,
         has_config: false,
     };
@@ -1246,15 +1485,7 @@ fn wire_organizations_in_main(project_dir: &Path) -> Result<()> {
 
     if let Some(db_var) = db_var {
         contents = ensure_use_line(contents, "use std::sync::Arc;", "use tideway::");
-        let verifier_setup = if contents.contains("let jwt = tideway::auth::JwtAuth::new")
-            || contents.contains("let jwt = JwtAuth::new")
-        {
-            "    let organization_jwt_verifier = jwt\n        .verifier::<tideway::auth::AccessTokenClaims>()\n        .expect(\"Failed to create organization JWT verifier\");\n"
-                .to_string()
-        } else {
-            "    // Compatibility fallback for application-owned auth wiring that predates JwtAuth.\n    let organization_jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let organization_jwt_issuer = std::env::var(\"JWT_ISSUER\")\n        .unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let organization_jwt_audience = std::env::var(\"JWT_AUDIENCE\")\n        .unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let organization_jwt_verifier = tideway::auth::JwtVerifier::<tideway::auth::AccessTokenClaims>::from_secret_checked(\n        organization_jwt_secret.as_bytes(),\n    )\n    .expect(\"JWT_SECRET must be at least 32 bytes\")\n    .with_issuer(organization_jwt_issuer)\n    .with_audience(organization_jwt_audience);\n"
-                .to_string()
-        };
+        let verifier_setup = jwt_verifier_setup(&contents, "organization");
         let block = format!(
             "{verifier_setup}    let organization_module = OrganizationModule::new(\n        Arc::new({db_var}.clone()),\n        organization_jwt_verifier,\n    );\n\n"
         );
@@ -1266,7 +1497,11 @@ fn wire_organizations_in_main(project_dir: &Path) -> Result<()> {
     }
 
     if !contents.contains("register_module(organization_module)") {
-        let (updated, registered) = insert_organization_into_app_builder(contents)?;
+        let (updated, registered) = insert_into_app_builder(
+            contents,
+            ".register_module(organization_module)",
+            "organizations",
+        )?;
         if !registered {
             print_warning("Could not find app builder; skipping organizations auto-wiring");
             return Ok(());
@@ -1278,6 +1513,147 @@ fn wire_organizations_in_main(project_dir: &Path) -> Result<()> {
         .with_context(|| format!("Failed to write {}", main_path.display()))?;
     print_success("Wired organizations into src/main.rs");
     Ok(())
+}
+
+/// Statements binding `{prefix}_jwt_verifier`, reusing the app's `JwtAuth` when present.
+fn jwt_verifier_setup(contents: &str, prefix: &str) -> String {
+    if contents.contains("let jwt = tideway::auth::JwtAuth::new")
+        || contents.contains("let jwt = JwtAuth::new")
+    {
+        format!(
+            "    let {prefix}_jwt_verifier = jwt\n        .verifier::<tideway::auth::AccessTokenClaims>()\n        .expect(\"Failed to create {prefix} JWT verifier\");\n"
+        )
+    } else {
+        format!(
+            "    // Compatibility fallback for application-owned auth wiring that predates JwtAuth.\n    let {prefix}_jwt_secret = std::env::var(\"JWT_SECRET\").expect(\"JWT_SECRET is not set\");\n    let {prefix}_jwt_issuer = std::env::var(\"JWT_ISSUER\")\n        .unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let {prefix}_jwt_audience = std::env::var(\"JWT_AUDIENCE\")\n        .unwrap_or_else(|_| env!(\"CARGO_PKG_NAME\").to_string());\n    let {prefix}_jwt_verifier = tideway::auth::JwtVerifier::<tideway::auth::AccessTokenClaims>::from_secret_checked(\n        {prefix}_jwt_secret.as_bytes(),\n    )\n    .expect(\"JWT_SECRET must be at least 32 bytes\")\n    .with_issuer({prefix}_jwt_issuer)\n    .with_audience({prefix}_jwt_audience);\n"
+        )
+    }
+}
+
+fn wire_api_keys_in_main(project_dir: &Path) -> Result<()> {
+    let main_path = project_dir.join("src").join("main.rs");
+    if !main_path.exists() {
+        print_warning("src/main.rs not found; skipping auto-wiring");
+        return Ok(());
+    }
+
+    let mut contents = fs::read_to_string(&main_path)
+        .with_context(|| format!("Failed to read {}", main_path.display()))?;
+
+    if !contents.contains("let api_key_module") {
+        let Some(db_var) = find_database_connection_var(&contents) else {
+            print_warning(
+                "Could not find a SeaORM database connection variable in src/main.rs; skipping API keys auto-wiring",
+            );
+            return Ok(());
+        };
+        contents = ensure_use_line(contents, "use std::sync::Arc;", "use tideway::");
+        let block = format!(
+            "{}    let api_key_module = ApiKeyModule::new(\n        Arc::new({db_var}.clone()),\n        api_key_jwt_verifier,\n    );\n    let api_key_extension = api_key_module.extension();\n\n",
+            jwt_verifier_setup(&contents, "api_key")
+        );
+        // Place the module right after the connection (and JwtAuth, which the verifier
+        // reuses) is bound: the app may move `db` into its context before the builder.
+        let insert_at = [
+            format!("let {db_var}"),
+            format!("let mut {db_var}"),
+            "let jwt =".to_string(),
+        ]
+        .iter()
+        .filter_map(|binding| after_let_statement(&contents, binding))
+        .max();
+        if let Some(insert_at) = insert_at {
+            contents.insert_str(insert_at, &format!("\n{block}"));
+        } else {
+            let Some(updated) = insert_before_any_app_builder(contents, &block)? else {
+                print_warning("Could not find app builder; skipping API keys auto-wiring");
+                return Ok(());
+            };
+            contents = updated;
+        }
+    }
+
+    // Apps generated with a library crate declare modules in src/lib.rs and import
+    // them in main.rs through the crate name, like OrganizationModule.
+    let library_import = contents.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("use ")?
+            .strip_suffix("::organizations::OrganizationModule;")
+            .filter(|path| *path != "crate")
+            .map(str::to_string)
+    });
+    let lib_path = project_dir.join("src").join("lib.rs");
+    match library_import {
+        Some(crate_path) if lib_path.exists() => {
+            ensure_lib_module_decl(&lib_path, "api_keys")?;
+            contents = ensure_use_line(
+                contents,
+                &format!("use {crate_path}::api_keys::ApiKeyModule;"),
+                &format!("use {crate_path}::organizations::OrganizationModule;"),
+            );
+        }
+        _ => {
+            contents = ensure_module_decl(&contents, "api_keys");
+            contents = ensure_use_line(
+                contents,
+                "use crate::api_keys::ApiKeyModule;",
+                "use crate::",
+            );
+        }
+    }
+
+    if !contents.contains("register_module(api_key_module)") {
+        let (updated, registered) = insert_into_app_builder(
+            contents,
+            ".with_global_layer(axum::Extension(api_key_extension))\n.register_module(api_key_module)",
+            "API keys",
+        )?;
+        if !registered {
+            return Ok(());
+        }
+        contents = updated;
+    }
+
+    write_file(&main_path, &contents)
+        .with_context(|| format!("Failed to write {}", main_path.display()))?;
+    print_success("Wired API keys into src/main.rs");
+    Ok(())
+}
+
+/// Byte offset just past the line that ends the first statement starting with `binding`.
+fn after_let_statement(contents: &str, binding: &str) -> Option<usize> {
+    let mut line_start = 0;
+    for line in contents.split_inclusive('\n') {
+        let rest = line.trim_start();
+        let is_binding = rest
+            .strip_prefix(binding)
+            .is_some_and(|after| after.starts_with([' ', ':', '=']));
+        if is_binding {
+            let end = find_statement_terminator(contents, line_start)?;
+            return Some(
+                contents[end..]
+                    .find('\n')
+                    .map_or(contents.len(), |newline| end + newline + 1),
+            );
+        }
+        line_start += line.len();
+    }
+    None
+}
+
+fn ensure_lib_module_decl(lib_path: &Path, module: &str) -> Result<()> {
+    let contents = fs::read_to_string(lib_path)
+        .with_context(|| format!("Failed to read {}", lib_path.display()))?;
+    let declaration = format!("pub mod {module};");
+    if contents.lines().any(|line| line.trim() == declaration) {
+        return Ok(());
+    }
+    let mut updated = contents.trim_end().to_string();
+    updated.push('\n');
+    updated.push_str(&declaration);
+    updated.push('\n');
+    write_file(lib_path, &updated)
+        .with_context(|| format!("Failed to write {}", lib_path.display()))
 }
 
 fn find_database_connection_var(contents: &str) -> Option<String> {
@@ -1318,15 +1694,20 @@ fn is_rust_identifier(name: &str) -> bool {
         && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
-fn insert_organization_into_app_builder(mut contents: String) -> Result<(String, bool)> {
-    let insert = ".register_module(organization_module)";
+fn insert_into_app_builder(
+    mut contents: String,
+    insert: &str,
+    label: &str,
+) -> Result<(String, bool)> {
     if let Some((start, end)) = find_app_builder_marker_range(&contents) {
         let statement = &contents[start..=end];
         if let Some(updated) = insert_snippet_into_builder_block(statement, insert) {
             contents.replace_range(start..=end, &updated);
             return Ok((contents, true));
         }
-        print_warning("Could not update app builder; skipping organizations module registration");
+        print_warning(&format!(
+            "Could not update app builder; skipping {label} module registration"
+        ));
         return Ok((contents, false));
     }
 
@@ -1336,7 +1717,9 @@ fn insert_organization_into_app_builder(mut contents: String) -> Result<(String,
             contents.replace_range(start..=end, &updated);
             return Ok((contents, true));
         }
-        print_warning("Could not update app builder; skipping organizations module registration");
+        print_warning(&format!(
+            "Could not update app builder; skipping {label} module registration"
+        ));
         return Ok((contents, false));
     }
 
@@ -1346,11 +1729,15 @@ fn insert_organization_into_app_builder(mut contents: String) -> Result<(String,
             contents.replace_range(start..=end, &updated);
             return Ok((contents, true));
         }
-        print_warning("Could not update app builder; skipping organizations module registration");
+        print_warning(&format!(
+            "Could not update app builder; skipping {label} module registration"
+        ));
         return Ok((contents, false));
     }
 
-    print_warning("Could not find app builder; skipping organizations module registration");
+    print_warning(&format!(
+        "Could not find app builder; skipping {label} module registration"
+    ));
     Ok((contents, false))
 }
 

@@ -260,6 +260,10 @@ where
             locked_until: Set(None),
             failed_attempts: Set(0),
             failed_mfa_attempts: Set(0),
+            {{#if has_auth_mfa_feature}}
+            mfa_enabled: Set(false),
+            mfa_totp_secret_encrypted: Set(None),
+            {{/if}}
             session_version: Set(0),
             is_platform_admin: Set(false),
             created_at: Set(now.into()),
@@ -534,6 +538,10 @@ impl VerificationStore for DbUserStore {
             .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
 
         self.mark_verified(&user).await
+    }
+
+    async fn verification_email(&self, user_id: &str) -> Result<Option<String>> {
+        Ok(self.find_by_id(user_id).await?.map(|user| user.email))
     }
 
     async fn send_verification_email(

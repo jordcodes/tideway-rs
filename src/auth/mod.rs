@@ -7,6 +7,7 @@
 //!
 //! - `auth` - Enables password hashing with Argon2
 //! - `auth-mfa` - Enables TOTP and backup code support
+//! - `auth-oauth` - Enables social login via OAuth 2.0 / OpenID Connect ([`oauth`])
 //!
 //! # Example
 //!
@@ -35,6 +36,7 @@ pub mod provider;
 pub mod token;
 
 // New auth modules
+pub mod api_keys;
 #[cfg(feature = "auth-breach")]
 pub mod breach;
 pub mod deletion;
@@ -45,6 +47,8 @@ pub mod jwt_issuer;
 pub mod lockout;
 #[cfg(feature = "auth-mfa")]
 pub mod mfa;
+#[cfg(feature = "auth-oauth")]
+pub mod oauth;
 pub mod password;
 pub mod refresh;
 pub mod sessions;
@@ -126,7 +130,17 @@ pub use lockout::{
 pub use deletion::test::InMemoryDeletionStore;
 pub use deletion::{
     AccountDeletionFlow, AccountDeletionStore, CleanupStats, DeletionConfig, DeletionRequest,
-    DeletionResult, PendingDeletion,
+    DeletionRequestBody, DeletionResult, PendingDeletion,
+};
+
+// API key re-exports
+#[cfg(feature = "api-keys-seaorm")]
+pub use api_keys::SeaOrmApiKeyStore;
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use api_keys::test::InMemoryApiKeyStore;
+pub use api_keys::{
+    ApiKey, ApiKeyAuth, ApiKeyAuthenticator, ApiKeyConfig, ApiKeyExtension, ApiKeyManager,
+    ApiKeyStore, CreatedApiKey, NewApiKey, Principal,
 };
 
 // Impersonation re-exports
@@ -134,6 +148,6 @@ pub use deletion::{
 pub use impersonation::test::InMemoryImpersonationStore;
 pub use impersonation::{
     BlockedAction, ImpersonationAuditEntry, ImpersonationClaims, ImpersonationConfig,
-    ImpersonationEvent, ImpersonationManager, ImpersonationRequest, ImpersonationSession,
-    ImpersonationStore,
+    ImpersonationEvent, ImpersonationManager, ImpersonationRequest, ImpersonationRequestBody,
+    ImpersonationSession, ImpersonationStore,
 };

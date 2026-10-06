@@ -23,7 +23,7 @@ a new custom scaffold, selecting
 `credits-stripe`.
 
 ```toml
-tideway = { version = "0.7", features = ["credits-seaorm", "credits-stripe"] }
+tideway = { version = "0.9.0", features = ["credits-seaorm", "credits-stripe"] }
 ```
 
 ```rust
@@ -96,7 +96,9 @@ forever. Change this with `CreditManager::with_reservation_ttl`. Grant, reserve,
 are idempotent. The SeaORM store uses transactions and conditional updates to prevent concurrent
 overspending.
 
-`balance` returns available and currently reserved units, broken down by source. `history` returns
+`balance` returns available and currently reserved units, broken down by source. It reads only
+the requested account and credit type, counting expired holds as available when their buckets
+are still valid, without writing expiry updates. `history` returns
 the append-only audit ledger with bounded pagination.
 
 Tideway deliberately does not generate public balance or history routes. Tenant authorization is
@@ -140,9 +142,27 @@ let webhook = WebhookHandler::new(billing_store, webhook_secret, plans)
 ```
 
 The sink fulfils only Tideway-created `credit_top_up` sessions in Stripe `payment` mode whose
-`payment_status` is `paid` or `no_payment_required`. Delayed payment methods are handled by
-`checkout.session.async_payment_succeeded`. The signed event ID is the grant idempotency key. If the
-application already has a billing event sink, compose it with `top_up_sink.with_next(existing_sink)`.
+`payment_status` is `paid`. Checkouts a 100%-off promotion code made free (`no_payment_required`)
+grant nothing. Delayed payment methods are handled by `checkout.session.async_payment_succeeded`.
+The grant idempotency key is `stripe-payment-intent:{payment_intent_id}`, so each payment grants
+once. If the application already has a billing event sink, compose it with
+`top_up_sink.with_next(existing_sink)`.
+
+Subscribe the webhook endpoint to `charge.refunded` and `charge.dispute.created` as well. The sink
+then revokes credits from the matching grant:
+
+- A refund revokes the refunded share of the pack, rounded up. Stripe reports the cumulative
+  refunded amount, so repeated or partial refunds never revoke more than that share.
+- A dispute revokes the whole pack.
+
+Revocation takes unspent credits first. Credits held by an open reservation are taken back when it
+is released instead of returning to the balance. Credits already committed cannot be recovered;
+the sink logs a warning with the unrecovered amount, which `CreditManager::revoke` also returns.
+Refunds of payments that did not buy a pack are passed through unchanged.
+
+Revocation needs a store that implements `CreditStore::revoke`. The in-memory and SeaORM stores do.
+A custom store that does not override it inherits a default that logs a warning and revokes
+nothing, so refund and dispute webhooks still succeed but customers keep the credits.
 
 The application remains responsible for authorizing checkout creation, obtaining the Stripe
 customer linked to that account, provider delivery, product wording, and deciding what counts as a
@@ -150,8 +170,8 @@ successful billable operation.
 
 ## Operational notes
 
-- Run `release_expired` from periodic maintenance if an application has long stretches without
-  balance or reservation requests. Normal balance and reservation operations also clean up a
+- Run `release_expired` from periodic maintenance to persist expired reservation releases and
+  their history entries. Reservation operations also clean up a
   bounded batch of expired holds for that account and credit type; they never sweep other tenants
   or process an unlimited backlog in the request path.
 - Treat pack IDs as immutable versions. If price, credit type, or amount changes, create a new pack
@@ -159,5 +179,6 @@ successful billable operation.
   pack early fails fulfilment safely rather than granting an unverified amount.
 - Treat credit transaction metadata as operational context, not a place for secrets or message
   contents.
-- For refunds or chargebacks, grant policy is application-specific. Use a stable compensating
-  operation in application code; Tideway does not silently remove already-consumed credits.
+- To revoke credits outside Stripe top-ups, call `CreditManager::revoke` with the grant's
+  idempotency key and a cumulative `RevocationAmount`. Tideway never makes a balance negative;
+  decide in application code what to do about an `unrecovered_amount`.

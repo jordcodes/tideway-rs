@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::sync::Mutex;
 use tideway_cli::cli::{NewArgs, NewPreset};
 
 #[test]
@@ -75,6 +76,18 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
         &project_dir.join(".env.example"),
         "ALLOW_PUBLIC_REGISTRATION=false",
     );
+    // Production observability works by setting the standard OTel variables.
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"otel\"");
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "OTEL_EXPORTER_OTLP_ENDPOINT=",
+    );
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "OTEL_SERVICE_NAME=my_app",
+    );
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"sentry\"");
+    assert_file_contains(&project_dir.join(".env.example"), "SENTRY_DSN=");
     assert_file_not_contains(
         &project_dir.join(".github/workflows/ci.yml"),
         "TEST_DATABASE_URL",
@@ -116,16 +129,27 @@ fn test_new_command_includes_features_and_env() {
 
     tideway_cli::commands::new::run(args).expect("run new command");
 
+    // Database-backed auth delivers lifecycle emails through background jobs.
     assert_file_contains(
         &project_dir.join("Cargo.toml"),
-        "features = [\"auth\", \"database\"]",
+        "features = [\"auth\", \"database\", \"email\", \"jobs\"]",
     );
     assert_file_contains(&project_dir.join("Cargo.toml"), "default-features = false");
+    assert_file_contains(&project_dir.join(".env.example"), "EMAIL_PROVIDER=console");
+    assert_file_contains(
+        &project_dir.join("src/email.rs"),
+        "impl EmailTemplates for AppEmailTemplates",
+    );
+    assert_file_contains(&project_dir.join("src/main.rs"), ".with_email_delivery(");
+    assert_file_contains(&project_dir.join("src/main.rs"), "register_email_jobs");
+    assert_file_not_contains(&project_dir.join("src/auth/store.rs"), "implement delivery");
     assert_file_contains(&project_dir.join("Cargo.toml"), "sea-orm");
     assert_file_contains(&project_dir.join(".env.example"), "DATABASE_URL=");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_SECRET=");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_ISSUER=my_app");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_AUDIENCE=my_app");
+    assert_file_not_contains(&project_dir.join(".env.example"), "OTEL_");
+    assert_file_not_contains(&project_dir.join(".env.example"), "SENTRY_DSN");
     assert_file_contains(&project_dir.join("src/main.rs"), "DATABASE_URL");
     assert_file_contains(&project_dir.join("src/main.rs"), "JwtAuth");
     assert!(project_dir.join("src/auth/mod.rs").exists());
@@ -173,14 +197,18 @@ fn test_new_credits_seaorm_includes_database_and_ledger_schema() {
         &project_dir.join("migration/src/lib.rs"),
         "Box::new(m013_create_credit_ledger::Migration)",
     );
+    assert_file_contains(
+        &project_dir.join("migration/src/m015_add_credit_revocation.rs"),
+        "PendingRevocation",
+    );
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        "Box::new(m015_add_credit_revocation::Migration)",
+    );
 }
 
 #[test]
-fn test_new_command_compiles_with_features_smoke() {
-    if std::env::var("TIDEWAY_CLI_SMOKE").is_err() {
-        return;
-    }
-
+fn test_new_command_auth_database_compiles_and_tests_against_workspace_source() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
 
@@ -201,16 +229,10 @@ fn test_new_command_compiles_with_features_smoke() {
 
     tideway_cli::commands::new::run(args).expect("run new command");
 
-    let output = std::process::Command::new("cargo")
-        .arg("check")
-        .current_dir(&project_dir)
-        .output()
-        .expect("run cargo check");
+    patch_scaffold_to_workspace(&project_dir);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("cargo check failed: {}", stderr);
-    }
+    run_cargo_in_project(&project_dir, &["check"]);
+    run_cargo_in_project(&project_dir, &["test"]);
 }
 
 #[test]
@@ -255,13 +277,14 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
         &project_dir.join("migration/src/main.rs"),
         "cli::run_cli(migration::Migrator).await",
     );
+    assert_file_contains(&project_dir.join("src/bin/seed.rs"), "SAMPLE_TODOS");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "default-run = \"my_app\"");
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+    run_cargo_in_project(&project_dir, &["check"]);
+    run_cargo_in_project(&project_dir, &["test"]);
     run_cargo_in_project(
-        temp_dir.path(),
         &project_dir,
         &[
             "clippy",
@@ -273,7 +296,6 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
         ],
     );
     run_cargo_in_project(
-        temp_dir.path(),
         &project_dir,
         &[
             "check",
@@ -282,6 +304,37 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
             "--all-targets",
         ],
     );
+
+    // One command seeds a fresh database (migrations included), and reruns are idempotent.
+    let first = run_tideway_seed(&project_dir);
+    assert!(
+        first.contains("todos: 3 inserted, 0 already present"),
+        "unexpected first seed output:\n{first}"
+    );
+    let second = run_tideway_seed(&project_dir);
+    assert!(
+        second.contains("todos: 0 inserted, 3 already present"),
+        "unexpected second seed output:\n{second}"
+    );
+}
+
+fn run_tideway_seed(project_dir: &Path) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
+    command
+        .args(["seed", "--fix-env", "--path"])
+        .arg(project_dir)
+        .current_dir(project_dir)
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(false))
+        .env_remove("DATABASE_URL");
+    let output = output_serialized(&mut command, "run tideway seed");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "tideway seed failed.\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
 }
 
 #[test]
@@ -336,7 +389,7 @@ fn test_new_command_auth_mfa_scaffold_is_secure_and_compiles() {
     );
 
     patch_scaffold_to_workspace(&project_dir);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+    run_cargo_in_project(&project_dir, &["test"]);
 }
 
 #[test]
@@ -395,7 +448,7 @@ fn test_new_command_minimal_compiles_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project(&project_dir, &["check"]);
 }
 
 #[test]
@@ -448,6 +501,155 @@ fn test_new_command_with_docker() {
     tideway_cli::commands::new::run(args).expect("run new command");
 
     assert!(project_dir.join("docker-compose.yml").exists());
+}
+
+#[test]
+fn test_new_command_generates_production_dockerfile() {
+    for (preset, with_docker) in [
+        (NewPreset::Minimal, false),
+        (NewPreset::Api, false),
+        (NewPreset::Api, true),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path().join("my_app");
+
+        let args = NewArgs {
+            name: Some("my_app".to_string()),
+            preset: Some(preset),
+            features: Vec::new(),
+            with_config: false,
+            with_docker,
+            with_ci: false,
+            no_prompt: true,
+            summary: true,
+            with_env: false,
+            without_invitations: false,
+            path: Some(project_dir.to_string_lossy().to_string()),
+            force: false,
+        };
+
+        let files = tideway_cli::commands::new::expected_files(&args);
+        assert!(files.contains(&"Dockerfile".to_string()));
+        assert!(files.contains(&".dockerignore".to_string()));
+
+        tideway_cli::commands::new::run(args).expect("run new command");
+
+        let dockerfile = project_dir.join("Dockerfile");
+        assert_file_contains(
+            &dockerfile,
+            "FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef",
+        );
+        assert_file_contains(
+            &dockerfile,
+            "RUN cargo chef cook --release --locked --bin my_app --recipe-path recipe.json",
+        );
+        assert_file_contains(&dockerfile, "FROM debian:bookworm-slim AS runtime");
+        assert_file_contains(&dockerfile, "cargo build --release --locked --bin my_app");
+        assert_file_contains(
+            &dockerfile,
+            "COPY --from=builder /app/target/release/my_app /usr/local/bin/my_app",
+        );
+        assert_file_contains(&dockerfile, "USER app");
+        assert_file_contains(&dockerfile, "PORT=8000");
+        assert_file_contains(&dockerfile, "CMD [\"my_app\"]");
+        assert_file_not_contains(&dockerfile, "{{");
+
+        let sqlite = matches!(preset, NewPreset::Api) && !with_docker;
+        if sqlite {
+            assert_file_contains(
+                &dockerfile,
+                "ENV DATABASE_URL=sqlite:///app/data/my_app.db?mode=rwc",
+            );
+        } else {
+            assert_file_not_contains(&dockerfile, "DATABASE_URL");
+        }
+
+        let dockerignore = project_dir.join(".dockerignore");
+        assert_file_contains(&dockerignore, "target/");
+        assert_file_contains(&dockerignore, ".env");
+        assert_file_not_contains(&dockerignore, "Cargo.lock");
+    }
+}
+
+/// Builds the generated production Dockerfile and checks the container serves /health.
+/// Opt-in (slow, needs a Docker daemon): `TIDEWAY_DOCKER_SMOKE=1 cargo test -p tideway-cli
+/// --test new_command_test production_dockerfile_builds -- --nocapture`.
+#[test]
+fn test_new_command_production_dockerfile_builds_and_serves_health_smoke() {
+    if std::env::var("TIDEWAY_DOCKER_SMOKE").is_err() {
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    // The scaffold pins the unreleased workspace version, so vendor the local crates into the
+    // Docker build context and patch them in.
+    vendor_workspace_crates(temp_dir.path(), &project_dir);
+
+    let tag = format!("tideway-dockerfile-smoke-{}", std::process::id());
+    run_checked(
+        Command::new("docker")
+            .args(["build", "-t", &tag, "."])
+            .current_dir(&project_dir),
+    );
+
+    let container = run_checked(Command::new("docker").args([
+        "run",
+        "-d",
+        "-p",
+        "127.0.0.1::8000",
+        "-e",
+        "JWT_SECRET=smoke-test-secret-with-at-least-32-bytes",
+        &tag,
+    ]));
+    let container = container.trim().to_string();
+
+    let result = std::panic::catch_unwind(|| {
+        let port_output = run_checked(Command::new("docker").args(["port", &container, "8000"]));
+        let addr = port_output
+            .lines()
+            .next()
+            .expect("published port")
+            .trim()
+            .to_string();
+        wait_for_http_ok(&addr, "/health");
+    });
+
+    if result.is_err() {
+        let logs = Command::new("docker")
+            .args(["logs", &container])
+            .output()
+            .expect("docker logs");
+        eprintln!(
+            "container logs:\n{}{}",
+            String::from_utf8_lossy(&logs.stdout),
+            String::from_utf8_lossy(&logs.stderr)
+        );
+    }
+    let _ = Command::new("docker")
+        .args(["rm", "-f", &container])
+        .output();
+    let _ = Command::new("docker").args(["rmi", "-f", &tag]).output();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 #[test]
@@ -764,8 +966,15 @@ fn test_new_command_with_preset_saas() {
     assert_file_contains(&cargo_toml, "\"organizations\"");
     assert_file_contains(&cargo_toml, "\"admin\"");
     assert_file_contains(&cargo_toml, "\"email\"");
+    assert_file_contains(&cargo_toml, "\"otel\"");
+    assert_file_contains(&cargo_toml, "\"sentry\"");
     assert_file_not_contains(&cargo_toml, "\"openapi\"");
     assert!(project_dir.join(".env.example").exists());
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "OTEL_EXPORTER_OTLP_ENDPOINT=",
+    );
+    assert_file_contains(&project_dir.join(".env.example"), "SENTRY_DSN=");
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert_file_contains(
@@ -1037,16 +1246,177 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project_with_denied_warnings(
-        temp_dir.path(),
-        &project_dir,
-        &["test", "--all-targets"],
-    );
+    run_cargo_in_project_with_denied_warnings(&project_dir, &["test", "--all-targets"]);
     assert!(project_dir.join("Cargo.lock").exists());
     assert!(
         !project_dir.join("migration/Cargo.lock").exists(),
         "workspace members should share the root Cargo.lock"
     );
+}
+
+#[test]
+fn test_saas_app_with_api_keys_wired_compiles_against_workspace_source() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run new command");
+
+    tideway_cli::commands::add::run(tideway_cli::cli::AddArgs {
+        feature: tideway_cli::cli::AddFeature::ApiKeys,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: false,
+    })
+    .expect("add api keys");
+
+    assert!(project_dir.join("src/api_keys/routes.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".register_module(api_key_module)",
+    );
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project_with_denied_warnings(&project_dir, &["check", "--all-targets"]);
+}
+
+/// The SaaS preset always renders admin with billing on and MFA off. Re-render the admin
+/// module (and the user schema it reads) for the other combinations and run the generated
+/// admin tests for each.
+#[test]
+fn test_saas_admin_compiles_and_tests_with_and_without_billing_and_mfa() {
+    use tideway_cli::templates::{BackendTemplateContext, BackendTemplateEngine};
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run new command");
+    patch_scaffold_to_workspace(&project_dir);
+
+    let admin_files = [
+        ("admin/routes", "src/admin/routes.rs"),
+        ("admin/tests", "src/admin/tests.rs"),
+    ];
+    let mfa_files = [
+        ("entities/user", "src/entities/user.rs"),
+        ("auth/routes", "src/auth/routes.rs"),
+        ("auth/store", "src/auth/store.rs"),
+        (
+            "organizations/invitations",
+            "src/organizations/invitations.rs",
+        ),
+        (
+            "migrations/m001_create_users",
+            "migration/src/m001_create_users.rs",
+        ),
+    ];
+
+    for (has_billing_feature, has_auth_mfa_feature) in
+        [(true, false), (false, false), (true, true), (false, true)]
+    {
+        let engine = BackendTemplateEngine::new(BackendTemplateContext {
+            project_name: "my_app".to_string(),
+            project_crate: "my_app".to_string(),
+            project_name_pascal: "MyApp".to_string(),
+            has_organizations: true,
+            has_invitations: true,
+            database: "postgres".to_string(),
+            database_url: "postgres://postgres:postgres@localhost:5432/my_app".to_string(),
+            is_sqlite_database: false,
+            tideway_version: tideway_cli::TIDEWAY_VERSION.to_string(),
+            tideway_features: Vec::new(),
+            has_tideway_features: false,
+            has_auth_feature: true,
+            has_auth_mfa_feature,
+            has_database_feature: true,
+            has_billing_feature,
+            has_openapi_feature: false,
+            has_otel_feature: true,
+            has_sentry_feature: true,
+            needs_arc: false,
+            has_config: false,
+        })
+        .expect("create backend template engine");
+        for (template, path) in admin_files.iter().chain(&mfa_files) {
+            fs::write(
+                project_dir.join(path),
+                engine.render(template).expect("render template"),
+            )
+            .expect("write rendered template");
+        }
+        let routes =
+            fs::read_to_string(project_dir.join("src/admin/routes.rs")).expect("read routes");
+        assert!(!routes.contains("TODO"), "admin routes still contain TODOs");
+        assert_eq!(
+            routes.contains("billing_subscriptions"),
+            has_billing_feature
+        );
+        assert_eq!(
+            routes.contains("user.mfa_totp_secret_encrypted.is_some()"),
+            has_auth_mfa_feature
+        );
+
+        if has_auth_mfa_feature {
+            let cargo_path = project_dir.join("Cargo.toml");
+            let cargo = fs::read_to_string(&cargo_path).expect("read Cargo.toml");
+            if !cargo.contains("\"auth-mfa\"") {
+                fs::write(
+                    &cargo_path,
+                    cargo.replacen("\"auth\",", "\"auth\", \"auth-mfa\",", 1),
+                )
+                .expect("enable auth-mfa");
+            }
+        }
+
+        let output =
+            cargo_output_in_project(&project_dir, &["test", "--all-targets", "admin::tests"]);
+        let expected = if has_billing_feature {
+            "stats_count_active_subscriptions_and_mrr ... ok"
+        } else {
+            "stats_omit_billing_fields_without_billing ... ok"
+        };
+        assert!(
+            output.contains(expected),
+            "billing={has_billing_feature} mfa={has_auth_mfa_feature}: missing `{expected}` in:\n{output}"
+        );
+        assert!(
+            output.contains("impersonation_token_works_until_ended ... ok"),
+            "{output}"
+        );
+        if has_auth_mfa_feature {
+            assert!(
+                output.contains("mfa_requires_an_enrolled_secret ... ok"),
+                "{output}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1072,7 +1442,7 @@ fn test_individual_auth_and_openapi_features_compile_without_warnings() {
 
         tideway_cli::commands::new::run(args).expect("run new command");
         patch_scaffold_to_workspace(&project_dir);
-        run_cargo_in_project_with_denied_warnings(temp_dir.path(), &project_dir, &["check"]);
+        run_cargo_in_project_with_denied_warnings(&project_dir, &["check"]);
     }
 }
 
@@ -1153,30 +1523,45 @@ fn patch_scaffold_to_workspace(project_dir: &Path) {
     fs::write(cargo_path, contents).expect("write Cargo.toml patch section");
 }
 
-fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
-    run_cargo_in_project_inner(temp_root, project_dir, args, false);
+fn run_cargo_in_project(project_dir: &Path, args: &[&str]) {
+    run_cargo_in_project_inner(project_dir, args, false);
 }
 
-fn run_cargo_in_project_with_denied_warnings(temp_root: &Path, project_dir: &Path, args: &[&str]) {
-    run_cargo_in_project_inner(temp_root, project_dir, args, true);
+fn run_cargo_in_project_with_denied_warnings(project_dir: &Path, args: &[&str]) {
+    run_cargo_in_project_inner(project_dir, args, true);
 }
 
-fn run_cargo_in_project_inner(
-    temp_root: &Path,
-    project_dir: &Path,
-    args: &[&str],
-    deny_warnings: bool,
-) {
+/// Runs cargo with warnings denied and returns stdout.
+fn cargo_output_in_project(project_dir: &Path, args: &[&str]) -> String {
     let mut command = Command::new("cargo");
     command
         .args(args)
         .current_dir(project_dir)
-        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"));
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(true))
+        .env("RUSTFLAGS", "-Dwarnings");
+    let output = output_serialized(&mut command, "run cargo");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "cargo {} failed.\nstdout:\n{}\nstderr:\n{}",
+        args.join(" "),
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
+}
+
+fn run_cargo_in_project_inner(project_dir: &Path, args: &[&str], deny_warnings: bool) {
+    let mut command = Command::new("cargo");
+    command
+        .args(args)
+        .current_dir(project_dir)
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(deny_warnings));
     if deny_warnings {
         command.env("RUSTFLAGS", "-Dwarnings");
     }
 
-    let output = command.output().expect("run cargo");
+    let output = output_serialized(&mut command, "run cargo");
 
     if !output.status.success() {
         panic!(
@@ -1186,6 +1571,166 @@ fn run_cargo_in_project_inner(
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// Serialises nested cargo builds within this test binary so parallel test
+/// threads don't each spawn a full-core build at once.
+static CARGO_LOCK: Mutex<()> = Mutex::new(());
+
+/// Shared target dir for scaffold builds. Scaffolds are patched to the
+/// workspace sources, so dependency artifacts are reused across tests and runs.
+/// `-Dwarnings` builds get a sibling dir so the RUSTFLAGS change doesn't
+/// invalidate the shared artifacts.
+fn scaffold_target_dir(deny_warnings: bool) -> PathBuf {
+    let name = if deny_warnings {
+        "scaffold-tests-deny-warnings"
+    } else {
+        "scaffold-tests"
+    };
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("target")
+        .join(name)
+}
+
+fn output_serialized(command: &mut Command, context: &str) -> Output {
+    let _guard = CARGO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    command.output().expect(context)
+}
+
+fn vendor_workspace_crates(temp_root: &Path, project_dir: &Path) {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let package_target = temp_root.join("package-target");
+    run_checked(
+        Command::new("cargo")
+            .args([
+                "package",
+                "-p",
+                "tideway",
+                "-p",
+                "tideway-macros",
+                "--no-verify",
+                "--allow-dirty",
+                "--target-dir",
+            ])
+            .arg(&package_target)
+            .current_dir(workspace_root),
+    );
+
+    let vendor_dir = project_dir.join("vendor");
+    fs::create_dir_all(&vendor_dir).expect("create vendor dir");
+    let mut tideway_dir = None;
+    let mut macros_dir = None;
+    for entry in fs::read_dir(package_target.join("package")).expect("read package dir") {
+        let path = entry.expect("package entry").path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(dir_name) = file_name.strip_suffix(".crate") else {
+            continue;
+        };
+        run_checked(
+            Command::new("tar")
+                .arg("-xzf")
+                .arg(&path)
+                .arg("-C")
+                .arg(&vendor_dir),
+        );
+        if dir_name.starts_with("tideway-macros-") {
+            macros_dir = Some(dir_name.to_string());
+        } else {
+            tideway_dir = Some(dir_name.to_string());
+        }
+    }
+    let tideway_dir = tideway_dir.expect("packaged tideway crate");
+    let macros_dir = macros_dir.expect("packaged tideway-macros crate");
+
+    // cargo-chef masks local crate versions in its dependency recipe, which breaks
+    // `[patch.crates-io]` version matching, so use plain path dependencies instead. It also only
+    // skeletonizes workspace members, so the vendored crates join the app's workspace.
+    let tideway_manifest = vendor_dir.join(&tideway_dir).join("Cargo.toml");
+    let manifest = fs::read_to_string(&tideway_manifest).expect("read vendored tideway manifest");
+    let macros_version = macros_dir
+        .strip_prefix("tideway-macros-")
+        .expect("macros crate version");
+    let macros_dep = format!("[dependencies.tideway-macros]\nversion = \"{macros_version}\"");
+    assert!(
+        manifest.contains(&macros_dep),
+        "unexpected tideway-macros dependency in vendored manifest:\n{manifest}"
+    );
+    fs::write(
+        &tideway_manifest,
+        manifest.replace(
+            &macros_dep,
+            &format!("[dependencies.tideway-macros]\npath = \"../{macros_dir}\""),
+        ),
+    )
+    .expect("write vendored tideway manifest");
+
+    let cargo_path = project_dir.join("Cargo.toml");
+    let mut contents = fs::read_to_string(&cargo_path).expect("read Cargo.toml");
+    let tideway_dep = format!(
+        "tideway = {{ version = \"{}\"",
+        tideway_cli::TIDEWAY_VERSION
+    );
+    assert!(
+        contents.contains(&tideway_dep),
+        "unexpected tideway dependency:\n{contents}"
+    );
+    contents = contents.replace(
+        &tideway_dep,
+        &format!("tideway = {{ path = \"vendor/{tideway_dir}\""),
+    );
+    let members = format!("\"vendor/{tideway_dir}\", \"vendor/{macros_dir}\"");
+    if contents.contains("members = [\"migration\"]") {
+        contents = contents.replace(
+            "members = [\"migration\"]",
+            &format!("members = [\"migration\", {members}]"),
+        );
+    } else {
+        contents.push_str(&format!("\n[workspace]\nmembers = [{members}]\n"));
+    }
+    fs::write(cargo_path, contents).expect("write Cargo.toml");
+}
+
+fn run_checked(command: &mut Command) -> String {
+    let output = command.output().expect("spawn command");
+    if !output.status.success() {
+        panic!(
+            "{:?} failed.\nstdout:\n{}\nstderr:\n{}",
+            command,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn wait_for_http_ok(addr: &str, path: &str) {
+    use std::io::{Read, Write};
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut last_response = String::new();
+    while std::time::Instant::now() < deadline {
+        if let Ok(mut stream) = std::net::TcpStream::connect(addr) {
+            let request =
+                format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+            if stream.write_all(request.as_bytes()).is_ok() {
+                last_response.clear();
+                let _ = stream.read_to_string(&mut last_response);
+                if last_response.starts_with("HTTP/1.1 200") {
+                    return;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("GET {path} on {addr} never returned 200; last response:\n{last_response}");
 }
 
 fn escape_toml_path(path: &Path) -> String {

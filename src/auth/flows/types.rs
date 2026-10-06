@@ -6,9 +6,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// Login request from client.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct LoginRequest {
     /// User's email address.
     pub email: String,
@@ -22,7 +23,7 @@ pub struct LoginRequest {
 }
 
 /// MFA verification request (second step of login).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct MfaVerifyRequest {
     /// The MFA token received from the initial login attempt.
     pub mfa_token: String,
@@ -31,7 +32,7 @@ pub struct MfaVerifyRequest {
 }
 
 /// Response to a login attempt.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(tag = "status")]
 pub enum LoginResponse {
@@ -172,7 +173,7 @@ pub enum MfaType {
 }
 
 /// Registration request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct RegisterRequest {
     /// User's email address.
     pub email: String,
@@ -190,7 +191,7 @@ pub struct PasswordResetRequest {
 }
 
 /// Password reset completion request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct PasswordResetComplete {
     /// The reset token from the email.
     pub token: String,
@@ -199,7 +200,7 @@ pub struct PasswordResetComplete {
 }
 
 /// Email verification request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct EmailVerifyRequest {
     /// The verification token from the email.
     pub token: String,
@@ -213,24 +214,218 @@ pub struct ResendVerificationRequest {
 }
 
 /// Token refresh request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct RefreshRequest {
     /// The refresh token.
     pub refresh_token: String,
 }
 
 /// Logout request.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct LogoutRequest {
     /// The refresh token to revoke.
     pub refresh_token: String,
 }
 
 /// Password change request (for authenticated users).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct PasswordChangeRequest {
     /// The user's current password (for verification).
     pub current_password: String,
     /// The new password to set.
     pub new_password: String,
+}
+
+// Manual `Debug` impls so passwords, tokens, and MFA codes never reach logs.
+const REDACTED: &str = "[REDACTED]";
+
+impl fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("email", &self.email)
+            .field("password", &REDACTED)
+            .field("mfa_code", &self.mfa_code.as_ref().map(|_| REDACTED))
+            .field("remember_me", &self.remember_me)
+            .finish()
+    }
+}
+
+impl fmt::Debug for MfaVerifyRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MfaVerifyRequest")
+            .field("mfa_token", &REDACTED)
+            .field("code", &REDACTED)
+            .finish()
+    }
+}
+
+impl fmt::Debug for LoginResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Success {
+                expires_in,
+                token_type,
+                ..
+            } => f
+                .debug_struct("Success")
+                .field("access_token", &REDACTED)
+                .field("refresh_token", &REDACTED)
+                .field("expires_in", expires_in)
+                .field("token_type", token_type)
+                .finish(),
+            Self::MfaRequired {
+                mfa_type,
+                backup_codes_remaining,
+                ..
+            } => f
+                .debug_struct("MfaRequired")
+                .field("mfa_token", &REDACTED)
+                .field("mfa_type", mfa_type)
+                .field("backup_codes_remaining", backup_codes_remaining)
+                .finish(),
+            Self::Error { message } => f.debug_struct("Error").field("message", message).finish(),
+        }
+    }
+}
+
+impl fmt::Debug for RegisterRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RegisterRequest")
+            .field("email", &self.email)
+            .field("password", &REDACTED)
+            .field("name", &self.name)
+            .finish()
+    }
+}
+
+impl fmt::Debug for PasswordResetComplete {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasswordResetComplete")
+            .field("token", &REDACTED)
+            .field("new_password", &REDACTED)
+            .finish()
+    }
+}
+
+impl fmt::Debug for EmailVerifyRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EmailVerifyRequest")
+            .field("token", &REDACTED)
+            .finish()
+    }
+}
+
+impl fmt::Debug for RefreshRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RefreshRequest")
+            .field("refresh_token", &REDACTED)
+            .finish()
+    }
+}
+
+impl fmt::Debug for LogoutRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LogoutRequest")
+            .field("refresh_token", &REDACTED)
+            .finish()
+    }
+}
+
+impl fmt::Debug for PasswordChangeRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PasswordChangeRequest")
+            .field("current_password", &REDACTED)
+            .field("new_password", &REDACTED)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod debug_redaction_tests {
+    use super::*;
+
+    const SECRET: &str = "s3cr3t-value";
+
+    fn assert_redacted(debug: String) {
+        assert!(!debug.contains(SECRET), "secret leaked in Debug: {debug}");
+        assert!(debug.contains("[REDACTED]"), "missing marker: {debug}");
+    }
+
+    #[test]
+    fn login_request_debug_redacts_password_and_mfa_code() {
+        let request = LoginRequest {
+            email: "user@example.com".into(),
+            password: SECRET.into(),
+            mfa_code: Some(SECRET.into()),
+            remember_me: true,
+        };
+        let debug = format!("{request:?}");
+        assert!(debug.contains("user@example.com"));
+        assert_redacted(debug);
+    }
+
+    #[test]
+    fn auth_request_debug_redacts_secrets() {
+        assert_redacted(format!(
+            "{:?}",
+            MfaVerifyRequest {
+                mfa_token: SECRET.into(),
+                code: SECRET.into(),
+            }
+        ));
+        assert_redacted(format!(
+            "{:?}",
+            RegisterRequest {
+                email: "user@example.com".into(),
+                password: SECRET.into(),
+                name: None,
+            }
+        ));
+        assert_redacted(format!(
+            "{:?}",
+            PasswordResetComplete {
+                token: SECRET.into(),
+                new_password: SECRET.into(),
+            }
+        ));
+        assert_redacted(format!(
+            "{:?}",
+            EmailVerifyRequest {
+                token: SECRET.into()
+            }
+        ));
+        assert_redacted(format!(
+            "{:?}",
+            RefreshRequest {
+                refresh_token: SECRET.into()
+            }
+        ));
+        assert_redacted(format!(
+            "{:?}",
+            LogoutRequest {
+                refresh_token: SECRET.into()
+            }
+        ));
+        assert_redacted(format!(
+            "{:?}",
+            PasswordChangeRequest {
+                current_password: SECRET.into(),
+                new_password: SECRET.into(),
+            }
+        ));
+    }
+
+    #[test]
+    fn login_response_debug_redacts_tokens() {
+        let debug = format!(
+            "{:?}",
+            LoginHttpResponse(LoginResponse::success(SECRET.into(), SECRET.into(), 900))
+        );
+        assert!(debug.contains("900"));
+        assert_redacted(debug);
+        assert_redacted(format!(
+            "{:?}",
+            LoginResponse::mfa_required(SECRET.into(), Some(3))
+        ));
+    }
 }

@@ -16,6 +16,18 @@ adoption checklist in [Organizations](organizations.md#existing-and-custom-organ
 and add only schema-compatible migrations. This avoids replacing application roles, route
 contracts, authorization rules, or table layouts.
 
+## Metrics scrape authentication
+
+The built-in metrics route now requires a bearer token. Existing apps that enable metrics
+must configure `MetricsConfig::builder().bearer_token(...)` or, when using environment
+configuration, `TIDEWAY_METRICS_BEARER_TOKEN` (fallback: `METRICS_BEARER_TOKEN`). Set the
+same token in your scraper's Authorization bearer header. Without a nonempty token, the
+route is absent (404), while collection remains enabled. Invalid or missing credentials
+on a configured scrape route return 401. Custom metrics paths follow the same rules.
+
+Unknown HTTP methods now use the shared `OTHER` label. Update dashboards that previously
+selected custom method labels. Standard HTTP method labels are unchanged.
+
 ## Recommended Workflow
 
 1. Update the CLI so its checks target the current framework release:
@@ -75,6 +87,507 @@ tideway --json doctor --upgrade --deny-warnings
 Upgrade doctor checks inspect `Cargo.toml`, application source, and migration source. They do not
 connect to or verify a deployed database, so migration status and constraints must still be checked
 through the application's normal migration and deployment workflow.
+
+## 0.8.x to 0.9.0: breaking changes
+
+> **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update. Applications
+> using the APIs below no longer compile, so `cargo update` leaves a `^0.8` requirement on 0.8.x.
+> Change the dependency to `tideway = "0.9.0"` and fix the compile errors as described here.
+
+| Change | Fix |
+| --- | --- |
+| `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize` | Deserialize the `*Body` types; see [request bodies](#08x-to-090-impersonation-and-deletion-request-bodies) |
+| `WebSocketHandler::on_upgrade` takes `&mut UpgradeRequest` | Update overrides; see [WebSocket upgrade authentication](#08x-to-090-websocket-upgrade-authentication) |
+| `tideway::prelude` exports `DatabaseConnectionTrait` instead of `DatabaseConnection` | See [prelude database trait](#08x-to-090-prelude-database-trait) |
+| `CachedInvoiceManager` returns `Arc<InvoiceList>` and `Option<Arc<Invoice>>` | See [shared cached invoices](#08x-to-090-shared-cached-invoices) |
+| `SecureRefundManager::get_refund` takes the billable ID | See [refund lookups](#08x-to-090-refund-lookups-scoped-to-the-billable-entity) |
+| `Refund` has a new `replayed` field | Set it in struct literals and custom `StripeRefundClient`s; see [replayed refunds](#08x-to-090-replayed-refunds) |
+| `BillingEvent::OneTimeCheckoutCompleted` field, `CreditTransactionKind` `#[non_exhaustive]`, `credits-seaorm` migration | See [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes) |
+| `BillingEvent::InvoicePaid` / `InvoicePaymentFailed` have a new `invoice` field | Add `..` to patterns or set `invoice: InvoiceSummary::default()`; see [invoice summaries](#08x-to-090-invoice-summaries-on-billing-events) |
+| `JobsConfig` has a new `shutdown_timeout_seconds` field | Set it in struct literals or use `..Default::default()`; see [bounded job shutdown](#08x-to-090-bounded-job-shutdown) |
+
+The remaining 0.9.0 sections below describe behavior changes that need review but no code change.
+
+## 0.8.x to 0.9.0: prelude database trait
+
+`tideway::prelude` re-exports the database trait as `DatabaseConnectionTrait`, so a glob import of
+the prelude no longer collides with SeaORM's `DatabaseConnection` struct. Code that names the
+trait through the prelude must change:
+
+```rust,ignore
+// Before
+use tideway::prelude::DatabaseConnection;
+
+// After
+use tideway::prelude::DatabaseConnectionTrait;
+// or
+use tideway::DatabaseConnection;
+```
+
+The trait itself and its `tideway::DatabaseConnection` and `tideway::database` paths are unchanged.
+
+## 0.8.x to 0.9.0: shared cached invoices
+
+`CachedInvoiceManager::list_invoices` now returns `Arc<InvoiceList>`, and
+`CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>`. Cache hits share the
+cached value instead of copying it, and a returned handle stays valid after invalidation.
+
+```rust,ignore
+// Before
+let invoices: InvoiceList = manager.list_invoices("org_123", params).await?;
+for invoice in invoices.invoices { /* owned Invoice */ }
+
+// After
+let invoices = manager.list_invoices("org_123", params).await?;
+for invoice in &invoices.invoices { /* &Invoice */ }
+let owned: InvoiceList = (*invoices).clone(); // only when ownership is required
+```
+
+To serialize a shared list, pass `invoices.as_ref()` to the serializer. Calls through the
+`InvoiceOperations` trait still return owned values and need no change. See
+[Billing](billing.md#cached-invoices).
+
+## 0.8.x to 0.9.0: middleware on merged routers
+
+Routes added with `App::merge_router` now pass through Tideway's middleware stack in `serve()`,
+`into_router_with_middleware()`, and `into_make_service_with_connect_info()`. Before this change,
+the stack was applied before merged routers were added, so those routes only received request IDs,
+CORS, and `with_global_layer` layers. CLI-generated apps mount every billing router this way,
+including `/billing/webhook` and `/admin/billing`, so those routes had no rate limit, timeout, or
+security headers.
+
+No public signatures change, and no migration is required. Behavior changes on merged routes:
+
+| Middleware | Before | Now |
+| --- | --- | --- |
+| Rate limiting | Not applied | Applied, sharing the app's limit with module routes |
+| Request timeout | Not applied | Slow handlers return `408` after `timeout_seconds` |
+| Body size limit | Not applied | Extractors enforce `max_body_size` unless the router sets its own `DefaultBodyLimit` |
+| Security headers, compression | Not applied | Applied |
+| Request logging, tracing, metrics | Not recorded | Recorded |
+| Request IDs, CORS, global layers | Applied | Unchanged |
+
+`App::layer` still applies only to registered modules, and `into_router()` still applies no
+middleware.
+
+Before deploying:
+
+1. Review rate limits for webhook traffic. With the `global` strategy, Stripe webhook deliveries
+   now count against the same limit as all other requests, so a burst of events can be rejected
+   with `429` or use up the limit for normal traffic. Stripe retries rejected deliveries, so
+   events are delayed rather than lost. Raise `max_requests` if webhook volume is high, or use
+   the `per_ip` strategy. With `per_ip` behind a proxy or load balancer, configure `trust_proxy`
+   and `trusted_proxies`, otherwise every request shares the proxy's address. See
+   [Rate limiting](rate_limiting.md).
+2. Find handlers mounted with `merge_router` that can take longer than `timeout_seconds` before
+   responding, such as long-polling or slow exports. They now return `408`. The timeout covers
+   producing the response only, so streamed bodies and WebSocket connections are not cut off after
+   the response starts or the upgrade completes.
+3. Check merged routes that accept large uploads, which now count against `max_body_size`. Raise
+   the limit or set `DefaultBodyLimit` on that router.
+4. Remove workarounds added for this bug. Rate limiters or security header layers added directly to
+   a merged router now run alongside Tideway's, so requests must pass both rate limits.
+
+Rollback: downgrading restores the old behavior, where merged routes bypass the middleware stack.
+No data or schema changes are involved.
+
+## 0.8.x to 0.9.0: impersonation and deletion request bodies
+
+`ImpersonationRequest` and `DeletionRequest` no longer implement `Deserialize`. Their `admin_id`
+and `user_id` fields identify the acting user. Before this change, a handler that bound them
+directly to a request body (`Json<ImpersonationRequest>`, `Json<DeletionRequest>`) let a client
+pick which admin to act as, or which account to delete.
+
+If your code no longer compiles after this upgrade, change the handler to deserialize the new body
+type and take the actor ID from the authenticated session or JWT:
+
+```rust,ignore
+// Before (unsafe): Json(req): Json<ImpersonationRequest>
+// After:
+Json(body): Json<ImpersonationRequestBody>
+manager.start_impersonation(body.into_request(authenticated_admin_id)).await?;
+
+// Before (unsafe): Json(req): Json<DeletionRequest>
+// After:
+Json(body): Json<DeletionRequestBody>
+flow.request_deletion(body.into_request(authenticated_user_id)).await?;
+```
+
+The body types reject unknown fields, so clients that still send `admin_id` or `user_id` get a
+`400` instead of having the value silently ignored. The impersonation body takes a custom duration
+as `duration_secs` (an integer). Code that builds the request structs directly on the server does
+not need to change. CLI-generated admin routes already take the actor from `RequestActor` and are
+not affected.
+
+## 0.8.x to 0.9.0: impersonation opt-out always enforced
+
+`ImpersonationManager::start_impersonation` used to skip `ImpersonationStore::can_be_impersonated`
+whenever `allow_admin_impersonation` was enabled, so users who had opted out could still be
+impersonated. The two checks are now separate:
+
+- Admin targets are detected with `ImpersonationStore::is_admin` and rejected unless
+  `allow_admin_impersonation` is enabled.
+- `can_be_impersonated` is always enforced and should express per-user eligibility only (for
+  example, an opt-out flag). Rejections are logged with reason `target_opted_out`.
+
+If your store returns `false` from `can_be_impersonated` just because the user is an admin, admin
+impersonation stays blocked even with `allow_admin_impersonation(true)`. Remove the admin condition
+from `can_be_impersonated` if you rely on that setting. Stores that never enable it need no changes.
+
+## 0.8.x to 0.9.0: organization owners only through ownership transfer
+
+`MembershipManager::add_member`, `InvitationManager::invite`, and `InvitationManager::accept` now
+reject memberships and invitations that grant the owner role. Before this change, they only checked
+that the actor could manage members, so an admin could add or invite a new owner. Owners can now
+only be created with `transfer_ownership`, which already applied to `update_membership`.
+
+No public signatures change, and no migration is required. Behavior changes:
+
+- `add_member` returns `InsufficientPermission` when the membership factory produces an owner
+  role. This applies to every actor, including existing owners.
+- `invite` returns `InsufficientPermission` for owner-role invitations when the store implements
+  `InvitationStore::invitation_grants_owner`. The in-memory and SeaORM stores do.
+- `accept` returns `InsufficientPermission` when the membership factory produces an owner role,
+  whatever the store. The invitation is revoked rather than left pending, so the invitee's email
+  can be invited again with a valid role.
+
+Before deploying:
+
+1. Search for `add_member` calls that pass an owner role, for example to seed co-owners. Use
+   `transfer_ownership` instead.
+2. Check for pending owner-role invitations. They fail once the release is deployed. With the
+   SeaORM store, find them with `role = 'owner' AND status = 'pending'` on
+   `organization_invitations`, then revoke them and reissue them with a non-owner role.
+3. If you implement `InvitationStore` yourself, override `invitation_grants_owner` so owner-role
+   invitations are rejected when created, not only when accepted.
+
+CLI-generated invitation and membership routes already reject the `owner` role and are not
+affected.
+
+## 0.8.x to 0.9.0: ownership transfer updates the organization owner
+
+`MembershipManager::transfer_ownership` only swapped membership roles. It never updated the
+organization's `owner_id`, which `OrganizationStore::count_owned_by_user` reads to enforce
+`max_orgs_per_user`. After a transfer, the organization still counted against the former owner and
+not the new one.
+
+Use the new `OrganizationManager::transfer_ownership`. It takes the same `make_owner` and
+`demote_owner` closures plus a `set_owner` closure that returns the organization with its owner
+set, and returns the updated organization:
+
+```rust
+org_manager
+    .transfer_ownership(
+        &org_id,
+        &new_owner_id,
+        &actor_id,
+        |m| MyMembership { role: MyRole::Owner, ..m.clone() },
+        |m| MyMembership { role: MyRole::Admin, ..m.clone() },
+        |org, owner_id| MyOrganization { owner_id: owner_id.to_string(), ..org },
+    )
+    .await?;
+```
+
+It updates the organization first, then the memberships, and reverts the organization if the
+membership update fails. `set_owner` must set the owner to the ID it receives, otherwise the
+transfer fails without writing anything. `MembershipManager::transfer_ownership` still works but
+is deprecated.
+
+With the built-in SeaORM store, prefer `transfer_ownership_atomic`, which updates the organization
+and both memberships in one transaction. It takes the role to give the former owner:
+
+```rust
+org_manager
+    .transfer_ownership_atomic(&org_id, &new_owner_id, &actor_id, DefaultOrgRole::Admin)
+    .await?;
+```
+
+Both methods now enforce `max_orgs_per_user` for the new owner: if they already own the maximum
+number of organizations, the transfer returns `MaxOrgsReached` and nothing is written. Handle that
+error wherever you expose ownership transfer.
+
+Organizations transferred with the old method still have the former owner's ID. Find them by
+comparing `owner_id` with the owner membership; with the SeaORM store:
+
+```sql
+SELECT o.id, o.owner_id, m.user_id AS owner_member
+FROM organizations o
+JOIN organization_members m ON m.org_id = o.id AND m.role = 'owner'
+WHERE o.owner_id <> m.user_id;
+```
+
+Set `owner_id` to `owner_member` for each row in a reviewed data migration.
+
+## 0.8.x to 0.9.0: WebSocket upgrade authentication
+
+`WebSocketHandler::on_upgrade` was never called, so overriding it to authenticate or reject
+WebSocket connections had no effect, and no hook could read request headers or cookies. The hook
+now runs before every upgrade and receives the request:
+
+```rust
+// Before
+async fn on_upgrade(&self, ctx: &AppContext) -> Result<()>;
+
+// After
+async fn on_upgrade(&self, req: &mut UpgradeRequest, ctx: &AppContext) -> Result<()>;
+```
+
+Handlers that do not override `on_upgrade` need no changes. If you override it:
+
+1. Update the signature and import `tideway::websocket::UpgradeRequest`.
+2. Review what the override returns. It now runs on every upgrade, and an error rejects the
+   connection with that error's HTTP response (for example 401 for `TidewayError::unauthorized`).
+   An override that always returned an error now blocks every connection.
+3. Optionally move authentication out of `on_connect` into `on_upgrade`. Read credentials with
+   `req.cookie(..)`, `req.header(..)`, or `req.uri().query()`, and call `req.set_user_id(..)` so
+   `on_connect` sees `conn.user_id()`.
+
+Later hooks can read the upgrade request through `Connection::headers`, `header`, `cookie`, and
+`uri`. CLI-generated apps do not override `on_upgrade` and are not affected.
+
+## 0.8.x to 0.9.0: namespaced Redis cache keys
+
+`RedisCache::clear()` ran `FLUSHDB`, deleting everything in the Redis database, including
+pending jobs from `RedisJobQueue` when both used the same database. The cache now stores keys
+under a `cache:` prefix, and `clear()` deletes only keys with that prefix.
+
+No code change is required. After deploying, the cache starts cold: entries written by earlier
+versions are stored without the prefix, so they are no longer read and expire on their
+existing TTL. If several apps or caches share one Redis database, give each a distinct prefix
+with `.with_prefix("myapp:cache:")`. An empty prefix is not supported: `clear()` returns an
+error rather than deleting every key in the database.
+
+> **Warning: stale reads during rolling deploys.** While 0.8.x and 0.9.0 pods share one Redis
+> database, each version reads and writes only its own keys: 0.8.x uses `user:1`, 0.9.0 uses
+> `cache:user:1`. `delete()` and `clear()` remove keys only in the calling version's namespace.
+> When a pod on one version invalidates an entry after a write, the other version's copy is not
+> removed, and pods on that version keep serving the old value until its TTL expires. The same
+> happens whenever you change the prefix passed to `with_prefix`.
+>
+> The stale window can last as long as the longest TTL you set (the cache's default TTL or an
+> explicit `ttl` passed to `set`), counted from the last write on the old version. Plan for it
+> in one of these ways:
+>
+> - Accept it if serving data up to one TTL old is acceptable for every cached value.
+> - Lower the TTLs on 0.8.x and let entries written with the old TTLs expire before starting
+>   the rollout. Raise them again once every pod runs 0.9.0.
+> - Avoid mixed versions: use a recreate or blue/green deploy, or point 0.9.0 at a separate
+>   Redis database.
+>
+> Once all pods run 0.9.0, invalidation works normally again. Keys left behind without the
+> prefix are never read and expire on their TTL.
+
+## 0.8.x to 0.9.0: refund lookups scoped to the billable entity
+
+`SecureRefundManager::get_refund` returned any refund by ID, so a caller who knew another
+organization's refund ID could read it. It now takes the billable entity and checks that the
+refund's charge (or payment intent) belongs to that entity's Stripe customer:
+
+```rust
+// Before
+let refund = manager.get_refund("re_xxx").await?;
+
+// After
+let refund = manager.get_refund("org_123", "re_xxx").await?;
+```
+
+A refund owned by another entity returns `BillingError::RefundNotFound` (404), the same as an
+unknown ID. Pass the billable ID of the authenticated caller, not one taken from the request. For
+admin-only lookups that must read any refund, use `RefundManager::get_refund`, which is unchanged.
+
+## 0.8.x to 0.9.0: replayed refunds
+
+Refund creation derives a Stripe idempotency key from the charge or payment intent, amount, and
+reason, so a second identical refund within 24 hours returned the first refund and issued
+nothing. `Refund` now has a `replayed` field that is `true` in that case:
+
+```rust
+let refund = manager.refund_charge("org_123", "ch_xxx", Some(500)).await?;
+if refund.replayed {
+    // No new refund was issued.
+}
+```
+
+Code that constructs `Refund` must set `replayed`, and custom `StripeRefundClient`
+implementations should set it to `true` when they return a cached refund. To issue an intentional
+repeat refund, use `refund(...)` with `CreateRefundRequest::with_idempotency_key`; see
+[refund idempotency](billing.md#refund-idempotency).
+
+## 0.8.x to 0.9.0: bounded job shutdown
+
+`App::serve()` used to keep accepting HTTP connections on SIGTERM until every running job finished,
+with no time limit. Under Kubernetes, a slow job meant the pod was SIGKILLed while still serving
+traffic. The listener now closes as soon as the signal arrives, in-flight requests drain while
+workers stop in parallel, and workers get at most `jobs.shutdown_timeout_seconds` (default 25)
+before running jobs are aborted.
+
+`JobsConfig` has a new public field, so constructing it as a full struct literal no longer compiles:
+
+```rust
+// Before
+JobsConfig { enabled: true, /* ... */ retry_backoff_seconds: 60 }
+
+// After: set the field, or fill the rest from the defaults
+JobsConfig { enabled: true, /* ... */ retry_backoff_seconds: 60, shutdown_timeout_seconds: 25 }
+JobsConfig { enabled: true, ..Default::default() }
+```
+
+Configs loaded with `JobsConfig::from_env()` or deserialized with serde pick up the default and
+need no change. Before deploying:
+
+1. Set `shutdown_timeout_seconds` (or `TIDEWAY_JOBS_SHUTDOWN_TIMEOUT_SECONDS`) a few seconds below
+   your platform's kill deadline, such as Kubernetes `terminationGracePeriodSeconds` (default 30).
+   Raise both together if jobs legitimately need longer to finish.
+2. Make sure job handlers are idempotent. A job aborted at the timeout stays claimed and is run
+   again through the queue's normal retry handling.
+3. If you manage a `WorkerPool` directly, prefer `pool.shutdown_with_timeout(timeout)` over
+   `pool.shutdown()`, which still waits without a limit.
+
+## 0.8.x to 0.9.0: invoice summaries on billing events
+
+`BillingEvent::InvoicePaid` and `BillingEvent::InvoicePaymentFailed` now carry an
+`invoice: InvoiceSummary` with the invoice number, customer email, amounts, currency, hosted
+invoice URL, and billing reason. Patterns without `..` and struct literals (typically in tests) no
+longer compile:
+
+```rust
+// Patterns: add `..`
+BillingEvent::InvoicePaid { invoice_id, customer_id, .. } => { /* ... */ }
+
+// Literals: set the new field
+BillingEvent::InvoicePaid {
+    context,
+    invoice_id: Some("in_1".into()),
+    subscription_id: None,
+    customer_id: Some("cus_1".into()),
+    invoice: InvoiceSummary::default(),
+}
+```
+
+The webhook handler also processes `customer.subscription.trial_will_end` as
+`BillingEvent::TrialWillEnd`. `BillingEvent` is `#[non_exhaustive]`, so existing matches already
+have a wildcard arm; add the event type to your Stripe endpoint to receive it.
+
+## 0.8.x to 0.9.0: scheduled JWKS refresh
+
+JWKS-backed verifiers (`JwtVerifier::from_jwks_url` and `from_jwks_url_with_client`) now
+re-fetch the key set every hour. Before this change, keys were fetched at startup and again only
+for an unknown `kid`, so a key the provider revoked stayed trusted until the process restarted.
+No code change is required. Behavior changes:
+
+| Situation | Before | Now |
+| --- | --- | --- |
+| Provider removes a key | Tokens signed with it still verify | Rejected after the next scheduled refresh |
+| JWKS also contains `EC`, `OKP`, or `oct` keys | Loading or refresh fails | Those keys are skipped; RSA keys are used |
+| JWKS contains keys, but no valid RSA keys | Loading or refresh fails | Unchanged: loading fails, refresh keeps the current keys |
+| RSA key with invalid `n`/`e` | `Internal` (500) on each request using it | Key skipped; requests using it get `Unauthorized` (401) |
+
+The refresh runs in the background, so requests never wait for it. If it fails, the current keys
+stay in use, a warning is logged, and the refresh is retried after the unknown-key cooldown
+(30 seconds by default).
+
+Before deploying, check JWKS-backed verifiers:
+
+1. Confirm the app can reach the JWKS endpoint after startup, not just during boot. If it cannot,
+   expect a warning roughly every 30 seconds.
+2. Choose a different interval with `.with_jwks_refresh_interval(duration)`, or keep the old
+   behavior with `.without_scheduled_jwks_refresh()`.
+
+## 0.8.x to 0.9.0: credit top-up refunds and disputes
+
+`CreditTopUpEventSink` now takes back prepaid credits when a Stripe payment is refunded or
+disputed, and no longer grants credits for checkouts a 100%-off promotion code made free. This
+needs a database migration for apps using `credits-seaorm`, and two more Stripe webhook events.
+
+1. Run `tideway --json doctor --upgrade`. A `TW-UPGRADE-CREDIT-REVOCATION-SCHEMA` warning means
+   the migration below is missing.
+2. From a clean application worktree, run `tideway add credits`. When the credits ledger already
+   exists, the command adds only an `add_credit_revocation` migration. It adds
+   `credit_buckets.revoked_amount` and `credit_buckets.pending_revocation` (both default `0`), an
+   index on `credit_buckets.idempotency_key`, and allows the `revoke` kind in
+   `credit_transactions`. On SQLite this rebuilds `credit_transactions`, because SQLite cannot alter
+   a CHECK constraint. Every step is safe to rerun.
+3. Apply the migration before deploying the new Tideway version. `SeaOrmCreditStore` reads the new
+   columns, so grants, reservations, and balance reads fail against an unmigrated database.
+4. In the Stripe dashboard, add `charge.refunded` and `charge.dispute.created` to the webhook
+   endpoint that already receives `checkout.session.completed`.
+5. If your code constructs or exhaustively destructures `BillingEvent::OneTimeCheckoutCompleted`,
+   handle the new `payment_intent_id` field. `CreditTransactionKind` has a new `Revoke` variant
+   and is now `#[non_exhaustive]`, so exhaustive matches on it need a wildcard arm. Custom
+   `CreditStore` implementations should implement `revoke`; the default returns an error.
+6. Before deploying, check the Stripe dashboard for failed top-up webhooks waiting to be retried.
+   A top-up granted before the upgrade under its event ID would be granted again under the new
+   key if a later sink failed and Stripe retries it after the deploy. Let pending retries finish
+   first, or reverse the duplicate grant afterwards.
+
+Custom billing event sinks now also receive `BillingEvent::ChargeRefunded` and
+`BillingEvent::ChargeDisputed`, because `WebhookHandler` processes `charge.refunded` and
+`charge.dispute.created` instead of ignoring them. Apps that do not use credits need no change.
+
+Top-ups are now granted under the key `stripe-payment-intent:{payment_intent_id}`. Purchases
+granted before the upgrade used `stripe-event:{event_id}`, so their refunds and disputes are not
+matched and leave the credits in place. Reverse those manually if needed. Credits already spent
+before a refund cannot be taken back; the sink logs a warning with the unrecovered amount.
+
+Rollback: the migration is additive and its down migration keeps the columns. Older Tideway
+versions ignore the columns, so they return held credits from revoked grants to the balance, and
+their `history` fails for an account once it has a `revoke` entry.
+
+## 0.8.x to 0.9.0: usage-record retries and errors
+
+This release fixes possible double billing of metered usage. `LiveStripeClient::create_usage_record`
+now sends one idempotency key across all retry attempts, retries HTTP 429 and 5xx responses as
+well as timeouts, and reuses a pooled HTTP client.
+
+No database migration, generated-source change, or API change is required. Error reporting for
+usage-record calls does change:
+
+| Stripe response | Before | Now |
+| --- | --- | --- |
+| 429 | `Internal` (500), not retried | Retried; after the last attempt, `BadRequest` (400) |
+| 5xx | `Internal` (500), not retried | Retried; after the last attempt, `Internal` (500) |
+| 401/403 | `Internal` (500), message hidden | `Internal` (500), generic message |
+| Other 4xx | `Internal` (500), message hidden | See [Stripe API errors](#08x-to-090-stripe-api-errors) |
+
+The underlying error is now `BillingError::StripeApiError` with `http_status` set, matching every
+other `LiveStripeClient` operation, rather than `BillingError::Internal`.
+
+Before deploying, check applications that record usage:
+
+1. Search for code that matches the `"HTTP client error: HTTP"` message text or relies on
+   usage-record failures being `Internal`. Branch on `StripeApiError::http_status` instead.
+2. If usage-record errors reach API clients, review the client-facing text described in
+   [Stripe API errors](#08x-to-090-stripe-api-errors).
+3. If usage is recorded on a latency-sensitive path, note that 429 and 5xx failures now take up to
+   `max_retries` backoff delays before they are returned.
+
+## 0.8.x to 0.9.0: Stripe API errors
+
+`BillingError::StripeApiError` (returned by every `LiveStripeClient` call) now converts to
+`TidewayError::Billing { public, source }`. `public` sets the HTTP status and client-facing message;
+`source` is the original `BillingError`:
+
+| Stripe status | HTTP status | Client-facing message |
+| --- | --- | --- |
+| 402 `card_error` | 400 | Stripe's message (for example "Your card's security code is incorrect."), with Stripe's `code` (for example `incorrect_cvc`) in the response `code` field |
+| 401/403 | 500 | Generic |
+| 404 | 404 | Generic ("Billing resource not found") |
+| 429 | 429 | Generic |
+| Other 4xx | 400 | Generic ("Unable to process billing request") |
+| 5xx, timeouts | 500 | Generic in production |
+
+Stripe's `code` is now its snake_case value (`incorrect_cvc`) instead of the Rust variant name
+(`IncorrectCvc`).
+
+Before deploying, search for code that matches Stripe failures by variant, such as
+`matches!(err, TidewayError::NotFound(_))` or `Err(TidewayError::Internal(_))`. Those matches no
+longer apply to Stripe errors. Match on `err.public_error()` instead, or read the original error:
+
+```rust
+if let Some(BillingError::StripeApiError { message, code, http_status, .. }) = err.billing_error() {
+    // Full Stripe message and code, also for 4xx errors whose client-facing text is generic.
+}
+```
 
 ## 0.7.x to 0.8.0 / CLI 0.1.48: recoverable password resets
 
@@ -582,6 +1095,8 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-BILLING-CUSTOMER-SCHEMA` | Migration source lacks required built-in billing customer columns. |
 | `TW-UPGRADE-BILLING-MIGRATION-MISSING` | The built-in billing store's event migration is absent. |
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |
+| `TW-UPGRADE-CREDIT-REVOCATION-SCHEMA` | Migration source lacks the credit revocation columns and `revoke` transaction kind. |
+| `TW-UPGRADE-API-KEYS-SCHEMA` | `api-keys-seaorm` / `SeaOrmApiKeyStore` is used but no `api_keys` migration was found; run `tideway add api-keys`. |
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |
 | `TW-UPGRADE-JWT-VERIFIER-SECRET` | The deprecated unchecked JWT verifier constructor is present. |
 | `TW-UPGRADE-JWT-IDENTITY-DRIFT` | JWT issuance uses a display name while verification expects the Cargo package name. |

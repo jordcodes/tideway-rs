@@ -26,7 +26,7 @@ pub struct CompressionConfig {
     #[serde(default)]
     pub algorithm: CompressionAlgorithm,
 
-    /// Compression level (1-9, where 9 is maximum compression)
+    /// Gzip compression level (1-9, where 9 is maximum compression)
     /// Higher levels compress better but use more CPU
     #[serde(default = "default_compression_level")]
     pub level: u8,
@@ -56,7 +56,12 @@ impl CompressionConfig {
 
     /// Load compression configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent or invalid variables.
+    pub(crate) fn with_env(mut self) -> Self {
+        let config = &mut self;
 
         if let Some(enabled) = get_env_with_prefix("COMPRESSION_ENABLED") {
             match enabled.parse() {
@@ -64,8 +69,8 @@ impl CompressionConfig {
                 Err(_) => {
                     tracing::warn!(
                         value = %enabled,
-                        "Invalid COMPRESSION_ENABLED (expected true/false), using default ({})",
-                        default_enabled()
+                        "Invalid COMPRESSION_ENABLED (expected true/false), keeping current value ({})",
+                        config.enabled
                     );
                 }
             }
@@ -79,9 +84,9 @@ impl CompressionConfig {
                 other => {
                     tracing::warn!(
                         value = %other,
-                        "Invalid COMPRESSION_ALGORITHM (expected gzip/brotli/both), using default"
+                        "Invalid COMPRESSION_ALGORITHM (expected gzip/brotli/both), keeping current value"
                     );
-                    CompressionAlgorithm::default()
+                    config.algorithm
                 }
             };
         }
@@ -91,8 +96,8 @@ impl CompressionConfig {
                 Ok(l) => config.level = l.clamp(1, 9),
                 Err(_) => tracing::warn!(
                     value = %level,
-                    "Invalid COMPRESSION_LEVEL (expected 1-9), using default ({})",
-                    default_compression_level()
+                    "Invalid COMPRESSION_LEVEL (expected 1-9), keeping current value ({})",
+                    config.level
                 ),
             }
         }
@@ -102,13 +107,13 @@ impl CompressionConfig {
                 Ok(q) => config.brotli_quality = q.clamp(1, 11),
                 Err(_) => tracing::warn!(
                     value = %quality,
-                    "Invalid COMPRESSION_BROTLI_QUALITY (expected 1-11), using default ({})",
-                    default_brotli_quality()
+                    "Invalid COMPRESSION_BROTLI_QUALITY (expected 1-11), keeping current value ({})",
+                    config.brotli_quality
                 ),
             }
         }
 
-        config
+        self
     }
 }
 

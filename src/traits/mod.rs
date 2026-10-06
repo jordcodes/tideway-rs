@@ -18,3 +18,6 @@ pub mod job;
 
 #[cfg(feature = "email")]
 pub mod mailer;
+
+#[cfg(feature = "storage")]
+pub mod storage;

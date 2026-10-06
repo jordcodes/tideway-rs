@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::sync::Mutex;
 
 use tideway_cli::cli::{NewArgs, NewPreset, ResourceArgs};
 
@@ -60,6 +61,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: true,
@@ -143,6 +145,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -224,6 +227,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -242,6 +246,7 @@ async fn main() {
     tideway_cli::commands::resource::run(args).expect("first run resource command");
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -334,6 +339,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -416,6 +422,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -504,6 +511,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -594,6 +602,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: true,
@@ -671,6 +680,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -731,6 +741,7 @@ impl MigratorTrait for Migrator {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -795,6 +806,7 @@ impl MigratorTrait for Migrator {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -862,6 +874,7 @@ impl MigratorTrait for Migrator {
 
     let error = tideway_cli::commands::resource::run(ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -953,6 +966,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -1033,6 +1047,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -1119,6 +1134,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -1201,6 +1217,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -1255,6 +1272,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1308,6 +1326,7 @@ tideway = "0.7"
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1352,6 +1371,7 @@ tideway = "0.7"
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -1390,6 +1410,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
 
     let args = ResourceArgs {
         name: "organization".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1450,6 +1471,7 @@ tideway = "0.7"
 
     let args = ResourceArgs {
         name: "subscription".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -1505,6 +1527,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     let args = ResourceArgs {
         name: "subscription".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1616,7 +1639,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "let organization_id = actor.organization_id()?;",
+        "fn policy_actor(actor: &RequestActor) -> Result<OrgActor> {",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1644,15 +1667,15 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        ".create_owned(organization_id, &owner_id, name, status)",
+        "self.create_owned(&actor.organization_id, &actor.user_id, name, status)",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        ".update_owned(id, organization_id, &owner_id, name, status)",
+        "self.update_owned(id, &actor.organization_id, &actor.user_id, name, status)",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "let model = self.get_required_for_actor(actor, id).await?;",
+        ".delete_authorized(&Self::policy_actor(actor)?, id)",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1673,6 +1696,354 @@ uuid = { version = "1", features = ["v4", "serde"] }
 }
 
 #[test]
+fn test_resource_default_profile_generates_org_scoped_handlers_when_saas_scaffold_detected() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, true, true, true);
+
+    let args = ResourceArgs {
+        name: "project".to_string(),
+        fields: Vec::new(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Api,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let route = project_dir.join("src/routes/project.rs");
+    for handler in [
+        "async fn list_projects(",
+        "async fn get_project(",
+        "async fn create_project(",
+        "async fn update_project(",
+        "async fn delete_project(",
+    ] {
+        let contents = fs::read_to_string(&route).expect("read route");
+        let body = &contents[contents.find(handler).expect("handler exists")..];
+        let body = &body[..body.find("\n}\n").expect("handler end")];
+        assert!(
+            body.contains("RequestActor::for_current_organization(&headers, &db).await?;"),
+            "{handler} must authenticate and resolve organization membership:\n{body}"
+        );
+    }
+    assert_file_contains(
+        &route,
+        "service.create_for_actor(&actor, body.name).await?;",
+    );
+    assert_file_not_contains(
+        &route,
+        "pub struct CreateRequest {\n    pub organization_id",
+    );
+    assert_file_not_contains(
+        &route,
+        "pub struct UpdateRequest {\n    pub organization_id",
+    );
+    assert_file_contains(
+        &project_dir.join("src/entities/project.rs"),
+        "pub organization_id: String,",
+    );
+    let repo = project_dir.join("src/repositories/project.rs");
+    assert_file_contains(
+        &repo,
+        "pub async fn list_owned(&self, organization_id: &str, limit: Option<u64>, offset: Option<u64>, search: Option<String>)",
+    );
+    assert_file_contains(
+        &repo,
+        ".filter(project::Column::OrganizationId.eq(organization_id.to_string()))",
+    );
+    assert_file_not_contains(&repo, "OwnerId");
+    let service = project_dir.join("src/services/project.rs");
+    assert_file_contains(&service, "model.organization_id == organization_id");
+    assert_file_contains(&service, "self.create_owned(&actor.organization_id, name)");
+    assert_file_not_contains(&service, "owner_id: &str");
+}
+
+#[test]
+fn test_resource_profile_tenant_generates_org_scoped_inline_handlers_when_saas_scaffold_detected() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, true, true, false);
+
+    let args = ResourceArgs {
+        name: "workspace".to_string(),
+        fields: Vec::new(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Tenant,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let route = project_dir.join("src/routes/workspace.rs");
+    assert_file_contains(
+        &route,
+        "async fn resolve_org_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OrgActor>",
+    );
+    assert_file_contains(
+        &route,
+        "let actor = resolve_org_actor(&headers, &db).await?;",
+    );
+    assert_file_contains(
+        &route,
+        ".create_authorized(&actor, body.name, body.slug, body.status)",
+    );
+    assert_file_not_contains(&route, "_owned(");
+    assert_file_not_contains(&route, "owner_id");
+    assert_file_contains(
+        &project_dir.join("src/entities/workspace.rs"),
+        "pub organization_id: String,",
+    );
+}
+
+#[test]
+fn test_resource_scoped_profiles_authorize_every_handler_through_a_policy() {
+    for (profile, name, plural, shared_actor) in [
+        (
+            tideway_cli::cli::ResourceProfile::Tenant,
+            "workspace",
+            "workspaces",
+            true,
+        ),
+        (
+            tideway_cli::cli::ResourceProfile::Tenant,
+            "workspace",
+            "workspaces",
+            false,
+        ),
+        (
+            tideway_cli::cli::ResourceProfile::Owned,
+            "note",
+            "notes",
+            true,
+        ),
+        (
+            tideway_cli::cli::ResourceProfile::Owned,
+            "note",
+            "notes",
+            false,
+        ),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path().join("my_app");
+        create_resource_project_fixture(
+            &project_dir,
+            r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+        );
+        create_saas_resource_markers(&project_dir, true, true, shared_actor);
+
+        let args = ResourceArgs {
+            name: name.to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: false,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+            fields: Vec::new(),
+        };
+        tideway_cli::commands::resource::run(args).expect("run resource command");
+
+        let context = format!("{profile:?} (shared actor: {shared_actor})");
+        let pascal = if name == "note" { "Note" } else { "Workspace" };
+
+        // A policy with role permission grants is generated and wired.
+        let policy = project_dir.join(format!("src/policies/{name}.rs"));
+        assert_file_contains(
+            &policy,
+            "use tideway::policy::{OrgActor, Policy, RolePermissions};",
+        );
+        assert_file_contains(
+            &policy,
+            &format!("impl Policy<OrgActor, {name}::Model> for {pascal}Policy {{"),
+        );
+        assert_file_contains(&policy, &format!(".grant(\"admin\", [\"{plural}.*\"])"));
+        for action in ["view", "create", "update", "delete"] {
+            assert_file_contains(
+                &policy,
+                &format!("actor.can(&self.permissions, \"{plural}.{action}\")"),
+            );
+        }
+        assert_file_contains(
+            &project_dir.join("src/policies/mod.rs"),
+            &format!("pub mod {name};"),
+        );
+        assert_file_contains(&project_dir.join("src/main.rs"), "mod policies;");
+
+        // Member delete rights and record checks follow the profile.
+        if name == "note" {
+            assert_file_contains(
+                &policy,
+                "actor.belongs_to(&model.organization_id)\n            && actor.is(&model.owner_id)",
+            );
+            assert_file_contains(
+                &policy,
+                ".grant(\"member\", [\"notes.view\", \"notes.create\", \"notes.update\", \"notes.delete\"])",
+            );
+        } else {
+            assert_file_not_contains(&policy, "owner_id");
+            assert_file_contains(
+                &policy,
+                ".grant(\"member\", [\"workspaces.view\", \"workspaces.create\", \"workspaces.update\"])",
+            );
+        }
+
+        // The service holds the policy and checks it before every operation.
+        let service = project_dir.join(format!("src/services/{name}.rs"));
+        assert_file_contains(&service, &format!("    policy: {pascal}Policy,\n"));
+        assert_file_contains(
+            &service,
+            &format!("pub fn with_policy(mut self, policy: {pascal}Policy) -> Self {{"),
+        );
+        for (method, check) in [
+            ("list_authorized", "Action::ViewAny, None"),
+            ("get_required_authorized", "Action::View, Some(&model)"),
+            ("create_authorized", "Action::Create, None"),
+            ("update_authorized", "Action::Update, Some(&model)"),
+            ("delete_authorized", "Action::Delete, Some(&model)"),
+        ] {
+            let contents = fs::read_to_string(&service).expect("read service");
+            let start = contents
+                .find(&format!("pub async fn {method}("))
+                .unwrap_or_else(|| panic!("{context}: {method} missing"));
+            let body = &contents[start..];
+            let body = &body[..body.find("\n    }\n").expect("method end")];
+            assert!(
+                body.contains(&format!("self.policy.authorize(actor, {check})?;")),
+                "{context}: {method} must authorize through the policy:\n{body}"
+            );
+        }
+
+        // Every route handler goes through an authorized service method.
+        let route = project_dir.join(format!("src/routes/{name}.rs"));
+        let contents = fs::read_to_string(&route).expect("read route");
+        let suffix = if shared_actor {
+            "_for_actor("
+        } else {
+            "_authorized("
+        };
+        for handler in [
+            format!("async fn list_{plural}("),
+            format!("async fn get_{name}("),
+            format!("async fn create_{name}("),
+            format!("async fn update_{name}("),
+            format!("async fn delete_{name}("),
+        ] {
+            let body = &contents[contents.find(&handler).expect("handler exists")..];
+            let body = &body[..body.find("\n}\n").expect("handler end")];
+            assert!(
+                body.contains(suffix) && !body.contains("_owned("),
+                "{context}: {handler} must call an authorized service method:\n{body}"
+            );
+        }
+        if shared_actor {
+            for method in [
+                "list_for_actor",
+                "get_required_for_actor",
+                "create_for_actor",
+                "update_for_actor",
+                "delete_for_actor",
+            ] {
+                let contents = fs::read_to_string(&service).expect("read service");
+                let body = &contents[contents
+                    .find(&format!("pub async fn {method}("))
+                    .unwrap_or_else(|| panic!("{context}: {method} missing"))..];
+                let body = &body[..body.find("\n    }\n").expect("method end")];
+                assert!(
+                    body.contains("_authorized(&Self::policy_actor(actor)?"),
+                    "{context}: {method} must delegate to the authorized method:\n{body}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_resource_unscoped_profiles_do_not_generate_policies() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "workspace".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Tenant,
+        fields: Vec::new(),
+    };
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert!(!project_dir.join("src/policies").exists());
+    assert_file_not_contains(&project_dir.join("src/main.rs"), "mod policies;");
+    let service = project_dir.join("src/services/workspace.rs");
+    assert_file_not_contains(&service, "policy");
+    assert_file_contains(&service, "Self { repo }");
+}
+
+#[test]
 fn test_resource_profile_admin_generates_saas_admin_guards_when_saas_scaffold_detected() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -1688,6 +2059,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     let args = ResourceArgs {
         name: "admin_user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1795,6 +2167,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     let args = ResourceArgs {
         name: "subscription".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1814,7 +2187,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     assert_file_contains(
         &project_dir.join("src/routes/subscription.rs"),
-        "async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor>",
+        "async fn resolve_org_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OrgActor>",
     );
     assert_file_contains(
         &project_dir.join("src/routes/subscription.rs"),
@@ -1846,6 +2219,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     let args = ResourceArgs {
         name: "admin_user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1882,6 +2256,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
 
     let args = ResourceArgs {
         name: "audit_event".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1940,6 +2315,7 @@ fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold()
 
     let resource_args = ResourceArgs {
         name: "subscription".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: false,
@@ -1965,7 +2341,76 @@ fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold()
     );
 
     patch_scaffold_to_workspace(&project_dir);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project(&project_dir, &["check"]);
+    assert_generated_policy_tests_pass(&project_dir);
+}
+
+#[test]
+fn test_resource_api_and_tenant_profiles_compile_against_saas_preset_workspace_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+    tideway_cli::commands::new::run(new_args).expect("run tideway new");
+
+    for (name, fields, profile) in [
+        ("project", vec![], tideway_cli::cli::ResourceProfile::Api),
+        (
+            "workspace",
+            vec![],
+            tideway_cli::cli::ResourceProfile::Tenant,
+        ),
+        (
+            "ticket",
+            vec!["subject:string", "body:text", "priority:int", "closed:bool"],
+            tideway_cli::cli::ResourceProfile::Api,
+        ),
+        (
+            "board",
+            vec!["title:string", "archived:bool"],
+            tideway_cli::cli::ResourceProfile::Tenant,
+        ),
+    ] {
+        let resource_args = ResourceArgs {
+            name: name.to_string(),
+            fields: fields.iter().map(|field| field.to_string()).collect(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: false,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+        };
+        tideway_cli::commands::resource::run(resource_args).expect("run tideway resource");
+        assert_file_contains(
+            &project_dir.join(format!("src/routes/{name}.rs")),
+            "RequestActor::for_current_organization(&headers, &db).await?;",
+        );
+    }
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project(&project_dir, &["check"]);
+    assert_generated_policy_tests_pass(&project_dir);
 }
 
 #[test]
@@ -2025,6 +2470,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -2103,6 +2549,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -2185,6 +2632,7 @@ async fn main() {
 
     let args = ResourceArgs {
         name: "user".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: false,
@@ -2210,6 +2658,355 @@ async fn main() {
         fs::read_to_string(project_dir.join("src/main.rs")).expect("read main after"),
         before_main,
     );
+}
+
+#[test]
+fn test_resource_cli_parses_inline_field_definitions() {
+    use clap::Parser;
+
+    let cli = tideway_cli::cli::Cli::try_parse_from([
+        "tideway",
+        "resource",
+        "post",
+        "title:string",
+        "body:text",
+        "published:bool",
+        "--db",
+    ])
+    .expect("parse resource command");
+
+    let tideway_cli::cli::Commands::Resource(args) = cli.command else {
+        panic!("expected resource command");
+    };
+    assert_eq!(args.name, "post");
+    assert_eq!(args.fields, ["title:string", "body:text", "published:bool"]);
+    assert!(args.db);
+}
+
+#[test]
+fn test_resource_inline_fields_drive_entity_migration_dto_and_validation() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "post".to_string(),
+        fields: [
+            "title:string",
+            "body:text",
+            "published:bool",
+            "views:int",
+            "published_at:datetime",
+        ]
+        .map(String::from)
+        .to_vec(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Api,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let entity = fs::read_to_string(project_dir.join("src/entities/post.rs")).expect("entity");
+    for line in [
+        "pub title: String,",
+        "pub body: String,",
+        "pub published: bool,",
+        "pub views: i32,",
+        "pub published_at: i64,",
+    ] {
+        assert!(entity.contains(line), "entity missing `{line}`:\n{entity}");
+    }
+    assert!(
+        !entity.contains("pub name: String"),
+        "default field leaked:\n{entity}"
+    );
+
+    let migration = read_single_migration(&project_dir, "create_posts");
+    for column in [
+        "ColumnDef::new(Posts::Title).string().not_null()",
+        "ColumnDef::new(Posts::Body).text().not_null()",
+        "ColumnDef::new(Posts::Published).boolean().not_null()",
+        "ColumnDef::new(Posts::Views).integer().not_null()",
+        "ColumnDef::new(Posts::PublishedAt).big_integer().not_null()",
+    ] {
+        assert!(
+            migration.contains(column),
+            "migration missing `{column}`:\n{migration}"
+        );
+    }
+    assert!(
+        !migration.contains("Posts::Name"),
+        "default column leaked:\n{migration}"
+    );
+
+    let routes = fs::read_to_string(project_dir.join("src/routes/post.rs")).expect("routes");
+    for line in [
+        "pub title: String,",
+        "pub body: String,",
+        "pub published: bool,",
+        "pub views: i32,",
+        "pub published_at: i64,",
+        "pub title: Option<String>,",
+        "pub published: Option<bool>,",
+        "pub views: Option<i32>,",
+    ] {
+        assert!(routes.contains(line), "routes missing `{line}`:\n{routes}");
+    }
+
+    let service = fs::read_to_string(project_dir.join("src/services/post.rs")).expect("service");
+    assert!(service.contains("Self::normalize_required_string(\"title\", title)?"));
+    assert!(service.contains("Self::normalize_required_string(\"body\", body)?"));
+    assert!(service.contains("Self::normalize_optional_string(\"title\", title)?"));
+    assert!(!service.contains("\"published\", published"));
+
+    assert_file_contains(
+        &project_dir.join("src/repositories/post.rs"),
+        "post::Column::Title.contains(search)",
+    );
+}
+
+#[test]
+fn test_resource_inline_fields_keep_profile_structural_fields() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "task".to_string(),
+        fields: vec!["title:string".to_string(), "done:bool".to_string()],
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Owned,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let entity = fs::read_to_string(project_dir.join("src/entities/task.rs")).expect("entity");
+    let ordered = [
+        "pub organization_id: String,",
+        "pub owner_id: String,",
+        "pub title: String,",
+        "pub done: bool,",
+        "pub created_at: i64,",
+        "pub updated_at: i64,",
+    ];
+    let positions: Vec<usize> = ordered
+        .iter()
+        .map(|line| {
+            entity
+                .find(line)
+                .unwrap_or_else(|| panic!("missing `{line}`:\n{entity}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "{entity}"
+    );
+    assert!(!entity.contains("pub name: String"));
+    assert!(!entity.contains("pub status: String"));
+}
+
+#[test]
+fn test_resource_invalid_inline_fields_fail_before_writing() {
+    for (fields, expected) in [
+        (vec!["title"], "expected `name:type`"),
+        (vec!["title:uuid4"], "unknown type `uuid4`"),
+        (vec!["Title:string"], "snake_case"),
+        (vec!["type:string"], "Rust keyword"),
+        (vec!["id:int"], "reserved"),
+        (vec!["title:string", "title:text"], "more than once"),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path().join("my_app");
+        create_resource_project_fixture(
+            &project_dir,
+            r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+        );
+
+        let error = tideway_cli::commands::resource::run(ResourceArgs {
+            name: "post".to_string(),
+            fields: fields.iter().map(|field| field.to_string()).collect(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: false,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile: tideway_cli::cli::ResourceProfile::Api,
+        })
+        .expect_err("invalid field definitions should fail");
+
+        assert!(
+            error.to_string().contains(expected),
+            "{fields:?}: expected `{expected}` in {error}"
+        );
+        assert!(!project_dir.join("src/routes/post.rs").exists());
+        assert!(!project_dir.join("src/entities").exists());
+    }
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+    let error = tideway_cli::commands::resource::run(ResourceArgs {
+        name: "task".to_string(),
+        fields: vec!["created_at:datetime".to_string()],
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Tenant,
+    })
+    .expect_err("duplicate structural field should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("already generated by the `tenant` profile")
+    );
+    assert!(!project_dir.join("src/routes/task.rs").exists());
+}
+
+#[test]
+fn test_resource_inline_fields_compile_against_api_preset_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let new_args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+    tideway_cli::commands::new::run(new_args).expect("run tideway new");
+
+    for (name, fields, profile) in [
+        (
+            "post",
+            vec![
+                "title:string",
+                "body:text",
+                "published:bool",
+                "views:int",
+                "word_count:bigint",
+                "published_at:datetime",
+            ],
+            tideway_cli::cli::ResourceProfile::Api,
+        ),
+        (
+            "counter",
+            vec!["hits:int", "enabled:bool"],
+            tideway_cli::cli::ResourceProfile::Api,
+        ),
+        (
+            "note",
+            vec!["title:string", "pinned:bool"],
+            tideway_cli::cli::ResourceProfile::Stub,
+        ),
+        (
+            "tally",
+            vec!["count:int"],
+            tideway_cli::cli::ResourceProfile::Stub,
+        ),
+    ] {
+        let resource_args = ResourceArgs {
+            name: name.to_string(),
+            fields: fields.iter().map(|field| field.to_string()).collect(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: matches!(profile, tideway_cli::cli::ResourceProfile::Stub),
+            with_tests: true,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+        };
+        tideway_cli::commands::resource::run(resource_args).expect("run tideway resource");
+    }
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project(&project_dir, &["check", "--all-targets"]);
+}
+
+fn read_single_migration(project_dir: &Path, suffix: &str) -> String {
+    let migration_dir = project_dir.join("migration/src");
+    let path = fs::read_dir(&migration_dir)
+        .expect("read migration dir")
+        .map(|entry| entry.expect("migration entry").path())
+        .find(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.ends_with(suffix))
+        })
+        .unwrap_or_else(|| panic!("no migration ending in {suffix}"));
+    fs::read_to_string(path).expect("read migration")
 }
 
 fn assert_file_contains(path: &Path, needle: &str) {
@@ -2349,13 +3146,13 @@ fn patch_scaffold_to_workspace(project_dir: &Path) {
     fs::write(cargo_path, contents).expect("write Cargo.toml patch section");
 }
 
-fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
-    let output = Command::new("cargo")
+fn run_cargo_in_project(project_dir: &Path, args: &[&str]) -> String {
+    let mut command = Command::new("cargo");
+    command
         .args(args)
         .current_dir(project_dir)
-        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
-        .output()
-        .expect("run cargo");
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(false));
+    let output = output_serialized(&mut command, "run cargo");
 
     if !output.status.success() {
         panic!(
@@ -2365,6 +3162,45 @@ fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Serialises nested cargo builds within this test binary so parallel test
+/// threads don't each spawn a full-core build at once.
+static CARGO_LOCK: Mutex<()> = Mutex::new(());
+
+/// Shared target dir for scaffold builds. Scaffolds are patched to the
+/// workspace sources, so dependency artifacts are reused across tests and runs.
+/// `-Dwarnings` builds get a sibling dir so the RUSTFLAGS change doesn't
+/// invalidate the shared artifacts.
+fn scaffold_target_dir(deny_warnings: bool) -> PathBuf {
+    let name = if deny_warnings {
+        "scaffold-tests-deny-warnings"
+    } else {
+        "scaffold-tests"
+    };
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("target")
+        .join(name)
+}
+
+fn output_serialized(command: &mut Command, context: &str) -> Output {
+    let _guard = CARGO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    command.output().expect(context)
+}
+
+/// Runs the generated policy unit tests against the real entity models.
+fn assert_generated_policy_tests_pass(project_dir: &Path) {
+    let stdout = run_cargo_in_project(project_dir, &["test", "--lib", "policies::"]);
+    assert!(
+        stdout.contains("policies::") && !stdout.contains(" 0 passed"),
+        "expected generated policy tests to run:\n{stdout}"
+    );
 }
 
 fn escape_toml_path(path: &Path) -> String {

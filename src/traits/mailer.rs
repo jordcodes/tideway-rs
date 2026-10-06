@@ -5,9 +5,10 @@
 
 use crate::error::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
 /// An email message to be sent
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Email {
     /// Sender email address (e.g., "noreply@example.com")
     pub from: String,

@@ -26,6 +26,30 @@ pub trait BillingStore: Send + Sync {
         customer_id: &str,
     ) -> Result<()>;
 
+    /// Link a billable entity to a Stripe customer only if it has no customer yet.
+    ///
+    /// Returns the customer ID that is linked after the call: `customer_id` if this caller
+    /// created the link, or the previously linked ID if another caller got there first.
+    /// `get_or_create_customer` uses this so concurrent first checkouts converge on one
+    /// Stripe customer.
+    ///
+    /// Production stores should override this with an atomic insert-or-ignore followed by a
+    /// read (e.g. `INSERT ... ON CONFLICT (billable_id) DO NOTHING`). The default
+    /// implementation is a non-atomic check-then-set.
+    async fn link_stripe_customer_if_absent(
+        &self,
+        billable_id: &str,
+        billable_type: &str,
+        customer_id: &str,
+    ) -> Result<String> {
+        if let Some(existing) = self.get_stripe_customer_id(billable_id).await? {
+            return Ok(existing);
+        }
+        self.set_stripe_customer_id(billable_id, billable_type, customer_id)
+            .await?;
+        Ok(customer_id.to_string())
+    }
+
     // Subscription tracking
 
     /// Get the cached subscription for a billable entity.
@@ -161,6 +185,24 @@ pub trait BillingStore: Send + Sync {
         Ok(())
     }
 
+    // Deleted subscription markers
+
+    /// Record that a Stripe subscription was deleted, so late webhooks cannot restore it.
+    ///
+    /// The default stores a marker in processed-event storage under a `tideway:` key, so it is
+    /// removed by [`Self::cleanup_old_events`] with the events. Keep the retention window longer
+    /// than Stripe's webhook retry period (about three days).
+    async fn mark_subscription_deleted(&self, stripe_subscription_id: &str) -> Result<()> {
+        self.mark_event_processed(&deleted_subscription_marker(stripe_subscription_id))
+            .await
+    }
+
+    /// Check whether [`Self::mark_subscription_deleted`] recorded this Stripe subscription.
+    async fn is_subscription_deleted(&self, stripe_subscription_id: &str) -> Result<bool> {
+        self.is_event_processed(&deleted_subscription_marker(stripe_subscription_id))
+            .await
+    }
+
     // Optional: cleanup old events
 
     /// Clean up old processed events (default: no-op).
@@ -175,6 +217,10 @@ pub trait BillingStore: Send + Sync {
     /// Used to prevent deleting plans that have active subscriptions.
     /// Returns the count of subscriptions with status Active or Trialing.
     async fn count_subscriptions_by_plan(&self, plan_id: &str) -> Result<u32>;
+}
+
+fn deleted_subscription_marker(stripe_subscription_id: &str) -> String {
+    format!("tideway:subscription_deleted:{stripe_subscription_id}")
 }
 
 /// Cached subscription state.
@@ -315,6 +361,15 @@ impl SubscriptionStatus {
             Self::Paused => "paused",
             Self::Unpaid => "unpaid",
         }
+    }
+
+    /// Whether the subscription has ended and can no longer bill or be resumed.
+    ///
+    /// Any other status still belongs to a live Stripe subscription, so starting a new
+    /// checkout for the same entity would create a second subscription.
+    #[must_use]
+    pub fn is_ended(&self) -> bool {
+        matches!(self, Self::Canceled | Self::IncompleteExpired)
     }
 }
 
@@ -680,6 +735,23 @@ pub mod test {
                 },
             );
             Ok(())
+        }
+
+        async fn link_stripe_customer_if_absent(
+            &self,
+            billable_id: &str,
+            billable_type: &str,
+            customer_id: &str,
+        ) -> Result<String> {
+            let mut customers = self.inner.customers.write().unwrap();
+            let record =
+                customers
+                    .entry(billable_id.to_string())
+                    .or_insert_with(|| CustomerRecord {
+                        billable_type: billable_type.to_string(),
+                        stripe_customer_id: customer_id.to_string(),
+                    });
+            Ok(record.stripe_customer_id.clone())
         }
 
         async fn get_subscription(&self, billable_id: &str) -> Result<Option<StoredSubscription>> {

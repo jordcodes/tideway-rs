@@ -7,7 +7,7 @@ use handlebars::Handlebars;
 use include_dir::{Dir, include_dir};
 use serde::Serialize;
 
-use crate::cli::{BackendPreset, Style};
+use crate::cli::{BackendPreset, Framework, Style};
 
 // Embed all templates at compile time
 static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
@@ -17,6 +17,9 @@ static TEMPLATES_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/templates");
 pub struct TemplateContext {
     pub api_base_url: String,
     pub style: Style,
+    pub framework: Framework,
+    /// React templates targeting Next.js (`'use client'`, `NEXT_PUBLIC_*` env vars)
+    pub is_next: bool,
 }
 
 /// Template engine using Handlebars
@@ -49,16 +52,27 @@ impl TemplateEngine {
             Style::Unstyled => "unstyled",
         };
 
-        // Try style-specific template first, fall back to default
-        let styled_name = format!("vue/{}.{}", template_name, style_suffix);
-        let default_name = format!("vue/{}", template_name);
+        let framework_dir = match self.context.framework {
+            Framework::Vue => "vue",
+            Framework::React | Framework::Next => "react",
+        };
 
-        let template_key = if self.handlebars.has_template(&styled_name) {
-            styled_name
-        } else if self.handlebars.has_template(&default_name) {
-            default_name
-        } else {
-            return Err(anyhow!("Template not found: {}", template_name));
+        // Try style-specific template first, then the framework default, then
+        // framework-neutral templates shared by every frontend (e.g. API types).
+        let candidates = [
+            format!("{}/{}.{}", framework_dir, template_name, style_suffix),
+            format!("{}/{}", framework_dir, template_name),
+            format!("common/{}", template_name),
+        ];
+        let Some(template_key) = candidates
+            .into_iter()
+            .find(|name| self.handlebars.has_template(name))
+        else {
+            return Err(anyhow!(
+                "Template not found: {} (framework: {})",
+                template_name,
+                self.context.framework
+            ));
         };
 
         self.handlebars
@@ -155,6 +169,10 @@ pub struct BackendTemplateContext {
     pub has_billing_feature: bool,
     /// Whether openapi is requested (starter templates)
     pub has_openapi_feature: bool,
+    /// Whether OpenTelemetry trace export is requested
+    pub has_otel_feature: bool,
+    /// Whether Sentry error reporting is requested
+    pub has_sentry_feature: bool,
     /// Whether starter templates need Arc
     pub needs_arc: bool,
     /// Whether starter templates should include config/error modules
@@ -199,6 +217,16 @@ impl BackendTemplateEngine {
     pub fn has_template(&self, template_name: &str) -> bool {
         let template_key = format!("backend/{}", template_name);
         self.handlebars.has_template(&template_key)
+    }
+}
+
+// Make Framework serializable for templates
+impl Serialize for Framework {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
     }
 }
 

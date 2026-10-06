@@ -241,7 +241,7 @@ Enable the `billing-seaorm` feature for a ready-to-use implementation:
 
 ```toml
 [dependencies]
-tideway = { version = "0.2", features = ["billing", "billing-seaorm"] }
+tideway = { version = "0.9.0", features = ["billing", "billing-seaorm"] }
 ```
 
 ```rust
@@ -852,6 +852,33 @@ let session = manager.create_checkout_session(
 redirect_to(session.url);
 ```
 
+Concurrent first checkouts for the same entity share one Stripe customer. If two requests race,
+the first customer link wins and the redundant customer is deleted from Stripe. A failed delete
+is logged and does not fail the checkout.
+
+`create_checkout_session` returns `TidewayError::Conflict` (HTTP 409) when the entity already has
+a stored subscription whose status is anything other than `canceled` or `incomplete_expired`. Use
+`SubscriptionManager` plan changes or the customer portal for existing subscribers.
+
+That check reads webhook-synced local state, so it cannot stop sessions opened before the first
+payment. Two more safeguards cover that window:
+
+- Before creating a session, Tideway expires the customer's other open subscription-mode
+  checkout sessions (`StripeCheckoutClient::expire_open_subscription_checkouts`), so a customer
+  who opened checkout in two tabs can only pay in the newest one. One-time payment sessions are
+  left alone. Custom checkout clients inherit a no-op default.
+- If a second live subscription still reaches the webhook, Tideway keeps the stored one and emits
+  `BillingEvent::DuplicateSubscription` instead of `SubscriptionCreated`/`SubscriptionUpdated`.
+  Handle it in your event sink by cancelling and refunding the duplicate, or alerting someone.
+  Each later update to the duplicate emits the event again, so deduplicate by subscription ID.
+  `SubscriptionManager::cancel_duplicate_subscription(billable_id, subscription_id)` cancels the
+  duplicate immediately. It refuses to cancel the stored subscription or one whose metadata
+  names another entity. It does not refund; use `SecureRefundManager` if your policy calls for
+  one. Generated apps log a warning for this event in `src/billing/events.rs`, with a TODO for
+  the policy.
+  A new subscription replaces the stored one normally when the stored one has ended or is set to
+  cancel at period end (a resubscribe).
+
 ## Subscription Management
 
 ```rust
@@ -966,12 +993,26 @@ let invoice = manager.get_invoice("org_123", "in_xxx").await?;
 let items = manager.get_line_items("org_123", "in_xxx").await?;
 ```
 
+### Cached invoices
+
+`CachedInvoiceManager::list_invoices` returns `Arc<InvoiceList>` and
+`get_upcoming_invoice` returns `Option<Arc<Invoice>>`. Hits share the cached
+allocation, and returned handles remain valid after invalidation or eviction.
+When migrating callers that previously consumed owned fields, borrow them instead
+(for example, `for invoice in &invoices.invoices`). Use `invoices.as_ref()` when
+serializing a shared list, or explicitly clone the underlying value if ownership
+is required.
+
+The `InvoiceOperations` trait retains its owned return types for compatibility;
+calling through that trait still copies cached results. Use the cached manager's
+inherent methods to avoid those copies.
+
 ## Refunds
 
 The module provides two refund managers:
 
 - `RefundManager` - Low-level, no authorization checks (admin use only)
-- `SecureRefundManager` - Verifies charge ownership before refunding (customer-facing)
+- `SecureRefundManager` - Verifies charge ownership before refunding or reading refunds (customer-facing)
 
 ```rust
 use tideway::billing::{SecureRefundManager, RefundReason};
@@ -998,7 +1039,43 @@ let refund = manager.refund_payment_intent("org_123", "pi_xxx", None).await?;
 
 // List refunds for a charge
 let refunds = manager.list_refunds_for_charge("org_123", "ch_xxx", 10).await?;
+
+// Get a refund (returns RefundNotFound unless it belongs to org_123)
+let refund = manager.get_refund("org_123", "re_xxx").await?;
 ```
+
+### Refund idempotency
+
+The convenience methods derive a Stripe idempotency key from the charge or payment
+intent, amount, and reason, so a double-submit or retry refunds only once. An identical
+call within Stripe's 24-hour key window returns the original refund instead of creating
+a new one, with `refund.replayed` set to `true`:
+
+```rust
+let refund = manager.refund_charge("org_123", "ch_xxx", Some(500)).await?;
+if refund.replayed {
+    // No new refund was issued; this is the one created at `refund.created`.
+}
+```
+
+A replay is expected for a double-submit or retry. A replay that only appears on the
+client's internal retry after a timeout is not reported, since it may be of that call's
+own first attempt.
+
+To issue an intentional repeat refund of the same amount, pass a full request with a
+distinct key (e.g. your support ticket or order adjustment ID):
+
+```rust
+use tideway::billing::CreateRefundRequest;
+
+let request = CreateRefundRequest::for_charge("ch_xxx")
+    .with_amount(500)
+    .with_idempotency_key("refund_ticket_42");
+let refund = manager.refund("org_123", request).await?;
+```
+
+`SecureRefundManager::refund` verifies ownership of the request's charge and payment
+intent; `RefundManager::refund` takes only the request.
 
 ## Customer Portal
 
@@ -1057,6 +1134,26 @@ let result = manager.remove_seats("org_123", 2).await?;
 let result = manager.set_seats("org_123", 10).await?;
 ```
 
+### Concurrent seat changes
+
+Stripe receives an absolute seat quantity, so `SeatManager` serializes changes for the same
+billable entity:
+
+- Within one `SeatManager`, calls for the same billable ID wait for each other. Share a single
+  manager (for example in `Arc`) rather than building one per request.
+- Across processes, each change first reserves the new seat count in your store with
+  `compare_and_save_subscription`, and only the caller that wins the reservation calls Stripe.
+  Others re-read and recompute. This requires an atomic `compare_and_save_subscription`
+  (the SeaORM store provides one).
+- The reserved count is visible locally while the Stripe call is in flight. If Stripe fails, the
+  previous count is restored. If the change keeps losing the reservation, the call returns
+  `TidewayError::Conflict` and can be retried.
+- Across processes, a change can still reserve on top of another process's change while that
+  change's Stripe call is in flight. If the Stripe calls then land out of order, the
+  `customer.subscription.updated` webhook resyncs the local count to Stripe's.
+
+Seat counts that would overflow `u32` are rejected with `BadRequest` before Stripe is called.
+
 ## Entitlements
 
 Check feature access and limits:
@@ -1086,6 +1183,47 @@ let entitlements = manager.get_entitlements("org_123").await?;
 println!("Features: {:?}", entitlements.features);
 println!("Limits: {:?}", entitlements.limits);
 ```
+
+### Feature flags and rollouts
+
+`FeatureFlagManager` layers per-organization overrides and percentage rollouts on top of
+plan entitlements. Evaluation order:
+
+1. A per-org override (`set_override(org, key, true|false)`) always wins.
+2. Otherwise the flag's `RolloutScope` applies:
+   - `AllBillables` (default): plans that include the feature keep it, and the rollout
+     enables it for a percentage of everyone else.
+   - `PlanSubscribers` (`.plan_subscribers_only()`): only orgs whose active plan includes
+     the feature are eligible, and the rollout enables it for a percentage of them.
+3. Features with no flag definition fall back to the plan entitlement.
+
+Rollout bucketing is a SHA-256 hash of the flag key and org ID, so an org stays in the
+same bucket across processes and deploys, raising the percentage only adds orgs, and
+each flag selects an independent cohort.
+
+```rust
+use tideway::billing::{FeatureFlag, FeatureFlagManager, InMemoryFeatureFlagStore};
+
+let flags = FeatureFlagManager::new(InMemoryFeatureFlagStore::new());
+
+// Release the "new_reports" plan feature to 10% of orgs on plans that include it.
+flags.save_flag(&FeatureFlag::new("new_reports").rollout(10).plan_subscribers_only()).await?;
+// Let a design partner in early, and hold one org back.
+flags.set_override("org_partner", "new_reports", true).await?;
+flags.set_override("org_sensitive", "new_reports", false).await?;
+// Widen later.
+flags.set_rollout("new_reports", 50).await?;
+
+let entitlements = manager.get_entitlements("org_123").await?;
+let eval = flags.evaluate("org_123", "new_reports", &entitlements).await?;
+if !eval.enabled {
+    // eval.reason: Override, PlanEntitlement, NotEntitled, InRollout, OutsideRollout
+}
+```
+
+`InMemoryFeatureFlagStore` suits tests, single-instance apps, and flags configured at
+startup. For multi-instance deployments, implement `FeatureFlagStore` over your database
+so overrides and rollout changes are shared.
 
 ## Webhooks
 
@@ -1132,7 +1270,10 @@ async fn stripe_webhook(
 Construct the handler with `.with_event_sink(AppBillingEvents)`. Without that call Tideway uses
 `NoOpBillingEventSink`, so applications that do not need hooks require no additional configuration.
 Tideway currently emits typed events for subscription-mode checkout completion, subscription
-creation/update/deletion, paid invoices, and failed invoice payments.
+creation/update/deletion, trials about to end (`customer.subscription.trial_will_end`), paid
+invoices, and failed invoice payments. Invoice events include an `InvoiceSummary` with the
+invoice number, customer email, amounts, currency, and hosted invoice URL. Subscribe your Stripe
+webhook endpoint to each of these event types.
 
 The sink runs after Tideway's core subscription-state mutation. If it returns an error, Tideway
 releases the webhook claim so Stripe can retry; the core mutation and sink may consequently run
@@ -1143,6 +1284,53 @@ network calls inside the webhook request.
 The built-in `billing_processed_events` table belongs to one Tideway billing webhook consumer. If
 an application also processes Stripe Connect or another independent Stripe webhook stream, give
 that consumer a separate idempotency table or use a store keyed by both consumer name and event ID.
+
+### Billing lifecycle emails
+
+With the `email` feature, `LifecycleEmailBillingSink` sends the built-in trial-ending,
+payment-failed, and receipt emails (see [Lifecycle Emails](./email.md#lifecycle-emails)):
+
+| Stripe event | Email |
+|--------------|-------|
+| `customer.subscription.trial_will_end` | Trial ending (while the subscription is still `trialing`) |
+| `invoice.payment_failed` | Payment failed, with the amount due |
+| `invoice.paid` | Receipt, linking to the hosted invoice (skipped for $0 invoices) |
+
+```rust
+use tideway::billing::{BillingEmailRecipients, LifecycleEmailBillingSink};
+use tideway::email::LifecycleEmailKind;
+
+let sink = LifecycleEmailBillingSink::new(emailer, "https://app.example.com/settings/billing")
+    .with_recipients(Arc::new(OwnerEmails { db }))   // needed for trial reminders
+    .with_plans(plans.clone())                       // plan display names in emails
+    .without(LifecycleEmailKind::Receipt)            // e.g. if Stripe already sends receipts
+    .with_inner(AppBillingEvents);                   // your existing sink runs first
+let handler = WebhookHandler::new(store, secret, plans).with_event_sink(sink);
+```
+
+Invoice emails go to the invoice's `customer_email`. Trial reminders, and invoices without one,
+use `BillingEmailRecipients::recipient(customer_id, billable_id)`; if it returns `None` the email
+is skipped with a warning. Emails are sent only after the inner sink succeeds, and Tideway's
+webhook idempotency prevents duplicates on Stripe redelivery. Use `LifecycleEmailer::queued` so
+delivery runs in a background job instead of the webhook request.
+
+### Rotating webhook signing secrets
+
+`WebhookHandler` accepts a webhook signed with any configured secret. It checks every `v1`
+signature in the `Stripe-Signature` header, since Stripe sends one per active secret while a
+secret is being rolled. To rotate without downtime:
+
+1. Roll the secret in the Stripe Dashboard, keeping the old secret valid for a period.
+2. Deploy with both secrets configured:
+
+   ```rust
+   let handler = WebhookHandler::new(store, new_secret, plans)
+       .with_additional_secret(old_secret);
+   // or: WebhookHandler::with_secrets(store, [new_secret, old_secret], plans)?
+   ```
+
+3. After Stripe stops signing with the old secret, remove it and redeploy. Webhooks signed only
+   with a removed secret are rejected.
 
 ## Live Stripe Client
 
@@ -1221,6 +1409,10 @@ operations:
 - A successful compare-and-save must persist a version different from `expected_version`. Treat
   `StoredSubscription::updated_at` as an opaque optimistic-lock token; it may be a timestamp or an
 integer revision, but it must advance even when two writes share a wall-clock tick.
+- `link_stripe_customer_if_absent` must insert the customer link only when none exists and return
+  the ID that ends up linked, in one atomic operation (for SQL, `INSERT ... ON CONFLICT
+  (billable_id) DO NOTHING` followed by a read). Otherwise concurrent first checkouts create
+  duplicate Stripe customers.
 
 The built-in SeaORM store uses a five-minute claim lease by default. Configure
 `with_event_claim_ttl` longer than the slowest expected handler. Webhook side effects must still be
@@ -1306,7 +1498,7 @@ Enable the `test-billing` feature for access to mock implementations:
 
 ```toml
 [dev-dependencies]
-tideway = { version = "0.2", features = ["billing", "test-billing"] }
+tideway = { version = "0.9.0", features = ["billing", "test-billing"] }
 ```
 
 ## Security Features
@@ -1333,14 +1525,14 @@ STRIPE_WEBHOOK_SECRET=whsec_xxx
 
 ```toml
 [dependencies]
-tideway = { version = "0.2", features = ["billing"] }
+tideway = { version = "0.9.0", features = ["billing"] }
 
 # With SeaORM storage
-tideway = { version = "0.2", features = ["billing", "billing-seaorm"] }
+tideway = { version = "0.9.0", features = ["billing", "billing-seaorm"] }
 
 # For testing
 [dev-dependencies]
-tideway = { version = "0.2", features = ["billing", "test-billing"] }
+tideway = { version = "0.9.0", features = ["billing", "test-billing"] }
 ```
 
 ## Limitations & Future Enhancements

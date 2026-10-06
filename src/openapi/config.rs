@@ -47,38 +47,39 @@ impl Default for OpenApiConfig {
 impl OpenApiConfig {
     /// Create config from environment variables
     pub fn from_env() -> Self {
-        let enabled = std::env::var("OPENAPI_ENABLED")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(false);
+        Self::default().with_env()
+    }
 
-        let swagger_ui = std::env::var("OPENAPI_SWAGGER_UI")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(false);
+    /// Apply environment overrides, preserving settings for absent or invalid variables.
+    pub(crate) fn with_env(mut self) -> Self {
+        let parse_bool = |name| std::env::var(name).ok().and_then(|v| v.parse().ok());
 
-        let serve_spec = std::env::var("OPENAPI_SERVE_SPEC")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(false);
-
-        let visibility = std::env::var("OPENAPI_VISIBILITY")
-            .ok()
-            .and_then(|v| match v.to_lowercase().as_str() {
-                "public" | "public-only" => Some(OpenApiVisibility::PublicOnly),
-                "internal" | "internal-only" => Some(OpenApiVisibility::InternalOnly),
-                "all" => Some(OpenApiVisibility::All),
-                _ => None,
-            })
-            .unwrap_or(OpenApiVisibility::All);
-
-        Self {
-            enabled,
-            swagger_ui,
-            serve_spec,
-            visibility,
-            ..Default::default()
+        if let Some(enabled) = parse_bool("OPENAPI_ENABLED") {
+            self.enabled = enabled;
         }
+
+        if let Some(swagger_ui) = parse_bool("OPENAPI_SWAGGER_UI") {
+            self.swagger_ui = swagger_ui;
+        }
+
+        if let Some(serve_spec) = parse_bool("OPENAPI_SERVE_SPEC") {
+            self.serve_spec = serve_spec;
+        }
+
+        if let Some(visibility) =
+            std::env::var("OPENAPI_VISIBILITY")
+                .ok()
+                .and_then(|v| match v.to_lowercase().as_str() {
+                    "public" | "public-only" => Some(OpenApiVisibility::PublicOnly),
+                    "internal" | "internal-only" => Some(OpenApiVisibility::InternalOnly),
+                    "all" => Some(OpenApiVisibility::All),
+                    _ => None,
+                })
+        {
+            self.visibility = visibility;
+        }
+
+        self
     }
 
     /// Builder: Enable OpenAPI

@@ -26,6 +26,7 @@ pub(super) struct WatchConfig {
 
 pub(super) fn run(mut config: WatchConfig) -> Result<()> {
     let (cargo_args, app_args) = split_args(std::mem::take(&mut config.cargo_args));
+    let cargo_args = with_default_run_target(&config.project_dir, cargo_args);
     // Let setup writes (notably first-run `.env` creation) settle before registering
     // the native watcher, otherwise macOS can report them as a new user edit.
     thread::sleep(DEBOUNCE);
@@ -173,6 +174,42 @@ fn build(
         started.elapsed().as_secs_f32()
     ));
     Ok(BuildOutcome::Success(executable))
+}
+
+/// `cargo build` ignores `package.default-run`, so pass it explicitly unless the caller already
+/// selected targets. Keeps apps with helper binaries (e.g. `src/bin/seed.rs`) restartable.
+fn with_default_run_target(project_dir: &Path, mut cargo_args: Vec<String>) -> Vec<String> {
+    const TARGET_SELECTORS: &[&str] = &[
+        "--bin",
+        "--bins",
+        "--example",
+        "--examples",
+        "--all-targets",
+        "-p",
+        "--package",
+    ];
+    let selects_targets = cargo_args.iter().any(|arg| {
+        TARGET_SELECTORS
+            .iter()
+            .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+    });
+    if selects_targets {
+        return cargo_args;
+    }
+
+    let default_run = std::fs::read_to_string(project_dir.join("Cargo.toml"))
+        .ok()
+        .and_then(|contents| contents.parse::<toml_edit::DocumentMut>().ok())
+        .and_then(|doc| {
+            doc.get("package")
+                .and_then(|package| package.get("default-run"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    if let Some(bin) = default_run {
+        cargo_args.extend(["--bin".to_string(), bin]);
+    }
+    cargo_args
 }
 
 fn read_cargo_output(stdout: impl std::io::Read, artifacts: mpsc::Sender<PathBuf>) {
@@ -396,6 +433,36 @@ mod tests {
         let (cargo, app) = split_args(vec!["--release".into(), "--".into(), "--seed".into()]);
         assert_eq!(cargo, ["--release"]);
         assert_eq!(app, ["--seed"]);
+    }
+
+    #[test]
+    fn builds_default_run_binary_unless_targets_are_selected() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        crate::write_file(&root.join("Cargo.toml"), "[package]\nname = \"app\"\n")
+            .expect("write manifest");
+        assert_eq!(
+            with_default_run_target(root, vec!["--release".into()]),
+            ["--release"]
+        );
+
+        crate::write_file(
+            &root.join("Cargo.toml"),
+            "[package]\nname = \"app\"\ndefault-run = \"app\"\n",
+        )
+        .expect("write manifest");
+        assert_eq!(
+            with_default_run_target(root, vec!["--release".into()]),
+            ["--release", "--bin", "app"]
+        );
+        assert_eq!(
+            with_default_run_target(root, vec!["--bin=seed".into()]),
+            ["--bin=seed"]
+        );
+        assert_eq!(
+            with_default_run_target(root, vec!["--example".into(), "demo".into()]),
+            ["--example", "demo"]
+        );
     }
 
     #[test]

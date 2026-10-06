@@ -313,7 +313,7 @@ use tideway::testing::TestDb;
 async fn test_user_creation() {
     let db = TestDb::new().await.unwrap();
 
-    // Seed database
+    // Seed database (to reuse fixtures as local demo data, see `tideway seed` in docs/cli.md)
     db.seed(&["CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT)"])
         .await
         .unwrap();

@@ -87,6 +87,10 @@ fn worker_heartbeat_key(worker_id: &str) -> String {
 /// - `jobs:failed` - List of permanently failed jobs
 /// - `jobs:completed` - List of completed jobs (optional, for history)
 ///
+/// Connections are initialized lazily and shared by clones and the scheduler.
+/// Dequeue polls every 100 ms for up to five seconds so waiting for work does
+/// not block other operations on the shared connection.
+///
 /// # Shutdown Behavior
 ///
 /// The scheduler task runs in the background and will automatically stop when
@@ -94,7 +98,7 @@ fn worker_heartbeat_key(worker_id: &str) -> String {
 /// to ensure clean resource cleanup.
 #[derive(Clone)]
 pub struct RedisJobQueue {
-    client: redis::Client,
+    connection: crate::redis_connection::SharedRedisConnection,
     worker_id: String,
     max_retries: u32,
     retry_backoff_seconds: u64,
@@ -125,14 +129,13 @@ impl RedisJobQueue {
         max_retries: u32,
         retry_backoff_seconds: u64,
     ) -> Result<Self> {
-        let client = redis::Client::open(url)
-            .map_err(|e| TidewayError::internal(format!("Failed to create Redis client: {}", e)))?;
+        let connection = crate::redis_connection::SharedRedisConnection::new(url)?;
 
         let worker_id = worker_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let queue = Self {
-            client,
+            connection,
             worker_id,
             max_retries,
             retry_backoff_seconds,
@@ -209,12 +212,14 @@ impl RedisJobQueue {
         }
     }
 
-    /// Get a Redis connection
-    async fn get_connection(&self) -> Result<redis::aio::MultiplexedConnection> {
-        self.client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to get Redis connection: {}", e)))
+    /// A [`RedisSchedulerLock`](crate::jobs::RedisSchedulerLock) sharing this queue's connection.
+    pub fn scheduler_lock(&self) -> crate::jobs::RedisSchedulerLock {
+        crate::jobs::RedisSchedulerLock::from_connection(self.connection.clone())
+    }
+
+    /// Clone the shared connection manager
+    async fn get_connection(&self) -> Result<redis::aio::ConnectionManager> {
+        self.connection.get().await
     }
 
     /// Start background task to move scheduled jobs to pending
@@ -222,7 +227,7 @@ impl RedisJobQueue {
     /// This task polls the scheduled jobs set and moves due jobs to the pending list.
     /// It respects the shutdown flag and will exit cleanly when signaled.
     fn start_scheduler_task(&self) {
-        let client = self.client.clone();
+        let connection = self.connection.clone();
         let worker_id = self.worker_id.clone();
         let shutdown = self.shutdown.clone();
         let scheduler_handle = self.scheduler_handle.clone();
@@ -244,7 +249,7 @@ impl RedisJobQueue {
                     break;
                 }
 
-                if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
+                if let Ok(mut conn) = connection.get().await {
                     let heartbeat_key = worker_heartbeat_key(&worker_id);
                     let heartbeat_update: redis::RedisResult<()> = redis::pipe()
                         .cmd("SADD")
@@ -356,15 +361,24 @@ impl JobQueue for RedisJobQueue {
         let mut conn = self.get_connection().await?;
         let processing_key = processing_key(&self.worker_id);
 
-        // Use BRPOPLPUSH for atomic move from pending to processing
-        // This blocks for up to 5 seconds waiting for a job
-        let result: Option<String> = redis::cmd("BRPOPLPUSH")
-            .arg(PENDING_JOBS_KEY)
-            .arg(&processing_key)
-            .arg(5) // timeout in seconds
-            .query_async(&mut conn)
-            .await
-            .map_err(|e| TidewayError::internal(format!("Failed to dequeue job: {}", e)))?;
+        // Blocking Redis commands would stall every user of the shared connection.
+        // Poll the same atomic move for up to five seconds instead.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let result: Option<String> = loop {
+            let job = redis::cmd("RPOPLPUSH")
+                .arg(PENDING_JOBS_KEY)
+                .arg(&processing_key)
+                .query_async::<Option<String>>(&mut conn)
+                .await
+                .map_err(|e| TidewayError::internal(format!("Failed to dequeue job: {}", e)))?;
+            if job.is_some() || tokio::time::Instant::now() >= deadline {
+                break job;
+            }
+            tokio::time::sleep_until(
+                deadline.min(tokio::time::Instant::now() + std::time::Duration::from_millis(100)),
+            )
+            .await;
+        };
 
         if let Some(job_json) = result {
             let job_data: JobData = serde_json::from_str(&job_json)

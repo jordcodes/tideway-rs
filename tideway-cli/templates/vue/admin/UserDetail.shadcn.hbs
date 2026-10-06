@@ -72,8 +72,9 @@ async function handleToggleVerified() {
 }
 
 async function handleImpersonate() {
-  const reason = prompt('Reason for impersonation (optional):')
-  const session = await startImpersonation(props.userId, reason || undefined)
+  const reason = prompt('Reason for impersonation (required, e.g. a support ticket):')?.trim()
+  if (!reason) return
+  const session = await startImpersonation(props.userId, reason)
   if (session) {
     emit('impersonate')
     // Reload the page to apply the new tokens

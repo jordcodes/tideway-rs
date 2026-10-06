@@ -31,6 +31,9 @@ bash scripts/check_issue_template_dx_ambiguity.sh
 echo "[verify] cli filesystem policy"
 bash scripts/check_cli_fs_writes.sh
 
+echo "[verify] scaffold tests not env-gated"
+bash scripts/check_no_gated_scaffold_tests.sh
+
 echo "[verify] public api surface"
 bash scripts/check_public_api_surface.sh
 
@@ -40,15 +43,19 @@ cargo test -p tideway-cli --test messaging_contract_test
 echo "[verify] tideway-cli tests"
 cargo test -p tideway-cli
 
-echo "[verify] tideway lib tests"
-cargo test --lib
+# Run the full suite with default features (covers feature-disabled code paths) and with every
+# feature enabled (covers feature-gated modules and test files).
+echo "[verify] tideway tests (default features)"
+cargo test -p tideway
+
+echo "[verify] tideway tests (all features)"
+cargo test -p tideway --all-features
+
+echo "[verify] tideway-macros tests"
+cargo test -p tideway-macros
 
 echo "[verify] tideway testing surfaces"
 cargo test --example testing_example
-cargo test --test testing_app_test
-cargo test --test test_host_test
-cargo test --test test_host_builder_test
-cargo test --test test_host_bootstrap_test
 
 echo "[verify] billing feature compile check"
 cargo check --features billing
@@ -56,11 +63,10 @@ cargo check --features billing
 echo "[verify] all-features compile check"
 cargo check --all-features
 
+echo "[verify] feature gates"
+bash scripts/check_feature_gates.sh
+
 echo "[verify] downstream upgrade contract"
 bash scripts/check_downstream_upgrade.sh
-
-echo "[verify] module contract tests"
-cargo test --test prelude_smoke_test
-cargo test --test feature_gate_contract_test
 
 echo "[verify] OK"

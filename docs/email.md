@@ -2,6 +2,26 @@
 
 Tideway provides a trait-based email system for sending transactional emails. The `Mailer` trait allows you to swap between SMTP, third-party services (Resend, SendGrid, Postmark), or console output for development.
 
+## Generated API Starter
+
+Apps created with `tideway new` (the API preset, or any app with `auth` and `database`) send
+verification and password-reset emails out of the box. They use the default
+[lifecycle templates](#lifecycle-emails), and background job workers started in `main.rs`
+deliver them. The generated `.env.example` uses the development console provider:
+
+```bash
+TIDEWAY_ENV=development
+APP_URL=http://localhost:5173       # frontend that serves /verify-email and /reset-password
+EMAIL_PROVIDER=console              # console (development only), resend, or smtp
+EMAIL_FROM="My App <noreply@example.com>"
+REQUIRE_EMAIL_VERIFICATION=false    # true blocks login until the email link is used
+```
+
+Leaving `EMAIL_PROVIDER` unset disables `/auth/password/reset*` and `/auth/email/*`.
+Customize wording or branding by overriding `EmailTemplates` methods on `AppEmailTemplates` in
+`src/email.rs`. The generated in-memory queue drops undelivered emails on restart; use
+`RedisJobQueue` (feature `jobs-redis`) for durable delivery.
+
 ## Generated SaaS Quick Start
 
 Create the batteries-included SaaS API and start its local dependencies:
@@ -377,63 +397,88 @@ Auth, password reset, and verification code remain provider-neutral. Production
 `APP_URL` values must use HTTPS so generated reset and verification links are
 not sent over plaintext HTTP.
 
-## Background Email Jobs
+## Lifecycle Emails
 
-Combine with the [background jobs](./background_jobs.md) system for async email sending:
+Tideway ships default, overridable templates for the six emails most SaaS apps
+need: `VerifyEmail`, `PasswordReset`, `Invitation`, `TrialEnding`,
+`PaymentFailed`, and `Receipt`. Each renders an accessible HTML body plus a
+plain-text fallback, with all application values escaped.
 
-```rust
-use tideway::{Job, JobData, AppContext, Email, Result, TidewayError};
-use serde::{Serialize, Deserialize};
-use async_trait::async_trait;
+`LifecycleEmailer` renders an email and delivers it. With the `jobs` feature,
+`LifecycleEmailer::queued` enqueues a `SendEmailJob` (job type
+`tideway.send_email`) so delivery happens in a background worker, with the
+queue's retry policy, instead of on the request path:
 
-#[derive(Debug, Serialize, Deserialize)]
-struct SendEmailJob {
-    to: String,
-    subject: String,
-    text: String,
-    html: Option<String>,
-}
+```rust,ignore
+use std::sync::Arc;
+use tideway::email::{EmailBranding, LifecycleEmail, LifecycleEmailer, register_email_jobs};
 
-#[async_trait]
-impl Job for SendEmailJob {
-    fn job_type(&self) -> &str {
-        "send_email"
-    }
+// Worker side: the worker's AppContext must have a mailer.
+let registry = JobRegistry::new();
+register_email_jobs(&registry).await;
+let ctx = Arc::new(AppContext::builder().with_mailer(mailer).with_job_queue(queue.clone()).build());
+let workers = WorkerPool::new(queue.clone(), Arc::new(registry), ctx, 2);
 
-    fn serialize(&self) -> Result<serde_json::Value> {
-        serde_json::to_value(self)
-            .map_err(|e| TidewayError::internal(format!("Serialize error: {}", e)))
-    }
+// Request side: render now, deliver in the background.
+let emails = LifecycleEmailer::queued(
+    queue,
+    "Acme <noreply@acme.example>",
+    EmailBranding::new("Acme")
+        .app_url("https://acme.example")
+        .support_email("support@acme.example"),
+);
 
-    async fn execute(&self, ctx: &AppContext) -> Result<()> {
-        let mailer = ctx.mailer()?;
-
-        let mut email = Email::new("noreply@myapp.com", &self.to, &self.subject)
-            .text(&self.text);
-
-        if let Some(ref html) = self.html {
-            email = email.html(html);
-        }
-
-        mailer.send(&email).await
-    }
-}
-
-// Enqueue email job from handler
-async fn register_user(ctx: Extension<AppContext>) -> Result<()> {
-    let queue = ctx.jobs()?;
-
-    let job = SendEmailJob {
-        to: "user@example.com".to_string(),
-        subject: "Welcome!".to_string(),
-        text: "Thanks for signing up!".to_string(),
-        html: Some("<h1>Welcome!</h1>".to_string()),
-    };
-
-    queue.enqueue(&job).await?;
-    Ok(())
-}
+// e.g. from PasswordResetStore::send_reset_email
+let link = format!("https://acme.example/reset-password?token={token}");
+emails
+    .send(&user.email, &LifecycleEmail::password_reset(link, expires_in))
+    .await?;
 ```
+
+Use `LifecycleEmailer::direct(mailer, from, branding)` when you deliberately want
+synchronous delivery (tests, scripts). Queued jobs contain the rendered body,
+including one-time links, so protect the queue backend like any other secret
+store.
+
+### Overriding Templates
+
+Implement `EmailTemplates`; every method has a default, so override only what
+you need:
+
+- `content` - change subject/copy for one or more emails, falling back to
+  `default_content` for the rest.
+- `layout` - return your own `EmailLayout` to rebrand every email at once.
+- `render` - take over rendering entirely (for example with your own template
+  engine).
+
+```rust,ignore
+use tideway::email::{
+    EmailBranding, EmailContent, EmailLayout, EmailTemplates, LifecycleEmail, default_content,
+};
+
+struct AcmeTemplates;
+
+impl EmailTemplates for AcmeTemplates {
+    fn content(&self, email: &LifecycleEmail, branding: &EmailBranding) -> tideway::Result<EmailContent> {
+        let mut content = default_content(email, branding)?;
+        if let LifecycleEmail::VerifyEmail { .. } = email {
+            content.subject = "Welcome to Acme - confirm your email".into();
+        }
+        Ok(content)
+    }
+
+    fn layout(&self) -> &dyn EmailLayout {
+        &AcmeLayout // implements EmailLayout::html (text falls back to the default)
+    }
+}
+
+let emails = emails.with_templates(Arc::new(AcmeTemplates));
+```
+
+Amounts on payment emails use `Amount { minor_units, currency }` (the shape
+payment providers report) and are formatted as `USD 49.00`, honouring
+zero-decimal currencies such as JPY. Override the templates for locale-aware
+formatting.
 
 ## Testing
 
@@ -477,5 +522,5 @@ Email support requires the `email` feature:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["email"] }
+tideway = { version = "0.9.0", features = ["email"] }
 ```

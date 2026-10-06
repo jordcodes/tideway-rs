@@ -1,0 +1,139 @@
+//! Create admin impersonation sessions and their audit log
+//! (used by `crate::auth::impersonation::DbImpersonationStore`).
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(ImpersonationSessions::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(ImpersonationSessions::SessionId)
+                            .string_len(64)
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(ImpersonationSessions::AdminId).string().not_null())
+                    .col(
+                        ColumnDef::new(ImpersonationSessions::TargetUserId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(ImpersonationSessions::Reason).text().null())
+                    // JSON array of blocked action names, e.g. ["delete_account"].
+                    .col(
+                        ColumnDef::new(ImpersonationSessions::BlockedActions)
+                            .text()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(ImpersonationSessions::StartedAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .col(
+                        ColumnDef::new(ImpersonationSessions::ExpiresAt)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    // Set when the session is ended or found expired; tokens stop working.
+                    .col(ColumnDef::new(ImpersonationSessions::EndedAt).big_integer().null())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_impersonation_sessions_target")
+                    .table(ImpersonationSessions::Table)
+                    .col(ImpersonationSessions::TargetUserId)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_table(
+                Table::create()
+                    .table(ImpersonationAuditLog::Table)
+                    .if_not_exists()
+                    .col(
+                        ColumnDef::new(ImpersonationAuditLog::Id)
+                            .string_len(36)
+                            .not_null()
+                            .primary_key(),
+                    )
+                    .col(ColumnDef::new(ImpersonationAuditLog::Event).string().not_null())
+                    .col(ColumnDef::new(ImpersonationAuditLog::SessionId).string().not_null())
+                    .col(ColumnDef::new(ImpersonationAuditLog::AdminId).string().not_null())
+                    .col(
+                        ColumnDef::new(ImpersonationAuditLog::TargetUserId)
+                            .string()
+                            .not_null(),
+                    )
+                    .col(ColumnDef::new(ImpersonationAuditLog::Reason).text().null())
+                    .col(ColumnDef::new(ImpersonationAuditLog::Metadata).text().null())
+                    .col(
+                        ColumnDef::new(ImpersonationAuditLog::Timestamp)
+                            .big_integer()
+                            .not_null(),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_impersonation_audit_log_target")
+                    .table(ImpersonationAuditLog::Table)
+                    .col(ImpersonationAuditLog::TargetUserId)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(ImpersonationAuditLog::Table).to_owned())
+            .await?;
+        manager
+            .drop_table(Table::drop().table(ImpersonationSessions::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum ImpersonationSessions {
+    Table,
+    SessionId,
+    AdminId,
+    TargetUserId,
+    Reason,
+    BlockedActions,
+    StartedAt,
+    ExpiresAt,
+    EndedAt,
+}
+
+#[derive(DeriveIden)]
+enum ImpersonationAuditLog {
+    Table,
+    Id,
+    Event,
+    SessionId,
+    AdminId,
+    TargetUserId,
+    Reason,
+    Metadata,
+    Timestamp,
+}

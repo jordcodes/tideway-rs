@@ -15,6 +15,28 @@ pub struct BillingEventContext {
     pub created: u64,
 }
 
+/// Customer-facing invoice details carried by invoice events.
+///
+/// Every field is optional because Stripe omits fields depending on API version and invoice type.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct InvoiceSummary {
+    /// Customer-facing invoice number, such as `ABCD-0001`.
+    pub number: Option<String>,
+    /// Email address Stripe has on file for the customer.
+    pub customer_email: Option<String>,
+    /// Amount due in the currency's smallest unit.
+    pub amount_due: Option<u64>,
+    /// Amount paid in the currency's smallest unit.
+    pub amount_paid: Option<u64>,
+    /// ISO 4217 currency code (lowercase, as sent by Stripe).
+    pub currency: Option<String>,
+    /// Stripe-hosted page where the customer can view or pay the invoice.
+    pub hosted_invoice_url: Option<String>,
+    /// Why the invoice was created, such as `subscription_cycle` or `subscription_create`.
+    pub billing_reason: Option<String>,
+}
+
 /// Typed billing lifecycle event emitted after Tideway's core processing succeeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -46,6 +68,37 @@ pub enum BillingEvent {
         plan_id: Option<String>,
         /// Stripe payment status, such as `paid` or `unpaid`.
         payment_status: Option<String>,
+        /// Stripe PaymentIntent ID that collected the payment, when Stripe charged the customer.
+        /// Refund and dispute events reference the same ID.
+        payment_intent_id: Option<String>,
+    },
+    /// Stripe refunded some or all of a charge.
+    ChargeRefunded {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Stripe charge ID.
+        charge_id: String,
+        /// Stripe PaymentIntent ID, when the charge belongs to one.
+        payment_intent_id: Option<String>,
+        /// Stripe customer ID, when included in the event.
+        customer_id: Option<String>,
+        /// Charged amount in the currency's smallest unit.
+        amount: u64,
+        /// Cumulative refunded amount in the currency's smallest unit.
+        amount_refunded: u64,
+    },
+    /// A customer disputed a charge with their bank.
+    ChargeDisputed {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Stripe dispute ID.
+        dispute_id: String,
+        /// Disputed Stripe charge ID.
+        charge_id: String,
+        /// Stripe PaymentIntent ID, when the charge belongs to one.
+        payment_intent_id: Option<String>,
+        /// Disputed amount in the currency's smallest unit.
+        amount: u64,
     },
     /// Stripe created a subscription and Tideway synchronized it locally.
     SubscriptionCreated {
@@ -61,6 +114,21 @@ pub enum BillingEvent {
         /// Normalized subscription state.
         subscription: StripeSubscriptionData,
     },
+    /// Stripe created a subscription for an entity that already has a different live
+    /// subscription, so the customer is likely billed twice.
+    ///
+    /// Tideway keeps the existing subscription and does not save the duplicate. Cancel or refund
+    /// the duplicate in Stripe, or alert someone to resolve it.
+    DuplicateSubscription {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Application billable ID.
+        billable_id: String,
+        /// Stripe subscription ID that Tideway kept.
+        existing_subscription_id: String,
+        /// The duplicate subscription, which was not saved.
+        subscription: StripeSubscriptionData,
+    },
     /// Stripe deleted a subscription and Tideway removed its local state.
     SubscriptionDeleted {
         /// Shared Stripe event metadata.
@@ -72,6 +140,16 @@ pub enum BillingEvent {
         /// Application billable ID from Stripe metadata, when present.
         billable_id: Option<String>,
     },
+    /// Stripe will end a subscription's trial soon (`customer.subscription.trial_will_end`).
+    ///
+    /// Stripe sends this three days before `subscription.trial_end`, or immediately when a trial
+    /// shorter than three days starts.
+    TrialWillEnd {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Normalized subscription state.
+        subscription: StripeSubscriptionData,
+    },
     /// Stripe marked an invoice as paid.
     InvoicePaid {
         /// Shared Stripe event metadata.
@@ -82,6 +160,8 @@ pub enum BillingEvent {
         subscription_id: Option<String>,
         /// Related Stripe customer ID, when included in the event.
         customer_id: Option<String>,
+        /// Customer-facing invoice details.
+        invoice: InvoiceSummary,
     },
     /// Stripe reported that an invoice payment failed.
     InvoicePaymentFailed {
@@ -93,6 +173,8 @@ pub enum BillingEvent {
         subscription_id: Option<String>,
         /// Related Stripe customer ID, when included in the event.
         customer_id: Option<String>,
+        /// Customer-facing invoice details.
+        invoice: InvoiceSummary,
     },
 }
 
@@ -115,9 +197,13 @@ impl BillingEvent {
         match self {
             Self::CheckoutCompleted { .. } => "checkout_completed",
             Self::OneTimeCheckoutCompleted { .. } => "one_time_checkout_completed",
+            Self::ChargeRefunded { .. } => "charge_refunded",
+            Self::ChargeDisputed { .. } => "charge_disputed",
             Self::SubscriptionCreated { .. } => "subscription_created",
             Self::SubscriptionUpdated { .. } => "subscription_updated",
+            Self::DuplicateSubscription { .. } => "duplicate_subscription",
             Self::SubscriptionDeleted { .. } => "subscription_deleted",
+            Self::TrialWillEnd { .. } => "trial_will_end",
             Self::InvoicePaid { .. } => "invoice_paid",
             Self::InvoicePaymentFailed { .. } => "invoice_payment_failed",
         }
@@ -127,9 +213,13 @@ impl BillingEvent {
         match self {
             Self::CheckoutCompleted { context, .. }
             | Self::OneTimeCheckoutCompleted { context, .. }
+            | Self::ChargeRefunded { context, .. }
+            | Self::ChargeDisputed { context, .. }
             | Self::SubscriptionCreated { context, .. }
             | Self::SubscriptionUpdated { context, .. }
+            | Self::DuplicateSubscription { context, .. }
             | Self::SubscriptionDeleted { context, .. }
+            | Self::TrialWillEnd { context, .. }
             | Self::InvoicePaid { context, .. }
             | Self::InvoicePaymentFailed { context, .. } => context,
         }

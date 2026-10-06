@@ -43,7 +43,7 @@ impl<S: BillingStore> EntitlementsManager<S> {
                             max_api_calls_monthly: plan.limits.max_api_calls_monthly,
                             custom: plan.limits.custom.clone(),
                         },
-                        total_seats: plan.included_seats + sub.extra_seats,
+                        total_seats: plan.included_seats.saturating_add(sub.extra_seats),
                     }),
                     None => Ok(Entitlements::none()),
                 }
@@ -244,7 +244,7 @@ pub async fn require_seat<S: BillingStore>(
         None => return FeatureCheckResult::FeatureNotIncluded,
     };
 
-    let total_seats = plan.included_seats + sub.extra_seats;
+    let total_seats = plan.included_seats.saturating_add(sub.extra_seats);
     if current_member_count < total_seats {
         FeatureCheckResult::Allowed
     } else {
@@ -278,12 +278,13 @@ pub struct CachedEntitlementsManager<S: BillingStore> {
     ttl: std::time::Duration,
     max_entries: usize,
     operation_counter: std::sync::atomic::AtomicU64,
+    created_at: std::time::Instant,
 }
 
 /// Default maximum cache entries.
 const DEFAULT_MAX_CACHE_ENTRIES: usize = 10_000;
 
-/// Cleanup interval (every N operations).
+/// Cleanup interval (every N cache misses).
 const CLEANUP_INTERVAL: u64 = 100;
 
 struct EntitlementsCache {
@@ -293,7 +294,8 @@ struct EntitlementsCache {
 struct CacheEntry {
     entitlements: Entitlements,
     expires_at: std::time::Instant,
-    last_accessed: std::time::Instant,
+    // Nanoseconds since manager creation; atomic updates allow shared cache reads.
+    last_accessed: std::sync::atomic::AtomicU64,
 }
 
 impl<S: BillingStore> CachedEntitlementsManager<S> {
@@ -315,6 +317,7 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
             ttl,
             max_entries: DEFAULT_MAX_CACHE_ENTRIES,
             operation_counter: std::sync::atomic::AtomicU64::new(0),
+            created_at: std::time::Instant::now(),
         }
     }
 
@@ -339,10 +342,15 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
             ttl,
             max_entries,
             operation_counter: std::sync::atomic::AtomicU64::new(0),
+            created_at: std::time::Instant::now(),
         }
     }
 
-    /// Perform periodic maintenance (cleanup expired entries, enforce max size).
+    fn access_timestamp(&self) -> u64 {
+        self.created_at.elapsed().as_nanos().min(u64::MAX as u128) as u64
+    }
+
+    /// Perform periodic maintenance on cache misses (cleanup expired entries, enforce max size).
     fn maybe_cleanup(&self) {
         let count = self
             .operation_counter
@@ -367,7 +375,12 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
             let mut entries: Vec<_> = cache
                 .entries
                 .iter()
-                .map(|(k, v)| (k.clone(), v.last_accessed))
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        v.last_accessed.load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                })
                 .collect();
 
             // Sort by last_accessed (oldest first)
@@ -383,19 +396,22 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
 
     /// Get entitlements, using cache if available and not expired.
     pub async fn get_entitlements(&self, billable_id: &str) -> Result<Entitlements> {
-        // Periodic maintenance
-        self.maybe_cleanup();
-
         // Check cache first
         // If lock is poisoned, treat as cache miss (safe for read-only cache check)
-        if let Ok(mut cache) = self.cache.write()
-            && let Some(entry) = cache.entries.get_mut(billable_id)
+        if let Ok(cache) = self.cache.read()
+            && let Some(entry) = cache.entries.get(billable_id)
             && entry.expires_at > std::time::Instant::now()
         {
-            // Update last accessed time
-            entry.last_accessed = std::time::Instant::now();
+            // Relaxed ordering suffices for eviction metadata; the read lock protects the value.
+            entry.last_accessed.fetch_max(
+                self.access_timestamp(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             return Ok(entry.entitlements.clone());
         }
+
+        // Cache hits never perform exclusive maintenance.
+        self.maybe_cleanup();
 
         // Cache miss or expired - fetch from storage
         let entitlements = self.inner.get_entitlements(billable_id).await?;
@@ -408,7 +424,7 @@ impl<S: BillingStore> CachedEntitlementsManager<S> {
                 CacheEntry {
                     entitlements: entitlements.clone(),
                     expires_at: now + self.ttl,
-                    last_accessed: now,
+                    last_accessed: std::sync::atomic::AtomicU64::new(self.access_timestamp()),
                 },
             );
         } else {
@@ -726,6 +742,70 @@ mod tests {
         assert_eq!(cached.cache_size(), 1);
     }
 
+    #[test]
+    fn cache_hits_do_not_require_exclusive_access() {
+        let cached = std::sync::Arc::new(CachedEntitlementsManager::new(
+            EntitlementsManager::new(InMemoryBillingStore::new(), create_test_plans()),
+            std::time::Duration::from_secs(60),
+        ));
+        let _ = futures::executor::block_on(cached.get_entitlements("org")).unwrap();
+        // Keep a reader active across enough hits to cross the maintenance interval.
+        let reader = cached.cache.read().unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let worker_cache = cached.clone();
+        let worker = std::thread::spawn(move || {
+            for _ in 0..=CLEANUP_INTERVAL {
+                let _ = futures::executor::block_on(worker_cache.get_entitlements("org")).unwrap();
+            }
+            send.send(()).unwrap();
+        });
+        let result = receive.recv_timeout(std::time::Duration::from_secs(2));
+        drop(reader); // Release even on failure so the worker can finish.
+        worker.join().unwrap();
+        assert!(result.is_ok(), "cache hits blocked behind a shared reader");
+    }
+
+    #[tokio::test]
+    async fn expired_cache_entry_is_refreshed() {
+        let store = InMemoryBillingStore::new();
+        let cached = CachedEntitlementsManager::new(
+            EntitlementsManager::new(store.clone(), create_test_plans()),
+            std::time::Duration::from_secs(60),
+        );
+        assert!(!cached.get_entitlements("org").await.unwrap().is_active);
+        let sub = create_test_subscription("starter", SubscriptionStatus::Active, 0);
+        store.save_subscription("org", &sub).await.unwrap();
+        // Hits remain cached until expiry.
+        assert!(!cached.get_entitlements("org").await.unwrap().is_active);
+        cached
+            .cache
+            .write()
+            .unwrap()
+            .entries
+            .get_mut("org")
+            .unwrap()
+            .expires_at = std::time::Instant::now();
+        assert!(cached.get_entitlements("org").await.unwrap().is_active);
+    }
+
+    #[tokio::test]
+    async fn cache_eviction_retains_recently_accessed_entries() {
+        let cached = CachedEntitlementsManager::with_max_entries(
+            EntitlementsManager::new(InMemoryBillingStore::new(), create_test_plans()),
+            std::time::Duration::from_secs(60),
+            2,
+        );
+        let _ = cached.get_entitlements("first").await.unwrap();
+        let _ = cached.get_entitlements("second").await.unwrap();
+        let _ = cached.get_entitlements("third").await.unwrap();
+        let _ = cached.get_entitlements("first").await.unwrap();
+        cached.enforce_max_entries();
+        let cache = cached.cache.read().unwrap();
+        assert!(cache.entries.contains_key("first"));
+        assert!(cache.entries.contains_key("third"));
+        assert!(!cache.entries.contains_key("second"));
+    }
+
     #[tokio::test]
     async fn test_cached_entitlements_invalidate() {
         let store = InMemoryBillingStore::new();
@@ -798,7 +878,7 @@ mod tests {
                 .unwrap();
         }
 
-        // Force cleanup (happens every 100 operations, so trigger manually)
+        // Force cleanup (happens every 100 cache misses, so trigger manually)
         cached.enforce_max_entries();
 
         // Should have at most 3 entries

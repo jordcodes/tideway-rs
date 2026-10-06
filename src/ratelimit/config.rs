@@ -17,6 +17,7 @@ pub struct RateLimitConfig {
     pub window_seconds: u64,
 
     /// Rate limiting strategy: "global" or "per_ip"
+    /// Per-IP quotas are shared by IPv6 /64 prefix, or by individual IPv4 /32 address.
     #[serde(default = "default_strategy")]
     pub strategy: String,
 
@@ -89,7 +90,12 @@ impl RateLimitConfig {
 
     /// Load rate limit configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(self) -> Self {
+        let mut config = self;
 
         if let Some(enabled) = get_env_with_prefix("RATE_LIMIT_ENABLED") {
             config.enabled = enabled.parse().unwrap_or(true);

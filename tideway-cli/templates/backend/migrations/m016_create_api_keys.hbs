@@ -1,0 +1,65 @@
+//! Create organization-scoped API keys (used by tideway::auth::SeaOrmApiKeyStore).
+
+use sea_orm_migration::prelude::*;
+
+#[derive(DeriveMigrationName)]
+pub struct Migration;
+
+#[async_trait::async_trait]
+impl MigrationTrait for Migration {
+    async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .create_table(
+                Table::create()
+                    .table(ApiKeys::Table)
+                    .if_not_exists()
+                    // Public key ID embedded in the key; safe to display.
+                    .col(ColumnDef::new(ApiKeys::Id).string_len(32).not_null().primary_key())
+                    .col(ColumnDef::new(ApiKeys::OrganizationId).string().not_null())
+                    .col(ColumnDef::new(ApiKeys::Name).string().not_null())
+                    // Stores a SHA-256 digest, never the plaintext key.
+                    .col(ColumnDef::new(ApiKeys::KeyHash).string_len(64).not_null())
+                    // JSON array of scopes, e.g. ["projects:read"].
+                    .col(ColumnDef::new(ApiKeys::Scopes).text().not_null())
+                    .col(ColumnDef::new(ApiKeys::CreatedBy).string().null())
+                    .col(ColumnDef::new(ApiKeys::CreatedAt).big_integer().not_null())
+                    .col(ColumnDef::new(ApiKeys::ExpiresAt).big_integer().null())
+                    .col(ColumnDef::new(ApiKeys::LastUsedAt).big_integer().null())
+                    .col(ColumnDef::new(ApiKeys::RevokedAt).big_integer().null())
+                    .to_owned(),
+            )
+            .await?;
+
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_api_keys_organization")
+                    .table(ApiKeys::Table)
+                    .col(ApiKeys::OrganizationId)
+                    .if_not_exists()
+                    .to_owned(),
+            )
+            .await
+    }
+
+    async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
+        manager
+            .drop_table(Table::drop().table(ApiKeys::Table).to_owned())
+            .await
+    }
+}
+
+#[derive(DeriveIden)]
+enum ApiKeys {
+    Table,
+    Id,
+    OrganizationId,
+    Name,
+    KeyHash,
+    Scopes,
+    CreatedBy,
+    CreatedAt,
+    ExpiresAt,
+    LastUsedAt,
+    RevokedAt,
+}

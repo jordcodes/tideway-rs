@@ -32,6 +32,14 @@ pub struct Refund {
     pub charge_id: Option<String>,
     /// The payment intent ID this refund is for.
     pub payment_intent_id: Option<String>,
+    /// True when creating this refund replayed an earlier request with the same
+    /// idempotency key, so no new refund was issued.
+    ///
+    /// Expected for a double-submit or retry. For an intentional repeat refund it
+    /// means the key collided; retry with a distinct key. A replay that only shows
+    /// up on an internal retry after a timeout is not reported, since it may be of
+    /// that call's own first attempt. Always false for retrieved or listed refunds.
+    pub replayed: bool,
 }
 
 /// Status of a refund.
@@ -107,6 +115,16 @@ impl RefundReason {
 }
 
 /// Request to create a refund.
+///
+/// # Idempotency
+///
+/// Refunds are sent to Stripe with an idempotency key so that retrying the same
+/// request (e.g. a double-submit or a retry after a timeout) refunds only once.
+/// Unless [`with_idempotency_key`](Self::with_idempotency_key) is used, the key is
+/// derived from the charge/payment intent, amount, and reason. Two identical partial
+/// refunds within Stripe's 24-hour key window therefore collapse into one, with
+/// [`Refund::replayed`] set on the second; pass a distinct explicit key for each
+/// when issuing intentional repeat refunds.
 #[derive(Debug, Clone, Default)]
 pub struct CreateRefundRequest {
     /// The charge ID to refund.
@@ -117,6 +135,8 @@ pub struct CreateRefundRequest {
     pub amount: Option<i64>,
     /// Reason for the refund.
     pub reason: Option<RefundReason>,
+    /// Explicit idempotency key. If None, one is derived from the request.
+    pub idempotency_key: Option<String>,
 }
 
 impl CreateRefundRequest {
@@ -157,6 +177,36 @@ impl CreateRefundRequest {
     pub fn with_reason(mut self, reason: RefundReason) -> Self {
         self.reason = Some(reason);
         self
+    }
+
+    /// Set an explicit idempotency key, overriding the derived one.
+    #[must_use]
+    pub fn with_idempotency_key(mut self, key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(key.into());
+        self
+    }
+
+    /// The idempotency key to send to Stripe for this request.
+    ///
+    /// Returns the explicit key if set, otherwise a deterministic key derived from
+    /// the refund target, amount, and reason, so retries of the same request match.
+    #[must_use]
+    pub fn idempotency_key(&self) -> String {
+        if let Some(key) = &self.idempotency_key {
+            return key.clone();
+        }
+
+        let target = match (&self.charge_id, &self.payment_intent_id) {
+            (Some(charge_id), Some(pi_id)) => format!("ch_{charge_id}_pi_{pi_id}"),
+            (Some(charge_id), None) => format!("ch_{charge_id}"),
+            (None, Some(pi_id)) => format!("pi_{pi_id}"),
+            (None, None) => "none".to_string(),
+        };
+        let amount = self
+            .amount
+            .map_or_else(|| "full".to_string(), |a| a.to_string());
+        let reason = self.reason.map_or("none", |r| r.as_str());
+        format!("refund_{target}_{amount}_{reason}")
     }
 }
 
@@ -208,7 +258,33 @@ impl<C: StripeRefundClient> RefundManager<C> {
         Self { client }
     }
 
+    /// Create a refund from a full request.
+    ///
+    /// Use this with [`CreateRefundRequest::with_idempotency_key`] to issue
+    /// intentional repeat refunds that the convenience methods would collapse.
+    ///
+    /// # Security Warning
+    ///
+    /// This method does not verify ownership. Ensure the caller
+    /// is authorized before invoking this method.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = CreateRefundRequest::for_charge("ch_xxx")
+    ///     .with_amount(500)
+    ///     .with_idempotency_key("refund_ticket_42");
+    /// let refund = manager.refund(request).await?;
+    /// ```
+    pub async fn refund(&self, request: CreateRefundRequest) -> Result<Refund> {
+        self.client.create_refund(request).await
+    }
+
     /// Refund a charge.
+    ///
+    /// Uses a derived idempotency key, so an identical call within Stripe's
+    /// 24-hour window returns the original refund with [`Refund::replayed`] set.
+    /// Use [`refund`](Self::refund) with an explicit key for intentional repeat refunds.
     ///
     /// # Security Warning
     ///
@@ -234,10 +310,12 @@ impl<C: StripeRefundClient> RefundManager<C> {
         if let Some(amt) = amount {
             request = request.with_amount(amt);
         }
-        self.client.create_refund(request).await
+        self.refund(request).await
     }
 
     /// Refund a payment intent.
+    ///
+    /// Uses a derived idempotency key; see [`refund_charge`](Self::refund_charge).
     ///
     /// # Security Warning
     ///
@@ -257,12 +335,13 @@ impl<C: StripeRefundClient> RefundManager<C> {
         if let Some(amt) = amount {
             request = request.with_amount(amt);
         }
-        self.client.create_refund(request).await
+        self.refund(request).await
     }
 
     /// Refund with a specific reason.
     ///
     /// Useful for fraud-related refunds or duplicate charges.
+    /// Uses a derived idempotency key; see [`refund_charge`](Self::refund_charge).
     ///
     /// # Security Warning
     ///
@@ -277,7 +356,7 @@ impl<C: StripeRefundClient> RefundManager<C> {
         if let Some(amt) = amount {
             request = request.with_amount(amt);
         }
-        self.client.create_refund(request).await
+        self.refund(request).await
     }
 
     /// Get a refund by ID.
@@ -367,9 +446,50 @@ impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
         Ok(())
     }
 
+    /// Create a refund from a full request with ownership verification.
+    ///
+    /// Verifies that the request's charge and/or payment intent belong to the
+    /// billable entity before processing. Use this with
+    /// [`CreateRefundRequest::with_idempotency_key`] to issue intentional repeat
+    /// refunds that the convenience methods would collapse.
+    ///
+    /// # Errors
+    ///
+    /// Returns `RefundFailed` if the request has neither a charge nor a payment intent.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request = CreateRefundRequest::for_charge("ch_xxx")
+    ///     .with_amount(500)
+    ///     .with_idempotency_key("refund_ticket_42");
+    /// let refund = manager.refund("org_123", request).await?;
+    /// ```
+    pub async fn refund(&self, billable_id: &str, request: CreateRefundRequest) -> Result<Refund> {
+        if request.charge_id.is_none() && request.payment_intent_id.is_none() {
+            return Err(super::error::BillingError::RefundFailed {
+                reason: "Refund request needs a charge or payment intent".to_string(),
+            }
+            .into());
+        }
+        if let Some(charge_id) = &request.charge_id {
+            self.verify_charge_ownership(billable_id, charge_id).await?;
+        }
+        if let Some(payment_intent_id) = &request.payment_intent_id {
+            self.verify_payment_intent_ownership(billable_id, payment_intent_id)
+                .await?;
+        }
+
+        self.client.create_refund(request).await
+    }
+
     /// Refund a charge with ownership verification.
     ///
     /// Verifies that the charge belongs to the billable entity before processing.
+    ///
+    /// Uses a derived idempotency key, so an identical call within Stripe's
+    /// 24-hour window returns the original refund with [`Refund::replayed`] set.
+    /// Use [`refund`](Self::refund) with an explicit key for intentional repeat refunds.
     ///
     /// # Arguments
     ///
@@ -392,19 +512,17 @@ impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
         charge_id: &str,
         amount: Option<i64>,
     ) -> Result<Refund> {
-        // Verify the charge belongs to this customer
-        self.verify_charge_ownership(billable_id, charge_id).await?;
-
         let mut request = CreateRefundRequest::for_charge(charge_id);
         if let Some(amt) = amount {
             request = request.with_amount(amt);
         }
-        self.client.create_refund(request).await
+        self.refund(billable_id, request).await
     }
 
     /// Refund a payment intent with ownership verification.
     ///
     /// Verifies that the payment intent belongs to the billable entity before processing.
+    /// Uses a derived idempotency key; see [`refund_charge`](Self::refund_charge).
     ///
     /// # Arguments
     ///
@@ -417,18 +535,16 @@ impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
         payment_intent_id: &str,
         amount: Option<i64>,
     ) -> Result<Refund> {
-        // Verify the payment intent belongs to this customer
-        self.verify_payment_intent_ownership(billable_id, payment_intent_id)
-            .await?;
-
         let mut request = CreateRefundRequest::for_payment_intent(payment_intent_id);
         if let Some(amt) = amount {
             request = request.with_amount(amt);
         }
-        self.client.create_refund(request).await
+        self.refund(billable_id, request).await
     }
 
     /// Refund a charge with a specific reason and ownership verification.
+    ///
+    /// Uses a derived idempotency key; see [`refund_charge`](Self::refund_charge).
     ///
     /// # Arguments
     ///
@@ -443,19 +559,59 @@ impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
         amount: Option<i64>,
         reason: RefundReason,
     ) -> Result<Refund> {
-        // Verify the charge belongs to this customer
-        self.verify_charge_ownership(billable_id, charge_id).await?;
-
         let mut request = CreateRefundRequest::for_charge(charge_id).with_reason(reason);
         if let Some(amt) = amount {
             request = request.with_amount(amt);
         }
-        self.client.create_refund(request).await
+        self.refund(billable_id, request).await
     }
 
-    /// Get a refund by ID.
-    pub async fn get_refund(&self, refund_id: &str) -> Result<Refund> {
-        self.client.get_refund(refund_id).await
+    /// Get a refund by ID with ownership verification.
+    ///
+    /// Verifies that the refund's charge (or payment intent, if it has no charge)
+    /// belongs to the billable entity. A refund owned by another entity is
+    /// reported as not found so its existence is not disclosed.
+    ///
+    /// # Arguments
+    ///
+    /// * `billable_id` - The billable entity ID (used to verify ownership)
+    /// * `refund_id` - The Stripe refund ID
+    pub async fn get_refund(&self, billable_id: &str, refund_id: &str) -> Result<Refund> {
+        let sub = self
+            .store
+            .get_subscription(billable_id)
+            .await?
+            .ok_or_else(|| super::error::BillingError::NoSubscription {
+                billable_id: billable_id.to_string(),
+            })?;
+
+        let not_found = || -> crate::error::TidewayError {
+            super::error::BillingError::RefundNotFound {
+                refund_id: refund_id.to_string(),
+            }
+            .into()
+        };
+
+        let refund = self.client.get_refund(refund_id).await?;
+
+        let owner = if let Some(charge_id) = &refund.charge_id {
+            self.client.get_charge_customer_id(charge_id).await
+        } else if let Some(payment_intent_id) = &refund.payment_intent_id {
+            self.client
+                .get_payment_intent_customer_id(payment_intent_id)
+                .await
+        } else {
+            return Err(not_found());
+        };
+
+        match owner {
+            Ok(customer_id) if customer_id == sub.stripe_customer_id => Ok(refund),
+            Ok(_) => Err(not_found()),
+            Err(e) if matches!(e.public_error(), crate::error::TidewayError::NotFound(_)) => {
+                Err(not_found())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// List refunds for a charge with ownership verification.
@@ -492,6 +648,8 @@ pub mod test {
         charge_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
         payment_intent_customers: std::sync::Arc<RwLock<HashMap<String, String>>>,
         refund_counter: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        /// Idempotency key -> refund ID, mirroring Stripe's replay behaviour.
+        idempotency_keys: std::sync::Arc<RwLock<HashMap<String, String>>>,
         /// Default currency for mock refunds (e.g., "gbp", "usd").
         pub default_currency: String,
     }
@@ -504,6 +662,7 @@ pub mod test {
                 charge_customers: std::sync::Arc::new(RwLock::new(HashMap::new())),
                 payment_intent_customers: std::sync::Arc::new(RwLock::new(HashMap::new())),
                 refund_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                idempotency_keys: std::sync::Arc::new(RwLock::new(HashMap::new())),
                 default_currency: "gbp".to_string(),
             }
         }
@@ -544,6 +703,19 @@ pub mod test {
 
     impl StripeRefundClient for MockStripeRefundClient {
         async fn create_refund(&self, request: CreateRefundRequest) -> Result<Refund> {
+            // Replay the original refund for a repeated idempotency key, like Stripe.
+            let mut idempotency_keys = self.idempotency_keys.write().unwrap();
+            let idempotency_key = request.idempotency_key();
+            if let Some(existing) = idempotency_keys
+                .get(&idempotency_key)
+                .and_then(|id| self.refunds.read().unwrap().get(id).cloned())
+            {
+                return Ok(Refund {
+                    replayed: true,
+                    ..existing
+                });
+            }
+
             let id = format!(
                 "re_mock_{}",
                 self.refund_counter
@@ -564,6 +736,7 @@ pub mod test {
                 created: now,
                 charge_id: request.charge_id.clone(),
                 payment_intent_id: request.payment_intent_id,
+                replayed: false,
             };
 
             // Store the refund
@@ -579,8 +752,10 @@ pub mod test {
                     .unwrap()
                     .entry(charge_id.clone())
                     .or_default()
-                    .push(id);
+                    .push(id.clone());
             }
+
+            idempotency_keys.insert(idempotency_key, id);
 
             Ok(refund)
         }
@@ -700,6 +875,11 @@ mod tests {
         // Retrieve it
         let retrieved = manager.get_refund(&created.id).await.unwrap();
         assert_eq!(created.id, retrieved.id);
+
+        // A replay is a property of the create call, not of the stored refund.
+        let replayed = manager.refund_charge("ch_123", None).await.unwrap();
+        assert!(replayed.replayed);
+        assert!(!manager.get_refund(&created.id).await.unwrap().replayed);
     }
 
     #[tokio::test]
@@ -757,6 +937,60 @@ mod tests {
         assert_eq!(request.charge_id, Some("ch_123".to_string()));
         assert_eq!(request.amount, Some(500));
         assert_eq!(request.reason, Some(RefundReason::RequestedByCustomer));
+    }
+
+    #[test]
+    fn test_refund_idempotency_key_is_deterministic() {
+        let request = || CreateRefundRequest::for_charge("ch_123").with_amount(500);
+        assert_eq!(request().idempotency_key(), request().idempotency_key());
+        assert_eq!(request().idempotency_key(), "refund_ch_ch_123_500_none");
+
+        let key = request().idempotency_key();
+        assert_ne!(
+            CreateRefundRequest::for_charge("ch_456")
+                .with_amount(500)
+                .idempotency_key(),
+            key
+        );
+        assert_ne!(
+            CreateRefundRequest::for_payment_intent("ch_123")
+                .with_amount(500)
+                .idempotency_key(),
+            key
+        );
+        assert_ne!(request().with_amount(600).idempotency_key(), key);
+        assert_ne!(
+            CreateRefundRequest::for_charge("ch_123").idempotency_key(),
+            key
+        );
+        assert_ne!(
+            request()
+                .with_reason(RefundReason::Duplicate)
+                .idempotency_key(),
+            key
+        );
+    }
+
+    #[test]
+    fn test_refund_explicit_idempotency_key_overrides_derived() {
+        let request = CreateRefundRequest::for_charge("ch_123").with_idempotency_key("my_key");
+        assert_eq!(request.idempotency_key(), "my_key");
+    }
+
+    #[tokio::test]
+    async fn test_refund_retry_with_explicit_keys_creates_distinct_refunds() {
+        let client = MockStripeRefundClient::new();
+
+        let first = client
+            .create_refund(CreateRefundRequest::for_charge("ch_123").with_idempotency_key("a"))
+            .await
+            .unwrap();
+        let second = client
+            .create_refund(CreateRefundRequest::for_charge("ch_123").with_idempotency_key("b"))
+            .await
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(client.list_refunds("ch_123", 10).await.unwrap().len(), 2);
     }
 
     // ========================================================================
@@ -906,5 +1140,270 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(refunds.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_charge_double_submit_refunds_once() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        let first = manager
+            .refund_charge("org_123", "ch_test", Some(500))
+            .await
+            .unwrap();
+        let retry = manager
+            .refund_charge("org_123", "ch_test", Some(500))
+            .await
+            .unwrap();
+        assert_eq!(first.id, retry.id);
+        assert!(!first.replayed);
+        assert!(retry.replayed, "a replayed refund must be reported");
+
+        let refunds = manager
+            .list_refunds_for_charge("org_123", "ch_test", 10)
+            .await
+            .unwrap();
+        assert_eq!(refunds.len(), 1, "retrying a refund must not refund twice");
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_payment_intent_double_submit_refunds_once() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        client.add_payment_intent("pi_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        let first = manager
+            .refund_payment_intent("org_123", "pi_test", None)
+            .await
+            .unwrap();
+        let retry = manager
+            .refund_payment_intent("org_123", "pi_test", None)
+            .await
+            .unwrap();
+        assert_eq!(first.id, retry.id);
+        assert!(!first.replayed);
+        assert!(retry.replayed, "a replayed refund must be reported");
+    }
+
+    #[tokio::test]
+    async fn test_refund_manager_repeat_refund_with_explicit_keys() {
+        let manager = RefundManager::new(MockStripeRefundClient::new());
+        let request = |key: &str| {
+            CreateRefundRequest::for_charge("ch_123")
+                .with_amount(500)
+                .with_idempotency_key(key)
+        };
+
+        let first = manager.refund(request("ticket_1")).await.unwrap();
+        let second = manager.refund(request("ticket_2")).await.unwrap();
+        assert_ne!(first.id, second.id);
+
+        // Reusing a caller key still replays rather than refunding twice.
+        let retry = manager.refund(request("ticket_2")).await.unwrap();
+        assert_eq!(retry.id, second.id);
+        assert!(!first.replayed && !second.replayed && retry.replayed);
+
+        let refunds = manager.list_refunds_for_charge("ch_123", 10).await.unwrap();
+        assert_eq!(refunds.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_repeat_refund_with_explicit_keys() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+        let request = |key: &str| {
+            CreateRefundRequest::for_charge("ch_test")
+                .with_amount(500)
+                .with_idempotency_key(key)
+        };
+
+        let first = manager
+            .refund("org_123", request("ticket_1"))
+            .await
+            .unwrap();
+        let second = manager
+            .refund("org_123", request("ticket_2"))
+            .await
+            .unwrap();
+        assert_ne!(first.id, second.id);
+
+        let refunds = manager
+            .list_refunds_for_charge("org_123", "ch_test", 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            refunds.len(),
+            2,
+            "intentional repeat refunds must both apply"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_request_verifies_ownership() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        client.add_charge("ch_other", "cus_other");
+        client.add_payment_intent("pi_other", "cus_other");
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+
+        let charge = CreateRefundRequest::for_charge("ch_other").with_idempotency_key("k1");
+        assert!(manager.refund("org_123", charge).await.is_err());
+
+        let pi = CreateRefundRequest::for_payment_intent("pi_other").with_idempotency_key("k2");
+        assert!(manager.refund("org_123", pi).await.is_err());
+
+        // An owned charge must not let a foreign payment intent through.
+        let mixed = CreateRefundRequest {
+            payment_intent_id: Some("pi_other".to_string()),
+            ..CreateRefundRequest::for_charge("ch_test")
+        };
+        assert!(manager.refund("org_123", mixed).await.is_err());
+
+        let empty = CreateRefundRequest::default().with_idempotency_key("k3");
+        assert!(manager.refund("org_123", empty).await.is_err());
+
+        assert!(
+            manager
+                .list_refunds_for_charge("org_123", "ch_test", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    fn create_other_subscription() -> StoredSubscription {
+        StoredSubscription {
+            stripe_subscription_id: "sub_other".to_string(),
+            stripe_customer_id: "cus_other".to_string(),
+            ..create_test_subscription()
+        }
+    }
+
+    fn assert_refund_not_found(result: Result<Refund>) {
+        match result {
+            Err(crate::error::TidewayError::NotFound(msg)) => {
+                assert!(
+                    msg.contains("Refund not found"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected refund NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_scoped_to_owner() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        store
+            .save_subscription("org_other", &create_other_subscription())
+            .await
+            .unwrap();
+        client.add_charge("ch_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+        let created = manager
+            .refund_charge("org_123", "ch_test", None)
+            .await
+            .unwrap();
+
+        let retrieved = manager.get_refund("org_123", &created.id).await.unwrap();
+        assert_eq!(retrieved.id, created.id);
+
+        assert_refund_not_found(manager.get_refund("org_other", &created.id).await);
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_for_payment_intent_scoped_to_owner() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        store
+            .save_subscription("org_other", &create_other_subscription())
+            .await
+            .unwrap();
+        client.add_payment_intent("pi_test", "cus_123");
+
+        let manager = SecureRefundManager::new(store, client);
+        let created = manager
+            .refund_payment_intent("org_123", "pi_test", None)
+            .await
+            .unwrap();
+        assert!(created.charge_id.is_none());
+
+        let retrieved = manager.get_refund("org_123", &created.id).await.unwrap();
+        assert_eq!(retrieved.id, created.id);
+
+        assert_refund_not_found(manager.get_refund("org_other", &created.id).await);
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_unknown_id() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+
+        let manager = SecureRefundManager::new(store, client);
+
+        assert_refund_not_found(manager.get_refund("org_123", "re_missing").await);
+    }
+
+    #[tokio::test]
+    async fn test_secure_get_refund_no_subscription() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeRefundClient::new();
+        client.add_charge("ch_test", "cus_123");
+
+        let created = client
+            .create_refund(CreateRefundRequest::for_charge("ch_test"))
+            .await
+            .unwrap();
+        let manager = SecureRefundManager::new(store, client);
+
+        let result = manager.get_refund("nonexistent", &created.id).await;
+        assert!(result.is_err());
     }
 }

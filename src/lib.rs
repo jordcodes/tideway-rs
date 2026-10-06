@@ -11,6 +11,7 @@
 //! - **Health Checks**: Built-in health check system
 //! - **OpenAPI**: Automatic API documentation with utoipa
 //! - **Webhooks**: Webhook handling with verification and idempotency
+//! - **Storage**: Optional local/S3/R2 file storage with presigned uploads
 //! - **Credits**: Optional atomic allowances and prepaid product-credit ledger
 //! - **Testing**: Alba-style HTTP testing utilities
 //!
@@ -87,6 +88,8 @@ pub mod admin {
 pub mod admin {}
 #[cfg(feature = "cache")]
 pub mod cache;
+#[cfg(any(feature = "cache-redis", feature = "jobs-redis"))]
+mod redis_connection;
 #[cfg(all(not(feature = "cache"), feature = "feature-gate-errors"))]
 pub mod cache {
     compile_error!("Enable the `cache` feature to use tideway::cache");
@@ -120,6 +123,7 @@ pub mod metrics {
 #[deprecated(note = "Enable the `metrics` feature to use tideway::metrics")]
 pub mod metrics {}
 mod middleware;
+pub mod observability;
 #[cfg(feature = "openapi")]
 pub mod openapi;
 #[cfg(all(not(feature = "openapi"), feature = "feature-gate-errors"))]
@@ -129,6 +133,7 @@ pub mod openapi {
 #[cfg(all(not(feature = "openapi"), feature = "feature-gate-warnings"))]
 #[deprecated(note = "Enable the `openapi` feature to use tideway::openapi")]
 pub mod openapi {}
+pub mod policy;
 pub mod prelude;
 pub mod ratelimit;
 pub mod request_logging;
@@ -160,6 +165,15 @@ pub mod email {
 #[cfg(all(not(feature = "email"), feature = "feature-gate-warnings"))]
 #[deprecated(note = "Enable the `email` feature to use tideway::email")]
 pub mod email {}
+#[cfg(feature = "storage")]
+pub mod storage;
+#[cfg(all(not(feature = "storage"), feature = "feature-gate-errors"))]
+pub mod storage {
+    compile_error!("Enable the `storage` feature to use tideway::storage");
+}
+#[cfg(all(not(feature = "storage"), feature = "feature-gate-warnings"))]
+#[deprecated(note = "Enable the `storage` feature to use tideway::storage")]
+pub mod storage {}
 pub mod testing;
 pub mod timeout;
 #[cfg(any(
@@ -167,7 +181,8 @@ pub mod timeout;
     feature = "cache",
     feature = "sessions",
     feature = "jobs",
-    feature = "email"
+    feature = "email",
+    feature = "storage"
 ))]
 pub mod traits;
 pub use testing::{TestFactory, TestUser, fake};
@@ -210,6 +225,7 @@ pub use http::{
 };
 #[cfg(feature = "metrics")]
 pub use metrics::{MetricsCollector, MetricsConfig, MetricsConfigBuilder};
+pub use observability::{ErrorEvent, ErrorReporter, shutdown_tracing};
 pub use ratelimit::{ClientIpResolver, TrustedProxyParseError};
 pub use ratelimit::{RateLimitConfig, RateLimitConfigBuilder};
 pub use request_logging::{RequestLoggingConfig, RequestLoggingConfigBuilder};
@@ -275,6 +291,17 @@ macro_rules! register_optional_modules {
     }};
 }
 
+// Internal helper for `module!`: builds a `MethodRouter` from `method => handler` pairs.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __tideway_method_router {
+    ($method:ident => $handler:expr $(, $more_method:ident => $more_handler:expr)* $(,)?) => {{
+        let router = axum::routing::$method($handler);
+        $(let router = router.$more_method($more_handler);)*
+        router
+    }};
+}
+
 /// Define a `RouteModule` with a compact route list.
 ///
 /// # Example
@@ -299,16 +326,6 @@ macro_rules! register_optional_modules {
 ///     ]
 /// );
 /// ```
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __tideway_method_router {
-    ($method:ident => $handler:expr $(, $more_method:ident => $more_handler:expr)* $(,)?) => {{
-        let router = axum::routing::$method($handler);
-        $(let router = router.$more_method($more_handler);)*
-        router
-    }};
-}
-
 #[macro_export]
 macro_rules! module {
     ($(#[$attr:meta])*, $name:ident, prefix = $prefix:expr, routes = [ $(($path:expr, $( $method:ident => $handler:expr ),+ $(,)?)),+ $(,)? ]) => {
@@ -440,10 +457,13 @@ macro_rules! module {
 pub use database::SeaOrmPool;
 #[cfg(feature = "email")]
 pub use email::{ConsoleMailer, ResendConfig, ResendMailer, SmtpConfig, SmtpMailer};
-#[cfg(all(feature = "jobs", feature = "jobs-redis"))]
-pub use jobs::RedisJobQueue;
 #[cfg(feature = "jobs")]
-pub use jobs::{InMemoryJobQueue, JobBackend, JobRegistry, JobWorker, WorkerPool};
+pub use jobs::{
+    InMemoryJobQueue, InMemorySchedulerLock, JobBackend, JobRegistry, JobScheduler, JobWorker,
+    SchedulerHandle, SchedulerLock, WorkerPool,
+};
+#[cfg(all(feature = "jobs", feature = "jobs-redis"))]
+pub use jobs::{RedisJobQueue, RedisSchedulerLock};
 #[cfg(feature = "database")]
 pub use traits::database::{DatabaseConnection, DatabasePool};
 #[cfg(feature = "jobs")]
@@ -452,6 +472,8 @@ pub use traits::job::{Job, JobData, JobQueue};
 pub use traits::mailer::{Email, Mailer};
 #[cfg(feature = "sessions")]
 pub use traits::session::{SessionData, SessionStore};
+#[cfg(feature = "storage")]
+pub use traits::storage::{FileStorage, PresignOptions, PresignedRequest, StoredObject};
 #[cfg(feature = "validation")]
 pub use validation::{
     ValidatedForm, ValidatedJson, ValidatedQuery, validate_form, validate_json, validator,
@@ -465,13 +487,16 @@ pub use websocket::{
 #[cfg(feature = "macros")]
 pub use tideway_macros::api;
 
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize tracing/logging with sensible defaults
 ///
 /// This should be called early in your application, typically in main()
 /// before creating the App. Safe to call multiple times - subsequent calls
 /// are ignored if tracing is already initialized.
+///
+/// With the `otel` feature, spans are also exported over OTLP when
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` is set (see [`observability`]).
 ///
 /// # Environment Variables
 ///
@@ -490,53 +515,45 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 /// }
 /// ```
 pub fn init_tracing() {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let directives = std::env::var(EnvFilter::DEFAULT_ENV)
+        .ok()
+        .filter(|directives| EnvFilter::try_new(directives).is_ok())
+        .unwrap_or_else(|| "info".to_string());
 
     let json_logs = std::env::var("TIDEWAY_LOG_JSON")
         .map(|v| v.parse::<bool>().unwrap_or(false))
         .unwrap_or(false);
 
-    let result = if json_logs {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer().json())
-            .try_init()
-    } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer())
-            .try_init()
-    };
-
-    // Silently ignore if already initialized (e.g., in tests or called twice)
-    if let Err(e) = result {
-        // Only log if it's not the "already initialized" error
-        if !e.to_string().contains("already") {
-            eprintln!("Warning: Failed to initialize tracing: {}", e);
-        }
-    }
+    install_subscriber(&directives, json_logs);
 }
 
 /// Initialize tracing with a custom configuration
 ///
 /// Safe to call multiple times - subsequent calls are ignored if tracing
-/// is already initialized.
+/// is already initialized. With the `otel` feature, spans are also exported
+/// over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 pub fn init_tracing_with_config(config: &Config) {
-    let env_filter = EnvFilter::new(&config.logging.level);
+    install_subscriber(&config.logging.level, config.logging.json);
+}
 
-    let result = if config.logging.json {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer().json())
-            .try_init()
+fn install_subscriber(directives: &str, json: bool) {
+    type Registry = tracing_subscriber::Registry;
+
+    // Filters are per layer so the OpenTelemetry exporter can enable request
+    // spans without changing what is printed.
+    let fmt_layer: Box<dyn Layer<Registry> + Send + Sync> = if json {
+        tracing_subscriber::fmt::layer().json().boxed()
     } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer())
-            .try_init()
+        tracing_subscriber::fmt::layer().boxed()
     };
+    let subscriber =
+        tracing_subscriber::registry().with(fmt_layer.with_filter(EnvFilter::new(directives)));
+    #[cfg(feature = "otel")]
+    let subscriber = subscriber.with(observability::otel::build_layer(directives));
 
-    // Silently ignore if already initialized
+    let result = subscriber.try_init();
+
+    // Silently ignore if already initialized (e.g., in tests or called twice)
     if let Err(e) = result
         && !e.to_string().contains("already")
     {

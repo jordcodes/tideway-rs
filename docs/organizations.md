@@ -47,6 +47,10 @@ tideway resource organization --profile tenant
 tideway resource project --profile owned
 ```
 
+In an app with organizations, generated `api` (default), `tenant`, and `owned` resources all
+require authentication and are scoped to the caller's organization membership. `owned` resources
+are additionally restricted to the user who created them.
+
 For frontend-only Vue organization helpers:
 
 ```bash
@@ -151,7 +155,9 @@ For a custom persistent `InvitationStore`:
 - compare the authenticated account's normalized email with the invitation email;
 - scope list/revoke operations by organization and return not-found for cross-organization IDs;
 - rotate tokens on resend, rate limit delivery, and recheck seats when reactivating an expired invite;
-- never grant the owner role through a normal invitation;
+- never grant the owner role through a normal invitation; override `invitation_grants_owner` so
+  `InvitationManager::invite` rejects owner invitations at creation (acceptance rejects them
+  regardless and revokes the invitation);
 - avoid returning or logging token digests in API responses.
 
 If an application currently stores raw pending tokens, plan that migration explicitly. Either
@@ -162,8 +168,13 @@ against a production-like copy before rollout. The migration can keep a legacy c
 
 ## Core Types
 
-- `OrganizationManager`: organization CRUD + owner bootstrap flow
-- `MembershipManager`: membership operations and permission checks
+- `OrganizationManager`: organization CRUD, owner bootstrap flow, and `transfer_ownership`, which
+  swaps the owner and admin memberships and updates the organization's owner so
+  `max_orgs_per_user` counts the new owner (a new owner already at that limit gets
+  `MaxOrgsReached`); with the SeaORM store, `transfer_ownership_atomic` does this in one
+  transaction
+- `MembershipManager`: membership operations and permission checks; owners can only be created
+  through `OrganizationManager::transfer_ownership`, never `add_member` or `update_membership`
 - `InvitationManager`: invitation issuance and acceptance
 - `InvitationRateLimiter`: zero-configuration, process-local invitation rate limiter
 - `InvitationRateLimitProvider`: asynchronous extension point for shared rate-limit backends
@@ -187,6 +198,49 @@ For JWT org-context extraction and permission guards, use:
 - `organizations::auth::OrgStoreLayer`
 - `organizations::auth::RequireOrgMembership`
 - `organizations::auth::RequirePermission`
+
+## Resource Authorization Policies
+
+Organization roles (`OrgRolePermissions`) cover org-level actions such as managing members or
+deleting the organization. For app data, use `tideway::policy` to decide whether an actor may act
+on a specific record — for example, whether a member may edit a given project. The module is not
+feature-gated.
+
+- `Policy<Actor, Resource>`: `view_any`, `view`, `create`, `update`, and `delete` abilities, all
+  denied unless implemented, plus a `before` hook for overrides such as super-admins.
+  `authorize(actor, action, resource)` returns `TidewayError::Forbidden` when denied.
+- `RolePermissions`: permission strings attached to role names. A granted `"*"` matches every
+  permission and `"projects.*"` matches `"projects.update"`, `"projects.update.own"`, and so on.
+- `OrgActor`: the caller's user ID, organization ID, and role, with `can`, `is`, and `belongs_to`
+  helpers.
+
+```rust
+use tideway::policy::{Action, OrgActor, Policy, RolePermissions};
+
+struct ProjectPolicy {
+    permissions: RolePermissions,
+}
+
+impl Policy<OrgActor, project::Model> for ProjectPolicy {
+    fn update(&self, actor: &OrgActor, project: &project::Model) -> bool {
+        actor.belongs_to(&project.organization_id)
+            && (actor.can(&self.permissions, "projects.update")
+                || (actor.is(&project.owner_id)
+                    && actor.can(&self.permissions, "projects.update.own")))
+    }
+}
+
+let policy = ProjectPolicy {
+    permissions: RolePermissions::new()
+        .grant("owner", ["*"])
+        .grant("admin", ["projects.*"])
+        .grant("member", ["projects.view", "projects.update.own"]),
+};
+policy.authorize(&actor, Action::Update, Some(&project))?;
+```
+
+On SaaS scaffolds, `tideway resource <name>` with the `api`, `tenant`, or `owned` profile generates
+`src/policies/<name>.rs` and routes every handler through it (see `docs/cli.md`).
 
 ## Billing Integration
 

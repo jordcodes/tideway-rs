@@ -15,7 +15,9 @@ pub enum SessionBackend {
 }
 
 /// Session configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// The `Debug` output redacts `encryption_key`.
+#[derive(Clone, Deserialize, Serialize)]
 pub struct SessionConfig {
     /// Session backend type
     #[serde(default)]
@@ -63,6 +65,25 @@ pub struct SessionConfig {
     /// Default: `false`
     #[serde(default)]
     pub allow_insecure_key: bool,
+}
+
+impl std::fmt::Debug for SessionConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SessionConfig")
+            .field("backend", &self.backend)
+            .field("default_ttl_seconds", &self.default_ttl_seconds)
+            .field("cookie_name", &self.cookie_name)
+            .field("cookie_domain", &self.cookie_domain)
+            .field("cookie_path", &self.cookie_path)
+            .field("cookie_secure", &self.cookie_secure)
+            .field("cookie_http_only", &self.cookie_http_only)
+            .field(
+                "encryption_key",
+                &self.encryption_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("allow_insecure_key", &self.allow_insecure_key)
+            .finish()
+    }
 }
 
 impl Default for SessionConfig {
@@ -198,4 +219,28 @@ fn default_secure() -> bool {
 
 fn default_http_only() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debug_redacts_encryption_key() {
+        let config = SessionConfig {
+            encryption_key: Some("deadbeef-session-key".to_string()),
+            ..SessionConfig::default()
+        };
+        let debug = format!("{config:?}");
+
+        assert!(!debug.contains("deadbeef-session-key"), "{debug}");
+        assert!(debug.contains("[REDACTED]"));
+        assert!(debug.contains("tideway_session"));
+    }
+
+    #[test]
+    fn debug_shows_missing_encryption_key() {
+        let debug = format!("{:?}", SessionConfig::default());
+        assert!(debug.contains("encryption_key: None"), "{debug}");
+    }
 }

@@ -18,23 +18,24 @@ use sea_orm::DatabaseConnection;
 use serde::{Deserialize, Serialize};
 use std::{net::SocketAddr, sync::Arc};
 use tideway::auth::{
-    AuthRateLimitConfig, AuthRateLimiter, AuthUser, JwtIssuer, LoginFlow, LoginFlowConfig,
-    LoginRateLimitConfig, LoginRateLimiter, LoginHttpResponse, LoginRequest, PasswordPolicy,
-    PasswordResetComplete, PasswordResetFlow, PasswordResetRequest, RegisterRequest,
-    RegistrationFlow, TokenRefreshFlow,
+    AuthRateLimitConfig, AuthRateLimiter, AuthUser, EmailVerificationFlow, EmailVerifyRequest,
+    JwtIssuer, LoginFlow, LoginFlowConfig, LoginRateLimitConfig, LoginRateLimiter,
+    LoginHttpResponse, LoginRequest, PasswordPolicy, PasswordResetComplete, PasswordResetFlow,
+    PasswordResetRequest, RegisterRequest, RegistrationFlow, TokenRefreshFlow,
 };
 {{#if has_auth_mfa_feature}}
 use tideway::auth::{
     BackupCodeGenerator, MfaSecretCipher, MfaVerifyRequest, PasswordHasher, TotpConfig, TotpManager,
-    UserStore,
 };
 {{/if}}
+use tideway::auth::UserStore;
 use tideway::{AppContext, ClientIpResolver, MessageResponse, Result, RouteModule};
 
 use crate::auth::{
     AppTokenIssuer, DbMfaTokenStore, DbRefreshTokenStore, DbUserStore, SimpleAuthProvider,
     SimpleUser,
 };
+use crate::email::AppEmails;
 
 #[derive(Clone)]
 pub struct AuthState {
@@ -46,7 +47,7 @@ pub struct AuthState {
     app_name: Arc<str>,
     allow_public_registration: bool,
     require_email_verification: bool,
-    email_delivery_enabled: bool,
+    emails: Option<AppEmails>,
     client_ip_resolver: Arc<ClientIpResolver>,
     login_rate_limiter: LoginRateLimiter,
     registration_rate_limiter: AuthRateLimiter,
@@ -95,7 +96,7 @@ impl AuthModule {
                 app_name: app_name.into().into(),
                 allow_public_registration: false,
                 require_email_verification,
-                email_delivery_enabled: false,
+                emails: None,
                 client_ip_resolver: Arc::new(
                     ClientIpResolver::from_env("TRUSTED_PROXY_IPS")
                         .expect("TRUSTED_PROXY_IPS must contain only non-catch-all IP addresses or CIDR networks"),
@@ -143,11 +144,17 @@ impl AuthModule {
         self
     }
 
-    /// Mount email-dependent auth routes after implementing the delivery hooks
-    /// in `DbUserStore`.
-    #[allow(dead_code)] // Generated extension point; used only when email delivery is configured.
-    pub fn with_email_delivery(mut self) -> Self {
-        self.state.email_delivery_enabled = true;
+    /// Send verification and password-reset emails through `emails` and mount the
+    /// email-dependent auth routes.
+    pub fn with_email_delivery(mut self, emails: AppEmails) -> Self {
+        self.state.emails = Some(emails);
+        self
+    }
+
+    /// Require a verified email before login. Defaults to `REQUIRE_EMAIL_VERIFICATION`.
+    #[allow(dead_code)] // Generated production-policy extension point.
+    pub fn with_email_verification_required(mut self, required: bool) -> Self {
+        self.state.require_email_verification = required;
         self
     }
 
@@ -164,8 +171,8 @@ impl AuthModule {
 impl RouteModule for AuthModule {
     fn routes(&self) -> Router<AppContext> {
         assert!(
-            !self.state.require_email_verification || self.state.email_delivery_enabled,
-            "REQUIRE_EMAIL_VERIFICATION=true requires AuthModule::with_email_delivery() and implemented delivery hooks",
+            !self.state.require_email_verification || self.state.emails.is_some(),
+            "REQUIRE_EMAIL_VERIFICATION=true requires email delivery; set EMAIL_PROVIDER, EMAIL_FROM, and APP_URL",
         );
         {{#if has_auth_mfa_feature}}
         assert!(
@@ -193,13 +200,15 @@ impl RouteModule for AuthModule {
             .route("/mfa", delete(disable_mfa));
         {{/if}}
 
-        let router = if self.state.email_delivery_enabled {
+        let router = if self.state.emails.is_some() {
             router
                 .route("/password/reset", post(request_password_reset))
                 .route(
                     "/password/reset/complete",
                     post(complete_password_reset),
                 )
+                .route("/email/verify", post(verify_email))
+                .route("/email/verification/resend", post(resend_verification))
         } else {
             router
         };
@@ -308,6 +317,17 @@ pub struct PasswordResetBody {
 }
 
 #[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
+pub struct VerifyEmailBody {
+    {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
+pub struct ResendVerificationBody {
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize{{#if has_openapi_feature}}, utoipa::ToSchema{{/if}})]
 pub struct PasswordResetCompleteBody {
     {{#if has_openapi_feature}}#[schema(write_only)]{{/if}}
     pub token: String,
@@ -323,6 +343,7 @@ fn user_store(state: &AuthState) -> DbUserStore {
         state.mfa_cipher.clone().expect("MFA cipher validated when routes were built"),
         {{/if}}
     )
+    .with_emails(state.emails.clone())
 }
 
 enum AuthRouteError {
@@ -744,9 +765,9 @@ async fn request_password_reset(
         });
     }
     let flow = PasswordResetFlow::new(user_store(&state)).with_policy(state.password_policy.clone());
-    // Keep account lookup and delivery off the response path so known and unknown accounts have
-    // the same externally observable lifecycle. Replace this task with a durable queue when the
-    // deployment requires delivery to survive process termination.
+    // Keep account lookup and token creation off the response path so known and unknown accounts
+    // have the same externally observable lifecycle. The email itself is delivered by a
+    // background job worker.
     tokio::spawn(async move {
         if let Err(error) = flow
             .request_reset(PasswordResetRequest { email: body.email })
@@ -757,6 +778,60 @@ async fn request_password_reset(
     });
     Ok(MessageResponse::success(
         "If that account exists, password reset instructions have been sent.",
+    ))
+}
+
+async fn verify_email(
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<VerifyEmailBody>,
+) -> Result<MessageResponse> {
+    EmailVerificationFlow::new(user_store(&state))
+        .verify(EmailVerifyRequest { token: body.token })
+        .await?;
+    Ok(MessageResponse::success("Email verified"))
+}
+
+async fn resend_verification(
+    ConnectInfo(address): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Extension(state): Extension<AuthState>,
+    Json(body): Json<ResendVerificationBody>,
+) -> AuthRouteResult<MessageResponse> {
+    enforce_auth_rate_limit(
+        &state,
+        &state.email_rate_limiter,
+        "verification resend",
+        address,
+        &headers,
+    )?;
+    let email = body.email.trim().to_ascii_lowercase();
+    if let Err(retry_after) = state.email_rate_limiter.check(&format!("email:{email}")) {
+        return Err(AuthRouteError::RateLimited {
+            message: "Too many verification requests; try again later".to_string(),
+            retry_after,
+        });
+    }
+    let store = user_store(&state);
+    // Respond identically for unknown and already-verified accounts so this endpoint does not
+    // reveal registration state.
+    tokio::spawn(async move {
+        let user = match UserStore::find_by_email(&store, &email).await {
+            Ok(Some(user)) if user.email_verified_at.is_none() => user,
+            Ok(_) => return,
+            Err(error) => {
+                tracing::error!(%error, "Verification resend lookup failed");
+                return;
+            }
+        };
+        if let Err(error) = EmailVerificationFlow::new(store)
+            .resend_for_user(&user.id.to_string())
+            .await
+        {
+            tracing::error!(user_id = %user.id, %error, "Verification resend failed");
+        }
+    });
+    Ok(MessageResponse::success(
+        "If an unverified account with that email exists, a verification link has been sent.",
     ))
 }
 

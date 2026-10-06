@@ -13,6 +13,7 @@ use url::Url;
 ///
 /// Creates Stripe Checkout sessions for subscription purchases.
 pub struct CheckoutManager<S: BillingStore, C: StripeClient + StripeCheckoutClient> {
+    store: S,
     customer_manager: CustomerManager<S, C>,
     client: C,
     plans: Plans,
@@ -26,7 +27,8 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone>
     #[must_use]
     pub fn new(store: S, client: C, plans: Plans, config: CheckoutConfig) -> Self {
         Self {
-            customer_manager: CustomerManager::new(store, client.clone()),
+            customer_manager: CustomerManager::new(store.clone(), client.clone()),
+            store,
             client,
             plans,
             config,
@@ -36,6 +38,9 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone>
     /// Create a checkout session for a new subscription.
     ///
     /// Returns a checkout session with a URL to redirect the customer to.
+    ///
+    /// Returns `TidewayError::Conflict` if the entity already has a subscription that has not
+    /// ended; change its plan or use the billing portal instead.
     pub async fn create_checkout_session(
         &self,
         entity: &impl BillableEntity,
@@ -63,8 +68,24 @@ impl<S: BillingStore + Clone, C: StripeClient + StripeCheckoutClient + Clone>
             crate::error::TidewayError::BadRequest(format!("Unknown plan: {}", request.plan_id))
         })?;
 
+        // A second checkout would create a second, separately billed subscription
+        if let Some(existing) = self.store.get_subscription(entity.billable_id()).await?
+            && !existing.status.is_ended()
+        {
+            return Err(crate::error::TidewayError::Conflict(format!(
+                "Already has a {} subscription. Change the plan or use the billing portal \
+                 instead of starting a new checkout.",
+                existing.status
+            )));
+        }
+
         // Get or create customer
         let customer_id = self.customer_manager.get_or_create_customer(entity).await?;
+
+        // Leave at most one payable subscription checkout per customer
+        self.client
+            .expire_open_subscription_checkouts(&customer_id)
+            .await?;
 
         // Build line items
         let mut line_items = vec![CheckoutLineItem {
@@ -519,18 +540,36 @@ pub trait StripeCheckoutClient: Send + Sync {
         &self,
         request: CreateCheckoutSessionRequest,
     ) -> Result<CheckoutSession>;
+
+    /// Expire the customer's open subscription-mode checkout sessions.
+    ///
+    /// Called before creating a new subscription checkout so each customer has at most one
+    /// payable session; otherwise paying in two tabs creates two subscriptions. The default
+    /// does nothing, for clients that cannot list sessions.
+    async fn expire_open_subscription_checkouts(&self, customer_id: &str) -> Result<()> {
+        let _ = customer_id;
+        Ok(())
+    }
 }
 
 /// Mock Stripe checkout client for testing.
 #[cfg(any(test, feature = "test-billing"))]
 pub mod test {
     use super::*;
+    use std::sync::RwLock;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Mock checkout client.
     #[derive(Default)]
     pub struct MockStripeCheckoutClient {
         session_counter: AtomicU64,
+        open_sessions: RwLock<Vec<MockOpenSession>>,
+    }
+
+    struct MockOpenSession {
+        id: String,
+        customer_id: String,
+        mode: CheckoutMode,
     }
 
     impl MockStripeCheckoutClient {
@@ -539,21 +578,44 @@ pub mod test {
         pub fn new() -> Self {
             Self::default()
         }
+
+        /// IDs of sessions for a customer that have not been expired (for test assertions).
+        pub fn open_session_ids(&self, customer_id: &str) -> Vec<String> {
+            self.open_sessions
+                .read()
+                .unwrap()
+                .iter()
+                .filter(|session| session.customer_id == customer_id)
+                .map(|session| session.id.clone())
+                .collect()
+        }
     }
 
     impl StripeCheckoutClient for MockStripeCheckoutClient {
         async fn create_checkout_session(
             &self,
-            _request: CreateCheckoutSessionRequest,
+            request: CreateCheckoutSessionRequest,
         ) -> Result<CheckoutSession> {
             let id = format!(
                 "cs_test_{}",
                 self.session_counter.fetch_add(1, Ordering::SeqCst)
             );
+            self.open_sessions.write().unwrap().push(MockOpenSession {
+                id: id.clone(),
+                customer_id: request.customer_id,
+                mode: request.mode,
+            });
             Ok(CheckoutSession {
                 id: id.clone(),
                 url: format!("https://checkout.stripe.com/c/pay/{}", id),
             })
+        }
+
+        async fn expire_open_subscription_checkouts(&self, customer_id: &str) -> Result<()> {
+            self.open_sessions.write().unwrap().retain(|session| {
+                session.customer_id != customer_id || session.mode != CheckoutMode::Subscription
+            });
+            Ok(())
         }
     }
 
@@ -604,6 +666,12 @@ pub mod test {
         ) -> Result<CheckoutSession> {
             self.checkout.create_checkout_session(request).await
         }
+
+        async fn expire_open_subscription_checkouts(&self, customer_id: &str) -> Result<()> {
+            self.checkout
+                .expire_open_subscription_checkouts(customer_id)
+                .await
+        }
     }
 
     impl Clone for MockFullStripeClient {
@@ -619,8 +687,10 @@ pub mod test {
 mod tests {
     use super::test::MockFullStripeClient;
     use super::*;
-    use crate::billing::storage::BillableEntity;
     use crate::billing::storage::test::InMemoryBillingStore;
+    use crate::billing::storage::{
+        BillableEntity, BillingStore, StoredSubscription, SubscriptionStatus,
+    };
 
     struct TestEntity {
         id: String,
@@ -767,6 +837,152 @@ mod tests {
 
         let result = manager.create_checkout_session(&entity, request).await;
         assert!(result.is_err());
+    }
+
+    fn stored_subscription(status: SubscriptionStatus) -> StoredSubscription {
+        StoredSubscription {
+            stripe_subscription_id: "sub_existing".to_string(),
+            stripe_customer_id: "cus_existing".to_string(),
+            plan_id: "starter".to_string(),
+            status,
+            current_period_start: 0,
+            current_period_end: 0,
+            extra_seats: 0,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: None,
+            seat_item_id: None,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_checkout_rejects_entity_with_live_subscription() {
+        for status in [
+            SubscriptionStatus::Active,
+            SubscriptionStatus::Trialing,
+            SubscriptionStatus::PastDue,
+            SubscriptionStatus::Incomplete,
+            SubscriptionStatus::Paused,
+            SubscriptionStatus::Unpaid,
+        ] {
+            let store = InMemoryBillingStore::new();
+            store
+                .save_subscription("org_subscribed", &stored_subscription(status))
+                .await
+                .unwrap();
+            let manager = CheckoutManager::new(
+                store.clone(),
+                MockFullStripeClient::new(),
+                create_test_plans(),
+                CheckoutConfig::default(),
+            );
+
+            let entity = TestEntity {
+                id: "org_subscribed".to_string(),
+                email: "test@example.com".to_string(),
+            };
+            let request = CheckoutRequest::new(
+                "pro",
+                "https://example.com/success",
+                "https://example.com/cancel",
+            );
+
+            let result = manager.create_checkout_session(&entity, request).await;
+            assert!(
+                matches!(result, Err(crate::error::TidewayError::Conflict(_))),
+                "status {status:?} should block a second checkout, got {result:?}"
+            );
+            assert_eq!(
+                store
+                    .get_stripe_customer_id("org_subscribed")
+                    .await
+                    .unwrap(),
+                None,
+                "no Stripe customer should be created for a rejected checkout"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_checkout_expires_previous_open_session() {
+        let store = InMemoryBillingStore::new();
+        let manager = CheckoutManager::new(
+            store.clone(),
+            MockFullStripeClient::new(),
+            create_test_plans(),
+            CheckoutConfig::default(),
+        );
+
+        let entity = TestEntity {
+            id: "org_two_tabs".to_string(),
+            email: "test@example.com".to_string(),
+        };
+        let request = || {
+            CheckoutRequest::new(
+                "pro",
+                "https://example.com/success",
+                "https://example.com/cancel",
+            )
+        };
+
+        let first = manager
+            .create_checkout_session(&entity, request())
+            .await
+            .unwrap();
+        let second = manager
+            .create_checkout_session(&entity, request())
+            .await
+            .unwrap();
+        assert_ne!(first.id, second.id);
+
+        let customer_id = store
+            .get_stripe_customer_id("org_two_tabs")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            manager.client.checkout.open_session_ids(&customer_id),
+            vec![second.id]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_checkout_allows_entity_with_ended_subscription() {
+        for status in [
+            SubscriptionStatus::Canceled,
+            SubscriptionStatus::IncompleteExpired,
+        ] {
+            let store = InMemoryBillingStore::new();
+            store
+                .save_subscription("org_resubscribe", &stored_subscription(status))
+                .await
+                .unwrap();
+            let manager = CheckoutManager::new(
+                store,
+                MockFullStripeClient::new(),
+                create_test_plans(),
+                CheckoutConfig::default(),
+            );
+
+            let entity = TestEntity {
+                id: "org_resubscribe".to_string(),
+                email: "test@example.com".to_string(),
+            };
+            let request = CheckoutRequest::new(
+                "pro",
+                "https://example.com/success",
+                "https://example.com/cancel",
+            );
+
+            assert!(
+                manager
+                    .create_checkout_session(&entity, request)
+                    .await
+                    .is_ok(),
+                "status {status:?} should allow a new checkout"
+            );
+        }
     }
 
     #[test]

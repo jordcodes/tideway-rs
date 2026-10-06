@@ -48,6 +48,18 @@ pub enum TidewayError {
     #[cfg(feature = "database")]
     #[error("Database error: {0}")]
     Database(String),
+
+    /// A billing error that keeps the original [`BillingError`](crate::billing::BillingError).
+    ///
+    /// The HTTP status, client-facing message, and `Display` text come from `public`. Use
+    /// [`TidewayError::billing_error`] to read the original error, for example a Stripe
+    /// `message` and `code`.
+    #[cfg(feature = "billing")]
+    #[error("{public}")]
+    Billing {
+        public: Box<TidewayError>,
+        source: Box<crate::billing::BillingError>,
+    },
 }
 
 /// Error context for additional error information
@@ -327,13 +339,24 @@ impl TidewayError {
 
         let body = Json(response);
 
-        // Log full error details server-side (not exposed to clients in production)
-        tracing::error!(
-            status = status.as_u16(),
-            error_id = %error_id,
-            error = %self, // Full error message for server logs
-            "Request failed"
-        );
+        // Log full error details server-side (not exposed to clients in production).
+        // Client errors are expected traffic, so keep them out of ERROR-level logs.
+        if status.is_server_error() {
+            tracing::error!(
+                status = status.as_u16(),
+                error_id = %error_id,
+                error = %self, // Full error message for server logs
+                "Request failed"
+            );
+            crate::observability::on_server_error(status, &error_id, self.to_string());
+        } else {
+            tracing::warn!(
+                status = status.as_u16(),
+                error_id = %error_id,
+                error = %self,
+                "Request failed"
+            );
+        }
 
         (status, body).into_response()
     }
@@ -372,6 +395,8 @@ impl TidewayError {
             Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::RequestTimeout => StatusCode::REQUEST_TIMEOUT,
             Self::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.status_code(),
         }
     }
 
@@ -402,6 +427,9 @@ impl TidewayError {
 
             #[cfg(feature = "database")]
             Self::Database(_) => "Database error".to_string(),
+
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.safe_message(),
         }
     }
 
@@ -409,6 +437,32 @@ impl TidewayError {
     pub fn error_code(&self) -> Option<&str> {
         match self {
             Self::CodedBadRequest { code, .. } => Some(code),
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.error_code(),
+            _ => None,
+        }
+    }
+
+    /// Return the error that determines the HTTP status and client-facing message.
+    ///
+    /// This unwraps [`TidewayError::Billing`], so `matches!(err.public_error(),
+    /// TidewayError::NotFound(_))` works for Stripe errors too. Other errors return `self`.
+    pub fn public_error(&self) -> &TidewayError {
+        match self {
+            #[cfg(feature = "billing")]
+            Self::Billing { public, .. } => public.public_error(),
+            _ => self,
+        }
+    }
+
+    /// Return the original billing error, when this error was converted from one.
+    ///
+    /// Stripe API errors keep their full `message`, `code`, and `http_status` here even when
+    /// the client-facing message is generic.
+    #[cfg(feature = "billing")]
+    pub fn billing_error(&self) -> Option<&crate::billing::BillingError> {
+        match self {
+            Self::Billing { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -1162,5 +1216,69 @@ mod tests {
                 .unwrap()
                 .contains("connection pool exhausted")
         );
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let logs = CapturedLogs::default();
+        let writer = logs.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = logs.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn test_client_errors_are_not_logged_at_error_level() {
+        let errors = [
+            TidewayError::bad_request("bad input"),
+            TidewayError::unauthorized("no token"),
+            TidewayError::forbidden("nope"),
+            TidewayError::not_found("missing"),
+            TidewayError::conflict("exists"),
+            TidewayError::too_many_requests("slow down"),
+            TidewayError::RequestTimeout,
+        ];
+        for err in errors {
+            let status = err.status_code();
+            let logs = capture_logs(|| {
+                let _ = err.into_response_with_info(None, false);
+            });
+            assert!(logs.contains("Request failed"), "{status}: {logs}");
+            assert!(logs.contains(" WARN "), "{status}: {logs}");
+            assert!(!logs.contains("ERROR"), "{status}: {logs}");
+        }
+    }
+
+    #[test]
+    fn test_server_errors_are_logged_at_error_level() {
+        for err in [
+            TidewayError::internal("boom"),
+            TidewayError::service_unavailable("down"),
+        ] {
+            let status = err.status_code();
+            let logs = capture_logs(|| {
+                let _ = err.into_response_with_info(None, false);
+            });
+            assert!(logs.contains("ERROR"), "{status}: {logs}");
+            assert!(logs.contains("Request failed"), "{status}: {logs}");
+        }
     }
 }

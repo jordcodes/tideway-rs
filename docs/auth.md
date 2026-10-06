@@ -7,10 +7,12 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **Password Hashing**: Argon2id with automatic rehashing
 - **JWT Tokens**: Access and refresh tokens with rotation
 - **MFA**: TOTP (Google Authenticator) and backup codes
+- **Social Login**: Google, GitHub, and any OpenID Connect provider via OAuth 2.0 + PKCE (opt-in)
 - **Auth Flows**: Login, registration, password reset/change, email verification
 - **Breach Checking**: HaveIBeenPwned integration (opt-in)
 - **Session Management**: List and revoke active sessions
 - **Trusted Devices**: Remember devices to skip MFA on subsequent logins
+- **API Keys**: Hashed, scoped, revocable organization keys with last-used tracking
 - **Account Lockout**: Progressive delays, notifications, admin unlock
 - **Account Deletion**: GDPR-compliant deletion with grace period
 - **Admin Impersonation**: Act as users for support with full audit trail
@@ -22,7 +24,7 @@ Enable the auth features in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["auth", "auth-mfa"] }
+tideway = { version = "0.9.0", features = ["auth", "auth-mfa"] }
 ```
 
 ### Basic Login Flow
@@ -76,7 +78,7 @@ For integration tests, enable the test-only bypass feature:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["auth", "test-auth-bypass"] }
+tideway = { version = "0.9.0", features = ["auth", "test-auth-bypass"] }
 ```
 
 Then use `TestHost` or the lower-level request DSL to inject either a synthetic
@@ -352,6 +354,10 @@ impl VerificationStore for MyVerificationStore {
 
     async fn mark_user_verified(&self, user_id: &str) -> Result<()>;
 
+    // Used by `EmailVerificationFlow::resend_for_user`; resends always go to
+    // the account's stored address, never one from the request.
+    async fn verification_email(&self, user_id: &str) -> Result<Option<String>>;
+
     async fn send_verification_email(
         &self,
         user_id: &str,
@@ -487,7 +493,7 @@ Requires `auth-breach` feature:
 
 ```toml
 [dependencies]
-tideway = { version = "0.7", features = ["auth", "auth-breach"] }
+tideway = { version = "0.9.0", features = ["auth", "auth-breach"] }
 ```
 
 ### Basic Usage
@@ -698,6 +704,176 @@ if let Some(index) = BackupCodeGenerator::verify("ABCD-1234", &in_memory_plainte
 }
 ```
 
+## Social Login (OAuth 2.0 / OpenID Connect)
+
+Requires the `auth-oauth` feature:
+
+```toml
+[dependencies]
+tideway = { version = "0.9.0", features = ["auth", "auth-oauth"] }
+```
+
+`tideway::auth::oauth` implements the authorization-code flow with PKCE for Google, GitHub,
+and any OpenID Connect provider (Microsoft Entra ID, Okta, Auth0, Keycloak, ...).
+
+### Providers
+
+```rust
+use tideway::auth::oauth::{InMemoryOAuthStateStore, OAuthFlow, OAuthProvider};
+
+let oauth = OAuthFlow::new(InMemoryOAuthStateStore::new(), accounts.clone())?
+    .with_provider(OAuthProvider::google(
+        env("GOOGLE_CLIENT_ID"),
+        env("GOOGLE_CLIENT_SECRET"),
+        "https://app.example.com/auth/google/callback",
+    ))
+    .with_provider(OAuthProvider::github(
+        env("GITHUB_CLIENT_ID"),
+        env("GITHUB_CLIENT_SECRET"),
+        "https://app.example.com/auth/github/callback",
+    ))
+    // Any OIDC issuer, configured from its discovery document:
+    .with_provider(
+        OAuthProvider::discover("okta", "https://example.okta.com", id, secret, redirect).await?,
+    );
+```
+
+Use `with_scopes`, `with_authorize_param("prompt", "select_account")`, or `with_name` to customize
+a provider. `InMemoryOAuthStateStore` only works for a single instance; implement
+`OAuthStateStore` on Redis or your database when running several instances.
+
+### SocialAccountStore
+
+`SocialAccountStore` extends `UserStore`, so social sign-in shares user lookup, lockout, and MFA
+state with password login. Store identities in a table with a unique `(provider, subject)` key:
+
+```rust
+use tideway::auth::oauth::{OAuthIdentity, SocialAccountStore};
+
+#[async_trait]
+impl SocialAccountStore for MyUserStore {
+    async fn find_by_identity(&self, provider: &str, subject: &str) -> Result<Option<User>>;
+
+    // Insert into user_identities (user_id, provider, subject, ...).
+    async fn link_identity(&self, user: &User, identity: &OAuthIdentity) -> Result<()>;
+
+    // Optional: refresh stored profile data / tokens on every sign-in.
+    async fn update_identity(&self, user: &User, identity: &OAuthIdentity) -> Result<()>;
+
+    // Create a user with the provider-verified email, marked as verified. `password_hash` is the
+    // hash of a random secret, so password login fails until the user resets their password.
+    async fn create_user_from_identity(
+        &self,
+        identity: &OAuthIdentity,
+        email: &str,
+        password_hash: &str,
+    ) -> Result<User>;
+}
+```
+
+```sql
+CREATE TABLE user_identities (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    access_token_encrypted TEXT,
+    refresh_token_encrypted TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider, subject)
+);
+```
+
+Sign-in does not need the provider's tokens. If you persist them to call the provider's API later,
+encrypt them with `OAuthTokenCipher` (AES-256-GCM, bound to the provider and subject):
+
+```rust
+let cipher = OAuthTokenCipher::from_env("OAUTH_TOKEN_KEY")?; // base64 32-byte key
+let encrypted = cipher.encrypt(&identity.provider, &identity.subject, &identity.tokens.access_token)?;
+```
+
+### Routes
+
+```rust
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, header::SET_COOKIE};
+use tideway::auth::LoginHttpResponse;
+use tideway::auth::oauth::{
+    AuthorizeOptions, OAuthCallbackParams, clear_state_cookie, state_from_cookies,
+};
+
+// GET /auth/:provider
+async fn start(State(app): State<AppState>, Path(provider): Path<String>) -> Result<Response> {
+    let request = app.oauth.authorize(&provider, AuthorizeOptions::new()).await?;
+    // Redirects to the provider and sets the HttpOnly state cookie.
+    Ok(request.redirect())
+}
+
+// GET /auth/:provider/callback
+async fn callback(
+    State(app): State<AppState>,
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+    Query(params): Query<OAuthCallbackParams>,
+) -> Result<impl IntoResponse> {
+    let browser_state = state_from_cookies(&headers);
+    let outcome = app.oauth.callback(&provider, params, browser_state.as_deref()).await?;
+    // Issues JWTs like a password login; returns an MFA challenge if MFA is enabled.
+    let login = app.login.complete_external_login(&outcome.user, false).await?;
+    Ok(([(SET_COOKIE, clear_state_cookie())], LoginHttpResponse::from(login)))
+}
+```
+
+The callback only succeeds in the browser that started the flow: `state` must match the
+`tideway_oauth_state` cookie (`HttpOnly`, `SameSite=Lax`, `Secure`). This blocks login CSRF and
+attackers attaching a victim's provider account to their own user. For plain-HTTP local
+development, set `OAuthFlowConfig::secure_cookie(false)`. Clients that cannot use cookies (native
+apps) must store `AuthorizationRequest::state` themselves and pass it back as `browser_state`.
+
+For cookie sessions, create the session for `outcome.user` instead of calling
+`complete_external_login`, and check `has_mfa_enabled` yourself if you use MFA.
+
+`AuthorizeOptions::redirect_to("/dashboard")` round-trips a same-origin path through
+`outcome.redirect_to` (absolute and protocol-relative URLs are rejected). To let a signed-in user
+connect another provider, use `AuthorizeOptions::new().link_to_user(current_user_id)`.
+
+### Account Resolution
+
+On callback, the identity is resolved in this order:
+
+1. An identity already linked to a user signs that user in.
+2. Otherwise, if the provider **verified** the email and a local account with that email exists,
+   the identity is linked when the local account is also verified
+   (`AccountLinking::VerifiedEmail`, the default). Unverified local accounts are refused with
+   `409 Conflict` to prevent account pre-hijacking. Set `AccountLinking::Never` to require
+   explicit linking.
+3. Otherwise a new verified user is created (disable with `OAuthFlowConfig::allow_signup(false)`).
+
+Identities without a provider-verified email can only sign in to accounts they are already linked
+to. Locked accounts are refused.
+
+### Security Properties
+
+- Single-use, hashed `state` that expires after 10 minutes, is bound to the provider, and must
+  match the browser's HttpOnly state cookie (CSRF and login-CSRF protection).
+- PKCE (`S256`) on every request, including GitHub.
+- OIDC `id_token` verified against the provider JWKS: RS256 signature, `iss`, `aud`, `exp`,
+  `nonce`, and `azp`.
+- Identities keyed on the stable subject (`sub`, or GitHub's numeric user ID), never on email or
+  username. GitHub emails are only trusted when primary and verified.
+- Client secrets, provider tokens, PKCE verifiers, and nonces are redacted from `Debug` output.
+- Provider HTTP calls have timeouts, a 1 MiB response limit, and do not follow redirects.
+
+### Social Login Events
+
+| Target | Description |
+|--------|-------------|
+| `auth.oauth.started` | Authorization redirect issued |
+| `auth.oauth.denied` | Provider returned an error (user cancelled) |
+| `auth.oauth.failed` | Invalid state, failed code exchange, or invalid identity |
+| `auth.oauth.linked` | Identity linked to an existing account |
+| `auth.oauth.signup` | Account created from social sign-in |
+| `auth.oauth.success` | Identity resolved to a user |
+
 ## Token Refresh
 
 ```rust
@@ -769,11 +945,17 @@ impl SessionStore for MySessionStore {
 High-level session operations with tracing:
 
 ```rust
+use std::sync::Arc;
 use tideway::auth::sessions::{SessionManager, SessionMetadata};
 
-let manager = SessionManager::new(session_store);
+// Share one refresh token store with TokenRefreshFlow so revoking a session
+// also revokes its refresh token family.
+let token_store = Arc::new(my_token_store);
+let manager = SessionManager::new(session_store)
+    .with_refresh_token_store(token_store.clone());
+let refresh_flow = TokenRefreshFlow::new(issuer, token_store, user_loader, secret);
 
-// Create session on login
+// Create session on login (session ID = refresh token family)
 let metadata = SessionMetadata::new()
     .with_ip("192.168.1.1")
     .with_user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X) Chrome/120.0.0.0");
@@ -799,6 +981,12 @@ manager.revoke_session("user-456", "family-789").await?;
 // Logout all other devices
 manager.revoke_other_sessions("user-456", "family-123").await?;
 ```
+
+> **Important:** Without `with_refresh_token_store`, revoking a session only hides it from
+> session listings. Its refresh token keeps minting access tokens until it expires.
+> With a token store attached, `revoke_session`, `revoke_other_sessions`,
+> `revoke_all_sessions`, and session-limit eviction all revoke the matching refresh token
+> families first.
 
 ### Session Limits
 
@@ -1064,6 +1252,138 @@ CREATE TABLE trusted_devices (
 CREATE INDEX idx_trusted_devices_user ON trusted_devices(user_id);
 CREATE INDEX idx_trusted_devices_lookup ON trusted_devices(user_id, token_hash);
 CREATE INDEX idx_trusted_devices_expiry ON trusted_devices(expires_at);
+```
+
+## API Keys
+
+Organization-scoped API keys (personal access tokens) for machine-to-machine access.
+Keys look like `tw_<id>_<secret>`; only a SHA-256 hash is stored and the plaintext is
+returned once at creation.
+
+### ApiKeyStore Trait
+
+```rust
+#[async_trait]
+pub trait ApiKeyStore: Send + Sync {
+    async fn create_api_key(&self, key: &ApiKey) -> Result<()>;
+    async fn find_api_key(&self, id: &str) -> Result<Option<ApiKey>>;
+    async fn list_api_keys(&self, organization_id: &str) -> Result<Vec<ApiKey>>;
+    async fn touch_api_key(&self, id: &str, used_at: SystemTime) -> Result<()>;
+    async fn revoke_api_key(&self, id: &str, revoked_at: SystemTime) -> Result<bool>;
+    // Default implementation provided:
+    async fn revoke_all_api_keys(&self, organization_id: &str, revoked_at: SystemTime) -> Result<usize>;
+}
+```
+
+`InMemoryApiKeyStore` is available under `test-auth-bypass` for tests. For production, enable
+`api-keys-seaorm` and use `SeaOrmApiKeyStore::new(db)`; `tideway add api-keys` generates the
+`api_keys` migration it expects.
+
+### Scaffolding with the CLI
+
+```bash
+tideway add api-keys --wire
+```
+
+This adds the migration and, for apps with the DB-backed organizations scaffold, owner/admin-only
+management routes (`GET/POST /organizations/{org_id}/api-keys`,
+`DELETE /organizations/{org_id}/api-keys/{key_id}`). Creating a key returns the plaintext once in
+the `key` field. `--wire` also installs the key manager as a global `ApiKeyExtension`, so your own
+handlers can accept keys with `ApiKeyAuth` or `Principal<P>`.
+
+### Issuing, Listing, and Revoking
+
+```rust
+use tideway::auth::{ApiKeyConfig, ApiKeyManager, NewApiKey};
+
+let manager = ApiKeyManager::new(store, ApiKeyConfig::default()
+    .max_keys_per_organization(25)
+    .default_ttl(Duration::from_secs(365 * 24 * 60 * 60)));
+
+// Only members whose role can manage org settings (owners/admins by default) may manage keys.
+manager.authorize_management(&membership_store, org_id, &user.id).await?; // 403 otherwise
+
+let created = manager
+    .create(NewApiKey::new(org_id, "CI deploy")
+        .scopes(["projects:read", "deployments:*"])
+        .created_by(&user.id))
+    .await?;
+// Return `created.plaintext` once; it cannot be recovered later.
+
+let keys = manager.list(org_id).await?;           // includes revoked keys
+manager.revoke(org_id, &key_id).await?;           // false if not in this org
+manager.revoke_all(org_id).await?;                // e.g. on org deletion
+```
+
+### Protecting Routes
+
+Install the manager as an extension, then use `ApiKeyAuth` for API-key-only routes or
+`Principal<P>` to accept either a JWT user (via your `AuthProvider`) or an API key:
+
+```rust
+use tideway::auth::{ApiKeyAuth, ApiKeyExtension, Principal};
+
+let app = Router::new()
+    .route("/projects", get(list_projects))
+    .layer(Extension(ApiKeyExtension::new(manager)))
+    .layer(Extension(my_auth_provider));
+
+async fn list_projects(principal: Principal<MyAuthProvider>) -> Result<Json<Vec<Project>>> {
+    let org_id = match &principal {
+        Principal::User(user) => user.current_org_id.clone(),
+        Principal::ApiKey(key) => {
+            key.require_scope("projects:read")?; // 403 if missing
+            key.organization_id.clone()
+        }
+    };
+    // ...
+}
+```
+
+Keys are accepted from `X-API-Key: <key>` or `Authorization: Bearer <key>`. A bearer
+token with the key prefix is treated as an API key; anything else falls through to
+JWT authentication. Unknown, tampered, revoked, and expired keys all return the same
+401 response.
+
+Scopes match exactly, via `*` (everything), or via `resource:*` (any `resource:<action>`).
+
+`authorize_management` (with the `organizations` feature) treats API keys as an organization
+setting: it requires a membership whose role passes `MembershipStore::can_manage_settings`. Apps
+using the generated `RequestActor` get the same rule via `require_org_role(&["owner", "admin"])` in
+the scaffolded routes.
+
+`last_used_at` is updated on successful authentication, throttled by
+`ApiKeyConfig::last_used_update_interval` (default 60 seconds).
+
+### API Key Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.api_key.created` | INFO | Key created |
+| `auth.api_key.revoked` | INFO | Key revoked |
+| `auth.api_key.revoke_all` | WARN | All keys revoked for an organization |
+| `auth.api_key.inactive` | DEBUG | Revoked or expired key presented |
+| `auth.api_key.touch_failed` | WARN | Failed to record last-used timestamp |
+
+### Database Schema
+
+`SeaOrmApiKeyStore` expects this table (timestamps are Unix seconds; `scopes` is a JSON array):
+
+```sql
+CREATE TABLE api_keys (
+    id VARCHAR(32) PRIMARY KEY,           -- public key ID (hex)
+    organization_id VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    key_hash VARCHAR(64) NOT NULL,        -- SHA-256 hex of the full key
+    scopes TEXT NOT NULL,                 -- JSON array, e.g. ["projects:read"]
+    created_by VARCHAR(255),
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT,
+    last_used_at BIGINT,
+    revoked_at BIGINT
+);
+
+CREATE INDEX idx_api_keys_organization ON api_keys(organization_id);
 ```
 
 ### Reuse Detection
@@ -1520,6 +1840,11 @@ impl AccountDeletionStore for MyStore {
 }
 ```
 
+If any cleanup method returns an error, the deletion is aborted before the account is
+deleted, so sessions and tokens can never outlive the account. `request_deletion` returns the
+error; `process_due_deletions` logs it (`auth.deletion.cleanup_failed`) and leaves the
+deletion pending so the next run retries it. Keep cleanup methods idempotent.
+
 ### Usage
 
 ```rust
@@ -1527,12 +1852,18 @@ use tideway::auth::deletion::{AccountDeletionFlow, DeletionConfig, DeletionReque
 
 let flow = AccountDeletionFlow::new(store, DeletionConfig::default());
 
-// Request deletion (user-initiated)
+// Request deletion (user-initiated). `user_id` must be the authenticated
+// user's ID from your session/JWT, never a value from the request body.
 let result = flow.request_deletion(DeletionRequest {
-    user_id: "user-123".to_string(),
+    user_id: authenticated_user_id,
     password: Some("current-password".to_string()),
     reason: Some("No longer using the service".to_string()),
 }).await?;
+
+// In an HTTP handler, deserialize the client body into `DeletionRequestBody`
+// (password + reason only; unknown fields such as `user_id` are rejected) and
+// attach the authenticated user's ID:
+let result = flow.request_deletion(body.into_request(authenticated_user_id)).await?;
 
 match result {
     DeletionResult::Scheduled { scheduled_for, .. } => {
@@ -1647,7 +1978,7 @@ let config = ImpersonationConfig::new()
     .max_duration(Duration::from_secs(30 * 60))  // 30 minutes
     .notify_user(true)                            // Email user on start
     .notify_on_end(true)                          // Email user on end
-    .allow_admin_impersonation(false)             // Can't impersonate other admins
+    .allow_admin_impersonation(false)             // Can't impersonate other admins (never overrides user opt-out)
     .require_reason(true)                         // Must provide reason
     .blocked_actions(vec![
         BlockedAction::DeleteAccount,
@@ -1668,6 +1999,9 @@ use async_trait::async_trait;
 impl ImpersonationStore for MyStore {
     // Required: Permission checks
     async fn is_admin(&self, user_id: &str) -> Result<bool>;
+    // Per-user eligibility (e.g. opt-out). Always enforced, even with
+    // `allow_admin_impersonation(true)`. Don't return false just because the
+    // user is an admin; admin targets are gated via `is_admin` + config.
     async fn can_be_impersonated(&self, user_id: &str) -> Result<bool>;
     async fn user_exists(&self, user_id: &str) -> Result<bool>;
     async fn get_user_email(&self, user_id: &str) -> Result<Option<String>>;
@@ -1696,17 +2030,35 @@ use tideway::auth::impersonation::{ImpersonationManager, ImpersonationConfig, Im
 
 let manager = ImpersonationManager::new(store, ImpersonationConfig::default());
 
-// Start impersonation
+// Start impersonation. `admin_id` must be the authenticated admin's ID from
+// your session/JWT, never a value from the request body.
 let session = manager.start_impersonation(ImpersonationRequest {
-    admin_id: "admin-123".to_string(),
+    admin_id: authenticated_admin_id,
     target_user_id: "user-456".to_string(),
     reason: Some("Support ticket #789".to_string()),
     duration: None,  // Use config default
 }).await?;
 
-// Include impersonation info in JWT claims
-let claims = ImpersonationClaims::from_session(&session);
-// Add to your JWT: imp_session, imp_admin, imp_blocked
+// In an HTTP handler, deserialize the client body into `ImpersonationRequestBody`
+// (`target_user_id`, `reason`, `duration_secs`; unknown fields such as `admin_id`
+// are rejected) and attach the authenticated admin's ID:
+let session = manager.start_impersonation(body.into_request(authenticated_admin_id)).await?;
+
+// Issue an access token with the impersonation claims (imp_session, imp_admin,
+// imp_blocked) that expires with the session. Don't issue a refresh token.
+let subject = TokenSubject::new(&session.target_user_id)
+    .with_custom(ImpersonationClaims::from_session(&session));
+let (access_token, _) = issuer.issue_access_token_expiring_at(subject, session.expires_at)?;
+
+// On each request, read the claims and reject the token once its session has
+// ended or expired.
+let data = verifier
+    .with_claims::<AccessTokenClaims<ImpersonationClaims>>()
+    .verify_access_token(&access_token)
+    .await?;
+if let Some(claims) = data.claims.custom {
+    manager.validate_session(&claims.imp_session, None).await?;
+}
 
 // Validate session and check if action is allowed
 let session = manager.validate_session(&session.session_id, Some("view_profile")).await?;
@@ -1883,7 +2235,6 @@ The following features are not currently implemented but may be added in future 
 |---------|-------------|----------|
 | **Password History** | Prevent reuse of last N passwords | Enterprise compliance (SOC2, HIPAA) |
 | **Magic Links** | Passwordless login via email link | Improved UX, reduced friction |
-| **OAuth/Social Login** | Google, GitHub, Apple sign-in | Consumer apps, reduced registration friction |
 | **API Keys** | Long-lived tokens with scopes for service-to-service auth | Developer APIs, integrations |
 | **Login Notifications** | Email alerts on new device/location login | Security-conscious users |
 | **Remember Me Tokens** | Persistent login across browser sessions | Long-lived user sessions |

@@ -52,8 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let user_id = conn.id().to_string();
             conn.set_user_id(user_id.clone());
 
-            // The connection is already registered by the extractor
-            // We just need to update the user mapping if needed
+            // The manager picks up the user ID once on_connect returns
 
             // Send welcome notification
             conn.send_json(&Notification {

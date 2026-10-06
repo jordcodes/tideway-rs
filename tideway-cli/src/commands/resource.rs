@@ -23,25 +23,193 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResourceFieldType {
     String,
+    Text,
     Bool,
+    I32,
     I64,
 }
 
 impl ResourceFieldType {
     fn rust_type(self) -> &'static str {
         match self {
-            Self::String => "String",
+            Self::String | Self::Text => "String",
             Self::Bool => "bool",
+            Self::I32 => "i32",
             Self::I64 => "i64",
         }
+    }
+
+    fn is_string(self) -> bool {
+        matches!(self, Self::String | Self::Text)
     }
 
     fn migration_column(self, column_enum: &str) -> String {
         match self {
             Self::String => format!("ColumnDef::new({column_enum}).string().not_null()"),
+            Self::Text => format!("ColumnDef::new({column_enum}).text().not_null()"),
             Self::Bool => format!("ColumnDef::new({column_enum}).boolean().not_null()"),
+            Self::I32 => format!("ColumnDef::new({column_enum}).integer().not_null()"),
             Self::I64 => format!("ColumnDef::new({column_enum}).big_integer().not_null()"),
         }
+    }
+}
+
+/// A field parsed from an inline `name:type` definition on the command line.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InlineField {
+    name: String,
+    ty: ResourceFieldType,
+    stub_value: &'static str,
+    json_value: &'static str,
+}
+
+const INLINE_FIELD_TYPES: &str = "string, text, bool, int, bigint, datetime";
+
+/// Names that collide with generated identifiers (handler locals, method params,
+/// the migration `Iden` enum, or the primary key).
+const RESERVED_FIELD_NAMES: [&str; 11] = [
+    "id", "active", "model", "actor", "db", "query", "search", "limit", "offset", "q", "table",
+];
+
+const RUST_KEYWORDS: [&str; 51] = [
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
+    "where", "while", "abstract", "become", "box", "do", "final", "gen", "macro", "override",
+    "priv", "try", "typeof", "unsized", "virtual", "yield",
+];
+
+fn parse_inline_fields(definitions: &[String]) -> Result<Vec<InlineField>> {
+    let mut fields: Vec<InlineField> = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        let invalid = |problem: &str| {
+            anyhow::anyhow!(error_contract(
+                &format!("Invalid field definition `{definition}`: {problem}."),
+                "Use `name:type`, e.g. `tideway resource post title:string body:text published:bool`.",
+                &format!("Supported types: {INLINE_FIELD_TYPES}."),
+            ))
+        };
+
+        let (name, ty) = definition
+            .split_once(':')
+            .ok_or_else(|| invalid("expected `name:type`"))?;
+        let name = name.trim();
+        let ty = ty.trim().to_ascii_lowercase();
+
+        let mut chars = name.chars();
+        let valid_ident = chars
+            .next()
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch == '_')
+            && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+        if !valid_ident || name == "_" {
+            return Err(invalid("field names must be snake_case identifiers"));
+        }
+        if RUST_KEYWORDS.contains(&name) {
+            return Err(invalid("field name is a Rust keyword"));
+        }
+        if RESERVED_FIELD_NAMES.contains(&name) {
+            return Err(invalid("field name is reserved by the generated code"));
+        }
+        if fields.iter().any(|field| field.name == name) {
+            return Err(invalid("field is defined more than once"));
+        }
+
+        let (ty, stub_value, json_value) = match ty.as_str() {
+            "string" | "str" => (
+                ResourceFieldType::String,
+                "\"Example\".to_string()",
+                "\"Example\"",
+            ),
+            "text" => (
+                ResourceFieldType::Text,
+                "\"Example\".to_string()",
+                "\"Example\"",
+            ),
+            "bool" | "boolean" => (ResourceFieldType::Bool, "true", "true"),
+            "int" | "integer" | "i32" => (ResourceFieldType::I32, "1", "1"),
+            "bigint" | "i64" => (ResourceFieldType::I64, "1", "1"),
+            // Stored as unix seconds, matching the generated created_at/updated_at columns.
+            "datetime" | "timestamp" => (ResourceFieldType::I64, "1_700_000_000", "1_700_000_000"),
+            _ => return Err(invalid(&format!("unknown type `{ty}`"))),
+        };
+
+        fields.push(InlineField {
+            name: name.to_string(),
+            ty,
+            stub_value,
+            json_value,
+        });
+    }
+    Ok(fields)
+}
+
+/// Build the full field list for inline definitions, keeping the profile's structural
+/// fields (scope columns first, generated timestamps last) around the user's fields.
+fn inline_schema_fields<'a>(
+    profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    inline_fields: &'a [InlineField],
+) -> Result<Vec<ResourceFieldSpec<'a>>> {
+    if inline_fields.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let base = resource_schema(profile, context, &[]);
+    let scope_fields = base
+        .fields
+        .iter()
+        .copied()
+        .filter(|field| matches!(field.name, "organization_id" | "owner_id"));
+    let timestamp_fields = base
+        .fields
+        .iter()
+        .copied()
+        .filter(|field| field.create_source == FieldSource::CurrentTimestamp);
+
+    let search_name = inline_fields
+        .iter()
+        .find(|field| field.ty.is_string())
+        .map(|field| field.name.as_str());
+    let custom_fields = inline_fields.iter().map(|field| ResourceFieldSpec {
+        name: &field.name,
+        ty: field.ty,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: Some(field.name.as_str()) == search_name,
+        stub_value: field.stub_value,
+        json_value: field.json_value,
+    });
+
+    let fields: Vec<_> = scope_fields
+        .chain(custom_fields)
+        .chain(timestamp_fields)
+        .collect();
+    for (index, field) in fields.iter().enumerate() {
+        if fields[..index].iter().any(|other| other.name == field.name) {
+            return Err(anyhow::anyhow!(error_contract(
+                &format!(
+                    "Field `{}` is already generated by the `{}` profile.",
+                    field.name,
+                    profile_label(profile)
+                ),
+                "Remove it from the inline field definitions.",
+                "Use `--profile api` for full control over the field list.",
+            )));
+        }
+    }
+    Ok(fields)
+}
+
+fn profile_label(profile: ResourceProfile) -> &'static str {
+    match profile {
+        ResourceProfile::Api => "api",
+        ResourceProfile::Stub => "stub",
+        ResourceProfile::Tenant => "tenant",
+        ResourceProfile::Owned => "owned",
+        ResourceProfile::Admin => "admin",
+        ResourceProfile::Event => "event",
     }
 }
 
@@ -52,34 +220,44 @@ enum FieldSource {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ResourceFieldSpec {
-    name: &'static str,
+struct ResourceFieldSpec<'a> {
+    name: &'a str,
     ty: ResourceFieldType,
     include_in_create: bool,
     include_in_update: bool,
     create_source: FieldSource,
     update_source: Option<FieldSource>,
     search: bool,
-    stub_value: &'static str,
-    json_value: &'static str,
+    stub_value: &'a str,
+    json_value: &'a str,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ResourceSchema {
-    display_field: &'static str,
-    display_fallback: &'static str,
-    fields: &'static [ResourceFieldSpec],
+struct ResourceSchema<'a> {
+    display_field: &'a str,
+    display_fallback: &'a str,
+    fields: &'a [ResourceFieldSpec<'a>],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ResourceGenerationContext {
     shared_saas_actor: bool,
+    /// `owned` profile: scoped to the caller's organization and user.
     saas_owned_scope: bool,
+    /// `api`/`tenant` profiles: scoped to the caller's organization.
+    saas_org_scope: bool,
     saas_admin_guard: bool,
     library_modules: bool,
 }
 
-const NAME_FIELDS: [ResourceFieldSpec; 1] = [ResourceFieldSpec {
+impl ResourceGenerationContext {
+    /// Whether generated handlers resolve the caller's organization membership.
+    fn saas_scoped(self) -> bool {
+        self.saas_owned_scope || self.saas_org_scope
+    }
+}
+
+const NAME_FIELDS: [ResourceFieldSpec<'static>; 1] = [ResourceFieldSpec {
     name: "name",
     ty: ResourceFieldType::String,
     include_in_create: true,
@@ -91,7 +269,7 @@ const NAME_FIELDS: [ResourceFieldSpec; 1] = [ResourceFieldSpec {
     json_value: "\"Example\"",
 }];
 
-const TENANT_FIELDS: [ResourceFieldSpec; 5] = [
+const TENANT_FIELDS: [ResourceFieldSpec<'static>; 5] = [
     ResourceFieldSpec {
         name: "name",
         ty: ResourceFieldType::String,
@@ -149,18 +327,32 @@ const TENANT_FIELDS: [ResourceFieldSpec; 5] = [
     },
 ];
 
-const OWNED_FIELDS: [ResourceFieldSpec; 6] = [
-    ResourceFieldSpec {
-        name: "organization_id",
-        ty: ResourceFieldType::String,
-        include_in_create: true,
-        include_in_update: true,
-        create_source: FieldSource::Request,
-        update_source: Some(FieldSource::Request),
-        search: false,
-        stub_value: "\"org_demo\".to_string()",
-        json_value: "\"org_demo\"",
-    },
+const ORGANIZATION_ID_FIELD: ResourceFieldSpec<'static> = ResourceFieldSpec {
+    name: "organization_id",
+    ty: ResourceFieldType::String,
+    include_in_create: true,
+    include_in_update: true,
+    create_source: FieldSource::Request,
+    update_source: Some(FieldSource::Request),
+    search: false,
+    stub_value: "\"org_demo\".to_string()",
+    json_value: "\"org_demo\"",
+};
+
+// SaaS scaffolds scope `api` and `tenant` resources to the caller's organization.
+const ORG_NAME_FIELDS: [ResourceFieldSpec<'static>; 2] = [ORGANIZATION_ID_FIELD, NAME_FIELDS[0]];
+
+const ORG_TENANT_FIELDS: [ResourceFieldSpec<'static>; 6] = [
+    ORGANIZATION_ID_FIELD,
+    TENANT_FIELDS[0],
+    TENANT_FIELDS[1],
+    TENANT_FIELDS[2],
+    TENANT_FIELDS[3],
+    TENANT_FIELDS[4],
+];
+
+const OWNED_FIELDS: [ResourceFieldSpec<'static>; 6] = [
+    ORGANIZATION_ID_FIELD,
     ResourceFieldSpec {
         name: "owner_id",
         ty: ResourceFieldType::String,
@@ -218,7 +410,7 @@ const OWNED_FIELDS: [ResourceFieldSpec; 6] = [
     },
 ];
 
-const ADMIN_FIELDS: [ResourceFieldSpec; 5] = [
+const ADMIN_FIELDS: [ResourceFieldSpec<'static>; 5] = [
     ResourceFieldSpec {
         name: "email",
         ty: ResourceFieldType::String,
@@ -276,7 +468,7 @@ const ADMIN_FIELDS: [ResourceFieldSpec; 5] = [
     },
 ];
 
-const EVENT_FIELDS: [ResourceFieldSpec; 6] = [
+const EVENT_FIELDS: [ResourceFieldSpec<'static>; 6] = [
     ResourceFieldSpec {
         name: "event_type",
         ty: ResourceFieldType::String,
@@ -345,8 +537,41 @@ const EVENT_FIELDS: [ResourceFieldSpec; 6] = [
     },
 ];
 
-fn resource_schema(profile: ResourceProfile) -> ResourceSchema {
+fn resource_schema<'a>(
+    profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &'a [ResourceFieldSpec<'a>],
+) -> ResourceSchema<'a> {
+    if !custom_fields.is_empty() {
+        let display = custom_fields
+            .iter()
+            .filter(|field| field.include_in_create)
+            .filter(|field| !matches!(field.name, "organization_id" | "owner_id"))
+            .find(|field| field.ty.is_string())
+            .or_else(|| {
+                custom_fields.iter().find(|field| {
+                    field.include_in_create && !matches!(field.name, "organization_id" | "owner_id")
+                })
+            })
+            .expect("inline fields include at least one request field");
+        return ResourceSchema {
+            display_field: display.name,
+            display_fallback: "Example",
+            fields: custom_fields,
+        };
+    }
+
     match profile {
+        ResourceProfile::Api if context.saas_org_scope => ResourceSchema {
+            display_field: "name",
+            display_fallback: "User",
+            fields: &ORG_NAME_FIELDS,
+        },
+        ResourceProfile::Tenant if context.saas_org_scope => ResourceSchema {
+            display_field: "name",
+            display_fallback: "Acme",
+            fields: &ORG_TENANT_FIELDS,
+        },
         ResourceProfile::Api | ResourceProfile::Stub => ResourceSchema {
             display_field: "name",
             display_fallback: "User",
@@ -395,7 +620,6 @@ fn update_request_fields(schema: ResourceSchema) -> Vec<ResourceFieldSpec> {
 
 fn route_request_fields(
     schema: ResourceSchema,
-    profile: ResourceProfile,
     context: ResourceGenerationContext,
     optional: bool,
 ) -> Vec<ResourceFieldSpec> {
@@ -405,7 +629,8 @@ fn route_request_fields(
         create_request_fields(schema)
     };
 
-    if context.saas_owned_scope && matches!(profile, ResourceProfile::Owned) {
+    // Scope columns come from the authenticated caller, never the request body.
+    if context.saas_scoped() {
         fields.retain(|field| !matches!(field.name, "organization_id" | "owner_id"));
     }
 
@@ -477,7 +702,10 @@ fn render_stub_response_fields(
 ) -> String {
     let mut output = format!("{indent}id: \"demo\".to_string(),\n");
     for field in schema.fields {
-        let value = if schema.fields.len() == 1 && field.name == schema.display_field {
+        let value = if schema.fields.len() == 1
+            && field.name == schema.display_field
+            && field.ty.is_string()
+        {
             format!("\"{}\".to_string()", default_display)
         } else {
             field.stub_value.to_string()
@@ -610,7 +838,13 @@ fn render_stub_call_args(schema: ResourceSchema, optional: bool) -> String {
 }
 
 fn display_fallback_value(schema: ResourceSchema, default_display: &str) -> String {
-    if schema.fields.len() == 1 && schema.display_field == "name" {
+    let display = schema
+        .fields
+        .iter()
+        .find(|field| field.name == schema.display_field);
+    if let Some(field) = display.filter(|field| !field.ty.is_string()) {
+        field.stub_value.to_string()
+    } else if schema.fields.len() == 1 && schema.display_field == "name" {
         format!("\"{}\".to_string()", default_display)
     } else {
         format!("\"{}\".to_string()", schema.display_fallback)
@@ -726,7 +960,7 @@ fn render_service_string_normalization_lines(schema: ResourceSchema, optional: b
 
     fields
         .iter()
-        .filter(|field| field.ty == ResourceFieldType::String)
+        .filter(|field| field.ty.is_string())
         .map(|field| {
             let expr = match (field.name, optional) {
                 ("slug", false) => "Self::normalize_slug(slug)?".to_string(),
@@ -914,6 +1148,10 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
             && matches!(args.profile, ResourceProfile::Owned)
             && has_saas_auth
             && has_saas_organizations,
+        saas_org_scope: full_stack
+            && matches!(args.profile, ResourceProfile::Api | ResourceProfile::Tenant)
+            && has_saas_auth
+            && has_saas_organizations,
         saas_admin_guard: full_stack
             && matches!(args.profile, ResourceProfile::Admin)
             && has_saas_auth
@@ -949,6 +1187,8 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
     let resource_pascal = to_pascal_case(&resource_name);
     let resource_plural = pluralize(&resource_name);
     let generation_context = detect_generation_context(&project_dir, &args);
+    let inline_fields = parse_inline_fields(&args.fields)?;
+    let custom_fields = inline_schema_fields(args.profile, generation_context, &inline_fields)?;
 
     let cargo_path = project_dir.join("Cargo.toml");
     let library_crate = generation_context
@@ -1009,6 +1249,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         args.paginate,
         args.search,
         generation_context,
+        &custom_fields,
     );
     write_file_with_force(&resource_path, &contents, false)?;
 
@@ -1038,6 +1279,8 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                 &resource_plural,
                 args.id_type,
                 args.profile,
+                generation_context,
+                &custom_fields,
                 migration_name.expect("SeaORM migration is planned before mutation"),
             )?,
             DbBackend::Auto => {
@@ -1058,6 +1301,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                 args.search,
                 args.profile,
                 generation_context,
+                &custom_fields,
             )?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
@@ -1069,9 +1313,22 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                     args.paginate,
                     args.search,
                     args.profile,
+                    generation_context,
+                    &custom_fields,
                 )?;
             }
             if args.service {
+                if generation_context.saas_scoped() {
+                    generate_policy(
+                        &project_dir,
+                        &resource_name,
+                        &resource_plural,
+                        args.id_type,
+                        args.profile,
+                        generation_context,
+                        &custom_fields,
+                    )?;
+                }
                 generate_service(
                     &project_dir,
                     &resource_name,
@@ -1080,6 +1337,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                     args.search,
                     args.profile,
                     generation_context,
+                    &custom_fields,
                 )?;
             }
         }
@@ -1092,6 +1350,9 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
             }
             if args.service {
                 wire_services_module(&src_dir, generation_context.library_modules)?;
+                if generation_context.saas_scoped() {
+                    wire_module(&src_dir, "policies", generation_context.library_modules)?;
+                }
             }
         } else {
             print_info(&format!(
@@ -1105,6 +1366,15 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         print_info(
             "Detected a SaaS scaffold; generated auth-scoped owned handlers that derive organization and owner context from the caller.",
         );
+    } else if generation_context.saas_org_scope {
+        print_info(
+            "Detected a SaaS scaffold; generated auth-scoped handlers that derive organization context from the caller's membership.",
+        );
+    }
+    if generation_context.saas_scoped() {
+        print_info(&format!(
+            "Every handler is authorized by src/policies/{resource_name}.rs; edit its role grants to control access."
+        ));
     } else if generation_context.saas_admin_guard {
         print_info("Detected a SaaS scaffold; generated admin-guarded handlers for this resource.");
     }
@@ -1148,7 +1418,8 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         if matches!(
             args.profile,
             ResourceProfile::Owned | ResourceProfile::Admin
-        ) {
+        ) || generation_context.saas_org_scope
+        {
             print_info(&format!(
                 "Try it with an access token: `curl -H \"Authorization: Bearer $ACCESS_TOKEN\" \"{list_url}\"`"
             ));
@@ -1376,12 +1647,6 @@ fn dependency_sections(doc: &toml_edit::DocumentMut) -> Vec<&toml_edit::Item> {
 
 fn render_saas_owned_route_support_code() -> &'static str {
     r#"
-#[derive(Debug, Clone)]
-struct OwnedActor {
-    organization_id: String,
-    owner_id: String,
-}
-
 fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
     static VERIFIER: std::sync::OnceLock<std::result::Result<JwtVerifier<AccessTokenClaims>, String>> =
         std::sync::OnceLock::new();
@@ -1427,14 +1692,15 @@ async fn authenticated_user(headers: &HeaderMap, db: &DatabaseConnection) -> Res
         .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))
 }
 
-async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor> {
+async fn resolve_org_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OrgActor> {
     let user = authenticated_user(headers, db).await?;
     let membership = resolve_current_membership(headers, db, &user).await?;
 
-    Ok(OwnedActor {
-        organization_id: membership.organization_id,
-        owner_id: user.id.to_string(),
-    })
+    Ok(OrgActor::new(
+        user.id.to_string(),
+        membership.organization_id,
+        membership.role,
+    ))
 }
 
 async fn resolve_current_membership(
@@ -1558,16 +1824,17 @@ fn render_resource_module(
     paginate: bool,
     search: bool,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
-    let schema = resource_schema(profile);
-    let route_create_fields = route_request_fields(schema, profile, context, false);
-    let route_update_fields = route_request_fields(schema, profile, context, true);
-    let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_owned_scope;
+    let schema = resource_schema(profile, context, custom_fields);
+    let route_create_fields = route_request_fields(schema, context, false);
+    let route_update_fields = route_request_fields(schema, context, true);
+    let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_scoped();
     let uses_shared_saas_admin_actor = context.shared_saas_actor && context.saas_admin_guard;
     let uses_inline_auth_helpers =
-        (context.saas_owned_scope || context.saas_admin_guard) && !context.shared_saas_actor;
-    let uses_auth_headers = context.saas_owned_scope || context.saas_admin_guard;
+        (context.saas_scoped() || context.saas_admin_guard) && !context.shared_saas_actor;
+    let uses_auth_headers = context.saas_scoped() || context.saas_admin_guard;
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
     } else {
@@ -1780,12 +2047,12 @@ mod tests {{
         ""
     };
     let actor_import =
-        if context.shared_saas_actor && (context.saas_owned_scope || context.saas_admin_guard) {
+        if context.shared_saas_actor && (context.saas_scoped() || context.saas_admin_guard) {
             "use crate::auth::RequestActor;\n"
         } else {
             ""
         };
-    let entities_import = if uses_inline_auth_helpers && context.saas_owned_scope {
+    let entities_import = if uses_inline_auth_helpers && context.saas_scoped() {
         "use crate::entities::{organization_member, user};\n".to_string()
     } else if uses_inline_auth_helpers && context.saas_admin_guard {
         "use crate::entities::user;\n".to_string()
@@ -1862,7 +2129,7 @@ pub struct PaginationParams {{
     } else {
         format!("    let mut query = {resource_name}::Entity::find();")
     };
-    let auth_support_code = if uses_inline_auth_helpers && context.saas_owned_scope {
+    let auth_support_code = if uses_inline_auth_helpers && context.saas_scoped() {
         render_saas_owned_route_support_code().to_string()
     } else if uses_inline_auth_helpers && context.saas_admin_guard {
         render_saas_admin_route_support_code().to_string()
@@ -1874,7 +2141,9 @@ pub struct PaginationParams {{
     } else {
         "use tideway::{AppContext, MessageResponse, Result, RouteModule};\n"
     };
-    let auth_imports = if uses_inline_auth_helpers {
+    let auth_imports = if uses_inline_auth_helpers && context.saas_scoped() {
+        "use tideway::auth::{AccessTokenClaims, JwtVerifier};\nuse tideway::policy::OrgActor;\n"
+    } else if uses_inline_auth_helpers {
         "use tideway::auth::{AccessTokenClaims, JwtVerifier};\n"
     } else {
         ""
@@ -1985,7 +2254,7 @@ async fn delete_{resource_name}(
             scoped_update_call_args = scoped_update_call_args,
         )
     } else if uses_inline_auth_helpers
-        && context.saas_owned_scope
+        && context.saas_scoped()
         && with_db
         && with_repo
         && with_service
@@ -1998,11 +2267,11 @@ async fn list_{resource_plural}(
     headers: HeaderMap{list_param_prefix}{list_params},
 ) -> Result<Json<Vec<{resource_pascal}>>> {{
     let db = ctx.sea_orm_connection()?;
-    let actor = resolve_owned_actor(&headers, &db).await?;
+    let actor = resolve_org_actor(&headers, &db).await?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
     let models = service
-        .list_owned(&actor.organization_id, &actor.owner_id{list_args_with_prefix})
+        .list_authorized(&actor{list_args_with_prefix})
         .await?;
     let items = models
         .into_iter()
@@ -2019,12 +2288,10 @@ async fn get_{resource_name}(
     Path(id): Path<{id_type_str}>,
 ) -> Result<Json<{resource_pascal}>> {{
     let db = ctx.sea_orm_connection()?;
-    let actor = resolve_owned_actor(&headers, &db).await?;
+    let actor = resolve_org_actor(&headers, &db).await?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    let model = service
-        .get_required_owned(id, &actor.organization_id, &actor.owner_id)
-        .await?;
+    let model = service.get_required_authorized(&actor, id).await?;
     Ok(Json({resource_pascal} {{
 {single_response_init_fields}    }}))
 }}
@@ -2036,11 +2303,11 @@ async fn create_{resource_name}(
     {body_extractor},
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
-    let actor = resolve_owned_actor(&headers, &db).await?;
+    let actor = resolve_org_actor(&headers, &db).await?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
     service
-        .create_owned(&actor.organization_id, &actor.owner_id, {scoped_create_call_args})
+        .create_authorized(&actor, {scoped_create_call_args})
         .await?;
     Ok(MessageResponse::success("Created"))
 }}
@@ -2053,11 +2320,11 @@ async fn update_{resource_name}(
     Json(body): Json<UpdateRequest>,
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
-    let actor = resolve_owned_actor(&headers, &db).await?;
+    let actor = resolve_org_actor(&headers, &db).await?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
     service
-        .update_owned(id, &actor.organization_id, &actor.owner_id, {scoped_update_call_args})
+        .update_authorized(&actor, id, {scoped_update_call_args})
         .await?;
     Ok(MessageResponse::success("Updated"))
 }}
@@ -2069,12 +2336,10 @@ async fn delete_{resource_name}(
     Path(id): Path<{id_type_str}>,
 ) -> Result<MessageResponse> {{
     let db = ctx.sea_orm_connection()?;
-    let actor = resolve_owned_actor(&headers, &db).await?;
+    let actor = resolve_org_actor(&headers, &db).await?;
     let repo = {resource_pascal}Repository::new(db);
     let service = {resource_pascal}Service::new(repo);
-    service
-        .delete_owned(id, &actor.organization_id, &actor.owner_id)
-        .await?;
+    service.delete_authorized(&actor, id).await?;
     Ok(MessageResponse::success("Deleted"))
 }}
 "#,
@@ -2805,12 +3070,15 @@ fn render_openapi_docs_file(paths: &[String]) -> String {
     output
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_sea_orm_scaffold(
     project_dir: &Path,
     resource_name: &str,
     resource_plural: &str,
     id_type: ResourceIdType,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
     migration_name: MigrationName,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
@@ -2827,7 +3095,14 @@ fn generate_sea_orm_scaffold(
     wire_entities_mod(&entities_mod, resource_name)?;
 
     let entity_path = entities_dir.join(format!("{}.rs", resource_name));
-    let entity_contents = render_sea_orm_entity(resource_name, resource_plural, id_type, profile);
+    let entity_contents = render_sea_orm_entity(
+        resource_name,
+        resource_plural,
+        id_type,
+        profile,
+        context,
+        custom_fields,
+    );
     write_file_with_force(&entity_path, &entity_contents, false)?;
 
     let migration_root = project_dir.join("migration");
@@ -2842,7 +3117,8 @@ fn generate_sea_orm_scaffold(
 
     let migration_mod = migration_name.module;
     let migration_file = migration_name.file;
-    let migration_contents = render_sea_orm_migration(resource_plural, id_type, profile);
+    let migration_contents =
+        render_sea_orm_migration(resource_plural, id_type, profile, context, custom_fields);
     let migration_path = migration_src.join(&migration_file);
     write_file_with_force(&migration_path, &migration_contents, false)?;
 
@@ -2876,9 +3152,11 @@ fn render_sea_orm_entity(
     resource_plural: &str,
     id_type: ResourceIdType,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile);
+    let schema = resource_schema(profile, context, custom_fields);
     let entity_fields = render_entity_fields(schema);
     let id_field = if matches!(id_type, ResourceIdType::Uuid) {
         "    #[sea_orm(primary_key, auto_increment = false)]\n    pub id: Uuid,\n"
@@ -2919,9 +3197,11 @@ fn render_sea_orm_migration(
     resource_plural: &str,
     id_type: ResourceIdType,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let table_enum = to_pascal_case(resource_plural);
-    let schema = resource_schema(profile);
+    let schema = resource_schema(profile, context, custom_fields);
     let columns = render_migration_columns(schema, &table_enum);
     let column_idents = render_migration_idents(schema);
     let id_column = if matches!(id_type, ResourceIdType::Uuid) {
@@ -3102,6 +3382,7 @@ fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_repository(
     project_dir: &Path,
     resource_name: &str,
@@ -3110,6 +3391,7 @@ fn generate_repository(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
@@ -3124,8 +3406,15 @@ fn generate_repository(
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
-    let repo_contents =
-        render_repository(resource_name, id_type, paginate, search, profile, context);
+    let repo_contents = render_repository(
+        resource_name,
+        id_type,
+        paginate,
+        search,
+        profile,
+        context,
+        custom_fields,
+    );
     write_file_with_force(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
@@ -3150,9 +3439,10 @@ fn render_repository(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile);
+    let schema = resource_schema(profile, context, custom_fields);
     let current_timestamp_helper = render_timestamp_helper_if_needed(schema);
     let (id_type_str, uuid_import) = if matches!(id_type, ResourceIdType::Uuid) {
         ("uuid::Uuid", "use uuid::Uuid;\n")
@@ -3170,7 +3460,7 @@ fn render_repository(
     let update_signature_args = render_create_signature_args(schema, true);
     let create_assignments = render_param_create_assignments(schema, "            ");
     let update_assignments = render_param_update_assignments(schema, "active", "        ");
-    let sea_orm_imports = if context.saas_owned_scope {
+    let sea_orm_imports = if context.saas_scoped() {
         if paginate {
             "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};"
         } else {
@@ -3188,20 +3478,35 @@ fn render_repository(
             (false, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, Set};",
         }
     };
-    let scoped_methods = if context.saas_owned_scope {
+    let scoped_methods = if context.saas_scoped() {
+        let (scope_params, scope_param_lines, owner_filter) = if context.saas_owned_scope {
+            (
+                "organization_id: &str, owner_id: &str",
+                "organization_id: &str,\n        owner_id: &str,",
+                format!(
+                    "\n            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()))"
+                ),
+            )
+        } else {
+            (
+                "organization_id: &str",
+                "organization_id: &str,",
+                String::new(),
+            )
+        };
         let scoped_list_signature = if paginate {
             if search {
                 format!(
-                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
+                    "pub async fn list_owned(&self, {scope_params}, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<{resource_name}::Model>> {{"
                 )
             } else {
                 format!(
-                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
+                    "pub async fn list_owned(&self, {scope_params}, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<{resource_name}::Model>> {{"
                 )
             }
         } else {
             format!(
-                "pub async fn list_owned(&self, organization_id: &str, owner_id: &str) -> Result<Vec<{resource_name}::Model>> {{"
+                "pub async fn list_owned(&self, {scope_params}) -> Result<Vec<{resource_name}::Model>> {{"
             )
         };
         let scoped_search_query = if search {
@@ -3211,11 +3516,11 @@ fn render_repository(
         };
         let scoped_list_body = if paginate {
             format!(
-                "        let mut query = {resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))\n            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()));\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{scoped_search_query}        Ok(query.all(&self.db).await?)",
+                "        let mut query = {resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string())){owner_filter};\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{scoped_search_query}        Ok(query.all(&self.db).await?)",
             )
         } else {
             format!(
-                "        Ok({resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))\n            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()))\n            .all(&self.db)\n            .await?)"
+                "        Ok({resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string())){owner_filter}\n            .all(&self.db)\n            .await?)"
             )
         };
 
@@ -3228,16 +3533,16 @@ fn render_repository(
     pub async fn get_owned(
         &self,
         id: {id_type},
-        organization_id: &str,
-        owner_id: &str,
+        {scope_param_lines}
     ) -> Result<Option<{resource_name}::Model>> {{
         Ok({resource_name}::Entity::find_by_id(id)
-            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string()))
-            .filter({resource_name}::Column::OwnerId.eq(owner_id.to_string()))
+            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string())){owner_filter}
             .one(&self.db)
             .await?)
     }}
 "#,
+            scope_param_lines = scope_param_lines,
+            owner_filter = owner_filter,
             scoped_list_signature = scoped_list_signature,
             scoped_list_body = scoped_list_body,
             resource_name = resource_name,
@@ -3317,6 +3622,7 @@ impl {resource_pascal}Repository {{
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_service(
     project_dir: &Path,
     resource_name: &str,
@@ -3325,6 +3631,7 @@ fn generate_service(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
@@ -3340,11 +3647,216 @@ fn generate_service(
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
-    let service_contents =
-        render_service(resource_name, id_type, paginate, search, profile, context);
+    let service_contents = render_service(
+        resource_name,
+        id_type,
+        paginate,
+        search,
+        profile,
+        context,
+        custom_fields,
+    );
     write_file_with_force(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
+}
+
+fn generate_policy(
+    project_dir: &Path,
+    resource_name: &str,
+    resource_plural: &str,
+    id_type: ResourceIdType,
+    profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
+) -> Result<()> {
+    let policies_dir = project_dir.join("src/policies");
+    ensure_dir(&policies_dir)
+        .with_context(|| format!("Failed to create {}", policies_dir.display()))?;
+
+    let policies_mod = policies_dir.join("mod.rs");
+    if !policies_mod.exists() {
+        let contents = "//! Resource authorization policies.\n\n";
+        write_file_with_force(&policies_mod, contents, false)?;
+        print_success("Created src/policies/mod.rs");
+    }
+    wire_services_mod(&policies_mod, resource_name)?;
+
+    let policy_path = policies_dir.join(format!("{}.rs", resource_name));
+    let policy_contents = render_policy(
+        resource_name,
+        resource_plural,
+        id_type,
+        profile,
+        context,
+        custom_fields,
+    );
+    write_file_with_force(&policy_path, &policy_contents, false)?;
+    print_success("Generated policy");
+    Ok(())
+}
+
+fn render_policy(
+    resource_name: &str,
+    resource_plural: &str,
+    id_type: ResourceIdType,
+    profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
+) -> String {
+    let resource_pascal = to_pascal_case(resource_name);
+    let schema = resource_schema(profile, context, custom_fields);
+    let owner_scoped = context.saas_owned_scope;
+    // Members may delete their own `owned` records; shared org records need an admin.
+    let member_actions: &[&str] = if owner_scoped {
+        &["view", "create", "update", "delete"]
+    } else {
+        &["view", "create", "update"]
+    };
+    let member_permissions = member_actions
+        .iter()
+        .map(|action| format!("\"{resource_plural}.{action}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let record_scope_check = if owner_scoped {
+        "actor.belongs_to(&model.organization_id)\n            && actor.is(&model.owner_id)"
+    } else {
+        "actor.belongs_to(&model.organization_id)"
+    };
+    let test_id = if matches!(id_type, ResourceIdType::Uuid) {
+        "uuid::Uuid::nil()"
+    } else {
+        "1"
+    };
+    let mut test_model_fields = format!("            id: {test_id},\n");
+    for field in schema.fields {
+        let value = match field.name {
+            "organization_id" => "\"org_1\".to_string()",
+            "owner_id" => "\"user_1\".to_string()",
+            _ => field.stub_value,
+        };
+        test_model_fields.push_str(&format!("            {}: {value},\n", field.name));
+    }
+    let member_delete_test = if owner_scoped {
+        format!(
+            r#"
+    #[test]
+    fn members_manage_only_their_own_{resource_plural}() {{
+        let policy = {resource_pascal}Policy::default();
+        let model = model();
+        let author = OrgActor::new("user_1", "org_1", "member");
+        let teammate = OrgActor::new("user_2", "org_1", "member");
+
+        assert!(policy.allows(&author, Action::Update, Some(&model)));
+        assert!(policy.allows(&author, Action::Delete, Some(&model)));
+        assert!(!policy.allows(&teammate, Action::View, Some(&model)));
+        assert!(!policy.allows(&teammate, Action::Update, Some(&model)));
+    }}
+"#
+        )
+    } else {
+        format!(
+            r#"
+    #[test]
+    fn members_cannot_delete_{resource_plural}() {{
+        let policy = {resource_pascal}Policy::default();
+        let model = model();
+        let member = OrgActor::new("user_2", "org_1", "member");
+        let admin = OrgActor::new("user_3", "org_1", "admin");
+
+        assert!(policy.allows(&member, Action::Update, Some(&model)));
+        assert!(!policy.allows(&member, Action::Delete, Some(&model)));
+        assert!(policy.allows(&admin, Action::Delete, Some(&model)));
+    }}
+"#
+        )
+    };
+
+    format!(
+        r#"//! Authorization policy for {resource_pascal} records.
+//!
+//! Role grants decide which permissions each organization role has, and the
+//! `Policy` methods decide whether an actor may act on a specific record.
+//! Both are application-owned: edit them to match your product's rules.
+
+use tideway::policy::{{OrgActor, Policy, RolePermissions}};
+
+use crate::entities::{resource_name};
+
+pub struct {resource_pascal}Policy {{
+    permissions: RolePermissions,
+}}
+
+impl {resource_pascal}Policy {{
+    pub fn new(permissions: RolePermissions) -> Self {{
+        Self {{ permissions }}
+    }}
+
+    pub fn permissions(&self) -> &RolePermissions {{
+        &self.permissions
+    }}
+}}
+
+impl Default for {resource_pascal}Policy {{
+    fn default() -> Self {{
+        Self::new(
+            RolePermissions::new()
+                .grant("owner", ["{resource_plural}.*"])
+                .grant("admin", ["{resource_plural}.*"])
+                .grant("member", [{member_permissions}]),
+        )
+    }}
+}}
+
+impl Policy<OrgActor, {resource_name}::Model> for {resource_pascal}Policy {{
+    fn view_any(&self, actor: &OrgActor) -> bool {{
+        actor.can(&self.permissions, "{resource_plural}.view")
+    }}
+
+    fn view(&self, actor: &OrgActor, model: &{resource_name}::Model) -> bool {{
+        {record_scope_check}
+            && actor.can(&self.permissions, "{resource_plural}.view")
+    }}
+
+    fn create(&self, actor: &OrgActor) -> bool {{
+        actor.can(&self.permissions, "{resource_plural}.create")
+    }}
+
+    fn update(&self, actor: &OrgActor, model: &{resource_name}::Model) -> bool {{
+        {record_scope_check}
+            && actor.can(&self.permissions, "{resource_plural}.update")
+    }}
+
+    fn delete(&self, actor: &OrgActor, model: &{resource_name}::Model) -> bool {{
+        {record_scope_check}
+            && actor.can(&self.permissions, "{resource_plural}.delete")
+    }}
+}}
+
+#[cfg(test)]
+mod tests {{
+    use super::*;
+    use tideway::policy::Action;
+
+    fn model() -> {resource_name}::Model {{
+        {resource_name}::Model {{
+{test_model_fields}        }}
+    }}
+{member_delete_test}
+    #[test]
+    fn other_organizations_and_unknown_roles_are_denied() {{
+        let policy = {resource_pascal}Policy::default();
+        let model = model();
+        let outsider = OrgActor::new("user_1", "org_2", "owner");
+        let guest = OrgActor::new("user_1", "org_1", "guest");
+
+        assert!(!policy.allows(&outsider, Action::View, Some(&model)));
+        assert!(!policy.allows(&guest, Action::ViewAny, None));
+        assert!(!policy.allows(&guest, Action::View, Some(&model)));
+    }}
+}}
+"#
+    )
 }
 
 fn wire_services_mod(mod_path: &Path, resource_name: &str) -> Result<()> {
@@ -3366,13 +3878,56 @@ fn render_service(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile);
-    let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_owned_scope;
+    let schema = resource_schema(profile, context, custom_fields);
+    let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_scoped();
     let uses_shared_saas_admin_actor = context.shared_saas_actor && context.saas_admin_guard;
-    let route_create_fields = route_request_fields(schema, profile, context, false);
-    let route_update_fields = route_request_fields(schema, profile, context, true);
+    // `owned` resources are scoped to organization + owner; `api`/`tenant` to organization only.
+    let owner_scoped = context.saas_owned_scope;
+    let scope_params = if owner_scoped {
+        "organization_id: &str, owner_id: &str"
+    } else {
+        "organization_id: &str"
+    };
+    let scope_param_lines = if owner_scoped {
+        "organization_id: &str,\n        owner_id: &str,"
+    } else {
+        "organization_id: &str,"
+    };
+    let scope_args = if owner_scoped {
+        "organization_id, owner_id"
+    } else {
+        "organization_id"
+    };
+    let normalized_scope_args = if owner_scoped {
+        "&organization_id, &owner_id"
+    } else {
+        "&organization_id"
+    };
+    let owner_normalize_line = if owner_scoped {
+        "\n        let owner_id = Self::normalize_required_string(\"owner_id\", owner_id.to_string())?;"
+    } else {
+        ""
+    };
+    let authorized_scope_args = if owner_scoped {
+        "&actor.organization_id, &actor.user_id"
+    } else {
+        "&actor.organization_id"
+    };
+    let list_param_args = match (paginate, search) {
+        (true, true) => ", limit, offset, search",
+        (true, false) => ", limit, offset",
+        (false, _) => "",
+    };
+    let list_param_signature = match (paginate, search) {
+        (true, true) => ", limit: Option<u64>, offset: Option<u64>, search: Option<String>",
+        (true, false) => ", limit: Option<u64>, offset: Option<u64>",
+        (false, _) => "",
+    };
+    let route_create_fields = route_request_fields(schema, context, false);
+    let route_update_fields = route_request_fields(schema, context, true);
     let create_signature_args = render_create_signature_args(schema, false);
     let update_signature_args = render_create_signature_args(schema, true);
     let create_call_args = render_param_names(schema, false);
@@ -3394,6 +3949,38 @@ fn render_service(
         "use crate::auth::RequestActor;\n"
     } else {
         ""
+    };
+    let policy_import = if context.saas_scoped() {
+        format!(
+            "use tideway::policy::{{Action, OrgActor, Policy}};\n\nuse crate::policies::{resource_name}::{resource_pascal}Policy;\n"
+        )
+    } else {
+        String::new()
+    };
+    let policy_field = if context.saas_scoped() {
+        format!("    policy: {resource_pascal}Policy,\n")
+    } else {
+        String::new()
+    };
+    let policy_init = if context.saas_scoped() {
+        format!(
+            "Self {{\n            repo,\n            policy: {resource_pascal}Policy::default(),\n        }}"
+        )
+    } else {
+        "Self { repo }".to_string()
+    };
+    let with_policy_method = if context.saas_scoped() {
+        format!(
+            r#"
+    /// Replaces the default authorization policy.
+    pub fn with_policy(mut self, policy: {resource_pascal}Policy) -> Self {{
+        self.policy = policy;
+        self
+    }}
+"#
+        )
+    } else {
+        String::new()
     };
     let audit_event_struct = if uses_shared_saas_owned_actor || uses_shared_saas_admin_actor {
         format!(
@@ -3435,30 +4022,51 @@ pub struct {resource_pascal}AuditEvent {{
     } else {
         "        self.repo.list().await"
     };
-    let owned_methods = if context.saas_owned_scope {
+    let owned_methods = if context.saas_scoped() {
         let owned_list_signature = if paginate {
             if search {
                 format!(
-                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                    "pub async fn list_owned(&self, {scope_params}, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
                 )
             } else {
                 format!(
-                    "pub async fn list_owned(&self, organization_id: &str, owner_id: &str, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                    "pub async fn list_owned(&self, {scope_params}, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
                 )
             }
         } else {
             format!(
-                "pub async fn list_owned(&self, organization_id: &str, owner_id: &str) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+                "pub async fn list_owned(&self, {scope_params}) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
             )
         };
         let owned_list_call = if paginate {
             if search {
-                "        self.repo.list_owned(&organization_id, &owner_id, limit, offset, search).await"
+                format!(
+                    "        self.repo.list_owned({normalized_scope_args}, limit, offset, search).await"
+                )
             } else {
-                "        self.repo.list_owned(&organization_id, &owner_id, limit, offset).await"
+                format!(
+                    "        self.repo.list_owned({normalized_scope_args}, limit, offset).await"
+                )
             }
         } else {
-            "        self.repo.list_owned(&organization_id, &owner_id).await"
+            format!("        self.repo.list_owned({normalized_scope_args}).await")
+        };
+        let owner_check = if owner_scoped {
+            format!(
+                "\n        ensure!(\n            model.owner_id == owner_id,\n            TidewayError::forbidden(\"{resource_pascal} belongs to another user\")\n        );"
+            )
+        } else {
+            String::new()
+        };
+        let create_scope_values = if owner_scoped {
+            "organization_id.to_string(),\n            owner_id.to_string(),"
+        } else {
+            "organization_id.to_string(),"
+        };
+        let update_scope_values = if owner_scoped {
+            "Some(organization_id), Some(owner_id)"
+        } else {
+            "Some(organization_id)"
         };
         let owned_create_signature = render_signature_args_from_fields(&route_create_fields, false);
         let owned_update_signature = render_signature_args_from_fields(&route_update_fields, true);
@@ -3468,51 +4076,41 @@ pub struct {resource_pascal}AuditEvent {{
         format!(
             r#"
     {owned_list_signature}
-        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;
-        let owner_id = Self::normalize_required_string("owner_id", owner_id.to_string())?;
+        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;{owner_normalize_line}
 {owned_list_call}
     }}
 
     fn ensure_owned_access(
         model: crate::entities::{resource_name}::Model,
-        organization_id: &str,
-        owner_id: &str,
+        {scope_param_lines}
     ) -> Result<crate::entities::{resource_name}::Model> {{
         ensure!(
             model.organization_id == organization_id,
             TidewayError::not_found("{resource_pascal} not found")
-        );
-        ensure!(
-            model.owner_id == owner_id,
-            TidewayError::forbidden("{resource_pascal} belongs to another user")
-        );
+        );{owner_check}
         Ok(model)
     }}
 
     pub async fn get_required_owned(
         &self,
         id: {id_type},
-        organization_id: &str,
-        owner_id: &str,
+        {scope_param_lines}
     ) -> Result<crate::entities::{resource_name}::Model> {{
-        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;
-        let owner_id = Self::normalize_required_string("owner_id", owner_id.to_string())?;
+        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;{owner_normalize_line}
         let model = self.repo
             .get(id)
             .await?
             .ok_or_else(|| TidewayError::not_found("{resource_pascal} not found"))?;
-        Self::ensure_owned_access(model, &organization_id, &owner_id)
+        Self::ensure_owned_access(model, {normalized_scope_args})
     }}
 
     pub async fn create_owned(
         &self,
-        organization_id: &str,
-        owner_id: &str,
+        {scope_param_lines}
         {owned_create_signature},
     ) -> Result<crate::entities::{resource_name}::Model> {{
         self.create(
-            organization_id.to_string(),
-            owner_id.to_string(),
+            {create_scope_values}
             {owned_create_args},
         )
         .await
@@ -3521,21 +4119,79 @@ pub struct {resource_pascal}AuditEvent {{
     pub async fn update_owned(
         &self,
         id: {id_type},
-        organization_id: &str,
-        owner_id: &str,
+        {scope_param_lines}
         {owned_update_signature},
     ) -> Result<crate::entities::{resource_name}::Model> {{
-        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;
-        let owner_id = Self::normalize_required_string("owner_id", owner_id.to_string())?;
-        self.get_required_owned(id, &organization_id, &owner_id).await?;
-        self.update(id, Some(organization_id), Some(owner_id), {owned_update_args}).await
+        let organization_id = Self::normalize_required_string("organization_id", organization_id.to_string())?;{owner_normalize_line}
+        self.get_required_owned(id, {normalized_scope_args}).await?;
+        self.update(id, {update_scope_values}, {owned_update_args}).await
     }}
 
-    pub async fn delete_owned(&self, id: {id_type}, organization_id: &str, owner_id: &str) -> Result<()> {{
-        self.get_required_owned(id, organization_id, owner_id).await?;
+    pub async fn delete_owned(&self, id: {id_type}, {scope_params}) -> Result<()> {{
+        self.get_required_owned(id, {scope_args}).await?;
         self.repo.delete(id).await
     }}
+
+    pub async fn list_authorized(&self, actor: &OrgActor{list_param_signature}) -> Result<Vec<crate::entities::{resource_name}::Model>> {{
+        self.policy.authorize(actor, Action::ViewAny, None)?;
+        self.list_owned({authorized_scope_args}{list_param_args}).await
+    }}
+
+    pub async fn get_required_authorized(
+        &self,
+        actor: &OrgActor,
+        id: {id_type},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let model = self.get_required_owned(id, {authorized_scope_args}).await?;
+        self.policy.authorize(actor, Action::View, Some(&model))?;
+        Ok(model)
+    }}
+
+    pub async fn create_authorized(
+        &self,
+        actor: &OrgActor,
+        {owned_create_signature},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        self.policy.authorize(actor, Action::Create, None)?;
+        self.create_owned({authorized_scope_args}, {owned_create_args})
+            .await
+    }}
+
+    pub async fn update_authorized(
+        &self,
+        actor: &OrgActor,
+        id: {id_type},
+        {owned_update_signature},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let model = self.get_required_owned(id, {authorized_scope_args}).await?;
+        self.policy.authorize(actor, Action::Update, Some(&model))?;
+        self.update_owned(id, {authorized_scope_args}, {owned_update_args})
+            .await
+    }}
+
+    /// Deletes the record and returns it as it was before deletion.
+    pub async fn delete_authorized(
+        &self,
+        actor: &OrgActor,
+        id: {id_type},
+    ) -> Result<crate::entities::{resource_name}::Model> {{
+        let model = self.get_required_owned(id, {authorized_scope_args}).await?;
+        self.policy.authorize(actor, Action::Delete, Some(&model))?;
+        self.repo.delete(id).await?;
+        Ok(model)
+    }}
 "#,
+            authorized_scope_args = authorized_scope_args,
+            list_param_args = list_param_args,
+            list_param_signature = list_param_signature,
+            owner_normalize_line = owner_normalize_line,
+            owner_check = owner_check,
+            scope_param_lines = scope_param_lines,
+            normalized_scope_args = normalized_scope_args,
+            create_scope_values = create_scope_values,
+            update_scope_values = update_scope_values,
+            scope_params = scope_params,
+            scope_args = scope_args,
             owned_list_signature = owned_list_signature,
             owned_list_call = owned_list_call,
             id_type = id_type_str,
@@ -3550,30 +4206,9 @@ pub struct {resource_pascal}AuditEvent {{
         String::new()
     };
     let owned_actor_methods = if uses_shared_saas_owned_actor {
-        let actor_list_signature = if paginate {
-            if search {
-                format!(
-                    "pub async fn list_for_actor(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>, search: Option<String>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
-                )
-            } else {
-                format!(
-                    "pub async fn list_for_actor(&self, actor: &RequestActor, limit: Option<u64>, offset: Option<u64>) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
-                )
-            }
-        } else {
-            format!(
-                "pub async fn list_for_actor(&self, actor: &RequestActor) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
-            )
-        };
-        let actor_list_call = if paginate {
-            if search {
-                "        self.list_owned(organization_id, &owner_id, limit, offset, search).await"
-            } else {
-                "        self.list_owned(organization_id, &owner_id, limit, offset).await"
-            }
-        } else {
-            "        self.list_owned(organization_id, &owner_id).await"
-        };
+        let actor_list_signature = format!(
+            "pub async fn list_for_actor(&self, actor: &RequestActor{list_param_signature}) -> Result<Vec<crate::entities::{resource_name}::Model>> {{"
+        );
         let owned_create_signature = render_signature_args_from_fields(&route_create_fields, false);
         let owned_update_signature = render_signature_args_from_fields(&route_update_fields, true);
         let owned_create_args = render_param_names_from_fields(&route_create_fields);
@@ -3581,10 +4216,22 @@ pub struct {resource_pascal}AuditEvent {{
 
         format!(
             r#"
+    /// Builds the policy subject from the caller's organization membership.
+    fn policy_actor(actor: &RequestActor) -> Result<OrgActor> {{
+        let membership = actor
+            .membership
+            .as_ref()
+            .ok_or_else(|| TidewayError::forbidden("Organization context required"))?;
+        Ok(OrgActor::new(
+            actor.owner_id(),
+            membership.organization_id.clone(),
+            membership.role.clone(),
+        ))
+    }}
+
     {actor_list_signature}
-        let organization_id = actor.organization_id()?;
-        let owner_id = actor.owner_id();
-{actor_list_call}
+        self.list_authorized(&Self::policy_actor(actor)?{list_param_args})
+            .await
     }}
 
     fn build_owned_audit_event(
@@ -3616,9 +4263,8 @@ pub struct {resource_pascal}AuditEvent {{
         actor: &RequestActor,
         id: {id_type},
     ) -> Result<crate::entities::{resource_name}::Model> {{
-        let organization_id = actor.organization_id()?;
-        let owner_id = actor.owner_id();
-        self.get_required_owned(id, organization_id, &owner_id).await
+        self.get_required_authorized(&Self::policy_actor(actor)?, id)
+            .await
     }}
 
     pub async fn create_for_actor(
@@ -3626,10 +4272,8 @@ pub struct {resource_pascal}AuditEvent {{
         actor: &RequestActor,
         {owned_create_signature},
     ) -> Result<crate::entities::{resource_name}::Model> {{
-        let organization_id = actor.organization_id()?;
-        let owner_id = actor.owner_id();
         let model = self
-            .create_owned(organization_id, &owner_id, {owned_create_args})
+            .create_authorized(&Self::policy_actor(actor)?, {owned_create_args})
             .await?;
         let event = Self::build_owned_audit_event(actor, "create", &model)?;
         self.audit_owned_write(&event, &model).await?;
@@ -3642,10 +4286,8 @@ pub struct {resource_pascal}AuditEvent {{
         id: {id_type},
         {owned_update_signature},
     ) -> Result<crate::entities::{resource_name}::Model> {{
-        let organization_id = actor.organization_id()?;
-        let owner_id = actor.owner_id();
         let model = self
-            .update_owned(id, organization_id, &owner_id, {owned_update_args})
+            .update_authorized(&Self::policy_actor(actor)?, id, {owned_update_args})
             .await?;
         let event = Self::build_owned_audit_event(actor, "update", &model)?;
         self.audit_owned_write(&event, &model).await?;
@@ -3653,16 +4295,15 @@ pub struct {resource_pascal}AuditEvent {{
     }}
 
     pub async fn delete_for_actor(&self, actor: &RequestActor, id: {id_type}) -> Result<()> {{
-        let model = self.get_required_for_actor(actor, id).await?;
-        let organization_id = actor.organization_id()?;
-        let owner_id = actor.owner_id();
+        let model = self
+            .delete_authorized(&Self::policy_actor(actor)?, id)
+            .await?;
         let event = Self::build_owned_audit_event(actor, "delete", &model)?;
-        self.delete_owned(id, organization_id, &owner_id).await?;
         self.audit_owned_write(&event, &model).await
     }}
 "#,
             actor_list_signature = actor_list_signature,
-            actor_list_call = actor_list_call,
+            list_param_args = list_param_args,
             id_type = id_type_str,
             resource_name = resource_name,
             owned_create_signature = owned_create_signature,
@@ -3788,19 +4429,19 @@ pub struct {resource_pascal}AuditEvent {{
         r#"use tideway::{{ensure, Result, TidewayError}};
 {uuid_import}
 {actor_import}
-
+{policy_import}
 use crate::repositories::{resource_name}::{resource_pascal}Repository;
 {audit_event_struct}
 
 pub struct {resource_pascal}Service {{
     repo: {resource_pascal}Repository,
-}}
+{policy_field}}}
 
 impl {resource_pascal}Service {{
     pub fn new(repo: {resource_pascal}Repository) -> Self {{
-        Self {{ repo }}
+        {policy_init}
     }}
-
+{with_policy_method}
     {list_signature}
 {list_body}
     }}
@@ -3841,6 +4482,10 @@ impl {resource_pascal}Service {{
         id_type = id_type_str,
         uuid_import = uuid_import,
         actor_import = actor_import,
+        policy_import = policy_import,
+        policy_field = policy_field,
+        policy_init = policy_init,
+        with_policy_method = with_policy_method,
         audit_event_struct = audit_event_struct,
         list_signature = list_signature,
         list_body = list_body,
@@ -3857,6 +4502,7 @@ impl {resource_pascal}Service {{
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_repository_tests(
     project_dir: &Path,
     project_name: &str,
@@ -3865,6 +4511,8 @@ fn generate_repository_tests(
     paginate: bool,
     search: bool,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> Result<()> {
     let tests_dir = project_dir.join("tests");
     ensure_dir(&tests_dir).with_context(|| format!("Failed to create {}", tests_dir.display()))?;
@@ -3877,12 +4525,15 @@ fn generate_repository_tests(
         paginate,
         search,
         profile,
+        context,
+        custom_fields,
     );
     write_file_with_force(&file_path, &contents, false)?;
     print_success("Generated repository tests");
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_repository_tests(
     project_name: &str,
     resource_name: &str,
@@ -3890,9 +4541,11 @@ fn render_repository_tests(
     paginate: bool,
     search: bool,
     profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile);
+    let schema = resource_schema(profile, context, custom_fields);
     let create_call_args = render_stub_call_args(schema, false);
     let list_call = if paginate {
         if search {

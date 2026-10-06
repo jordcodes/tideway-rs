@@ -1,0 +1,63 @@
+//! Development and demo seed data for {{project_name_pascal}}.
+//!
+//! Run with `tideway seed` (loads `.env` and `DATABASE_URL`). Pending migrations are applied
+//! first. Keep seeds idempotent so they are safe to rerun against an existing database.
+
+use migration::MigratorTrait;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, DbErr, EntityTrait, QueryFilter,
+    Set,
+};
+
+// Reuse the application's SeaORM entities.
+#[allow(dead_code)]
+#[path = "../entities/mod.rs"]
+mod entities;
+
+use entities::todo;
+
+const SAMPLE_TODOS: &[&str] = &[
+    "Example: read the Tideway getting started guide",
+    "Example: add a resource with `tideway resource`",
+    "Example: ship the first release",
+];
+
+#[tokio::main]
+async fn main() -> Result<(), DbErr> {
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");
+    let db = Database::connect(&database_url).await?;
+    migration::Migrator::up(&db, None).await?;
+
+    seed_todos(&db).await?;
+    println!("Seed complete");
+    Ok(())
+}
+
+async fn seed_todos(db: &DatabaseConnection) -> Result<(), DbErr> {
+    let mut inserted = 0;
+    for name in SAMPLE_TODOS {
+        let exists = todo::Entity::find()
+            .filter(todo::Column::Name.eq(*name))
+            .one(db)
+            .await?
+            .is_some();
+        if exists {
+            continue;
+        }
+
+        todo::ActiveModel {
+            name: Set((*name).to_string()),
+            ..Default::default()
+        }
+        .insert(db)
+        .await?;
+        inserted += 1;
+    }
+
+    println!(
+        "todos: {} inserted, {} already present",
+        inserted,
+        SAMPLE_TODOS.len() - inserted
+    );
+    Ok(())
+}

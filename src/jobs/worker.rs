@@ -3,9 +3,12 @@
 //! Workers poll the job queue and execute jobs using registered handlers.
 
 use crate::app::AppContext;
-use crate::error::Result;
+use crate::error::{Result, TidewayError};
 use crate::jobs::registry::JobRegistry;
+use crate::observability::{ErrorEvent, ErrorSource, JobInfo, panic_message};
 use crate::traits::job::JobQueue;
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
@@ -47,31 +50,29 @@ impl JobWorker {
         tracing::info!(worker_id = %self.worker_id, "Job worker started");
 
         loop {
-            tokio::select! {
-                _ = shutdown_rx.recv() => {
-                    tracing::info!(worker_id = %self.worker_id, "Shutdown signal received, finishing current job...");
-                    break;
+            // Never cancel dequeue: a backend may already have claimed a job even
+            // when its future has not returned yet. Finish the entire claim,
+            // execution and acknowledgement before observing shutdown.
+            match shutdown_rx.try_recv() {
+                Ok(()) | Err(mpsc::error::TryRecvError::Disconnected) => break,
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+
+            match self.process_next_job().await {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_rx.recv() => break,
+                        _ = self.queue.wait_for_job(Duration::from_secs(1)) => {},
+                    }
                 }
-                result = self.process_next_job() => {
-                    match result {
-                        Ok(Some(_)) => {
-                            // Job processed successfully, continue immediately
-                        }
-                        Ok(None) => {
-                            // Allow queue implementations to provide event-driven wakeups.
-                            tokio::select! {
-                                _ = shutdown_rx.recv() => break,
-                                _ = self.queue.wait_for_job(Duration::from_secs(1)) => {},
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(worker_id = %self.worker_id, error = %e, "Error processing job");
-                            // Wait before retrying
-                            tokio::select! {
-                                _ = shutdown_rx.recv() => break,
-                                _ = sleep(Duration::from_secs(1)) => {},
-                            }
-                        }
+                Err(e) => {
+                    tracing::error!(worker_id = %self.worker_id, error = %e, "Error processing job");
+                    tokio::select! {
+                        biased;
+                        _ = shutdown_rx.recv() => break,
+                        _ = sleep(Duration::from_secs(1)) => {},
                     }
                 }
             }
@@ -89,6 +90,7 @@ impl JobWorker {
         };
 
         let job_id = job_data.job_id.clone();
+        let job_type = job_data.job_type.clone();
         tracing::debug!(
             worker_id = %self.worker_id,
             job_id = %job_id,
@@ -96,8 +98,17 @@ impl JobWorker {
             "Processing job"
         );
 
-        // Execute the job
-        match self.registry.execute(job_data, self.ctx.clone()).await {
+        // Catch both handler construction and future polling panics. Treat them
+        // like ordinary job failures so the worker survives and the queue retries.
+        let result = AssertUnwindSafe(self.registry.execute(job_data, self.ctx.clone()))
+            .catch_unwind()
+            .await;
+        let panicked = result.is_err();
+        let result = result.unwrap_or_else(|panic| {
+            let message = panic_message(panic.as_ref());
+            Err(TidewayError::internal(format!("Job panicked: {message}")))
+        });
+        match result {
             Ok(()) => {
                 // Job completed successfully
                 self.queue.complete(&job_id).await?;
@@ -111,6 +122,13 @@ impl JobWorker {
             Err(e) => {
                 // Job failed, let the queue handle retry logic
                 let error_msg = format!("{}", e);
+                if let Some(reporter) = self.ctx.error_reporter_opt() {
+                    reporter.report(
+                        &ErrorEvent::new(error_msg.clone())
+                            .with_panic(panicked)
+                            .with_source(ErrorSource::Job(JobInfo::new(&job_id, job_type))),
+                    );
+                }
                 self.queue.fail(&job_id, error_msg).await?;
                 tracing::warn!(
                     worker_id = %self.worker_id,
@@ -188,5 +206,40 @@ impl WorkerPool {
         }
 
         tracing::info!("Worker pool shut down");
+    }
+
+    /// Shutdown all workers, aborting any still running after `timeout`
+    ///
+    /// Returns `true` if every worker stopped within the timeout. Jobs whose
+    /// workers are aborted are left claimed and are recovered by the queue
+    /// backend's normal retry/visibility handling, so handlers should be idempotent.
+    pub async fn shutdown_with_timeout(self, timeout: Duration) -> bool {
+        tracing::info!(
+            timeout_secs = timeout.as_secs_f64(),
+            "Shutting down worker pool..."
+        );
+
+        for shutdown_tx in self.shutdown_txs {
+            let _ = shutdown_tx.try_send(());
+        }
+
+        let abort_handles: Vec<_> = self.workers.iter().map(|w| w.abort_handle()).collect();
+        let finished = tokio::time::timeout(timeout, futures::future::join_all(self.workers))
+            .await
+            .is_ok();
+
+        if finished {
+            tracing::info!("Worker pool shut down");
+        } else {
+            let still_running = abort_handles.iter().filter(|h| !h.is_finished()).count();
+            tracing::warn!(
+                still_running,
+                "Worker pool shutdown timed out; aborting running jobs"
+            );
+            for handle in abort_handles {
+                handle.abort();
+            }
+        }
+        finished
     }
 }

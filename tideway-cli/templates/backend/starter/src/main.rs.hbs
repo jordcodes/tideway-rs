@@ -16,6 +16,12 @@ use tideway::{AppContext, SeaOrmPool};
 use axum::Extension;
 use crate::auth::{AuthModule, SimpleAuthProvider};
 use tideway::auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig};
+{{#if has_database_feature}}
+use std::time::Duration;
+use tideway::jobs::JobsConfig;
+use tideway::{InMemoryJobQueue, JobQueue, JobRegistry, WorkerPool};
+use crate::email::EmailSetup;
+{{/if}}
 {{/if}}
 
 mod routes;
@@ -24,6 +30,9 @@ mod openapi_docs;
 {{/if}}
 {{#if has_auth_feature}}
 mod auth;
+{{#if has_database_feature}}
+mod email;
+{{/if}}
 {{/if}}
 {{#if has_database_feature}}
 mod entities;
@@ -97,6 +106,16 @@ async fn main() -> Result<(), std::io::Error> {
     let jwt_issuer = jwt.issuer();
     let auth_db = Arc::new(db.clone());
     let auth_provider = SimpleAuthProvider::new(jwt_verifier, auth_db.clone());
+
+    // Lifecycle emails (verification, password reset) are queued by request handlers and
+    // delivered by background workers. Swap in `tideway::RedisJobQueue` (feature `jobs-redis`)
+    // when queued emails must survive restarts.
+    let jobs_config = JobsConfig::from_env();
+    let job_queue: Arc<dyn JobQueue> = Arc::new(InMemoryJobQueue::new(
+        jobs_config.max_retries,
+        jobs_config.retry_backoff_seconds,
+    ));
+    let email = EmailSetup::from_env(job_queue.clone()).expect("Invalid email configuration");
     let auth_module = AuthModule::new(
         auth_db,
         jwt_issuer.clone(),
@@ -104,6 +123,15 @@ async fn main() -> Result<(), std::io::Error> {
         "{{project_name}}",
     )
     .with_public_registration(allow_public_registration);
+    let auth_module = match &email {
+        Some(email) => auth_module.with_email_delivery(email.emails.clone()),
+        None => {
+            tracing::warn!(
+                "EMAIL_PROVIDER is not set; email verification and password reset routes are disabled"
+            );
+            auth_module
+        }
+    };
     {{else}}
     let auth_provider = SimpleAuthProvider::new(jwt_verifier);
     let auth_module = AuthModule::new();
@@ -125,6 +153,9 @@ async fn main() -> Result<(), std::io::Error> {
         .with_context(
             AppContext::builder()
                 .with_database(Arc::new(SeaOrmPool::new(db, database_url)))
+{{#if has_auth_feature}}
+                .with_job_queue(job_queue.clone())
+{{/if}}
                 .build()
         )
 {{/if}}
@@ -154,5 +185,37 @@ async fn main() -> Result<(), std::io::Error> {
     };
 {{/if}}
 
+{{#if has_auth_feature}}
+{{#if has_database_feature}}
+    let email_workers = match email {
+        Some(email) => {
+            let registry = Arc::new(JobRegistry::new());
+            tideway::email::register_email_jobs(&registry).await;
+            let worker_context = AppContext::builder()
+                .with_mailer(email.mailer)
+                .with_job_queue(job_queue.clone())
+                .build();
+            Some(WorkerPool::new(
+                job_queue,
+                registry,
+                Arc::new(worker_context),
+                jobs_config.worker_count.max(1),
+            ))
+        }
+        None => None,
+    };
+
+    let result = app.serve().await;
+    if let Some(workers) = email_workers {
+        workers
+            .shutdown_with_timeout(Duration::from_secs(jobs_config.shutdown_timeout_seconds))
+            .await;
+    }
+    result
+{{else}}
     app.serve().await
+{{/if}}
+{{else}}
+    app.serve().await
+{{/if}}
 }

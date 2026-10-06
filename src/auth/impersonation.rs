@@ -14,16 +14,16 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use tideway::auth::impersonation::{ImpersonationManager, ImpersonationConfig};
+//! use tideway::auth::impersonation::{
+//!     ImpersonationConfig, ImpersonationManager, ImpersonationRequestBody,
+//! };
 //!
 //! let manager = ImpersonationManager::new(store, ImpersonationConfig::default());
 //!
-//! // Admin starts impersonating a user
-//! let session = manager.start_impersonation(
-//!     "admin-123",      // Admin user ID
-//!     "user-456",       // Target user ID
-//!     Some("Support ticket #789"),
-//! ).await?;
+//! // Admin starts impersonating a user. The admin ID comes from the
+//! // authenticated session, never from the request body.
+//! let body: ImpersonationRequestBody = /* Json<ImpersonationRequestBody> */;
+//! let session = manager.start_impersonation(body.into_request(admin.id)).await?;
 //!
 //! // Issue tokens with impersonation claims
 //! // The access token will include impersonation info for UI detection
@@ -53,6 +53,9 @@ pub struct ImpersonationConfig {
     /// Whether to notify the user when impersonation ends.
     pub notify_on_end: bool,
     /// Whether admins can impersonate other admins.
+    ///
+    /// Does not override [`ImpersonationStore::can_be_impersonated`]; users
+    /// who opted out can never be impersonated.
     pub allow_admin_impersonation: bool,
     /// Actions blocked during impersonation.
     pub blocked_actions: Vec<BlockedAction>,
@@ -189,22 +192,31 @@ impl BlockedAction {
     /// Check if an action string matches this blocked action.
     #[must_use]
     pub fn matches(&self, action: &str) -> bool {
+        self.as_str() == action
+    }
+
+    /// Canonical action name used by session checks and token claims.
+    fn as_str(&self) -> &str {
         match self {
-            Self::DeleteAccount => action == "delete_account",
-            Self::ChangePassword => action == "change_password",
-            Self::ChangeMfa => action == "change_mfa",
-            Self::ChangeEmail => action == "change_email",
-            Self::ModifyBilling => action == "modify_billing",
-            Self::ExportData => action == "export_data",
-            Self::MakePurchase => action == "make_purchase",
-            Self::SendMessages => action == "send_messages",
-            Self::Custom(s) => action == s,
+            Self::DeleteAccount => "delete_account",
+            Self::ChangePassword => "change_password",
+            Self::ChangeMfa => "change_mfa",
+            Self::ChangeEmail => "change_email",
+            Self::ModifyBilling => "modify_billing",
+            Self::ExportData => "export_data",
+            Self::MakePurchase => "make_purchase",
+            Self::SendMessages => "send_messages",
+            Self::Custom(s) => s,
         }
     }
 }
 
 /// Request to start impersonation.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// Intentionally not `Deserialize`: `admin_id` identifies the acting admin and
+/// must come from the authenticated request context, never from client input.
+/// Deserialize request bodies into [`ImpersonationRequestBody`] instead.
+#[derive(Debug, Clone)]
 pub struct ImpersonationRequest {
     /// The admin user ID.
     pub admin_id: String,
@@ -214,6 +226,35 @@ pub struct ImpersonationRequest {
     pub reason: Option<String>,
     /// Custom duration (if different from config default).
     pub duration: Option<Duration>,
+}
+
+/// Client-supplied body for starting impersonation.
+///
+/// Contains no actor ID; pair it with the authenticated admin's ID via
+/// [`ImpersonationRequestBody::into_request`]. Unknown fields (such as a
+/// smuggled `admin_id`) are rejected.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImpersonationRequestBody {
+    /// The target user ID to impersonate.
+    pub target_user_id: String,
+    /// Reason for impersonation (e.g., support ticket).
+    pub reason: Option<String>,
+    /// Custom duration in seconds (if different from config default).
+    pub duration_secs: Option<u64>,
+}
+
+impl ImpersonationRequestBody {
+    /// Build an [`ImpersonationRequest`] for the authenticated admin.
+    #[must_use]
+    pub fn into_request(self, admin_id: impl Into<String>) -> ImpersonationRequest {
+        ImpersonationRequest {
+            admin_id: admin_id.into(),
+            target_user_id: self.target_user_id,
+            reason: self.reason,
+            duration: self.duration_secs.map(Duration::from_secs),
+        }
+    }
 }
 
 /// An active impersonation session.
@@ -286,7 +327,7 @@ impl ImpersonationClaims {
             imp_blocked: session
                 .blocked_actions
                 .iter()
-                .map(|a| format!("{a:?}").to_lowercase())
+                .map(|a| a.as_str().to_owned())
                 .collect(),
         }
     }
@@ -333,9 +374,12 @@ pub trait ImpersonationStore: Send + Sync {
     /// Check if a user is an admin who can impersonate.
     async fn is_admin(&self, user_id: &str) -> Result<bool>;
 
-    /// Check if a target user can be impersonated.
+    /// Check if a target user allows being impersonated (e.g. has not opted out).
     ///
-    /// Returns false if the user is an admin (unless config allows).
+    /// Always enforced, regardless of
+    /// [`ImpersonationConfig::allow_admin_impersonation`]. Admin targets are
+    /// checked separately via [`is_admin`](Self::is_admin), so do not return
+    /// false here just because the user is an admin.
     async fn can_be_impersonated(&self, user_id: &str) -> Result<bool>;
 
     /// Get the target user's email for notifications.
@@ -451,9 +495,9 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
             return Err(TidewayError::NotFound("Target user not found".into()));
         }
 
-        // Check if target can be impersonated
-        if !self.store.can_be_impersonated(&req.target_user_id).await?
-            && !self.config.allow_admin_impersonation
+        // Check if target is an admin (only allowed when configured)
+        if !self.config.allow_admin_impersonation
+            && self.store.is_admin(&req.target_user_id).await?
         {
             tracing::warn!(
                 target: "auth.impersonation.rejected",
@@ -464,6 +508,20 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
             );
             return Err(TidewayError::Forbidden(
                 "Cannot impersonate admin users".into(),
+            ));
+        }
+
+        // Per-user eligibility (e.g. opt-out) is always enforced
+        if !self.store.can_be_impersonated(&req.target_user_id).await? {
+            tracing::warn!(
+                target: "auth.impersonation.rejected",
+                admin_id = %req.admin_id,
+                target_user_id = %req.target_user_id,
+                reason = "target_opted_out",
+                "Impersonation rejected: target has opted out"
+            );
+            return Err(TidewayError::Forbidden(
+                "User has opted out of impersonation".into(),
             ));
         }
 
@@ -744,25 +802,14 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
     }
 }
 
-/// Generate a unique session ID.
+/// Generate an unguessable session ID from 256 bits of OS randomness.
 fn generate_session_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use rand::RngCore;
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-
-    // Simple unique ID using timestamp + random suffix
-    format!("imp_{timestamp:x}_{:x}", random_u64())
-}
-
-/// Generate a random u64 for session IDs.
-fn random_u64() -> u64 {
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hasher};
-
-    RandomState::new().build_hasher().finish()
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    format!("imp_{}", URL_SAFE_NO_PAD.encode(bytes))
 }
 
 /// Truncate a string to a maximum length (UTF-8 safe).
@@ -798,7 +845,7 @@ pub mod test {
     #[derive(Clone)]
     struct UserData {
         email: String,
-        is_admin: bool,
+        opted_out: bool,
     }
 
     impl InMemoryImpersonationStore {
@@ -814,7 +861,7 @@ pub mod test {
                 user_id.to_string(),
                 UserData {
                     email: email.to_string(),
-                    is_admin: false,
+                    opted_out: false,
                 },
             );
         }
@@ -825,10 +872,17 @@ pub mod test {
                 user_id.to_string(),
                 UserData {
                     email: email.to_string(),
-                    is_admin: true,
+                    opted_out: false,
                 },
             );
             self.admins.write().unwrap().push(user_id.to_string());
+        }
+
+        /// Mark a user as having opted out of impersonation.
+        pub fn opt_out_user(&self, user_id: &str) {
+            if let Some(user) = self.users.write().unwrap().get_mut(user_id) {
+                user.opted_out = true;
+            }
         }
 
         /// Get notifications sent.
@@ -849,13 +903,13 @@ pub mod test {
         }
 
         async fn can_be_impersonated(&self, user_id: &str) -> Result<bool> {
-            // Regular users can be impersonated, admins cannot by default
+            // Admin targets are gated by the manager via `is_admin`
             Ok(self
                 .users
                 .read()
                 .unwrap()
                 .get(user_id)
-                .map(|u| !u.is_admin)
+                .map(|u| !u.opted_out)
                 .unwrap_or(false))
         }
 
@@ -976,6 +1030,150 @@ mod tests {
         store.add_user("user-1", "user1@example.com");
         store.add_user("user-2", "user2@example.com");
         store
+    }
+
+    #[test]
+    fn test_session_id_is_256_bit_random_token() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        for _ in 0..2_000 {
+            let id = generate_session_id();
+            let token = id
+                .strip_prefix("imp_")
+                .expect("session ID keeps imp_ prefix");
+            let bytes = URL_SAFE_NO_PAD
+                .decode(token)
+                .expect("session ID token is base64url");
+            assert_eq!(bytes.len(), 32, "session ID must carry 256 random bits");
+            assert!(seen.insert(id), "session IDs must be unique");
+        }
+    }
+
+    // Autoref probe: the inherent method wins only when `T: DeserializeOwned`.
+    struct DeserializeProbe<T>(std::marker::PhantomData<T>);
+    impl<T: serde::de::DeserializeOwned> DeserializeProbe<T> {
+        // Only selected if `Deserialize` is reintroduced, which fails the test.
+        #[allow(dead_code)]
+        fn is_deserializable(&self) -> bool {
+            true
+        }
+    }
+    trait NotDeserializable {
+        fn is_deserializable(&self) -> bool {
+            false
+        }
+    }
+    impl<T> NotDeserializable for DeserializeProbe<T> {}
+
+    #[test]
+    fn test_impersonation_request_is_not_deserializable() {
+        // admin_id is the acting user and must come from authenticated context.
+        assert!(
+            !DeserializeProbe::<ImpersonationRequest>(std::marker::PhantomData).is_deserializable()
+        );
+    }
+
+    #[test]
+    fn test_request_body_rejects_client_admin_id() {
+        let err = serde_json::from_str::<ImpersonationRequestBody>(
+            r#"{"admin_id":"admin-1","target_user_id":"user-1","reason":"x"}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("admin_id"));
+    }
+
+    #[test]
+    fn test_request_body_uses_authenticated_admin_id() {
+        let body: ImpersonationRequestBody = serde_json::from_str(
+            r#"{"target_user_id":"user-1","reason":"Ticket #1","duration_secs":600}"#,
+        )
+        .unwrap();
+        let req = body.into_request("admin-1");
+        assert_eq!(req.admin_id, "admin-1");
+        assert_eq!(req.target_user_id, "user-1");
+        assert_eq!(req.reason.as_deref(), Some("Ticket #1"));
+        assert_eq!(req.duration, Some(Duration::from_secs(600)));
+    }
+
+    #[tokio::test]
+    async fn test_request_body_cannot_borrow_another_admins_identity() {
+        let manager = ImpersonationManager::new(setup_store(), ImpersonationConfig::default());
+        // A non-admin caller sends a body; the handler passes their own ID.
+        let body: ImpersonationRequestBody =
+            serde_json::from_str(r#"{"target_user_id":"user-2","reason":"x"}"#).unwrap();
+        let result = manager
+            .start_impersonation(body.into_request("user-1"))
+            .await;
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_opted_out_user_rejected_even_with_admin_impersonation_allowed() {
+        let store = setup_store();
+        store.opt_out_user("user-1");
+        let config = ImpersonationConfig::default().allow_admin_impersonation(true);
+        let manager = ImpersonationManager::new(store, config);
+
+        let result = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "user-1".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await;
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_opted_out_user_rejected_with_default_config() {
+        let store = setup_store();
+        store.opt_out_user("user-1");
+        let manager = ImpersonationManager::new(store, ImpersonationConfig::default());
+
+        let result = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "user-1".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await;
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_admin_target_rejected_by_default() {
+        let manager = ImpersonationManager::new(setup_store(), ImpersonationConfig::default());
+
+        let result = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "admin-2".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await;
+        assert!(matches!(result, Err(TidewayError::Forbidden(_))));
+    }
+
+    #[tokio::test]
+    async fn test_admin_target_allowed_when_configured() {
+        let config = ImpersonationConfig::default().allow_admin_impersonation(true);
+        let manager = ImpersonationManager::new(setup_store(), config);
+
+        let session = manager
+            .start_impersonation(ImpersonationRequest {
+                admin_id: "admin-1".to_string(),
+                target_user_id: "admin-2".to_string(),
+                reason: Some("Support".to_string()),
+                duration: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(session.target_user_id, "admin-2");
     }
 
     #[test]
@@ -1282,6 +1480,57 @@ mod tests {
         let claims = ImpersonationClaims::from_session(&session);
         assert_eq!(claims.imp_session, "imp_123");
         assert_eq!(claims.imp_admin, "admin-1");
-        assert_eq!(claims.imp_blocked.len(), 2);
+        assert_eq!(claims.imp_blocked, ["delete_account", "change_password"]);
+    }
+
+    #[test]
+    fn test_claim_driven_action_checks() {
+        let actions = [
+            (BlockedAction::DeleteAccount, "delete_account"),
+            (BlockedAction::ChangePassword, "change_password"),
+            (BlockedAction::ChangeMfa, "change_mfa"),
+            (BlockedAction::ChangeEmail, "change_email"),
+            (BlockedAction::ModifyBilling, "modify_billing"),
+            (BlockedAction::ExportData, "export_data"),
+            (BlockedAction::MakePurchase, "make_purchase"),
+            (BlockedAction::SendMessages, "send_messages"),
+            (
+                BlockedAction::Custom("Manage_API_keys".into()),
+                "Manage_API_keys",
+            ),
+        ];
+        for (blocked_action, action_name) in actions {
+            let session = ImpersonationSession {
+                session_id: "imp_123".into(),
+                admin_id: "admin-1".into(),
+                target_user_id: "user-1".into(),
+                reason: None,
+                started_at: 0,
+                expires_at: 0,
+                blocked_actions: vec![blocked_action],
+            };
+            let claims = ImpersonationClaims::from_session(&session);
+            let json = serde_json::to_string(&claims).unwrap();
+            let token: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+            // Equivalent to the frontend's decoded token.imp_blocked.includes(action).
+            let blocked_buttons = token["imp_blocked"].as_array().unwrap();
+            assert!(
+                blocked_buttons.contains(&serde_json::json!(action_name)),
+                "{action_name}"
+            );
+            assert!(!blocked_buttons.contains(&serde_json::json!("view_profile")));
+
+            // Claim-driven authorization must agree with server-side session checks.
+            let decoded: ImpersonationClaims = serde_json::from_str(&json).unwrap();
+            for action in [action_name, "view_profile"] {
+                assert_eq!(
+                    decoded.imp_blocked.iter().any(|blocked| blocked == action),
+                    session.is_action_blocked(action),
+                    "{action}"
+                );
+            }
+            assert_eq!(decoded.imp_blocked, [action_name]);
+        }
     }
 }

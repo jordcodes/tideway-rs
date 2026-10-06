@@ -11,6 +11,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::sync::mpsc;
 
 /// Handle to a connection for the manager
 ///
@@ -36,10 +37,18 @@ pub type ConnectionHandle = Arc<tokio::sync::RwLock<Connection>>;
 pub struct ConnectionManager {
     /// Map of connection ID to connection handle
     connections: Arc<DashMap<String, ConnectionHandle>>,
+    /// Outbound senders by connection ID, so broadcasts never need a connection lock.
+    /// Handlers run while holding the connection's write lock and may broadcast to
+    /// rooms or users that include their own connection.
+    senders: Arc<DashMap<String, mpsc::Sender<Message>>>,
     /// Map of room name to set of connection IDs
     rooms: Arc<DashMap<String, HashSet<String>>>,
+    /// Authoritative reverse room index, independent of connection-lock contention.
+    connection_rooms: Arc<DashMap<String, HashSet<String>>>,
     /// Map of user ID to set of connection IDs (for user-specific broadcasting)
     users: Arc<DashMap<String, HashSet<String>>>,
+    /// Reverse user index, so cleanup does not need the connection lock.
+    connection_users: Arc<DashMap<String, String>>,
     /// Maximum number of connections allowed (0 = unlimited)
     max_connections: usize,
     /// Current active connection count (atomic for race-free limit checking)
@@ -63,8 +72,11 @@ impl ConnectionManager {
     pub fn with_max_connections(max_connections: usize) -> Self {
         Self {
             connections: Arc::new(DashMap::new()),
+            senders: Arc::new(DashMap::new()),
             rooms: Arc::new(DashMap::new()),
+            connection_rooms: Arc::new(DashMap::new()),
             users: Arc::new(DashMap::new()),
+            connection_users: Arc::new(DashMap::new()),
             max_connections,
             active_count: Arc::new(AtomicU64::new(0)),
             total_connections: Arc::new(AtomicU64::new(0)),
@@ -85,11 +97,12 @@ impl ConnectionManager {
     /// registration attempts are handled safely without exceeding the limit.
     pub async fn register(&self, conn: ConnectionHandle) -> Result<()> {
         // Get connection info first (before checking limit)
-        let (conn_id, user_id) = {
+        let (conn_id, user_id, sender) = {
             let conn_guard = conn.read().await;
             (
                 conn_guard.id().to_string(),
                 conn_guard.user_id().map(String::from),
+                conn_guard.sender_clone(),
             )
         };
 
@@ -125,12 +138,11 @@ impl ConnectionManager {
         }
 
         // Now insert the connection (we've already reserved the slot)
+        self.senders.insert(conn_id.clone(), sender);
         self.connections.insert(conn_id.clone(), conn);
 
         // Update user mapping if user is authenticated
-        if let Some(uid) = user_id {
-            self.users.entry(uid).or_default().insert(conn_id.clone());
-        }
+        self.sync_user(&conn_id, user_id.as_deref());
 
         self.total_connections.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -144,47 +156,68 @@ impl ConnectionManager {
         if let Some((_, conn)) = self.connections.remove(conn_id) {
             // Decrement active count (matches the increment in register)
             self.active_count.fetch_sub(1, Ordering::Relaxed);
+            self.senders.remove(conn_id);
+            drop(conn);
 
-            let conn_guard = conn.read().await;
-
-            // Remove from user mapping
-            if let Some(user_id) = conn_guard.user_id()
-                && let Some(mut user_conns) = self.users.get_mut(user_id)
-            {
-                user_conns.remove(conn_id);
-                if user_conns.is_empty() {
-                    drop(user_conns);
-                    self.users.remove(user_id);
-                }
+            // Removing the connection above excludes concurrent user updates, and
+            // the reverse index avoids waiting on a lock a handler may hold.
+            if let Some((_, user_id)) = self.connection_users.remove(conn_id) {
+                self.remove_user_member(conn_id, &user_id);
             }
 
-            // Remove from all rooms
-            for room_name in conn_guard.rooms() {
-                if let Some(mut room_conns) = self.rooms.get_mut(room_name) {
-                    room_conns.remove(conn_id);
-                    if room_conns.is_empty() {
-                        drop(room_conns);
-                        self.rooms.remove(room_name);
-                    }
+            // Removing the connection above excludes concurrent room updates. Only
+            // visit its indexed rooms, even when connection-local updates were skipped.
+            if let Some((_, rooms)) = self.connection_rooms.remove(conn_id) {
+                for room in rooms {
+                    self.remove_room_member(conn_id, &room);
                 }
             }
-            drop(conn_guard);
-
-            // Ensure no stale room memberships remain even if local room state was
-            // out-of-sync due lock contention in add/remove room updates.
-            self.remove_connection_from_all_rooms(conn_id);
         }
     }
 
-    fn remove_connection_from_all_rooms(&self, conn_id: &str) {
-        let room_names: Vec<String> = self.rooms.iter().map(|entry| entry.key().clone()).collect();
+    fn remove_room_member(&self, conn_id: &str, room: &str) {
+        // Remove empty rooms atomically with membership changes so a concurrent
+        // join cannot be lost between checking emptiness and removing the room.
+        self.rooms.remove_if_mut(room, |_, members| {
+            members.remove(conn_id);
+            members.is_empty()
+        });
+    }
 
-        for room_name in room_names {
-            if let Some(mut room_conns) = self.rooms.get_mut(&room_name) {
-                room_conns.remove(conn_id);
-                if room_conns.is_empty() {
-                    drop(room_conns);
-                    self.rooms.remove(&room_name);
+    fn remove_user_member(&self, conn_id: &str, user_id: &str) {
+        self.users.remove_if_mut(user_id, |_, conns| {
+            conns.remove(conn_id);
+            conns.is_empty()
+        });
+    }
+
+    /// Point a registered connection's user mapping at `user_id`. Unknown
+    /// connection IDs are ignored.
+    pub(crate) fn sync_user(&self, conn_id: &str, user_id: Option<&str>) {
+        // Hold the connection entry so unregister cannot interleave; lock order
+        // matches add_to_room: connections -> connection_users -> users.
+        let Some(_conn) = self.connections.get(conn_id) else {
+            return;
+        };
+        match user_id {
+            Some(user_id) => {
+                let previous = self
+                    .connection_users
+                    .insert(conn_id.to_string(), user_id.to_string());
+                if previous.as_deref() == Some(user_id) {
+                    return;
+                }
+                if let Some(previous) = previous {
+                    self.remove_user_member(conn_id, &previous);
+                }
+                self.users
+                    .entry(user_id.to_string())
+                    .or_default()
+                    .insert(conn_id.to_string());
+            }
+            None => {
+                if let Some((_, previous)) = self.connection_users.remove(conn_id) {
+                    self.remove_user_member(conn_id, &previous);
                 }
             }
         }
@@ -197,28 +230,22 @@ impl ConnectionManager {
 
     /// Broadcast a message to all connections
     ///
-    /// This method clones the message for each connection. For large messages,
-    /// consider using `broadcast_with` to avoid cloning.
+    /// This method clones the message once for each connection. Conversion to
+    /// the outbound WebSocket frame consumes that clone without copying its payload.
     pub async fn broadcast(&self, msg: Message) -> Result<()> {
         self.total_broadcasts.fetch_add(1, Ordering::Relaxed);
         let mut errors = Vec::new();
         let mut failed_conns = Vec::new();
 
-        // Collect connection handles first to minimize lock time
-        let conns: Vec<(String, ConnectionHandle)> = self
-            .connections
+        // Collect senders first so no map guard is held while sending
+        let senders: Vec<(String, mpsc::Sender<Message>)> = self
+            .senders
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect();
 
         // Send to each connection
-        for (conn_id, conn) in conns {
-            // Clone sender under a short-lived read lock, then send without holding the lock.
-            let sender = {
-                let conn_guard = conn.read().await;
-                conn_guard.sender_clone()
-            };
-
+        for (conn_id, sender) in senders {
             if sender.try_send(msg.clone()).is_err() {
                 errors.push(TidewayError::internal(
                     "Failed to send message: channel full or connection closed",
@@ -271,18 +298,14 @@ impl ConnectionManager {
         let mut failed_conns = Vec::new();
 
         for conn_id in conn_ids {
-            let Some(conn) = self
-                .connections
+            // Never lock the connection here: the sender may be broadcasting from
+            // inside its own handler, which holds that connection's write lock.
+            let Some(sender) = self
+                .senders
                 .get(&conn_id)
                 .map(|entry| entry.value().clone())
             else {
                 continue;
-            };
-
-            // Clone sender under a short-lived read lock, then send without holding the lock.
-            let sender = {
-                let conn_guard = conn.read().await;
-                conn_guard.sender_clone()
             };
 
             if sender.try_send(msg.clone()).is_err() {
@@ -339,18 +362,14 @@ impl ConnectionManager {
         let mut failed_conns = Vec::new();
 
         for conn_id in conn_ids {
-            let Some(conn) = self
-                .connections
+            // Never lock the connection here: the sender may be broadcasting from
+            // inside its own handler, which holds that connection's write lock.
+            let Some(sender) = self
+                .senders
                 .get(&conn_id)
                 .map(|entry| entry.value().clone())
             else {
                 continue;
-            };
-
-            // Clone sender under a short-lived read lock, then send without holding the lock.
-            let sender = {
-                let conn_guard = conn.read().await;
-                conn_guard.sender_clone()
             };
 
             if sender.try_send(msg.clone()).is_err() {
@@ -398,35 +417,41 @@ impl ConnectionManager {
         self.broadcast_text_to_user(user_id, json).await
     }
 
-    /// Add a connection to a room
+    /// Add a registered connection to a room. Unknown connection IDs are ignored.
     pub fn add_to_room(&self, conn_id: &str, room: &str) {
+        // Keep the map guard until both indexes are updated: unregister must
+        // remove this entry before cleaning memberships. Lock order is always
+        // connections -> connection_rooms -> rooms; no guards cross an await.
+        let Some(conn) = self.connections.get(conn_id) else {
+            return;
+        };
+        let mut memberships = self
+            .connection_rooms
+            .entry(conn_id.to_string())
+            .or_default();
+        memberships.insert(room.to_string());
         self.rooms
             .entry(room.to_string())
             .or_default()
             .insert(conn_id.to_string());
 
-        // Also update the connection's local state
-        if let Some(conn) = self.connections.get(conn_id)
-            && let Ok(mut conn_guard) = conn.try_write()
-        {
+        // Local state is best effort; cleanup relies on the reverse index.
+        if let Ok(mut conn_guard) = conn.try_write() {
             conn_guard.join_room(room);
         }
     }
 
     /// Remove a connection from a room
     pub fn remove_from_room(&self, conn_id: &str, room: &str) {
-        if let Some(mut room_conns) = self.rooms.get_mut(room) {
-            room_conns.remove(conn_id);
-            if room_conns.is_empty() {
-                drop(room_conns);
-                self.rooms.remove(room);
-            }
+        let Some(conn) = self.connections.get(conn_id) else {
+            return;
+        };
+        if let Some(mut memberships) = self.connection_rooms.get_mut(conn_id) {
+            memberships.remove(room);
+            self.remove_room_member(conn_id, room);
         }
 
-        // Also update the connection's local state
-        if let Some(conn) = self.connections.get(conn_id)
-            && let Ok(mut conn_guard) = conn.try_write()
-        {
+        if let Ok(mut conn_guard) = conn.try_write() {
             conn_guard.leave_room(room);
         }
     }
@@ -480,19 +505,17 @@ impl ConnectionManager {
 
     /// Update user ID mapping for an existing connection
     ///
-    /// Call this after setting user_id on a connection to update the manager's
-    /// user-to-connections mapping.
+    /// Connections served by [`ws`](super::ws) are synced automatically after
+    /// `on_connect` and `on_message`, so handlers only need `conn.set_user_id`.
+    /// Call this for connections managed outside that route after changing their
+    /// user ID. It is a no-op while another task holds the connection lock.
     pub fn update_user_mapping(&self, conn_id: &str) {
-        if let Some(conn) = self.connections.get(conn_id) {
-            // Try to read without blocking
-            if let Ok(conn_guard) = conn.try_read()
-                && let Some(user_id) = conn_guard.user_id()
-            {
-                self.users
-                    .entry(user_id.to_string())
-                    .or_default()
-                    .insert(conn_id.to_string());
-            }
+        let Some(conn) = self.get(conn_id) else {
+            return;
+        };
+        // Try to read without blocking
+        if let Ok(conn_guard) = conn.try_read() {
+            self.sync_user(conn_id, conn_guard.user_id());
         }
     }
 
@@ -558,5 +581,35 @@ pub struct ConnectionMetrics {
 impl Default for ConnectionManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unregister_does_not_lock_unrelated_rooms() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let manager = ConnectionManager::new();
+        let (conn, _rx) = Connection::channel("departing", 1);
+        runtime
+            .block_on(manager.register(Arc::new(tokio::sync::RwLock::new(conn))))
+            .unwrap();
+        manager
+            .rooms
+            .insert("unrelated".into(), HashSet::from(["other".into()]));
+        let room_guard = manager.rooms.get_mut("unrelated").unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker_manager = manager.clone();
+        let worker = std::thread::spawn(move || {
+            runtime.block_on(worker_manager.unregister("departing"));
+            done_tx.send(()).unwrap();
+        });
+        let result = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+        // Release the lock before joining so a regression fails instead of hanging.
+        drop(room_guard);
+        worker.join().unwrap();
+        result.expect("disconnect must not access unrelated rooms");
     }
 }

@@ -1,12 +1,17 @@
 //! Shared request actor helpers for authenticated SaaS routes.
 
 use axum::http::HeaderMap;
+{{#if has_organizations}}
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+{{else}}
+use sea_orm::{DatabaseConnection, EntityTrait};
+{{/if}}
 use std::sync::OnceLock;
-use tideway::auth::{AccessTokenClaims, JwtVerifier};
+use tideway::auth::{AccessTokenClaims, ImpersonationClaims, JwtVerifier};
 use tideway::{Result, TidewayError};
 use uuid::Uuid;
 
+use super::impersonation::ensure_session_active;
 use crate::entities::user;
 {{#if has_organizations}}
 use crate::entities::organization_member;
@@ -15,6 +20,8 @@ use crate::entities::organization_member;
 #[derive(Clone, Debug)]
 pub struct RequestActor {
     pub user: user::Model,
+    /// Set when the request uses an admin impersonation token.
+    pub impersonation: Option<ImpersonationClaims>,
     {{#if has_organizations}}
     pub membership: Option<organization_member::Model>,
     {{/if}}
@@ -31,9 +38,10 @@ impl RequestActor {
         db: &DatabaseConnection,
         verifier: &JwtVerifier<AccessTokenClaims>,
     ) -> Result<Self> {
-        let user = authenticated_user(headers, db, verifier).await?;
+        let (user, impersonation) = authenticated_user(headers, db, verifier).await?;
         Ok(Self {
             user,
+            impersonation,
             {{#if has_organizations}}
             membership: None,
             {{/if}}
@@ -41,6 +49,11 @@ impl RequestActor {
     }
 
     pub fn require_admin(&self) -> Result<()> {
+        if self.impersonation.is_some() {
+            return Err(TidewayError::Forbidden(
+                "Admin access is not available while impersonating".into(),
+            ));
+        }
         if self.user.is_platform_admin {
             Ok(())
         } else {
@@ -62,10 +75,11 @@ impl RequestActor {
         db: &DatabaseConnection,
         verifier: &JwtVerifier<AccessTokenClaims>,
     ) -> Result<Self> {
-        let user = authenticated_user(headers, db, verifier).await?;
+        let (user, impersonation) = authenticated_user(headers, db, verifier).await?;
         let membership = resolve_current_membership(headers, db, &user).await?;
         Ok(Self {
             user,
+            impersonation,
             membership: Some(membership),
         })
     }
@@ -85,12 +99,13 @@ impl RequestActor {
         verifier: &JwtVerifier<AccessTokenClaims>,
         organization_id: &str,
     ) -> Result<Self> {
-        let user = authenticated_user(headers, db, verifier).await?;
+        let (user, impersonation) = authenticated_user(headers, db, verifier).await?;
         let membership = load_membership(db, organization_id, user.id)
             .await?
             .ok_or_else(|| TidewayError::NotFound("Organization not found".into()))?;
         Ok(Self {
             user,
+            impersonation,
             membership: Some(membership),
         })
     }
@@ -159,9 +174,12 @@ async fn authenticated_user(
     headers: &HeaderMap,
     db: &DatabaseConnection,
     verifier: &JwtVerifier<AccessTokenClaims>,
-) -> Result<user::Model> {
+) -> Result<(user::Model, Option<ImpersonationClaims>)> {
     let token = bearer_token(headers)?;
-    let token_data = verifier.verify_access_token(token).await?;
+    let token_data = verifier
+        .with_claims::<AccessTokenClaims<ImpersonationClaims>>()
+        .verify_access_token(token)
+        .await?;
 
     let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
         .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
@@ -174,7 +192,13 @@ async fn authenticated_user(
     if token_data.claims.session_version != user.session_version.max(0) as u64 {
         return Err(TidewayError::Unauthorized("Access token has been revoked".into()));
     }
-    Ok(user)
+
+    // Impersonation tokens only work while their server-side session is live.
+    let impersonation = token_data.claims.custom;
+    if let Some(claims) = &impersonation {
+        ensure_session_active(db, claims, &user.id.to_string()).await?;
+    }
+    Ok((user, impersonation))
 }
 
 {{#if has_organizations}}

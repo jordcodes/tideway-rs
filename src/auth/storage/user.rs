@@ -233,6 +233,17 @@ pub trait VerificationStore: Send + Sync {
     /// Mark a user as verified.
     async fn mark_user_verified(&self, user_id: &str) -> Result<()>;
 
+    /// Get the email address stored on the user's account.
+    ///
+    /// Returns `None` when the user does not exist. Verification resends use
+    /// this address, never one supplied by the client, so a token can only be
+    /// delivered to the address the account will be marked as owning.
+    async fn verification_email(&self, _user_id: &str) -> Result<Option<String>> {
+        Err(crate::TidewayError::internal(
+            "VerificationStore::verification_email must be implemented to resend verification emails",
+        ))
+    }
+
     /// Send a verification email.
     async fn send_verification_email(
         &self,

@@ -38,6 +38,43 @@ pub(crate) fn next_migration_name(
     )
 }
 
+/// Name a migration that runs directly after `previous`, which may not be written yet.
+pub(crate) fn following_migration_name(
+    migrations_dir: &Path,
+    previous: &MigrationName,
+    description: &str,
+) -> Result<MigrationName> {
+    let previous = parse_migration(&previous.module)
+        .ok_or_else(|| anyhow::anyhow!("Invalid migration name: {}", previous.module))?;
+    let module = match (previous.sequential, previous.timestamp) {
+        (Some((number, width)), _) => {
+            let next = number
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Migration number overflow"))?;
+            format!("m{next:0width$}_{description}")
+        }
+        (None, Some(timestamp)) => {
+            let next = timestamp
+                .checked_add_signed(Duration::seconds(1))
+                .ok_or_else(|| anyhow::anyhow!("Migration timestamp overflow"))?;
+            format!("m{}_{description}", next.format("%Y%m%d_%H%M%S"))
+        }
+        (None, None) => unreachable!("parsed migrations are sequential or timestamped"),
+    };
+    let file = format!("{module}.rs");
+    if migrations_dir.join(&file).exists() {
+        return Err(anyhow::anyhow!(error_contract(
+            &format!(
+                "Migration {} already exists",
+                migrations_dir.join(&file).display()
+            ),
+            "Wait one second before retrying.",
+            "Create and register an application-owned migration manually.",
+        )));
+    }
+    Ok(MigrationName { module, file })
+}
+
 pub(crate) fn is_migration_module(module: &str) -> bool {
     parse_migration(module).is_some()
 }

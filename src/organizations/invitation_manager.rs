@@ -15,7 +15,7 @@ use super::storage::{
     WithAuditStore,
 };
 use super::utils::{current_timestamp, is_valid_email};
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 /// Parameters passed to the invitation factory function.
@@ -245,7 +245,8 @@ where
 
     /// Create an invitation.
     ///
-    /// Checks email format, rate limits, seat availability, pending invitation limit, and actor permissions.
+    /// Checks email format, organization existence, and actor permissions before
+    /// consuming rate-limit quota, then checks pending invitations and seat availability.
     #[instrument(skip(self, invitation_factory))]
     pub async fn invite<F>(
         &self,
@@ -257,9 +258,6 @@ where
     where
         F: FnOnce(InvitationCreateParams) -> I::Invitation,
     {
-        // Check rate limit first (before any other work)
-        self.rate_limiter.check_invitation_rate(org_id, actor_id)?;
-
         // Validate email format
         if !is_valid_email(email) {
             return Err(OrganizationError::invalid_email(email));
@@ -284,6 +282,9 @@ where
                 "can_manage_members",
             ));
         }
+
+        // Only authorized members may consume invitation quota.
+        self.rate_limiter.check_invitation_rate(org_id, actor_id)?;
 
         // Check if email already has pending invitation
         if self
@@ -334,6 +335,13 @@ where
             created_at: now,
         });
 
+        // Prevent inviting owners (must use transfer_ownership)
+        if self.invitation_store.invitation_grants_owner(&invitation) {
+            return Err(OrganizationError::insufficient_permission(
+                "cannot invite as owner, use transfer_ownership instead",
+            ));
+        }
+
         // Persist invitation
         self.invitation_store.create(&invitation).await?;
 
@@ -359,7 +367,7 @@ where
     /// Accept an invitation by token.
     ///
     /// User provides factory for creating membership from invitation.
-    #[instrument(skip(self, membership_factory))]
+    #[instrument(skip(self, token, membership_factory))]
     pub async fn accept<F>(
         &self,
         token: &str,
@@ -415,6 +423,21 @@ where
                 joined_at: now,
             },
         );
+
+        // Invitations can never grant ownership. Revoke rather than release, since
+        // the invitation can never succeed and would otherwise block re-inviting.
+        let role = self.membership_store.membership_role(&membership);
+        if self.membership_store.is_owner(&role) {
+            warn!(
+                org_id,
+                invitation_id, "Rejected invitation granting owner role"
+            );
+            let _ = self.invitation_store.release_claim(&invitation_id).await;
+            let _ = self.invitation_store.mark_revoked(&invitation_id).await;
+            return Err(OrganizationError::insufficient_permission(
+                "invitations cannot grant owner role",
+            ));
+        }
 
         // Add member and mark invitation as accepted
         if let Err(error) = self.membership_store.add_member(&membership).await {

@@ -1,4 +1,4 @@
-use crate::utils::get_env_with_prefix;
+use crate::utils::{get_env_with_prefix, is_production_like_environment};
 use serde::{Deserialize, Serialize};
 
 /// X-Frame-Options header value
@@ -105,7 +105,12 @@ impl SecurityConfig {
 
     /// Load security configuration from environment variables
     pub fn from_env() -> Self {
-        let mut config = Self::default();
+        Self::default().with_env()
+    }
+
+    /// Apply environment overrides, preserving settings for absent variables.
+    pub(crate) fn with_env(self) -> Self {
+        let mut config = self;
         let explicit_hsts_max_age = get_env_with_prefix("SECURITY_HSTS_MAX_AGE").is_some();
 
         if let Some(enabled) = get_env_with_prefix("SECURITY_ENABLED") {
@@ -162,7 +167,12 @@ impl SecurityConfig {
             config.permissions_policy = Some(permissions);
         }
 
-        if !is_production_like_environment() && !explicit_hsts_max_age {
+        // Outside production, disable HSTS unless a max-age was explicitly configured
+        // (via the environment or a non-default value set before loading the environment).
+        if !is_production_like_environment()
+            && !explicit_hsts_max_age
+            && config.hsts_max_age == default_hsts_max_age()
+        {
             config.hsts_max_age = 0;
             config.hsts_preload = false;
         }
@@ -173,18 +183,6 @@ impl SecurityConfig {
 
 fn parse_bool_with_default(value: &str, default: bool) -> bool {
     value.parse().unwrap_or(default)
-}
-
-fn is_production_like_environment() -> bool {
-    [
-        get_env_with_prefix("ENV"),
-        get_env_with_prefix("ENVIRONMENT"),
-        get_env_with_prefix("APP_ENV"),
-        get_env_with_prefix("TIDEWAY_ENV"),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|env_value| matches!(env_value.to_lowercase().as_str(), "prod" | "production"))
 }
 
 /// Builder for SecurityConfig

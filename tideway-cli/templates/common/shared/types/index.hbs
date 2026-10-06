@@ -225,9 +225,13 @@ export interface AdminOrganization {
 export interface PlatformStats {
   total_users: number
   total_organizations: number
-  active_subscriptions: number
-  mrr_cents: number
   recent_signups: number
+  /** Present when the backend was generated with billing. Counts `active` and `trialing`. */
+  active_subscriptions?: number
+  /** Omitted when billing data can't price MRR accurately; see `mrr_unavailable_reason`. */
+  mrr_cents?: number
+  mrr_currency?: string
+  mrr_unavailable_reason?: string
 }
 
 export interface UpdateUserRequest {
@@ -242,7 +246,6 @@ export interface ImpersonationSession {
   target_user_id: string
   target_user_email?: string
   access_token?: string
-  refresh_token?: string
   expires_at?: number
   original_access_token?: string
   original_refresh_token?: string

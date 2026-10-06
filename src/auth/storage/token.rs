@@ -82,6 +82,45 @@ pub trait RefreshTokenStore: Send + Sync {
     async fn associate_family_with_user(&self, family: &str, user_id: &str) -> Result<()>;
 }
 
+/// Allows one store to be shared, e.g. between `TokenRefreshFlow` and `SessionManager`.
+#[async_trait]
+impl<T: RefreshTokenStore + ?Sized> RefreshTokenStore for std::sync::Arc<T> {
+    async fn is_family_revoked(&self, family: &str) -> Result<bool> {
+        (**self).is_family_revoked(family).await
+    }
+
+    async fn get_family_generation(&self, family: &str) -> Result<Option<u32>> {
+        (**self).get_family_generation(family).await
+    }
+
+    async fn set_family_generation(&self, family: &str, generation: u32) -> Result<()> {
+        (**self).set_family_generation(family, generation).await
+    }
+
+    async fn compare_and_swap_family_generation(
+        &self,
+        family: &str,
+        expected_generation: u32,
+        new_generation: u32,
+    ) -> Result<bool> {
+        (**self)
+            .compare_and_swap_family_generation(family, expected_generation, new_generation)
+            .await
+    }
+
+    async fn revoke_family(&self, family: &str) -> Result<()> {
+        (**self).revoke_family(family).await
+    }
+
+    async fn revoke_all_for_user(&self, user_id: &str) -> Result<()> {
+        (**self).revoke_all_for_user(user_id).await
+    }
+
+    async fn associate_family_with_user(&self, family: &str, user_id: &str) -> Result<()> {
+        (**self).associate_family_with_user(family, user_id).await
+    }
+}
+
 /// Trait for temporary MFA token storage.
 ///
 /// MFA tokens are short-lived tokens issued after password verification
@@ -182,10 +221,15 @@ pub mod test {
         }
 
         async fn revoke_family(&self, family: &str) -> Result<()> {
+            // Record unseen families too, so a never-refreshed token can't be used after revocation.
             let mut families = self.families.write().unwrap();
-            if let Some(state) = families.get_mut(family) {
-                state.revoked = true;
-            }
+            families
+                .entry(family.to_string())
+                .or_insert(FamilyState {
+                    generation: 0,
+                    revoked: true,
+                })
+                .revoked = true;
             Ok(())
         }
 

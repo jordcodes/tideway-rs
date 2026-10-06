@@ -2,9 +2,17 @@
 members = [".", "tideway-macros", "tideway-cli", "tests/fixtures/downstream_upgrade"]
 exclude = ["load-tests/app"]
 
+# Keep file:line backtraces for workspace code but drop full debuginfo; the test
+# profile inherits these. Shrinks target/ and cuts link time for the many test binaries.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [package]
 name = "tideway"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 authors = ["JD"]
 description = "A batteries-included Rust web framework built on Axum for building SaaS applications quickly"
@@ -38,9 +46,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = "2.0"
 anyhow = "1.0"
 
-# Configuration
-config = "0.14"
-
 # Auth
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"], optional = true }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
@@ -61,7 +66,8 @@ validator = { version = "0.20", features = ["derive"], optional = true }
 # Database (optional)
 sea-orm = { version = "1.1", features = ["sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros"], optional = true }
 sea-orm-migration = { version = "1.1", optional = true }
-chrono = { version = "0.4", optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+cron = { version = "0.17", optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite"], optional = true }
 testcontainers-modules = { version = "0.13", optional = true, default-features = false, features = ["postgres"] }
 
@@ -73,9 +79,18 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"], optional
 # Metrics (optional)
 prometheus = { version = "0.14", optional = true }
 
+# OpenTelemetry OTLP trace export (optional)
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"], optional = true }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
+tracing-opentelemetry = { version = "0.32", default-features = false, optional = true }
+
+# Sentry error reporting (optional)
+sentry = { version = "0.49", default-features = false, features = ["ureq", "rustls", "contexts"], optional = true }
+
 # Cache (optional)
 moka = { version = "0.12", features = ["future"], optional = true }
-redis = { version = "0.27", features = ["tokio-comp"], optional = true }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
 
 # Sessions (optional)
 cookie = { version = "0.18", features = ["private"], optional = true }
@@ -113,6 +128,9 @@ lettre = { version = "0.11.22", default-features = false, features = ["tokio1-ru
 
 # Jobs (optional - chrono already added for database)
 
+# File storage (optional)
+object_store = { version = "0.14", default-features = false, features = ["fs"], optional = true }
+
 # Rate limiting
 governor = "0.10"
 ipnet = "2.11"
@@ -133,26 +151,38 @@ openapi = ["utoipa", "utoipa-axum", "utoipa-swagger-ui"]
 validation = ["validator"]
 # Prometheus metrics collection
 metrics = ["prometheus"]
+# OpenTelemetry trace export over OTLP/HTTP (enabled at runtime by OTEL_EXPORTER_OTLP_ENDPOINT)
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 # Base cache abstraction (enables moka-backed in-memory cache)
 cache = ["moka"]
 # Redis-backed caching
 cache-redis = ["redis", "cache"]
 # Session management
 sessions = ["cookie", "hex"]
+# Sentry error reporting (enabled at runtime by SENTRY_DSN)
+sentry = ["dep:sentry"]
 # Background job processing
-jobs = ["chrono"]
+jobs = ["chrono", "cron"]
 # Redis-backed job queue
 jobs-redis = ["redis", "jobs"]
 # WebSocket support
 websocket = ["dashmap", "axum/ws"]
 # Email sending
 email = ["lettre"]
+# File storage abstraction (local filesystem + in-memory backends, presigned uploads)
+storage = ["dep:object_store"]
+# S3-compatible storage backends (AWS S3, Cloudflare R2, MinIO)
+storage-s3 = ["storage", "object_store/aws"]
 # Testing helper to bypass auth (for tests only)
 test-auth-bypass = ["auth"]
 # Password hashing with Argon2
 auth = ["argon2", "dep:jsonwebtoken", "dep:rand"]
 # MFA support (TOTP + backup codes)
 auth-mfa = ["auth", "totp-rs", "aes-gcm"]
+# SeaORM-backed API key storage
+api-keys-seaorm = ["auth", "database"]
+# OAuth 2.0 / OpenID Connect social login (Google, GitHub, generic OIDC)
+auth-oauth = ["auth", "aes-gcm"]
 # Password breach checking via HaveIBeenPwned
 auth-breach = ["sha1"]
 # Stripe-based billing
@@ -182,6 +212,8 @@ test-organizations = ["organizations"]
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 rsa = "0.9"
+# Lets tests run generated migrations, which use schema introspection, against SQLite and PostgreSQL.
+sea-orm-migration = { version = "1.1", features = ["sqlx-sqlite", "sqlx-postgres"] }
 
 [[bench]]
 name = "overhead"
@@ -191,6 +223,18 @@ harness = false
 name = "hot_paths"
 harness = false
 required-features = ["auth", "jobs", "websocket"]
+
+[[test]]
+name = "oauth_test"
+required-features = ["auth-oauth"]
+
+[[test]]
+name = "otel_export_test"
+required-features = ["otel"]
+
+[[test]]
+name = "sentry_reporter_test"
+required-features = ["sentry"]
 
 [[example]]
 name = "email_example"

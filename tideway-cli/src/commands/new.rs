@@ -55,6 +55,7 @@ const SUPPORTED_TIDEWAY_FEATURES: &[&str] = &[
     "auth",
     "auth-breach",
     "auth-mfa",
+    "auth-oauth",
     "billing",
     "billing-seaorm",
     "credits",
@@ -76,6 +77,8 @@ const SUPPORTED_TIDEWAY_FEATURES: &[&str] = &[
     "organizations",
     "organizations-billing",
     "organizations-seaorm",
+    "otel",
+    "sentry",
     "sessions",
     "test-auth-bypass",
     "test-billing",
@@ -117,6 +120,14 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         apply_preset(preset, &mut args);
     }
 
+    let backend_preset = args
+        .preset
+        .and_then(preset_backend_preset)
+        .or(wizard.backend_preset.clone());
+    if backend_preset.is_none() {
+        add_starter_lifecycle_email_features(&mut args.features);
+    }
+
     let dir_name = args.path.clone().unwrap_or_else(|| name.clone());
     let project_name = normalize_project_name(&name);
     let project_name_pascal = to_pascal_case(&project_name);
@@ -128,10 +139,6 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     let has_openapi_feature = features.contains("openapi");
     let has_tideway_features = !features.is_empty();
     let starter_database = starter_database_for(&args);
-    let backend_preset = args
-        .preset
-        .and_then(preset_backend_preset)
-        .or(wizard.backend_preset.clone());
 
     let target_dir = PathBuf::from(&dir_name);
     if target_dir.exists() {
@@ -182,6 +189,8 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         has_database_feature,
         has_billing_feature: features.contains("billing"),
         has_openapi_feature,
+        has_otel_feature: features.contains("otel"),
+        has_sentry_feature: features.contains("sentry"),
         needs_arc,
         has_config: args.with_config,
     };
@@ -204,6 +213,10 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
             &project_name,
             backend_preset.clone(),
             args.without_invitations,
+            ObservabilityFeatures {
+                otel: features.contains("otel"),
+                sentry: features.contains("sentry"),
+            },
             runtime,
         )?;
         ensure_backend_dependencies(
@@ -265,9 +278,14 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         }
         println!();
         println!("Optional: run `tideway doctor` for a project/setup audit.");
+        println!(
+            "Deploy: `docker build -t {} .` builds a production image (see Tideway's docs/deployment.md).",
+            project_name
+        );
         println!();
         if should_suggest_migrate(args.preset, has_database_feature) {
             println!("Tip: run `tideway migrate` when you need explicit migration control.");
+            println!("Tip: run `tideway seed` to load demo data from src/bin/seed.rs.");
             println!();
         }
 
@@ -315,6 +333,14 @@ fn scaffold_files(
             write_file_with_force_or_error_default(
                 &target_dir.join("src/openapi_docs.rs"),
                 &engine.render("starter/src/openapi_docs.rs")?,
+                args.force,
+            )?;
+        }
+
+        if has_database_auth {
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/email.rs"),
+                &engine.render("starter/src/email.rs")?,
                 args.force,
             )?;
         }
@@ -374,6 +400,16 @@ fn scaffold_files(
         &engine.render("starter/gitignore")?,
         args.force,
     )?;
+    write_file_with_force_or_error_default(
+        &target_dir.join("Dockerfile"),
+        &engine.render("starter/Dockerfile")?,
+        args.force,
+    )?;
+    write_file_with_force_or_error_default(
+        &target_dir.join(".dockerignore"),
+        &engine.render("starter/dockerignore")?,
+        args.force,
+    )?;
 
     write_file_with_force_or_error_default(
         &target_dir.join("tests/health.rs"),
@@ -408,6 +444,16 @@ fn scaffold_files(
         write_file_with_force_or_error_default(
             &target_dir.join("src/entities/mod.rs"),
             &engine.render("starter/src/entities/mod.rs")?,
+            args.force,
+        )?;
+        let seed_template = if matches!(args.preset, Some(NewPreset::Api)) {
+            "starter/src/bin/seed_api.rs"
+        } else {
+            "starter/src/bin/seed.rs"
+        };
+        write_file_with_force_or_error_default(
+            &target_dir.join("src/bin/seed.rs"),
+            &engine.render(seed_template)?,
             args.force,
         )?;
 
@@ -474,6 +520,15 @@ fn scaffold_files(
                 &target_dir.join("migration/src/lib.rs"),
                 "m013_create_credit_ledger",
             )?;
+            write_file_with_force_or_error_default(
+                &target_dir.join("migration/src/m015_add_credit_revocation.rs"),
+                &engine.render("migrations/m015_add_credit_revocation")?,
+                args.force,
+            )?;
+            crate::commands::add::ensure_migration_registered(
+                &target_dir.join("migration/src/lib.rs"),
+                "m015_add_credit_revocation",
+            )?;
         }
     }
 
@@ -529,6 +584,7 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
             files.push("src/auth/routes.rs".to_string());
             if has_database_auth {
                 files.push("src/auth/tests.rs".to_string());
+                files.push("src/email.rs".to_string());
             }
         }
 
@@ -546,10 +602,16 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
     }
 
     files.push(".gitignore".to_string());
+    files.push("Dockerfile".to_string());
+    files.push(".dockerignore".to_string());
     files.push("tests/health.rs".to_string());
 
     if needs_env {
         files.push(".env.example".to_string());
+    }
+
+    if has_database_feature {
+        files.push("src/bin/seed.rs".to_string());
     }
 
     if backend_preset.is_none() && has_database_feature {
@@ -559,6 +621,7 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
         files.push("src/entities/mod.rs".to_string());
         if normalized_features.contains("credits-seaorm") {
             files.push("migration/src/m013_create_credit_ledger.rs".to_string());
+            files.push("migration/src/m015_add_credit_revocation.rs".to_string());
         }
     }
 
@@ -781,12 +844,14 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "src/auth/mod.rs".to_string(),
         "src/auth/routes.rs".to_string(),
         "src/auth/store.rs".to_string(),
+        "src/auth/impersonation.rs".to_string(),
         "src/auth/tests.rs".to_string(),
         "src/billing/mod.rs".to_string(),
         "src/billing/events.rs".to_string(),
         "src/billing/routes.rs".to_string(),
         "src/admin/mod.rs".to_string(),
         "src/admin/routes.rs".to_string(),
+        "src/admin/tests.rs".to_string(),
         "migration/Cargo.toml".to_string(),
         "migration/src/lib.rs".to_string(),
         "migration/src/main.rs".to_string(),
@@ -798,6 +863,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "migration/src/m009_create_webhook_processed_events.rs".to_string(),
         "migration/src/m010_create_billing_processed_events.rs".to_string(),
         "migration/src/m012_add_webhook_claim_lifecycle.rs".to_string(),
+        "migration/src/m017_create_impersonation_sessions.rs".to_string(),
     ];
 
     if *preset == BackendPreset::B2b {
@@ -1116,7 +1182,14 @@ fn apply_advanced_wizard_choice(
 fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
     let preset_features: &[&str] = match preset {
         NewPreset::Minimal => &[],
-        NewPreset::Api => &["auth", "database", "openapi", "validation"],
+        NewPreset::Api => &[
+            "auth",
+            "database",
+            "openapi",
+            "validation",
+            "otel",
+            "sentry",
+        ],
         NewPreset::Saas => &[
             "auth",
             "database",
@@ -1127,8 +1200,17 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
             "admin",
             "validation",
             "metrics",
+            "otel",
+            "sentry",
         ],
-        NewPreset::Worker => &["database", "jobs", "jobs-redis", "metrics"],
+        NewPreset::Worker => &[
+            "database",
+            "jobs",
+            "jobs-redis",
+            "metrics",
+            "otel",
+            "sentry",
+        ],
         NewPreset::List => &[],
     };
 
@@ -1172,6 +1254,8 @@ fn apply_backend_defaults(args: &mut NewArgs, has_organizations: bool) {
         "billing",
         "billing-seaorm",
         "admin",
+        "otel",
+        "sentry",
     ];
     if has_organizations {
         features.push("organizations");
@@ -1204,13 +1288,13 @@ fn print_presets(runtime: CommandRuntime) {
     println!("Available presets:");
     println!("  - minimal: basic starter (no extra features)");
     println!(
-        "  - api: auth + database + openapi + validation, plus config, CI, env, and a sample todo resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add --with-docker for Postgres)"
+        "  - api: auth + database + openapi + validation + otel + sentry, plus config, CI, env, and a sample todo resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add --with-docker for Postgres)"
     );
     println!(
-        "  - saas: b2b backend scaffold with auth, provider-neutral email, billing, organizations, admin, docker, CI, and env defaults"
+        "  - saas: b2b backend scaffold with auth, provider-neutral email, billing, organizations, admin, OpenTelemetry, Sentry, docker, CI, and env defaults"
     );
     println!(
-        "  - worker: jobs-first starter (database + jobs + redis + metrics) with config, docker, CI, and env"
+        "  - worker: jobs-first starter (database + jobs + redis + metrics + otel + sentry) with config, docker, CI, and env"
     );
 }
 
@@ -1224,6 +1308,7 @@ fn preset_backend_preset(preset: NewPreset) -> Option<BackendPreset> {
 fn scaffold_api_preset(target_dir: &Path, runtime: CommandRuntime) -> Result<()> {
     let args = ResourceArgs {
         name: "todo".to_string(),
+        fields: Vec::new(),
         path: target_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: true,
@@ -1248,6 +1333,7 @@ fn scaffold_backend_preset(
     project_name: &str,
     preset: BackendPreset,
     without_invitations: bool,
+    observability: ObservabilityFeatures,
     runtime: CommandRuntime,
 ) -> Result<()> {
     let has_organizations = matches!(preset, BackendPreset::B2b);
@@ -1274,6 +1360,7 @@ fn scaffold_backend_preset(
         project_name,
         has_organizations,
         has_organizations && !without_invitations,
+        observability,
     )?;
     write_file_with_force_or_error_default(
         &target_dir.join("migration/Cargo.toml"),
@@ -1288,10 +1375,18 @@ fn scaffold_backend_preset(
     Ok(())
 }
 
+/// Observability features requested for a backend preset scaffold.
+#[derive(Clone, Copy)]
+struct ObservabilityFeatures {
+    otel: bool,
+    sentry: bool,
+}
+
 fn backend_template_engine(
     project_name: &str,
     has_organizations: bool,
     has_invitations: bool,
+    observability: ObservabilityFeatures,
 ) -> Result<BackendTemplateEngine> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
@@ -1310,6 +1405,8 @@ fn backend_template_engine(
         has_database_feature: true,
         has_billing_feature: true,
         has_openapi_feature: false,
+        has_otel_feature: observability.otel,
+        has_sentry_feature: observability.sentry,
         needs_arc: false,
         has_config: false,
     };
@@ -1324,6 +1421,7 @@ fn scaffold_wizard_resource(
 ) -> Result<()> {
     let args = ResourceArgs {
         name: resource.name,
+        fields: Vec::new(),
         path: target_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: resource.with_tests,
@@ -1429,6 +1527,20 @@ fn should_default_to_api_preset(args: &NewArgs) -> bool {
         && !args.with_ci
         && !args.with_env
         && (args.no_prompt || !Term::stdout().is_term())
+}
+
+/// Database-backed starter auth sends verification and password-reset emails through Tideway's
+/// lifecycle emails, delivered by background job workers.
+fn add_starter_lifecycle_email_features(features: &mut Vec<String>) {
+    let normalized = normalize_features(features);
+    if !(normalized.contains("auth") && normalized.contains("database")) {
+        return;
+    }
+    for feature in ["email", "jobs"] {
+        if !normalized.contains(feature) {
+            features.push(feature.to_string());
+        }
+    }
 }
 
 fn should_suggest_migrate(preset: Option<NewPreset>, has_database_feature: bool) -> bool {
@@ -1539,6 +1651,8 @@ fn prompt_for_options(args: &mut NewArgs) -> Result<WizardOptions> {
                 "email",
                 "websocket",
                 "metrics",
+                "otel",
+                "sentry",
                 "validation",
                 "openapi",
             ];

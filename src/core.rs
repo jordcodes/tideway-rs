@@ -5,6 +5,7 @@ use crate::{
     dev::{build_dev_error_layer, build_request_dumper_layer},
     http::RouteModule,
     middleware::MakeRequestUuid,
+    observability::{self, ErrorReportingLayer},
     ratelimit::build_rate_limit_layer,
     request_logging::build_request_logging_layer,
     security::build_security_headers_layer,
@@ -21,15 +22,15 @@ use axum::{
 use sea_orm_migration::MigratorTrait;
 use tokio::signal;
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, OnResponse, TraceLayer};
 
 use std::sync::Arc;
 
 #[cfg(feature = "metrics")]
-use crate::metrics::{MetricsCollector, build_metrics_layer, metrics_handler};
+use crate::metrics::{MetricsCollector, authenticated_metrics_route, build_metrics_layer};
 
 #[cfg(feature = "jobs")]
-use crate::jobs::{JobRegistry, WorkerPool};
+use crate::jobs::{JobRegistry, JobScheduler, SchedulerHandle, WorkerPool};
 
 /// Main application structure for Tideway
 pub struct App {
@@ -44,6 +45,8 @@ pub struct App {
     metrics_collector: Option<Arc<MetricsCollector>>,
     #[cfg(feature = "jobs")]
     worker_pool: Option<WorkerPool>,
+    #[cfg(feature = "jobs")]
+    scheduler: Option<SchedulerHandle>,
 }
 
 impl App {
@@ -84,10 +87,16 @@ impl App {
         // Add metrics endpoint route (needs to be here so into_test_router() includes it)
         #[cfg(feature = "metrics")]
         {
-            if metrics_collector.is_some() {
+            if metrics_collector.is_some()
+                && let Some(token) = config
+                    .metrics
+                    .bearer_token
+                    .as_ref()
+                    .filter(|t| !t.trim().is_empty())
+            {
                 router = router.route(
                     config.metrics.path.as_str(),
-                    axum::routing::get(metrics_handler),
+                    authenticated_metrics_route(token.clone()),
                 );
             }
         }
@@ -102,6 +111,8 @@ impl App {
             metrics_collector,
             #[cfg(feature = "jobs")]
             worker_pool: None,
+            #[cfg(feature = "jobs")]
+            scheduler: None,
         }
     }
 
@@ -161,6 +172,11 @@ impl App {
     /// Note: This accepts `Router<()>` - routers that have already had their state provided.
     /// These routers will be merged after `with_state` is called in `serve()`.
     /// For routers that need `AppContext`, use `register_module` instead.
+    ///
+    /// Merged routes receive Tideway's full middleware stack in `serve()` and
+    /// `into_router_with_middleware()`, including rate limiting (sharing the same
+    /// budget as module routes), timeouts, body limits, and security headers.
+    /// Layers added with [`App::layer`] apply only to registered modules.
     pub fn merge_router(mut self, router: Router) -> Self {
         self.extra_routers.push(router);
         self
@@ -309,13 +325,17 @@ impl App {
     /// example per-IP rate limiting), pair the returned router with
     /// `Router::into_make_service_with_connect_info`, or use
     /// `App::into_make_service_with_connect_info()` for the exact `serve()` path.
-    pub fn into_router_with_middleware(self) -> Router {
-        let app = self.with_middleware();
-        apply_global_layers_with_config(
-            build_stateful_router(app.router, app.context, app.extra_routers),
-            &app.global_layers,
-            &app.config.cors,
-        )
+    pub fn into_router_with_middleware(mut self) -> Router {
+        self.install_default_error_reporter();
+        let router = build_stateful_router(
+            std::mem::take(&mut self.router),
+            self.context.clone(),
+            std::mem::take(&mut self.extra_routers),
+        );
+        // Apply middleware after merging so routers added with `merge_router`
+        // receive the same stack as registered modules.
+        let router = self.apply_middleware(router);
+        apply_global_layers_with_config(router, &self.global_layers, &self.config.cors)
     }
 
     /// Convert the App into an axum make-service with Tideway's middleware stack
@@ -340,69 +360,23 @@ impl App {
         self.into_router()
     }
 
-    /// Apply middleware stack and prepare for serving
-    fn with_middleware(mut self) -> Self {
-        let mut router = self.router;
-
-        // Middleware order (from outer to inner):
-        // 1. Metrics (if enabled) - needs to be outermost to track all requests
-        #[cfg(feature = "metrics")]
-        {
-            if let Some(ref collector) = self.metrics_collector {
-                // Add metrics middleware layer (outermost)
-                // Note: metrics route is added in with_config() so it's available in tests
-                router = router.layer(build_metrics_layer(collector.clone()));
-            }
+    /// Apply Tideway's middleware stack to the fully merged application router
+    fn apply_middleware(&self, mut router: Router) -> Router {
+        // Runs after routing, inside the request span, to name it and error reports
+        // after the matched route.
+        if observability::traces_routes() || self.context.error_reporter_opt().is_some() {
+            router = router.route_layer(axum::middleware::from_fn(observability::record_route));
         }
 
-        // 2. Body size limit - reject large bodies early to prevent DoS attacks
-        router = router.layer(DefaultBodyLimit::max(self.config.server.max_body_size));
-
-        // 3. Timeout - early in stack to catch slow requests
-        if let Some(timeout_layer) = build_timeout_layer(&self.config.timeout) {
-            router = router.layer(timeout_layer);
-        }
-
-        // 4. Security headers - early to secure all responses
-        if let Some(security_layer) = build_security_headers_layer(&self.config.security) {
-            router = router.layer(security_layer);
-        }
-
-        // 5. Compression - compress responses before sending
-        if let Some(compression_layer) = build_compression_layer(&self.config.compression) {
-            router = router.layer(compression_layer);
-        }
-
-        // 6. Rate limiting - after compression/security but before request processing
-        if let Some(rate_limit_layer) = build_rate_limit_layer(&self.config.rate_limit) {
-            router = router.layer(rate_limit_layer);
-        }
-
-        // 7. Request ID - add request IDs for tracing
-        router = router
-            .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-            .layer(PropagateRequestIdLayer::x_request_id());
-
-        // 8. Trace layer - HTTP tracing
-        router = router.layer(TraceLayer::new_for_http());
-
-        // 9. Dev middleware - request dumper and error logging
-        if self.config.dev.enabled {
-            let dev_config = Arc::new(self.config.dev.clone());
-            if dev_config.enable_request_dumper {
-                router = router.layer(build_request_dumper_layer(dev_config.clone()));
-            }
-            router = router.layer(build_dev_error_layer(dev_config));
-        }
-
-        // 10. Request logging - log requests/responses (innermost of logging layers)
-        if let Some(logging_layer) = build_request_logging_layer(&self.config.request_logging) {
-            router = router.layer(logging_layer);
-        }
-
+        // Router::layer wraps the existing router: add layers INNERMOST FIRST.
+        // Request execution order (outer to inner): metrics, tracing, dev logging,
+        // request logging, security headers, compression, rate limit, timeout,
+        // body limit, auth bridge, handler. Response processing unwinds this order.
+        // Request ID generation/propagation wraps even CORS and global layers in
+        // apply_global_layers_with_config, before any logging or early responses.
         #[cfg(feature = "auth")]
         {
-            // 11. Auth provider bridge - make AppContext auth provider available to extractors.
+            // Auth provider bridge - make AppContext auth provider available to extractors.
             if let Some(auth_provider) = self.context.auth_provider_extension() {
                 router = router.layer(axum::middleware::from_fn({
                     move |mut request: axum::extract::Request, next: axum::middleware::Next| {
@@ -416,13 +390,62 @@ impl App {
             }
         }
 
-        self.router = router;
-        self
+        router = router.layer(DefaultBodyLimit::max(self.config.server.max_body_size));
+
+        if let Some(timeout_layer) = build_timeout_layer(&self.config.timeout) {
+            router = router.layer(timeout_layer);
+        }
+        if let Some(rate_limit_layer) = build_rate_limit_layer(&self.config.rate_limit) {
+            router = router.layer(rate_limit_layer);
+        }
+        if let Some(compression_layer) = build_compression_layer(&self.config.compression) {
+            router = router.layer(compression_layer);
+        }
+        if let Some(security_layer) = build_security_headers_layer(&self.config.security) {
+            router = router.layer(security_layer);
+        }
+
+        // Logging must see IDs and responses synthesized by timeout/rate limiting.
+        if let Some(logging_layer) = build_request_logging_layer(&self.config.request_logging) {
+            router = router.layer(logging_layer);
+        }
+        if self.config.dev.is_dev_mode() {
+            let dev_config = Arc::new(self.config.dev.clone());
+            router = router.layer(build_dev_error_layer(dev_config.clone()));
+            if dev_config.enable_request_dumper {
+                router = router.layer(build_request_dumper_layer(dev_config));
+            }
+        }
+        // Report inside the trace span so reports carry the request's trace ID.
+        if let Some(reporter) = self.context.error_reporter_opt() {
+            router = router.layer(ErrorReportingLayer::new(reporter.clone()));
+        }
+        router = router.layer(
+            TraceLayer::new_for_http()
+                .make_span_with(observability::request_span::<axum::body::Body>)
+                .on_response(
+                    |response: &axum::http::Response<axum::body::Body>,
+                     latency: std::time::Duration,
+                     span: &tracing::Span| {
+                        DefaultOnResponse::default().on_response(response, latency, span);
+                        observability::record_response(response, span);
+                    },
+                ),
+        );
+
+        // Keep metrics outside all middleware that can synthesize a response.
+        #[cfg(feature = "metrics")]
+        if let Some(ref collector) = self.metrics_collector {
+            router = router.layer(build_metrics_layer(collector.clone()));
+        }
+
+        router
     }
 
     /// Start background job workers if jobs are enabled
     #[cfg(feature = "jobs")]
     pub fn start_workers(mut self, registry: Arc<JobRegistry>) -> Self {
+        self.install_default_error_reporter();
         if let Some(ref queue) = self.context.jobs
             && self.config.jobs.enabled
         {
@@ -441,6 +464,25 @@ impl App {
         self
     }
 
+    /// Start the recurring job scheduler if jobs are enabled
+    ///
+    /// Due jobs are enqueued onto the context's job queue and executed by workers
+    /// (see [`start_workers`](Self::start_workers)), which may run in this or any
+    /// other instance. The scheduler stops on the shutdown signal.
+    #[cfg(feature = "jobs")]
+    pub fn start_scheduler(mut self, scheduler: JobScheduler) -> Self {
+        if let Some(ref queue) = self.context.jobs
+            && self.config.jobs.enabled
+            && !scheduler.is_empty()
+        {
+            if let Some(previous) = self.scheduler.take() {
+                tokio::spawn(previous.shutdown());
+            }
+            self.scheduler = Some(scheduler.start(queue.clone()));
+        }
+        self
+    }
+
     /// Start the application server
     pub async fn serve(self) -> Result<(), std::io::Error> {
         let addr = self.config.server.addr().map_err(|e| {
@@ -450,40 +492,99 @@ impl App {
             )
         })?;
 
-        #[allow(unused_mut)] // Needed for worker_pool.take() when jobs feature is enabled
-        let mut app = self.with_middleware();
-
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
         tracing::info!("Server starting on http://{}", addr);
         tracing::info!("Health check available at http://{}/health", addr);
 
-        // Create shutdown future that also shuts down workers
-        #[cfg(feature = "jobs")]
-        let worker_pool = app.worker_pool.take();
+        let mut app = self;
+        app.install_default_error_reporter();
+        let reporter = app.context.error_reporter_opt().cloned();
 
-        let shutdown = async move {
-            shutdown_signal().await;
-            #[cfg(feature = "jobs")]
-            {
-                if let Some(pool) = worker_pool {
-                    pool.shutdown().await;
-                }
+        let result = app.serve_with_shutdown(listener, shutdown_signal()).await;
+
+        // Deliver spans and error reports still buffered from the final requests.
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Some(reporter) = reporter {
+                reporter.flush(std::time::Duration::from_secs(2));
             }
+            observability::shutdown_tracing();
+        })
+        .await;
+
+        result
+    }
+
+    /// Register the environment-configured reporter (Sentry via `SENTRY_DSN`)
+    /// when the application has not set one.
+    fn install_default_error_reporter(&mut self) {
+        if self.context.error_reporter.is_none() {
+            self.context.error_reporter = observability::default_error_reporter();
+        }
+    }
+
+    /// Serve on `listener` until `signal` resolves, then drain HTTP connections and
+    /// stop job workers concurrently.
+    ///
+    /// Workers get at most `jobs.shutdown_timeout_seconds` to finish, so a slow job
+    /// can neither keep the listener accepting traffic nor outlive the platform's
+    /// kill deadline.
+    async fn serve_with_shutdown<S>(
+        self,
+        listener: tokio::net::TcpListener,
+        signal: S,
+    ) -> std::io::Result<()>
+    where
+        S: std::future::Future<Output = ()> + Send + 'static,
+    {
+        use futures::FutureExt;
+
+        #[allow(unused_mut)] // Needed for worker_pool/scheduler.take() when jobs feature is enabled
+        let mut app = self;
+
+        let signal = signal.shared();
+
+        #[cfg(feature = "jobs")]
+        let workers = {
+            let worker_pool = app.worker_pool.take();
+            let scheduler = app.scheduler.take();
+            let timeout = std::time::Duration::from_secs(app.config.jobs.shutdown_timeout_seconds);
+            let signal = signal.clone();
+            tokio::spawn(async move {
+                if worker_pool.is_none() && scheduler.is_none() {
+                    return;
+                }
+                signal.await;
+                // Stop enqueueing before draining workers.
+                if let Some(scheduler) = scheduler {
+                    scheduler.shutdown().await;
+                }
+                if let Some(pool) = worker_pool {
+                    pool.shutdown_with_timeout(timeout).await;
+                }
+            })
         };
 
-        let final_router = apply_global_layers_with_config(
-            build_stateful_router(app.router, app.context, app.extra_routers),
-            &app.global_layers,
-            &app.config.cors,
-        );
+        let final_router = app.into_router_with_middleware();
 
-        axum::serve(
+        let result = axum::serve(
             listener,
             final_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown)
-        .await
+        .with_graceful_shutdown(signal)
+        .await;
+
+        #[cfg(feature = "jobs")]
+        {
+            if result.is_ok() {
+                let _ = workers.await;
+            } else {
+                // The signal never fired, so the worker task would wait forever.
+                workers.abort();
+            }
+        }
+
+        result
     }
 }
 
@@ -648,7 +749,11 @@ fn apply_global_layers_with_config(
     if let Some(cors_layer) = crate::cors::build_cors_layer(cors_config) {
         router = router.layer(cors_layer);
     }
+    // Set the ID before propagation captures it, including for CORS preflights
+    // and responses returned early by user-supplied global layers.
     router
+        .layer(PropagateRequestIdLayer::x_request_id())
+        .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
 }
 
 impl Default for AppBuilder {
@@ -683,6 +788,157 @@ mod tests {
         )
         .await
         .expect("shutdown should immediately hand graceful draining to Axum");
+    }
+
+    #[cfg(feature = "jobs")]
+    #[tokio::test]
+    async fn shutdown_stops_http_while_jobs_run_and_bounds_job_wait() {
+        use crate::jobs::InMemoryJobQueue;
+        use crate::traits::job::{Job, JobQueue};
+        use std::time::{Duration, Instant};
+
+        #[derive(Debug)]
+        struct StuckJob;
+
+        #[async_trait::async_trait]
+        impl Job for StuckJob {
+            fn job_type(&self) -> &str {
+                "stuck"
+            }
+            fn serialize(&self) -> crate::Result<serde_json::Value> {
+                Ok(serde_json::Value::Null)
+            }
+            async fn execute(&self, _ctx: &AppContext) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(e) => panic!("should bind ephemeral port: {}", e),
+        };
+        let addr = listener.local_addr().unwrap();
+
+        let started = Arc::new(tokio::sync::Notify::new());
+        let registry = Arc::new(JobRegistry::new());
+        {
+            let started = started.clone();
+            registry
+                .register("stuck", move |_, _| {
+                    let started = started.clone();
+                    Box::pin(async move {
+                        started.notify_one();
+                        std::future::pending::<crate::Result<()>>().await
+                    })
+                })
+                .await;
+        }
+
+        let queue = Arc::new(InMemoryJobQueue::new(0, 60));
+        queue.enqueue(&StuckJob).await.unwrap();
+
+        let mut config = Config::default();
+        config.jobs.enabled = true;
+        config.jobs.worker_count = 1;
+        config.jobs.shutdown_timeout_seconds = 2;
+        let app = App::with_config(config)
+            .register_module(PingModule)
+            .with_context(AppContext::builder().with_job_queue(queue).build())
+            .start_workers(registry);
+
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .expect("job should start");
+
+        let (signal_tx, signal_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(app.serve_with_shutdown(listener, async move {
+            let _ = signal_rx.await;
+        }));
+        tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("server should accept connections before shutdown");
+
+        signal_tx.send(()).unwrap();
+        let shutdown_started = Instant::now();
+
+        // The listener must close right away, not after the stuck job gives up.
+        let mut refused = false;
+        while shutdown_started.elapsed() < Duration::from_millis(1000) {
+            if tokio::net::TcpStream::connect(addr).await.is_err() {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            refused,
+            "server kept accepting connections while waiting for jobs"
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("shutdown should not wait on a stuck job past its timeout")
+            .unwrap()
+            .unwrap();
+        assert!(shutdown_started.elapsed() >= Duration::from_secs(2));
+    }
+
+    #[cfg(feature = "jobs")]
+    #[tokio::test]
+    async fn start_scheduler_runs_only_when_jobs_enabled_and_stops_on_shutdown() {
+        use crate::jobs::{InMemoryJobQueue, InMemorySchedulerLock, JobScheduler};
+        use crate::traits::job::Job;
+
+        #[derive(Debug)]
+        struct TickJob;
+
+        #[async_trait::async_trait]
+        impl Job for TickJob {
+            fn job_type(&self) -> &str {
+                "tick"
+            }
+            fn serialize(&self) -> crate::Result<serde_json::Value> {
+                Ok(serde_json::Value::Null)
+            }
+            async fn execute(&self, _ctx: &AppContext) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+
+        let scheduler = || {
+            JobScheduler::new(Arc::new(InMemorySchedulerLock::new()))
+                .add("tick", "* * * * * *", TickJob)
+                .unwrap()
+        };
+        let context = AppContext::builder()
+            .with_job_queue(Arc::new(InMemoryJobQueue::new(0, 60)))
+            .build();
+
+        let disabled = App::new()
+            .with_context(context.clone())
+            .start_scheduler(scheduler());
+        assert!(disabled.scheduler.is_none());
+
+        let mut config = Config::default();
+        config.jobs.enabled = true;
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(e) => panic!("should bind ephemeral port: {}", e),
+        };
+        let enabled = App::with_config(config)
+            .with_context(context)
+            .start_scheduler(scheduler());
+        assert!(enabled.scheduler.is_some());
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            enabled.serve_with_shutdown(listener, async {}),
+        )
+        .await
+        .expect("serve should stop the scheduler on shutdown")
+        .unwrap();
     }
 
     #[tokio::test]
@@ -805,4 +1061,87 @@ where
 
     // Returning starts Axum's graceful connection drain. Sleeping here would delay
     // shutdown rather than give active requests time to finish.
+}
+
+#[cfg(test)]
+mod middleware_stack_tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        routing::get,
+    };
+    use tower::ServiceExt;
+
+    fn app() -> App {
+        let mut config = Config::default();
+        config.dev.enabled = false;
+        config.request_logging.enabled = true;
+        config.timeout.timeout_seconds = 0;
+        config.rate_limit.enabled = true;
+        config.rate_limit.strategy = "global".into();
+        config.rate_limit.max_requests = 1;
+        config.rate_limit.window_seconds = 3600;
+        #[cfg(feature = "metrics")]
+        {
+            config.metrics.enabled = true;
+        }
+        let mut app = App::with_config(config);
+        app.router = app
+            .router
+            .route("/fast", get(|| async { "ok" }))
+            .route("/slow", get(std::future::pending::<StatusCode>));
+        app
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_has_generated_request_id() {
+        let mut app = app();
+        app.config.cors = crate::cors::CorsConfig::permissive();
+        let response = app
+            .into_router_with_middleware()
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/fast")
+                    .header("origin", "https://example.com")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap()).unwrap();
+    }
+
+    #[cfg(feature = "metrics")]
+    #[tokio::test]
+    async fn metrics_count_short_circuit_responses() {
+        for (path, statuses) in [
+            ("/fast", vec![StatusCode::OK, StatusCode::TOO_MANY_REQUESTS]),
+            ("/slow", vec![StatusCode::REQUEST_TIMEOUT]),
+        ] {
+            let app = app();
+            let collector = app.metrics_collector.clone().unwrap();
+            let router = app.into_router_with_middleware();
+            for status in statuses {
+                let response = router
+                    .clone()
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), status);
+                assert_eq!(
+                    collector
+                        .http_requests_total
+                        .with_label_values(&["GET", path, status.as_str()])
+                        .get(),
+                    1,
+                    "missing {status} metric"
+                );
+                assert_eq!(collector.http_requests_in_flight.get(), 0);
+            }
+        }
+    }
 }
