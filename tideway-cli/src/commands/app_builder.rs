@@ -101,6 +101,24 @@ pub fn is_app_builder_start_line(line_and_rest: &str) -> bool {
 }
 
 pub fn insert_snippet_into_builder_block(statement: &str, snippet: &str) -> Option<String> {
+    // A fluent chain that ends in `.serve()` must be extended before serving,
+    // not after the awaited result.
+    if let Some(serve_line) = find_chain_line_start(statement, ".serve(") {
+        let indent = statement[serve_line..]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect::<String>();
+        let mut updated = String::with_capacity(statement.len() + snippet.len() + 32);
+        updated.push_str(&statement[..serve_line]);
+        for line in snippet.lines() {
+            updated.push_str(&indent);
+            updated.push_str(line);
+            updated.push('\n');
+        }
+        updated.push_str(&statement[serve_line..]);
+        return Some(updated);
+    }
+
     let semicolon_pos = statement.rfind(';')?;
     let line_start = statement[..semicolon_pos]
         .rfind('\n')
@@ -126,6 +144,19 @@ pub fn insert_snippet_into_builder_block(statement: &str, snippet: &str) -> Opti
     updated.push_str(&statement[semicolon_pos..]);
 
     Some(updated)
+}
+
+/// Start of the last line in `statement` that begins (after indentation) with `call`.
+fn find_chain_line_start(statement: &str, call: &str) -> Option<usize> {
+    let mut found = None;
+    let mut offset = 0;
+    for line in statement.split_inclusive('\n') {
+        if offset > 0 && line.trim_start().starts_with(call) {
+            found = Some(offset);
+        }
+        offset += line.len();
+    }
+    found
 }
 
 pub fn find_statement_terminator(contents: &str, start_pos: usize) -> Option<usize> {

@@ -1070,6 +1070,7 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-BILLING-MIGRATION-MISSING` | The built-in billing store's event migration is absent. |
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |
 | `TW-UPGRADE-CREDIT-REVOCATION-SCHEMA` | Migration source lacks the credit revocation columns and `revoke` transaction kind. |
+| `TW-UPGRADE-API-KEYS-SCHEMA` | `api-keys-seaorm` / `SeaOrmApiKeyStore` is used but no `api_keys` migration was found; run `tideway add api-keys`. |
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |
 | `TW-UPGRADE-JWT-VERIFIER-SECRET` | The deprecated unchecked JWT verifier constructor is present. |
 | `TW-UPGRADE-JWT-IDENTITY-DRIFT` | JWT issuance uses a display name while verification expects the Cargo package name. |

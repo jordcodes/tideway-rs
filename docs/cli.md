@@ -128,6 +128,8 @@ tideway add database
 tideway add database --wire
 tideway add organizations --wire --db
 tideway add credits
+tideway add api-keys
+tideway add api-keys --wire
 tideway add billing-schema
 tideway add openapi
 tideway add openapi --wire
@@ -142,6 +144,15 @@ ledger migration without generating or replacing application handlers or migrati
 preserves the application's existing migration convention, including sequential names such as
 `m014_...` and SeaORM timestamp names such as `m20260717_143012_...`. See `docs/credits.md` for the
 reserve/commit workflow and optional Stripe top-ups.
+
+`tideway add api-keys` is additive: it enables `api-keys-seaorm` and registers an `api_keys`
+migration (reusing an existing one, and following the app's migration naming convention). When the
+DB-backed auth and organizations scaffolds are present it also generates `src/api_keys/` with
+`GET/POST /organizations/{org_id}/api-keys` and `DELETE /organizations/{org_id}/api-keys/{key_id}`,
+restricted to organization owners and admins. Existing files are never overwritten without
+`--force`. `--wire` registers `ApiKeyModule` in `main.rs` and installs its `ApiKeyExtension` as a
+global layer so handlers can use `ApiKeyAuth` / `Principal`. See the API Keys section of
+`docs/auth.md`.
 
 `tideway add billing-schema` is an upgrade repair for applications using
 `SeaOrmBillingStore`. It registers an idempotent additive migration for the current

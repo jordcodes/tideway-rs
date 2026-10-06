@@ -35,6 +35,7 @@ pub mod provider;
 pub mod token;
 
 // New auth modules
+pub mod api_keys;
 #[cfg(feature = "auth-breach")]
 pub mod breach;
 pub mod deletion;
@@ -127,6 +128,16 @@ pub use deletion::test::InMemoryDeletionStore;
 pub use deletion::{
     AccountDeletionFlow, AccountDeletionStore, CleanupStats, DeletionConfig, DeletionRequest,
     DeletionRequestBody, DeletionResult, PendingDeletion,
+};
+
+// API key re-exports
+#[cfg(feature = "api-keys-seaorm")]
+pub use api_keys::SeaOrmApiKeyStore;
+#[cfg(any(test, feature = "test-auth-bypass"))]
+pub use api_keys::test::InMemoryApiKeyStore;
+pub use api_keys::{
+    ApiKey, ApiKeyAuth, ApiKeyAuthenticator, ApiKeyConfig, ApiKeyExtension, ApiKeyManager,
+    ApiKeyStore, CreatedApiKey, NewApiKey, Principal,
 };
 
 // Impersonation re-exports

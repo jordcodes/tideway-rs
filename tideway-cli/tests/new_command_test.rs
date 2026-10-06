@@ -1058,6 +1058,50 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
 }
 
 #[test]
+fn test_saas_app_with_api_keys_wired_compiles_against_workspace_source() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run new command");
+
+    tideway_cli::commands::add::run(tideway_cli::cli::AddArgs {
+        feature: tideway_cli::cli::AddFeature::ApiKeys,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: false,
+    })
+    .expect("add api keys");
+
+    assert!(project_dir.join("src/api_keys/routes.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".register_module(api_key_module)",
+    );
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project_with_denied_warnings(
+        temp_dir.path(),
+        &project_dir,
+        &["check", "--all-targets"],
+    );
+}
+
+#[test]
 fn test_individual_auth_and_openapi_features_compile_without_warnings() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
 
