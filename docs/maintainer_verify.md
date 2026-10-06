@@ -28,7 +28,7 @@ bash scripts/verify.sh
 16. `cargo check --all-features`
 17. `bash scripts/check_downstream_upgrade.sh`
 18. `cargo test --test it prelude_smoke_test::`
-19. `cargo test --test it feature_gate_contract_test::`
+19. `bash scripts/check_feature_gates.sh`
 
 ## Common Failures and Fixes
 
@@ -260,7 +260,8 @@ Fix:
 
 Symptoms:
 - `prelude_smoke_test` fails after export changes
-- `feature_gate_contract_test` missing compile guidance messages
+- `scripts/check_feature_gates.sh` reports missing compile guidance messages, a failed isolated
+  feature build, or a leaked `unused import: error::TidewayError` warning
 
 Fix:
 - keep `src/prelude.rs` aligned with intended stable imports
