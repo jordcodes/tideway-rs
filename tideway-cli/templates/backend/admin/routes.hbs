@@ -6,9 +6,18 @@ use axum::{
     Json, Router,
 };
 use sea_orm::{entity::*, ColumnTrait, DatabaseConnection, PaginatorTrait, QueryFilter, QueryOrder};
+{{#if has_billing_feature}}
+use sea_orm::{FromQueryResult, QuerySelect};
+{{/if}}
 use serde::{Deserialize, Serialize};
+{{#if has_billing_feature}}
+use std::collections::HashMap;
+{{/if}}
 use std::sync::Arc;
 use tideway::auth::{AccessTokenClaims, JwtIssuer, JwtVerifier, TokenSubject};
+{{#if has_billing_feature}}
+use tideway::billing::{PlanInterval, SubscriptionStatus};
+{{/if}}
 use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
 use uuid::Uuid;
 use chrono::{Duration, Utc};
@@ -19,6 +28,52 @@ use crate::entities::user;
 use crate::entities::{organization, organization_member};
 {{/if}}
 
+{{#if has_billing_feature}}
+/// Read-only views of the billing tables written by `tideway::billing::SeaOrmBillingStore`.
+/// Only the columns the admin endpoints read are mapped.
+mod billing_tables {
+    pub mod subscription {
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+        #[sea_orm(table_name = "billing_subscriptions")]
+        pub struct Model {
+            #[sea_orm(primary_key, auto_increment = false)]
+            pub billable_id: String,
+            pub plan_id: String,
+            pub status: String,
+            pub extra_seats: i32,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+    }
+
+    pub mod plan {
+        use sea_orm::entity::prelude::*;
+
+        #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+        #[sea_orm(table_name = "billing_plans")]
+        pub struct Model {
+            #[sea_orm(primary_key, auto_increment = false)]
+            pub id: String,
+            pub price_cents: i64,
+            pub currency: String,
+            pub interval: String,
+        }
+
+        #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+        pub enum Relation {}
+
+        impl ActiveModelBehavior for ActiveModel {}
+    }
+}
+
+use billing_tables::{plan as billing_plan, subscription as billing_subscription};
+
+{{/if}}
 /// Admin routes state.
 #[derive(Clone)]
 pub struct AdminState {
@@ -77,9 +132,19 @@ pub struct PlatformStats {
     {{#if has_organizations}}
     pub total_organizations: u64,
     {{/if}}
-    pub active_subscriptions: u64,
-    pub mrr_cents: u64,
     pub recent_signups: u64,
+    {{#if has_billing_feature}}
+    /// Subscriptions with status `active` or `trialing`.
+    pub active_subscriptions: u64,
+    /// Monthly recurring revenue in minor units of `mrr_currency`. Omitted when the billing
+    /// tables can't price it accurately; `mrr_unavailable_reason` says why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mrr_cents: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mrr_currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mrr_unavailable_reason: Option<String>,
+    {{/if}}
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,6 +170,29 @@ pub struct AdminUserResponse {
     pub is_platform_admin: bool,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+impl From<user::Model> for AdminUserResponse {
+    fn from(user: user::Model) -> Self {
+        Self {
+            id: user.id.to_string(),
+            {{#if has_auth_mfa_feature}}
+            // Matches `has_mfa_enabled` in the auth store: the flag alone is not enough
+            // without an enrolled TOTP secret.
+            mfa_enabled: user.mfa_enabled && user.mfa_totp_secret_encrypted.is_some(),
+            {{else}}
+            // Generated without the `auth-mfa` feature, so no user can have MFA enabled.
+            mfa_enabled: false,
+            {{/if}}
+            email: user.email,
+            name: user.name,
+            email_verified: user.email_verified_at.is_some(),
+            locked: user.locked_until.map(|t| t > Utc::now()).unwrap_or(false),
+            is_platform_admin: user.is_platform_admin,
+            created_at: user.created_at.timestamp(),
+            updated_at: user.updated_at.timestamp(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -141,7 +229,10 @@ pub struct AdminOrgResponse {
     pub slug: String,
     pub owner_id: String,
     pub contact_email: Option<String>,
+    {{#if has_billing_feature}}
+    /// Stripe status of the organization's subscription, or `null` if it has none.
     pub subscription_status: Option<String>,
+    {{/if}}
     pub member_count: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -205,20 +296,119 @@ async fn get_stats(
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    // TODO: Calculate from billing tables
-    let active_subscriptions = 0u64;
-    let mrr_cents = 0u64;
+    {{#if has_billing_feature}}
+    let active_subscriptions = billing_subscription::Entity::find()
+        .filter(billing_subscription::Column::Status.is_in([
+            SubscriptionStatus::Active.as_str(),
+            SubscriptionStatus::Trialing.as_str(),
+        ]))
+        .count(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let (mrr_cents, mrr_currency, mrr_unavailable_reason) = match monthly_recurring_revenue(state.db.as_ref()).await? {
+        Ok(mrr) => (Some(mrr.cents), mrr.currency, None),
+        Err(reason) => (None, None, Some(reason)),
+    };
+    {{/if}}
 
     Ok(Json(PlatformStats {
         total_users,
         {{#if has_organizations}}
         total_organizations,
         {{/if}}
+        recent_signups,
+        {{#if has_billing_feature}}
         active_subscriptions,
         mrr_cents,
-        recent_signups,
+        mrr_currency,
+        mrr_unavailable_reason,
+        {{/if}}
     }))
 }
+
+{{#if has_billing_feature}}
+struct Mrr {
+    cents: u64,
+    currency: Option<String>,
+}
+
+#[derive(Debug, FromQueryResult)]
+struct PlanSubscriptionTotals {
+    plan_id: String,
+    subscriptions: i64,
+    extra_seats: Option<i64>,
+}
+
+/// Sums `billing_plans.price_cents` over subscriptions with status `active`, with yearly
+/// plans divided by 12 and one-time plans excluded. Trials are not revenue yet, so they
+/// are counted in `active_subscriptions` but not here.
+///
+/// The inner `Err` explains why the tables can't produce an accurate number: a subscription
+/// on a plan missing from `billing_plans`, extra seats (seat prices are not stored), or plans
+/// in more than one currency.
+async fn monthly_recurring_revenue(
+    db: &DatabaseConnection,
+) -> Result<std::result::Result<Mrr, String>> {
+    let totals = billing_subscription::Entity::find()
+        .select_only()
+        .column(billing_subscription::Column::PlanId)
+        .column_as(billing_subscription::Column::BillableId.count(), "subscriptions")
+        .column_as(billing_subscription::Column::ExtraSeats.sum(), "extra_seats")
+        .filter(billing_subscription::Column::Status.eq(SubscriptionStatus::Active.as_str()))
+        .group_by(billing_subscription::Column::PlanId)
+        .into_model::<PlanSubscriptionTotals>()
+        .all(db)
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    let plans: HashMap<String, billing_plan::Model> = billing_plan::Entity::find()
+        .filter(billing_plan::Column::Id.is_in(totals.iter().map(|t| t.plan_id.clone())))
+        .all(db)
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .into_iter()
+        .map(|plan| (plan.id.clone(), plan))
+        .collect();
+
+    let mut monthly_cents: u64 = 0;
+    let mut yearly_cents: u64 = 0;
+    let mut currency: Option<String> = None;
+    for total in &totals {
+        let Some(plan) = plans.get(&total.plan_id) else {
+            return Ok(Err(format!(
+                "subscriptions reference plan `{}`, which is not in billing_plans",
+                total.plan_id
+            )));
+        };
+        if total.extra_seats.unwrap_or(0) > 0 {
+            return Ok(Err(format!(
+                "subscriptions on plan `{}` have extra seats, and seat prices are not stored in billing_plans",
+                plan.id
+            )));
+        }
+        match &currency {
+            Some(existing) if !existing.eq_ignore_ascii_case(&plan.currency) => {
+                return Ok(Err("active plans are priced in more than one currency".to_string()));
+            }
+            Some(_) => {}
+            None => currency = Some(plan.currency.to_ascii_lowercase()),
+        }
+
+        let amount = u64::try_from(plan.price_cents).unwrap_or(0)
+            * u64::try_from(total.subscriptions).unwrap_or(0);
+        match PlanInterval::from_str(&plan.interval) {
+            PlanInterval::Monthly => monthly_cents += amount,
+            PlanInterval::Yearly => yearly_cents += amount,
+            PlanInterval::OneTime => {}
+        }
+    }
+
+    // Divide yearly revenue once, rounding to the nearest cent, rather than per subscription.
+    let cents = monthly_cents + (yearly_cents + 6) / 12;
+    Ok(Ok(Mrr { cents, currency }))
+}
+{{/if}}
 
 async fn list_users(
     Extension(state): Extension<AdminState>,
@@ -244,40 +434,25 @@ async fn list_users(
 
     select = select.order_by_desc(user::Column::CreatedAt);
 
-    let per_page = query.per_page.min(100).max(1) as u64;
-    let page = query.page.max(1) as u64;
+    let per_page = query.per_page.clamp(1, 100);
+    let page = query.page.max(1);
 
-    let paginator = select.paginate(state.db.as_ref(), per_page);
+    let paginator = select.paginate(state.db.as_ref(), u64::from(per_page));
     let total = paginator.num_items().await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    let users = paginator.fetch_page(page - 1).await
+    let users = paginator.fetch_page(u64::from(page - 1)).await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    let items: Vec<AdminUserResponse> = users
-        .into_iter()
-        .map(|u| {
-            AdminUserResponse {
-                id: u.id.to_string(),
-                email: u.email,
-                name: u.name,
-                mfa_enabled: false, // TODO: Check MFA status
-                email_verified: u.email_verified_at.is_some(),
-                locked: u.locked_until.map(|t| t > Utc::now()).unwrap_or(false),
-                is_platform_admin: u.is_platform_admin,
-                created_at: u.created_at.timestamp(),
-                updated_at: u.updated_at.timestamp(),
-            }
-        })
-        .collect();
+    let items: Vec<AdminUserResponse> = users.into_iter().map(AdminUserResponse::from).collect();
 
-    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let total_pages = total.div_ceil(u64::from(per_page)) as u32;
 
     Ok(Json(PaginatedUsers {
         items,
         total,
-        page: query.page,
-        per_page: query.per_page,
+        page,
+        per_page,
         total_pages,
     }))
 }
@@ -304,17 +479,7 @@ async fn get_user(
         .map_err(|e| TidewayError::Database(e.to_string()))?
         .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
 
-    Ok(Json(AdminUserResponse {
-        id: user.id.to_string(),
-        email: user.email,
-        name: user.name,
-        mfa_enabled: false, // TODO: Check MFA status
-        email_verified: user.email_verified_at.is_some(),
-        locked: user.locked_until.map(|t| t > Utc::now()).unwrap_or(false),
-        is_platform_admin: user.is_platform_admin,
-        created_at: user.created_at.timestamp(),
-        updated_at: user.updated_at.timestamp(),
-    }))
+    Ok(Json(AdminUserResponse::from(user)))
 }
 
 async fn update_user(
@@ -401,14 +566,14 @@ async fn list_organizations(
 
     select = select.order_by_desc(organization::Column::CreatedAt);
 
-    let per_page = query.per_page.min(100).max(1) as u64;
-    let page = query.page.max(1) as u64;
+    let per_page = query.per_page.clamp(1, 100);
+    let page = query.page.max(1);
 
-    let paginator = select.paginate(state.db.as_ref(), per_page);
+    let paginator = select.paginate(state.db.as_ref(), u64::from(per_page));
     let total = paginator.num_items().await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
-    let orgs = paginator.fetch_page(page - 1).await
+    let orgs = paginator.fetch_page(u64::from(page - 1)).await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
     let org_ids: Vec<String> = orgs.iter().map(|o| o.id.clone()).collect();
@@ -424,17 +589,30 @@ async fn list_organizations(
         *count_map.entry(m.organization_id).or_insert(0) += 1;
     }
 
+    {{#if has_billing_feature}}
+    let mut status_map: HashMap<String, String> = billing_subscription::Entity::find()
+        .filter(billing_subscription::Column::BillableId.is_in(org_ids))
+        .all(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .into_iter()
+        .map(|s| (s.billable_id, s.status))
+        .collect();
+    {{/if}}
+
     let items: Vec<AdminOrgResponse> = orgs
         .into_iter()
         .map(|o| {
             let member_count = count_map.get(&o.id).copied();
             AdminOrgResponse {
+                {{#if has_billing_feature}}
+                subscription_status: status_map.remove(&o.id),
+                {{/if}}
                 id: o.id,
                 name: o.name,
                 slug: o.slug,
                 owner_id: o.owner_id.to_string(),
                 contact_email: Some(o.contact_email),
-                subscription_status: None, // TODO: Fetch from billing
                 member_count,
                 created_at: o.created_at,
                 updated_at: o.updated_at,
@@ -442,13 +620,13 @@ async fn list_organizations(
         })
         .collect();
 
-    let total_pages = ((total as f64) / (per_page as f64)).ceil() as u32;
+    let total_pages = total.div_ceil(u64::from(per_page)) as u32;
 
     Ok(Json(PaginatedOrgs {
         items,
         total,
-        page: query.page,
-        per_page: query.per_page,
+        page,
+        per_page,
         total_pages,
     }))
 }
@@ -478,13 +656,23 @@ async fn get_organization(
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
+    {{#if has_billing_feature}}
+    let subscription_status = billing_subscription::Entity::find_by_id(&org_id)
+        .one(state.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .map(|s| s.status);
+    {{/if}}
+
     Ok(Json(AdminOrgResponse {
         id: org.id,
         name: org.name,
         slug: org.slug,
         owner_id: org.owner_id.to_string(),
         contact_email: Some(org.contact_email),
-        subscription_status: None, // TODO: Fetch from billing
+        {{#if has_billing_feature}}
+        subscription_status,
+        {{/if}}
         member_count: Some(member_count),
         created_at: org.created_at,
         updated_at: org.updated_at,
