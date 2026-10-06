@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::sync::Mutex;
 use tideway_cli::cli::{NewArgs, NewPreset};
 
 #[test]
@@ -230,8 +231,8 @@ fn test_new_command_auth_database_compiles_and_tests_against_workspace_source() 
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+    run_cargo_in_project(&project_dir, &["check"]);
+    run_cargo_in_project(&project_dir, &["test"]);
 }
 
 #[test]
@@ -281,10 +282,9 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+    run_cargo_in_project(&project_dir, &["check"]);
+    run_cargo_in_project(&project_dir, &["test"]);
     run_cargo_in_project(
-        temp_dir.path(),
         &project_dir,
         &[
             "clippy",
@@ -296,7 +296,6 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
         ],
     );
     run_cargo_in_project(
-        temp_dir.path(),
         &project_dir,
         &[
             "check",
@@ -307,27 +306,27 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
     );
 
     // One command seeds a fresh database (migrations included), and reruns are idempotent.
-    let first = run_tideway_seed(temp_dir.path(), &project_dir);
+    let first = run_tideway_seed(&project_dir);
     assert!(
         first.contains("todos: 3 inserted, 0 already present"),
         "unexpected first seed output:\n{first}"
     );
-    let second = run_tideway_seed(temp_dir.path(), &project_dir);
+    let second = run_tideway_seed(&project_dir);
     assert!(
         second.contains("todos: 0 inserted, 3 already present"),
         "unexpected second seed output:\n{second}"
     );
 }
 
-fn run_tideway_seed(temp_root: &Path, project_dir: &Path) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+fn run_tideway_seed(project_dir: &Path) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
+    command
         .args(["seed", "--fix-env", "--path"])
         .arg(project_dir)
         .current_dir(project_dir)
-        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
-        .env_remove("DATABASE_URL")
-        .output()
-        .expect("run tideway seed");
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(false))
+        .env_remove("DATABASE_URL");
+    let output = output_serialized(&mut command, "run tideway seed");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(
         output.status.success(),
@@ -390,7 +389,7 @@ fn test_new_command_auth_mfa_scaffold_is_secure_and_compiles() {
     );
 
     patch_scaffold_to_workspace(&project_dir);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
+    run_cargo_in_project(&project_dir, &["test"]);
 }
 
 #[test]
@@ -449,7 +448,7 @@ fn test_new_command_minimal_compiles_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project(&project_dir, &["check"]);
 }
 
 #[test]
@@ -1247,11 +1246,7 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
 
     patch_scaffold_to_workspace(&project_dir);
 
-    run_cargo_in_project_with_denied_warnings(
-        temp_dir.path(),
-        &project_dir,
-        &["test", "--all-targets"],
-    );
+    run_cargo_in_project_with_denied_warnings(&project_dir, &["test", "--all-targets"]);
     assert!(project_dir.join("Cargo.lock").exists());
     assert!(
         !project_dir.join("migration/Cargo.lock").exists(),
@@ -1296,11 +1291,7 @@ fn test_saas_app_with_api_keys_wired_compiles_against_workspace_source() {
     );
 
     patch_scaffold_to_workspace(&project_dir);
-    run_cargo_in_project_with_denied_warnings(
-        temp_dir.path(),
-        &project_dir,
-        &["check", "--all-targets"],
-    );
+    run_cargo_in_project_with_denied_warnings(&project_dir, &["check", "--all-targets"]);
 }
 
 /// The SaaS preset always renders admin with billing on and MFA off. Re-render the admin
@@ -1404,11 +1395,8 @@ fn test_saas_admin_compiles_and_tests_with_and_without_billing_and_mfa() {
             }
         }
 
-        let output = cargo_output_in_project(
-            temp_dir.path(),
-            &project_dir,
-            &["test", "--all-targets", "admin::tests"],
-        );
+        let output =
+            cargo_output_in_project(&project_dir, &["test", "--all-targets", "admin::tests"]);
         let expected = if has_billing_feature {
             "stats_count_active_subscriptions_and_mrr ... ok"
         } else {
@@ -1454,7 +1442,7 @@ fn test_individual_auth_and_openapi_features_compile_without_warnings() {
 
         tideway_cli::commands::new::run(args).expect("run new command");
         patch_scaffold_to_workspace(&project_dir);
-        run_cargo_in_project_with_denied_warnings(temp_dir.path(), &project_dir, &["check"]);
+        run_cargo_in_project_with_denied_warnings(&project_dir, &["check"]);
     }
 }
 
@@ -1535,23 +1523,23 @@ fn patch_scaffold_to_workspace(project_dir: &Path) {
     fs::write(cargo_path, contents).expect("write Cargo.toml patch section");
 }
 
-fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
-    run_cargo_in_project_inner(temp_root, project_dir, args, false);
+fn run_cargo_in_project(project_dir: &Path, args: &[&str]) {
+    run_cargo_in_project_inner(project_dir, args, false);
 }
 
-fn run_cargo_in_project_with_denied_warnings(temp_root: &Path, project_dir: &Path, args: &[&str]) {
-    run_cargo_in_project_inner(temp_root, project_dir, args, true);
+fn run_cargo_in_project_with_denied_warnings(project_dir: &Path, args: &[&str]) {
+    run_cargo_in_project_inner(project_dir, args, true);
 }
 
 /// Runs cargo with warnings denied and returns stdout.
-fn cargo_output_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("cargo")
+fn cargo_output_in_project(project_dir: &Path, args: &[&str]) -> String {
+    let mut command = Command::new("cargo");
+    command
         .args(args)
         .current_dir(project_dir)
-        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
-        .env("RUSTFLAGS", "-Dwarnings")
-        .output()
-        .expect("run cargo");
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(true))
+        .env("RUSTFLAGS", "-Dwarnings");
+    let output = output_serialized(&mut command, "run cargo");
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(
         output.status.success(),
@@ -1563,22 +1551,17 @@ fn cargo_output_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) 
     stdout
 }
 
-fn run_cargo_in_project_inner(
-    temp_root: &Path,
-    project_dir: &Path,
-    args: &[&str],
-    deny_warnings: bool,
-) {
+fn run_cargo_in_project_inner(project_dir: &Path, args: &[&str], deny_warnings: bool) {
     let mut command = Command::new("cargo");
     command
         .args(args)
         .current_dir(project_dir)
-        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"));
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(deny_warnings));
     if deny_warnings {
         command.env("RUSTFLAGS", "-Dwarnings");
     }
 
-    let output = command.output().expect("run cargo");
+    let output = output_serialized(&mut command, "run cargo");
 
     if !output.status.success() {
         panic!(
@@ -1588,6 +1571,34 @@ fn run_cargo_in_project_inner(
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+/// Serialises nested cargo builds within this test binary so parallel test
+/// threads don't each spawn a full-core build at once.
+static CARGO_LOCK: Mutex<()> = Mutex::new(());
+
+/// Shared target dir for scaffold builds. Scaffolds are patched to the
+/// workspace sources, so dependency artifacts are reused across tests and runs.
+/// `-Dwarnings` builds get a sibling dir so the RUSTFLAGS change doesn't
+/// invalidate the shared artifacts.
+fn scaffold_target_dir(deny_warnings: bool) -> PathBuf {
+    let name = if deny_warnings {
+        "scaffold-tests-deny-warnings"
+    } else {
+        "scaffold-tests"
+    };
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("target")
+        .join(name)
+}
+
+fn output_serialized(command: &mut Command, context: &str) -> Output {
+    let _guard = CARGO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    command.output().expect(context)
 }
 
 fn vendor_workspace_crates(temp_root: &Path, project_dir: &Path) {
