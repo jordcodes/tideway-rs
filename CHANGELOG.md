@@ -267,6 +267,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
+- `tideway new` now generates a multi-stage production `Dockerfile` (cargo-chef dependency caching, slim non-root
+  Debian runtime listening on `$PORT`) and `.dockerignore` for every scaffold. The new
+  `docs/deployment.md` covers building the image and deploying to Fly.io and Railway.
 - File storage: the `storage` feature adds a `FileStorage` trait over `object_store` with a
   `LocalStorage` backend (HMAC-signed presigned URLs served by `LocalStorage::router()`) and an
   in-memory backend for tests; `storage-s3` adds `ObjectStorage::s3` and `ObjectStorage::r2`

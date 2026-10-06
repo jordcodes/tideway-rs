@@ -265,6 +265,10 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         }
         println!();
         println!("Optional: run `tideway doctor` for a project/setup audit.");
+        println!(
+            "Deploy: `docker build -t {} .` builds a production image (see Tideway's docs/deployment.md).",
+            project_name
+        );
         println!();
         if should_suggest_migrate(args.preset, has_database_feature) {
             println!("Tip: run `tideway migrate` when you need explicit migration control.");
@@ -372,6 +376,16 @@ fn scaffold_files(
     write_file_with_force_or_error_default(
         &target_dir.join(".gitignore"),
         &engine.render("starter/gitignore")?,
+        args.force,
+    )?;
+    write_file_with_force_or_error_default(
+        &target_dir.join("Dockerfile"),
+        &engine.render("starter/Dockerfile")?,
+        args.force,
+    )?;
+    write_file_with_force_or_error_default(
+        &target_dir.join(".dockerignore"),
+        &engine.render("starter/dockerignore")?,
         args.force,
     )?;
 
@@ -555,6 +569,8 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
     }
 
     files.push(".gitignore".to_string());
+    files.push("Dockerfile".to_string());
+    files.push(".dockerignore".to_string());
     files.push("tests/health.rs".to_string());
 
     if needs_env {

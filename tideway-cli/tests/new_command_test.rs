@@ -459,6 +459,155 @@ fn test_new_command_with_docker() {
 }
 
 #[test]
+fn test_new_command_generates_production_dockerfile() {
+    for (preset, with_docker) in [
+        (NewPreset::Minimal, false),
+        (NewPreset::Api, false),
+        (NewPreset::Api, true),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path().join("my_app");
+
+        let args = NewArgs {
+            name: Some("my_app".to_string()),
+            preset: Some(preset),
+            features: Vec::new(),
+            with_config: false,
+            with_docker,
+            with_ci: false,
+            no_prompt: true,
+            summary: true,
+            with_env: false,
+            without_invitations: false,
+            path: Some(project_dir.to_string_lossy().to_string()),
+            force: false,
+        };
+
+        let files = tideway_cli::commands::new::expected_files(&args);
+        assert!(files.contains(&"Dockerfile".to_string()));
+        assert!(files.contains(&".dockerignore".to_string()));
+
+        tideway_cli::commands::new::run(args).expect("run new command");
+
+        let dockerfile = project_dir.join("Dockerfile");
+        assert_file_contains(
+            &dockerfile,
+            "FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef",
+        );
+        assert_file_contains(
+            &dockerfile,
+            "RUN cargo chef cook --release --locked --bin my_app --recipe-path recipe.json",
+        );
+        assert_file_contains(&dockerfile, "FROM debian:bookworm-slim AS runtime");
+        assert_file_contains(&dockerfile, "cargo build --release --locked --bin my_app");
+        assert_file_contains(
+            &dockerfile,
+            "COPY --from=builder /app/target/release/my_app /usr/local/bin/my_app",
+        );
+        assert_file_contains(&dockerfile, "USER app");
+        assert_file_contains(&dockerfile, "PORT=8000");
+        assert_file_contains(&dockerfile, "CMD [\"my_app\"]");
+        assert_file_not_contains(&dockerfile, "{{");
+
+        let sqlite = matches!(preset, NewPreset::Api) && !with_docker;
+        if sqlite {
+            assert_file_contains(
+                &dockerfile,
+                "ENV DATABASE_URL=sqlite:///app/data/my_app.db?mode=rwc",
+            );
+        } else {
+            assert_file_not_contains(&dockerfile, "DATABASE_URL");
+        }
+
+        let dockerignore = project_dir.join(".dockerignore");
+        assert_file_contains(&dockerignore, "target/");
+        assert_file_contains(&dockerignore, ".env");
+        assert_file_not_contains(&dockerignore, "Cargo.lock");
+    }
+}
+
+/// Builds the generated production Dockerfile and checks the container serves /health.
+/// Opt-in (slow, needs a Docker daemon): `TIDEWAY_DOCKER_SMOKE=1 cargo test -p tideway-cli
+/// --test new_command_test production_dockerfile_builds -- --nocapture`.
+#[test]
+fn test_new_command_production_dockerfile_builds_and_serves_health_smoke() {
+    if std::env::var("TIDEWAY_DOCKER_SMOKE").is_err() {
+        return;
+    }
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    let args = NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Api),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: true,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    };
+    tideway_cli::commands::new::run(args).expect("run new command");
+
+    // The scaffold pins the unreleased workspace version, so vendor the local crates into the
+    // Docker build context and patch them in.
+    vendor_workspace_crates(temp_dir.path(), &project_dir);
+
+    let tag = format!("tideway-dockerfile-smoke-{}", std::process::id());
+    run_checked(
+        Command::new("docker")
+            .args(["build", "-t", &tag, "."])
+            .current_dir(&project_dir),
+    );
+
+    let container = run_checked(Command::new("docker").args([
+        "run",
+        "-d",
+        "-p",
+        "127.0.0.1::8000",
+        "-e",
+        "JWT_SECRET=smoke-test-secret-with-at-least-32-bytes",
+        &tag,
+    ]));
+    let container = container.trim().to_string();
+
+    let result = std::panic::catch_unwind(|| {
+        let port_output = run_checked(Command::new("docker").args(["port", &container, "8000"]));
+        let addr = port_output
+            .lines()
+            .next()
+            .expect("published port")
+            .trim()
+            .to_string();
+        wait_for_http_ok(&addr, "/health");
+    });
+
+    if result.is_err() {
+        let logs = Command::new("docker")
+            .args(["logs", &container])
+            .output()
+            .expect("docker logs");
+        eprintln!(
+            "container logs:\n{}{}",
+            String::from_utf8_lossy(&logs.stdout),
+            String::from_utf8_lossy(&logs.stderr)
+        );
+    }
+    let _ = Command::new("docker")
+        .args(["rm", "-f", &container])
+        .output();
+    let _ = Command::new("docker").args(["rmi", "-f", &tag]).output();
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+#[test]
 fn test_new_command_with_ci() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -1194,6 +1343,138 @@ fn run_cargo_in_project_inner(
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+fn vendor_workspace_crates(temp_root: &Path, project_dir: &Path) {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root");
+    let package_target = temp_root.join("package-target");
+    run_checked(
+        Command::new("cargo")
+            .args([
+                "package",
+                "-p",
+                "tideway",
+                "-p",
+                "tideway-macros",
+                "--no-verify",
+                "--allow-dirty",
+                "--target-dir",
+            ])
+            .arg(&package_target)
+            .current_dir(workspace_root),
+    );
+
+    let vendor_dir = project_dir.join("vendor");
+    fs::create_dir_all(&vendor_dir).expect("create vendor dir");
+    let mut tideway_dir = None;
+    let mut macros_dir = None;
+    for entry in fs::read_dir(package_target.join("package")).expect("read package dir") {
+        let path = entry.expect("package entry").path();
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(dir_name) = file_name.strip_suffix(".crate") else {
+            continue;
+        };
+        run_checked(
+            Command::new("tar")
+                .arg("-xzf")
+                .arg(&path)
+                .arg("-C")
+                .arg(&vendor_dir),
+        );
+        if dir_name.starts_with("tideway-macros-") {
+            macros_dir = Some(dir_name.to_string());
+        } else {
+            tideway_dir = Some(dir_name.to_string());
+        }
+    }
+    let tideway_dir = tideway_dir.expect("packaged tideway crate");
+    let macros_dir = macros_dir.expect("packaged tideway-macros crate");
+
+    // cargo-chef masks local crate versions in its dependency recipe, which breaks
+    // `[patch.crates-io]` version matching, so use plain path dependencies instead. It also only
+    // skeletonizes workspace members, so the vendored crates join the app's workspace.
+    let tideway_manifest = vendor_dir.join(&tideway_dir).join("Cargo.toml");
+    let manifest = fs::read_to_string(&tideway_manifest).expect("read vendored tideway manifest");
+    let macros_version = macros_dir
+        .strip_prefix("tideway-macros-")
+        .expect("macros crate version");
+    let macros_dep = format!("[dependencies.tideway-macros]\nversion = \"{macros_version}\"");
+    assert!(
+        manifest.contains(&macros_dep),
+        "unexpected tideway-macros dependency in vendored manifest:\n{manifest}"
+    );
+    fs::write(
+        &tideway_manifest,
+        manifest.replace(
+            &macros_dep,
+            &format!("[dependencies.tideway-macros]\npath = \"../{macros_dir}\""),
+        ),
+    )
+    .expect("write vendored tideway manifest");
+
+    let cargo_path = project_dir.join("Cargo.toml");
+    let mut contents = fs::read_to_string(&cargo_path).expect("read Cargo.toml");
+    let tideway_dep = format!(
+        "tideway = {{ version = \"{}\"",
+        tideway_cli::TIDEWAY_VERSION
+    );
+    assert!(
+        contents.contains(&tideway_dep),
+        "unexpected tideway dependency:\n{contents}"
+    );
+    contents = contents.replace(
+        &tideway_dep,
+        &format!("tideway = {{ path = \"vendor/{tideway_dir}\""),
+    );
+    let members = format!("\"vendor/{tideway_dir}\", \"vendor/{macros_dir}\"");
+    if contents.contains("members = [\"migration\"]") {
+        contents = contents.replace(
+            "members = [\"migration\"]",
+            &format!("members = [\"migration\", {members}]"),
+        );
+    } else {
+        contents.push_str(&format!("\n[workspace]\nmembers = [{members}]\n"));
+    }
+    fs::write(cargo_path, contents).expect("write Cargo.toml");
+}
+
+fn run_checked(command: &mut Command) -> String {
+    let output = command.output().expect("spawn command");
+    if !output.status.success() {
+        panic!(
+            "{:?} failed.\nstdout:\n{}\nstderr:\n{}",
+            command,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+fn wait_for_http_ok(addr: &str, path: &str) {
+    use std::io::{Read, Write};
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut last_response = String::new();
+    while std::time::Instant::now() < deadline {
+        if let Ok(mut stream) = std::net::TcpStream::connect(addr) {
+            let request =
+                format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+            if stream.write_all(request.as_bytes()).is_ok() {
+                last_response.clear();
+                let _ = stream.read_to_string(&mut last_response);
+                if last_response.starts_with("HTTP/1.1 200") {
+                    return;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("GET {path} on {addr} never returned 200; last response:\n{last_response}");
 }
 
 fn escape_toml_path(path: &Path) -> String {
