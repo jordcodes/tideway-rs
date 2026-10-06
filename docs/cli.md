@@ -171,6 +171,30 @@ Recommended full API resource:
 tideway resource user
 ```
 
+Define fields inline as `name:type`:
+
+```bash
+tideway resource post title:string body:text published:bool views:int published_at:datetime
+```
+
+Inline fields drive the entity, migration, request/response DTOs, service validation, and search
+(the first string field is searchable). Supported types:
+
+| Type | Rust | Column |
+|------|------|--------|
+| `string` | `String` | `string()` |
+| `text` | `String` | `text()` |
+| `bool` / `boolean` | `bool` | `boolean()` |
+| `int` / `integer` / `i32` | `i32` | `integer()` |
+| `bigint` / `i64` | `i64` | `big_integer()` |
+| `datetime` / `timestamp` | `i64` (unix seconds) | `big_integer()` |
+
+Inline fields replace the profile's default domain fields; structural fields are kept
+(`organization_id`/`owner_id` for scoped profiles, `created_at`/`updated_at` for timestamped profiles).
+String fields are trimmed and must be non-empty. Names must be snake_case and may not be Rust
+keywords or reserved generator names (`id`, `active`, `model`, `actor`, `db`, `query`, `search`,
+`limit`, `offset`, `q`, `table`).
+
 Intent-specific full-stack profiles:
 
 ```bash

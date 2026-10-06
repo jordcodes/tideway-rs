@@ -66,6 +66,7 @@ fn test_resource_wire_scaffold_snapshots() {
 
     let resource_args = ResourceArgs {
         name: "todo".to_string(),
+        fields: Vec::new(),
         path: project_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: true,

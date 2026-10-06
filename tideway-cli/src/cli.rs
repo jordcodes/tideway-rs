@@ -327,6 +327,12 @@ pub struct ResourceArgs {
     #[arg(value_name = "NAME")]
     pub name: String,
 
+    /// Inline field definitions (e.g. title:string body:text published:bool).
+    /// Types: string, text, bool, int, bigint, datetime (unix seconds as i64).
+    /// Replaces the profile's default domain fields.
+    #[arg(value_name = "FIELD:TYPE")]
+    pub fields: Vec<String>,
+
     /// Project directory
     #[arg(short, long, default_value = ".")]
     pub path: String,

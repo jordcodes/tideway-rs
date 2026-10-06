@@ -161,6 +161,7 @@ When adding OpenAPI, the CLI creates `src/openapi_docs.rs` if it does not exist.
 Generate a CRUD route module for a resource.
 
 ```bash
+tideway resource post title:string body:text published:bool
 tideway resource user --wire
 tideway resource invoice_item --wire
 tideway resource user --wire --db
