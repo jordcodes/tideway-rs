@@ -27,6 +27,8 @@ Follow these conventions to work efficiently and safely.
 
 ## Patterns
 - DB-backed resources: `routes` → `repositories` → `services`.
+- Org-scoped SaaS resources authorize through `src/policies/<name>.rs` (`tideway::policy`);
+  change access by editing its role grants, not by bypassing the `*_authorized` service methods.
 - Use `paginate` + `search (q)` for list endpoints when DB-backed.
 - Avoid breaking changes to generated paths; prefer additive updates.
 
