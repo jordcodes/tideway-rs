@@ -11,7 +11,7 @@
 - **Fast & Reliable**: Built on Axum and Tokio for maximum performance
 - **Batteries Included**: Pre-configured logging, tracing, error handling, and health checks
 - **Modular Architecture**: Organize your application into reusable route modules
-- **Trait-Based Extensibility**: Swap database, cache, session, and email implementations easily
+- **Trait-Based Extensibility**: Swap database, cache, session, email, and file storage implementations easily
 - **Production Middleware**: Compression, security headers, timeouts, and Prometheus metrics
 - **Request Validation**: Type-safe validation with custom validators and extractors
 - **Enhanced Error Handling**: Rich error responses with context, IDs, and dev-mode stack traces
@@ -44,6 +44,8 @@ Feature flags are opt-in unless marked Default.
 | `jobs-redis` | `jobs` | `docs/background_jobs.md` | — | — |
 | `websocket` | `websocket` | `docs/websockets.md` | `examples/websocket_chat.rs` | — |
 | `email` | `email` | `docs/email.md` | `examples/email_example.rs` | — |
+| `storage` | `storage` | `docs/storage.md` | `tests/storage_test.rs` | Local filesystem + in-memory, presigned uploads |
+| `storage-s3` | `storage` | `docs/storage.md` | `tests/storage_test.rs` | AWS S3, Cloudflare R2, S3-compatible |
 | `auth` | `auth` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-mfa` | `auth::mfa` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-breach` | `auth::breach` | `docs/auth.md` | — | — |

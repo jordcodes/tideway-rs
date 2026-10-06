@@ -267,6 +267,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
+- File storage: the `storage` feature adds a `FileStorage` trait over `object_store` with a
+  `LocalStorage` backend (HMAC-signed presigned URLs served by `LocalStorage::router()`) and an
+  in-memory backend for tests; `storage-s3` adds `ObjectStorage::s3` and `ObjectStorage::r2`
+  with SigV4 presigned URLs. `UploadPolicy` presets for avatars, logos, and attachments validate
+  declared uploads, generate safe keys, presign a content-type-bound `PUT`, and `confirm` stored
+  size after upload. Register a backend with `AppContextBuilder::with_storage` and read it with
+  `AppContext::storage`. See `docs/storage.md`.
 - Recurring jobs: `jobs::JobScheduler` enqueues existing `Job` values on cron schedules (UTC,
   five- or six-field expressions) and `App::start_scheduler` runs it alongside the workers. Each
   occurrence is claimed through a `SchedulerLock` before it is enqueued, so only one instance runs

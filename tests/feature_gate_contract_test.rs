@@ -34,6 +34,7 @@ fn feature_gate_errors_provide_actionable_messages() {
         "Enable the `sessions` feature to use tideway::session",
         "Enable the `jobs` feature to use tideway::jobs",
         "Enable the `email` feature to use tideway::email",
+        "Enable the `storage` feature to use tideway::storage",
         "Enable the `validation` feature to use tideway::validation",
         "Enable the `websocket` feature to use tideway::websocket",
     ] {
