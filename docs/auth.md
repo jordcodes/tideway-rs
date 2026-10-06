@@ -2044,9 +2044,21 @@ let session = manager.start_impersonation(ImpersonationRequest {
 // are rejected) and attach the authenticated admin's ID:
 let session = manager.start_impersonation(body.into_request(authenticated_admin_id)).await?;
 
-// Include impersonation info in JWT claims
-let claims = ImpersonationClaims::from_session(&session);
-// Add to your JWT: imp_session, imp_admin, imp_blocked
+// Issue an access token with the impersonation claims (imp_session, imp_admin,
+// imp_blocked) that expires with the session. Don't issue a refresh token.
+let subject = TokenSubject::new(&session.target_user_id)
+    .with_custom(ImpersonationClaims::from_session(&session));
+let (access_token, _) = issuer.issue_access_token_expiring_at(subject, session.expires_at)?;
+
+// On each request, read the claims and reject the token once its session has
+// ended or expired.
+let data = verifier
+    .with_claims::<AccessTokenClaims<ImpersonationClaims>>()
+    .verify_access_token(&access_token)
+    .await?;
+if let Some(claims) = data.claims.custom {
+    manager.validate_session(&claims.imp_session, None).await?;
+}
 
 // Validate session and check if action is allowed
 let session = manager.validate_session(&session.session_id, Some("view_profile")).await?;

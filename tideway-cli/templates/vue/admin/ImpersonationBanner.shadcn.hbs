@@ -5,11 +5,10 @@ import { Button } from '@/components/ui/button'
 const { isImpersonating, impersonationInfo, endImpersonation } = useAdmin()
 
 async function handleEndImpersonation() {
-  const success = await endImpersonation()
-  if (success) {
-    // Reload the page to apply the original tokens
-    window.location.href = '/admin'
-  }
+  // Original tokens are restored even if the session had already expired.
+  await endImpersonation()
+  // Reload the page to apply the original tokens
+  window.location.href = '/admin'
 }
 </script>
 

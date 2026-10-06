@@ -276,6 +276,28 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
         }
     }
 
+    /// Reuse this verifier's keys and validation rules to decode a different
+    /// claims type, e.g. `AccessTokenClaims<ImpersonationClaims>` to read
+    /// custom claims from tokens checked by a `JwtVerifier<AccessTokenClaims>`.
+    #[must_use]
+    pub fn with_claims<D: DeserializeOwned + Clone>(&self) -> JwtVerifier<D> {
+        JwtVerifier {
+            jwks: self.jwks.clone(),
+            jwks_url: self.jwks_url.clone(),
+            jwks_client: self.jwks_client.clone(),
+            jwks_refresh_interval: self.jwks_refresh_interval,
+            jwks_schedule: self.jwks_schedule.clone(),
+            last_unknown_kid_refresh: self.last_unknown_kid_refresh.clone(),
+            unknown_kid_refresh_cooldown: self.unknown_kid_refresh_cooldown,
+            decoding_key: self.decoding_key.clone(),
+            validation: self.validation.clone(),
+            issuer_configured: self.issuer_configured,
+            audience_configured: self.audience_configured,
+            warning_logged: self.warning_logged.clone(),
+            _claims: std::marker::PhantomData,
+        }
+    }
+
     /// Create a verifier using JWKS (fetches keys from URL)
     ///
     /// # Security Warning
@@ -740,6 +762,67 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn test_with_claims_reads_custom_claims_with_same_validation() {
+        use crate::auth::ImpersonationClaims;
+
+        let secret = "test_secret_for_custom_claim_retyping_1";
+        let issuer = JwtIssuer::new(
+            JwtIssuerConfig::with_secure_secret(secret, "test-app")
+                .unwrap()
+                .audience("api-a"),
+        )
+        .unwrap();
+        let claims = ImpersonationClaims {
+            imp_session: "imp_abc".into(),
+            imp_admin: "admin-1".into(),
+            imp_blocked: vec!["delete_account".into()],
+        };
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 600;
+        let (token, expires_in) = issuer
+            .issue_access_token_expiring_at(
+                TokenSubject::new("user-123").with_custom(claims.clone()),
+                expires_at,
+            )
+            .unwrap();
+        assert!(expires_in <= 600);
+
+        let verifier = JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+            .unwrap()
+            .with_issuer("test-app")
+            .with_audience("api-a");
+        let data = verifier
+            .with_claims::<AccessTokenClaims<ImpersonationClaims>>()
+            .verify_access_token(&token)
+            .await
+            .unwrap();
+        assert_eq!(data.claims.custom, Some(claims));
+        assert_eq!(data.claims.standard.exp, expires_at);
+
+        let plain = issuer
+            .issue_access_token(TokenSubject::new("user-123"))
+            .unwrap()
+            .0;
+        let data = verifier
+            .with_claims::<AccessTokenClaims<ImpersonationClaims>>()
+            .verify_access_token(&plain)
+            .await
+            .unwrap();
+        assert_eq!(data.claims.custom, None);
+
+        let wrong_audience =
+            JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+                .unwrap()
+                .with_issuer("test-app")
+                .with_audience("api-b")
+                .with_claims::<AccessTokenClaims<ImpersonationClaims>>();
+        assert!(wrong_audience.verify_access_token(&token).await.is_err());
     }
 
     #[tokio::test]

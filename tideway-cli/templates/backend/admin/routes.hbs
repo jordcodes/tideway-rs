@@ -8,11 +8,15 @@ use axum::{
 use sea_orm::{entity::*, ColumnTrait, DatabaseConnection, PaginatorTrait, QueryFilter, QueryOrder};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tideway::auth::{AccessTokenClaims, JwtIssuer, JwtVerifier, TokenSubject};
+use tideway::auth::{
+    AccessTokenClaims, ImpersonationClaims, ImpersonationConfig, ImpersonationRequestBody,
+    JwtIssuer, JwtVerifier, TokenSubject,
+};
 use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
 use uuid::Uuid;
 use chrono::{Duration, Utc};
 
+use crate::auth::impersonation::{impersonation_manager, AppImpersonationManager};
 use crate::auth::RequestActor;
 use crate::entities::user;
 {{#if has_organizations}}
@@ -25,6 +29,7 @@ pub struct AdminState {
     pub db: Arc<DatabaseConnection>,
     pub jwt_verifier: JwtVerifier<AccessTokenClaims>,
     pub jwt_issuer: Arc<JwtIssuer>,
+    pub impersonation: Arc<AppImpersonationManager>,
 }
 
 /// Admin routes module.
@@ -38,13 +43,28 @@ impl AdminModule {
         jwt_verifier: JwtVerifier<AccessTokenClaims>,
         jwt_issuer: Arc<JwtIssuer>,
     ) -> Self {
+        let impersonation = Arc::new(impersonation_manager(
+            db.as_ref().clone(),
+            ImpersonationConfig::default(),
+        ));
         Self {
             state: AdminState {
                 db,
                 jwt_verifier,
                 jwt_issuer,
+                impersonation,
             },
         }
+    }
+
+    /// Override the impersonation policy. The default requires a reason,
+    /// blocks admin targets, and caps sessions at one hour.
+    pub fn with_impersonation_config(mut self, config: ImpersonationConfig) -> Self {
+        self.state.impersonation = Arc::new(impersonation_manager(
+            self.state.db.as_ref().clone(),
+            config,
+        ));
+        self
     }
 }
 
@@ -157,18 +177,14 @@ pub struct PaginatedOrgs {
 }
 {{/if}}
 
-#[derive(Debug, Deserialize)]
-pub struct ImpersonateRequest {
-    pub reason: Option<String>,
-}
-
+/// Impersonation issues a single access token bound to the session; there is
+/// no refresh token, so the session cannot outlive `expires_at`.
 #[derive(Debug, Serialize)]
 pub struct ImpersonationResponse {
     pub session_id: String,
     pub target_user_id: String,
     pub target_user_email: String,
     pub access_token: String,
-    pub refresh_token: String,
     pub expires_at: i64,
 }
 
@@ -496,7 +512,7 @@ async fn start_impersonation(
     Extension(state): Extension<AdminState>,
     headers: axum::http::HeaderMap,
     Path(user_id): Path<String>,
-    Json(body): Json<ImpersonateRequest>,
+    Json(mut body): Json<ImpersonationRequestBody>,
 ) -> Result<Json<ImpersonationResponse>> {
     let actor = RequestActor::from_headers_with_verifier(
         &headers,
@@ -506,47 +522,66 @@ async fn start_impersonation(
     .await?;
     actor.require_admin()?;
 
-    let target_uuid = Uuid::parse_str(&user_id)
-        .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
+    if body.target_user_id != user_id {
+        return Err(TidewayError::BadRequest(
+            "target_user_id does not match the user in the path".into(),
+        ));
+    }
+    // A blank reason counts as no reason.
+    body.reason = body.reason.filter(|reason| !reason.trim().is_empty());
 
-    let target_user = user::Entity::find_by_id(target_uuid)
-        .one(state.db.as_ref())
-        .await
-        .map_err(|e| TidewayError::Database(e.to_string()))?
-        .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+    // Validates the reason, admin rights, admin targets, and concurrent
+    // sessions, then stores the session and its audit entry.
+    let session = state
+        .impersonation
+        .start_impersonation(body.into_request(actor.user.id.to_string()))
+        .await?;
 
-    tracing::info!(
-        admin_id = %actor.user.id,
-        admin_email = %actor.user.email,
-        target_id = %target_user.id,
-        target_email = %target_user.email,
-        reason = ?body.reason,
-        "Admin started impersonation"
-    );
-
-    let session_id = Uuid::new_v4().to_string();
-    let expires_at = (Utc::now() + Duration::hours(1)).timestamp();
+    let target_user = user::Entity::find_by_id(
+        Uuid::parse_str(&session.target_user_id)
+            .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?,
+    )
+    .one(state.db.as_ref())
+    .await
+    .map_err(|e| TidewayError::Database(e.to_string()))?
+    .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
 
     let subject = TokenSubject {
-        user_id: &target_user.id.to_string(),
+        user_id: &session.target_user_id,
         email: Some(&target_user.email),
         name: target_user.name.as_deref(),
         session_version: target_user.session_version.max(0) as u64,
-        custom: None::<()>,
+        custom: Some(ImpersonationClaims::from_session(&session)),
     };
-    let tokens = state.jwt_issuer.issue(subject, false)
-        .map_err(|e| TidewayError::Internal(format!("Failed to issue token: {}", e)))?;
+    let access_token = match state
+        .jwt_issuer
+        .issue_access_token_expiring_at(subject, session.expires_at)
+    {
+        Ok((token, _)) => token,
+        Err(error) => {
+            // Don't leave a live session behind without a token.
+            let _ = state
+                .impersonation
+                .end_impersonation(&session.session_id)
+                .await;
+            return Err(TidewayError::Internal(format!(
+                "Failed to issue token: {}",
+                error
+            )));
+        }
+    };
 
     Ok(Json(ImpersonationResponse {
-        session_id,
-        target_user_id: target_user.id.to_string(),
+        session_id: session.session_id,
+        target_user_id: session.target_user_id,
         target_user_email: target_user.email,
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at,
+        access_token,
+        expires_at: i64::try_from(session.expires_at).unwrap_or(i64::MAX),
     }))
 }
 
+/// Ends the impersonation session of the calling impersonation token. The
+/// token stops working immediately.
 async fn end_impersonation(
     Extension(state): Extension<AdminState>,
     headers: axum::http::HeaderMap,
@@ -557,11 +592,14 @@ async fn end_impersonation(
         &state.jwt_verifier,
     )
     .await?;
+    let claims = actor
+        .impersonation
+        .ok_or_else(|| TidewayError::BadRequest("Not an impersonation session".into()))?;
 
-    tracing::info!(
-        user_id = %actor.user.id,
-        "Impersonation session ended"
-    );
+    state
+        .impersonation
+        .end_impersonation(&claims.imp_session)
+        .await?;
 
     Ok(MessageResponse::success("Impersonation ended"))
 }

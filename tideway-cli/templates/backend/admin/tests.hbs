@@ -1,0 +1,312 @@
+//! Admin impersonation tests.
+
+use std::{sync::Arc, time::Duration};
+
+use axum::{
+    body::{to_bytes, Body},
+    extract::State,
+    http::{header, HeaderMap, Method, Request, StatusCode},
+    routing::get,
+    Json, Router,
+};
+use chrono::Utc;
+use migration::{Migrator, MigratorTrait};
+use sea_orm::{
+    ActiveModelTrait, ConnectOptions, ConnectionTrait, Database, DatabaseBackend,
+    DatabaseConnection, Set, Statement,
+};
+use serde_json::{json, Value};
+use tideway::auth::{
+    AccessTokenClaims, ImpersonationConfig, ImpersonationEvent, ImpersonationStore, JwtAuth,
+    JwtAuthConfig, JwtIssuer, JwtVerifier, TokenSubject,
+};
+use tideway::App;
+use tower::ServiceExt;
+use uuid::Uuid;
+
+use super::AdminModule;
+use crate::auth::impersonation::DbImpersonationStore;
+use crate::auth::RequestActor;
+use crate::entities::user;
+
+const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
+const JWT_ISSUER: &str = env!("CARGO_PKG_NAME");
+const JWT_AUDIENCE: &str = env!("CARGO_PKG_NAME");
+
+struct TestApp {
+    router: Router,
+    db: DatabaseConnection,
+    issuer: Arc<JwtIssuer>,
+}
+
+async fn connect_test_database() -> DatabaseConnection {
+    let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+        return Database::connect("sqlite::memory:")
+            .await
+            .expect("connect to in-memory sqlite");
+    };
+    let schema = format!("test_{}", Uuid::new_v4().simple());
+    let admin = Database::connect(&database_url)
+        .await
+        .expect("connect to PostgreSQL test database");
+    admin
+        .execute(Statement::from_string(
+            DatabaseBackend::Postgres,
+            format!("CREATE SCHEMA \"{schema}\""),
+        ))
+        .await
+        .expect("create isolated PostgreSQL test schema");
+    let mut options = ConnectOptions::new(database_url);
+    options.set_schema_search_path(schema);
+    Database::connect(options)
+        .await
+        .expect("connect to isolated PostgreSQL test schema")
+}
+
+async fn test_app(config: ImpersonationConfig) -> TestApp {
+    let db = connect_test_database().await;
+    Migrator::up(&db, None).await.expect("run migrations");
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(JWT_SECRET, JWT_ISSUER)
+            .expect("valid secret")
+            .audience(JWT_AUDIENCE),
+    )
+    .expect("create paired auth");
+    let issuer = jwt.issuer();
+    let verifier = jwt
+        .verifier::<AccessTokenClaims>()
+        .expect("create verifier");
+
+    let admin = AdminModule::new(Arc::new(db.clone()), verifier.clone(), issuer.clone())
+        .with_impersonation_config(config);
+    // Any route authenticated through `RequestActor`, to observe the token.
+    let whoami: Router = Router::new()
+        .route("/whoami", get(whoami))
+        .with_state((db.clone(), verifier));
+    let router = App::new()
+        .register_module(admin)
+        .into_router()
+        .merge(whoami);
+
+    TestApp { router, db, issuer }
+}
+
+async fn whoami(
+    State((db, verifier)): State<(DatabaseConnection, JwtVerifier<AccessTokenClaims>)>,
+    headers: HeaderMap,
+) -> tideway::Result<Json<Value>> {
+    let actor = RequestActor::from_headers_with_verifier(&headers, &db, &verifier).await?;
+    Ok(Json(json!({
+        "user_id": actor.user.id.to_string(),
+        "impersonated_by": actor.impersonation.map(|claims| claims.imp_admin),
+    })))
+}
+
+async fn create_user(app: &TestApp, email: &str, is_platform_admin: bool) -> (String, String) {
+    let id = Uuid::new_v4();
+    let now = Utc::now();
+    user::ActiveModel {
+        id: Set(id),
+        email: Set(email.to_owned()),
+        password_hash: Set("not-a-real-hash".to_owned()),
+        name: Set(None),
+        email_verified_at: Set(Some(now.into())),
+        locked_until: Set(None),
+        failed_attempts: Set(0),
+        failed_mfa_attempts: Set(0),
+        session_version: Set(0),
+        is_platform_admin: Set(is_platform_admin),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+        ..Default::default()
+    }
+    .insert(&app.db)
+    .await
+    .expect("insert user");
+
+    let id = id.to_string();
+    let token = app
+        .issuer
+        .issue(TokenSubject::new(&id).with_email(email), false)
+        .expect("issue token")
+        .access_token;
+    (id, token)
+}
+
+async fn request(
+    app: &TestApp,
+    method: Method,
+    path: &str,
+    body: Value,
+    token: &str,
+) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::from(body.to_string()))
+        .expect("build request");
+    let response = app
+        .router
+        .clone()
+        .oneshot(request)
+        .await
+        .expect("route response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("read response body");
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+async fn start(app: &TestApp, admin_token: &str, target_id: &str, body: Value) -> (StatusCode, Value) {
+    request(
+        app,
+        Method::POST,
+        &format!("/admin/users/{target_id}/impersonate"),
+        body,
+        admin_token,
+    )
+    .await
+}
+
+async fn audit_events(app: &TestApp, user_id: &str) -> Vec<ImpersonationEvent> {
+    DbImpersonationStore::new(app.db.clone())
+        .get_audit_log(user_id, 100)
+        .await
+        .expect("read audit log")
+        .into_iter()
+        .map(|entry| entry.event)
+        .collect()
+}
+
+#[tokio::test]
+async fn impersonating_an_admin_is_rejected() {
+    let app = test_app(ImpersonationConfig::default()).await;
+    let (_, admin_token) = create_user(&app, "admin@example.com", true).await;
+    let (other_admin_id, _) = create_user(&app, "other-admin@example.com", true).await;
+
+    let (status, body) = start(
+        &app,
+        &admin_token,
+        &other_admin_id,
+        json!({"target_user_id": other_admin_id, "reason": "SUP-1"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "response: {body}");
+    assert!(audit_events(&app, &other_admin_id).await.is_empty());
+}
+
+#[tokio::test]
+async fn impersonation_requires_a_reason_and_an_admin() {
+    let app = test_app(ImpersonationConfig::default()).await;
+    let (_, admin_token) = create_user(&app, "admin@example.com", true).await;
+    let (target_id, target_token) = create_user(&app, "user@example.com", false).await;
+
+    for body in [
+        json!({"target_user_id": target_id}),
+        json!({"target_user_id": target_id, "reason": "   "}),
+    ] {
+        let (status, response) = start(&app, &admin_token, &target_id, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "response: {response}");
+    }
+
+    // The acting admin always comes from the authenticated token.
+    let (status, _) = start(
+        &app,
+        &admin_token,
+        &target_id,
+        json!({"target_user_id": target_id, "reason": "SUP-1", "admin_id": target_id}),
+    )
+    .await;
+    assert!(status.is_client_error());
+
+    let (status, _) = start(
+        &app,
+        &target_token,
+        &target_id,
+        json!({"target_user_id": target_id, "reason": "SUP-1"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(audit_events(&app, &target_id).await.is_empty());
+}
+
+#[tokio::test]
+async fn impersonation_token_works_until_ended() {
+    let app = test_app(ImpersonationConfig::default()).await;
+    let (admin_id, admin_token) = create_user(&app, "admin@example.com", true).await;
+    let (target_id, _) = create_user(&app, "user@example.com", false).await;
+
+    let (status, started) = start(
+        &app,
+        &admin_token,
+        &target_id,
+        json!({"target_user_id": target_id, "reason": "SUP-1234"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "response: {started}");
+    assert!(started.get("refresh_token").is_none(), "no refresh token: {started}");
+    let token = started["access_token"].as_str().expect("access token").to_owned();
+    let expires_at = started["expires_at"].as_i64().expect("expires_at");
+    assert!(expires_at <= Utc::now().timestamp() + 60 * 60);
+
+    let (status, me) = request(&app, Method::GET, "/whoami", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::OK, "response: {me}");
+    assert_eq!(me["user_id"], target_id.as_str());
+    assert_eq!(me["impersonated_by"], admin_id.as_str());
+
+    // Impersonation tokens cannot reach admin routes.
+    let (status, _) = request(&app, Method::GET, "/admin/stats", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, response) =
+        request(&app, Method::POST, "/admin/impersonation/end", json!({}), &token).await;
+    assert_eq!(status, StatusCode::OK, "response: {response}");
+
+    let (status, _) = request(&app, Method::GET, "/whoami", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) =
+        request(&app, Method::POST, "/admin/impersonation/end", json!({}), &token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // The admin's own token is unaffected and can't end anything.
+    let (status, _) =
+        request(&app, Method::POST, "/admin/impersonation/end", json!({}), &admin_token).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let mut events = audit_events(&app, &target_id).await;
+    events.sort_by_key(|event| format!("{event:?}"));
+    assert_eq!(events, vec![ImpersonationEvent::Ended, ImpersonationEvent::Started]);
+}
+
+#[tokio::test]
+async fn impersonation_token_expires_after_max_duration() {
+    let config = ImpersonationConfig::default().max_duration(Duration::from_secs(2));
+    let app = test_app(config).await;
+    let (_, admin_token) = create_user(&app, "admin@example.com", true).await;
+    let (target_id, _) = create_user(&app, "user@example.com", false).await;
+
+    let (status, started) = start(
+        &app,
+        &admin_token,
+        &target_id,
+        json!({"target_user_id": target_id, "reason": "SUP-1234", "duration_secs": 3600}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "response: {started}");
+    let token = started["access_token"].as_str().expect("access token").to_owned();
+    assert!(started["expires_at"].as_i64().expect("expires_at") <= Utc::now().timestamp() + 2);
+
+    let (status, _) = request(&app, Method::GET, "/whoami", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::OK);
+
+    tokio::time::sleep(Duration::from_millis(2_100)).await;
+
+    let (status, _) = request(&app, Method::GET, "/whoami", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(audit_events(&app, &target_id)
+        .await
+        .contains(&ImpersonationEvent::Expired));
+}

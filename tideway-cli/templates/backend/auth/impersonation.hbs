@@ -1,0 +1,336 @@
+//! Database-backed admin impersonation sessions.
+//!
+//! Sessions and their audit log live in the tables created by
+//! `m017_create_impersonation_sessions`. Impersonation access tokens carry
+//! `ImpersonationClaims`; `RequestActor` rejects them once the session has
+//! ended or expired.
+
+use async_trait::async_trait;
+use sea_orm::{
+    sea_query::Expr, ColumnTrait, Condition, DatabaseConnection, EntityTrait, QueryFilter,
+    QueryOrder, QuerySelect, Set,
+};
+use std::time::SystemTime;
+use tideway::auth::{
+    BlockedAction, ImpersonationAuditEntry, ImpersonationClaims, ImpersonationConfig,
+    ImpersonationEvent, ImpersonationManager, ImpersonationSession, ImpersonationStore,
+};
+use tideway::{Result, TidewayError};
+use uuid::Uuid;
+
+use crate::entities::user;
+
+/// Impersonation manager backed by the application database.
+pub type AppImpersonationManager = ImpersonationManager<DbImpersonationStore>;
+
+/// Build an impersonation manager for the given database and config.
+pub fn impersonation_manager(
+    db: DatabaseConnection,
+    config: ImpersonationConfig,
+) -> AppImpersonationManager {
+    ImpersonationManager::new(DbImpersonationStore::new(db), config)
+}
+
+/// Reject an impersonation token whose session has ended, expired, or does
+/// not belong to the token's subject.
+pub async fn ensure_session_active(
+    db: &DatabaseConnection,
+    claims: &ImpersonationClaims,
+    target_user_id: &str,
+) -> Result<ImpersonationSession> {
+    // Validation does not depend on start-time config, so defaults are fine here.
+    let manager = impersonation_manager(db.clone(), ImpersonationConfig::default());
+    let session = manager
+        .validate_session(&claims.imp_session, None)
+        .await
+        .map_err(|error| match error {
+            TidewayError::NotFound(_) => {
+                TidewayError::Unauthorized("Impersonation session has ended".into())
+            }
+            other => other,
+        })?;
+
+    if session.target_user_id != target_user_id || session.admin_id != claims.imp_admin {
+        return Err(TidewayError::Unauthorized(
+            "Impersonation session does not match token".into(),
+        ));
+    }
+    // Revoking the admin's platform access also revokes their impersonation tokens.
+    if !manager.store().is_admin(&session.admin_id).await? {
+        return Err(TidewayError::Unauthorized(
+            "Impersonating admin no longer has admin access".into(),
+        ));
+    }
+    Ok(session)
+}
+
+/// SeaORM implementation of [`ImpersonationStore`].
+#[derive(Clone)]
+pub struct DbImpersonationStore {
+    db: DatabaseConnection,
+}
+
+impl DbImpersonationStore {
+    pub fn new(db: DatabaseConnection) -> Self {
+        Self { db }
+    }
+
+    async fn find_user(&self, user_id: &str) -> Result<Option<user::Model>> {
+        let Ok(user_id) = Uuid::parse_str(user_id) else {
+            return Ok(None);
+        };
+        user::Entity::find_by_id(user_id)
+            .one(&self.db)
+            .await
+            .map_err(db_error)
+    }
+}
+
+#[async_trait]
+impl ImpersonationStore for DbImpersonationStore {
+    async fn is_admin(&self, user_id: &str) -> Result<bool> {
+        Ok(self
+            .find_user(user_id)
+            .await?
+            .is_some_and(|user| user.is_platform_admin))
+    }
+
+    async fn can_be_impersonated(&self, user_id: &str) -> Result<bool> {
+        // Admin targets are rejected separately by the manager. Add a per-user
+        // opt-out here if your product needs one.
+        Ok(self.find_user(user_id).await?.is_some())
+    }
+
+    async fn get_user_email(&self, user_id: &str) -> Result<Option<String>> {
+        Ok(self.find_user(user_id).await?.map(|user| user.email))
+    }
+
+    async fn user_exists(&self, user_id: &str) -> Result<bool> {
+        Ok(self.find_user(user_id).await?.is_some())
+    }
+
+    async fn create_session(&self, session: &ImpersonationSession) -> Result<()> {
+        let blocked_actions = serde_json::to_string(&session.blocked_actions)
+            .map_err(|error| TidewayError::Internal(error.to_string()))?;
+        impersonation_session::Entity::insert(impersonation_session::ActiveModel {
+            session_id: Set(session.session_id.clone()),
+            admin_id: Set(session.admin_id.clone()),
+            target_user_id: Set(session.target_user_id.clone()),
+            reason: Set(session.reason.clone()),
+            blocked_actions: Set(blocked_actions),
+            started_at: Set(to_i64(session.started_at)),
+            expires_at: Set(to_i64(session.expires_at)),
+            ended_at: Set(None),
+        })
+        .exec(&self.db)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn get_session(&self, session_id: &str) -> Result<Option<ImpersonationSession>> {
+        impersonation_session::Entity::find_by_id(session_id.to_owned())
+            .filter(impersonation_session::Column::EndedAt.is_null())
+            .one(&self.db)
+            .await
+            .map_err(db_error)?
+            .map(session_from_model)
+            .transpose()
+    }
+
+    async fn get_session_for_user(
+        &self,
+        target_user_id: &str,
+    ) -> Result<Option<ImpersonationSession>> {
+        impersonation_session::Entity::find()
+            .filter(impersonation_session::Column::TargetUserId.eq(target_user_id))
+            .filter(impersonation_session::Column::EndedAt.is_null())
+            .order_by_desc(impersonation_session::Column::StartedAt)
+            .one(&self.db)
+            .await
+            .map_err(db_error)?
+            .map(session_from_model)
+            .transpose()
+    }
+
+    async fn get_sessions_by_admin(&self, admin_id: &str) -> Result<Vec<ImpersonationSession>> {
+        impersonation_session::Entity::find()
+            .filter(impersonation_session::Column::AdminId.eq(admin_id))
+            .filter(impersonation_session::Column::EndedAt.is_null())
+            .all(&self.db)
+            .await
+            .map_err(db_error)?
+            .into_iter()
+            .map(session_from_model)
+            .collect()
+    }
+
+    async fn end_session(&self, session_id: &str) -> Result<bool> {
+        let result = impersonation_session::Entity::update_many()
+            .col_expr(impersonation_session::Column::EndedAt, Expr::value(now_i64()))
+            .filter(impersonation_session::Column::SessionId.eq(session_id))
+            .filter(impersonation_session::Column::EndedAt.is_null())
+            .exec(&self.db)
+            .await
+            .map_err(db_error)?;
+        Ok(result.rows_affected > 0)
+    }
+
+    async fn end_sessions_for_user(&self, target_user_id: &str) -> Result<usize> {
+        let result = impersonation_session::Entity::update_many()
+            .col_expr(impersonation_session::Column::EndedAt, Expr::value(now_i64()))
+            .filter(impersonation_session::Column::TargetUserId.eq(target_user_id))
+            .filter(impersonation_session::Column::EndedAt.is_null())
+            .exec(&self.db)
+            .await
+            .map_err(db_error)?;
+        Ok(result.rows_affected as usize)
+    }
+
+    async fn record_audit(&self, entry: &ImpersonationAuditEntry) -> Result<()> {
+        impersonation_audit::Entity::insert(impersonation_audit::ActiveModel {
+            id: Set(Uuid::new_v4().to_string()),
+            event: Set(event_name(&entry.event).to_owned()),
+            session_id: Set(entry.session_id.clone()),
+            admin_id: Set(entry.admin_id.clone()),
+            target_user_id: Set(entry.target_user_id.clone()),
+            reason: Set(entry.reason.clone()),
+            metadata: Set(entry.metadata.clone()),
+            timestamp: Set(to_i64(entry.timestamp)),
+        })
+        .exec(&self.db)
+        .await
+        .map_err(db_error)?;
+        Ok(())
+    }
+
+    async fn get_audit_log(
+        &self,
+        user_id: &str,
+        limit: usize,
+    ) -> Result<Vec<ImpersonationAuditEntry>> {
+        let rows = impersonation_audit::Entity::find()
+            .filter(
+                Condition::any()
+                    .add(impersonation_audit::Column::AdminId.eq(user_id))
+                    .add(impersonation_audit::Column::TargetUserId.eq(user_id)),
+            )
+            .order_by_desc(impersonation_audit::Column::Timestamp)
+            .limit(limit as u64)
+            .all(&self.db)
+            .await
+            .map_err(db_error)?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                Some(ImpersonationAuditEntry {
+                    event: parse_event(&row.event)?,
+                    session_id: row.session_id,
+                    admin_id: row.admin_id,
+                    target_user_id: row.target_user_id,
+                    reason: row.reason,
+                    timestamp: row.timestamp.max(0) as u64,
+                    metadata: row.metadata,
+                })
+            })
+            .collect())
+    }
+}
+
+fn session_from_model(model: impersonation_session::Model) -> Result<ImpersonationSession> {
+    let blocked_actions: Vec<BlockedAction> = serde_json::from_str(&model.blocked_actions)
+        .map_err(|error| TidewayError::Internal(error.to_string()))?;
+    Ok(ImpersonationSession {
+        session_id: model.session_id,
+        admin_id: model.admin_id,
+        target_user_id: model.target_user_id,
+        reason: model.reason,
+        started_at: model.started_at.max(0) as u64,
+        expires_at: model.expires_at.max(0) as u64,
+        blocked_actions,
+    })
+}
+
+fn event_name(event: &ImpersonationEvent) -> &'static str {
+    match event {
+        ImpersonationEvent::Started => "started",
+        ImpersonationEvent::Ended => "ended",
+        ImpersonationEvent::Expired => "expired",
+        ImpersonationEvent::BlockedAttempt => "blocked_attempt",
+        ImpersonationEvent::Extended => "extended",
+    }
+}
+
+fn parse_event(name: &str) -> Option<ImpersonationEvent> {
+    Some(match name {
+        "started" => ImpersonationEvent::Started,
+        "ended" => ImpersonationEvent::Ended,
+        "expired" => ImpersonationEvent::Expired,
+        "blocked_attempt" => ImpersonationEvent::BlockedAttempt,
+        "extended" => ImpersonationEvent::Extended,
+        _ => return None,
+    })
+}
+
+fn to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn now_i64() -> i64 {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    to_i64(now)
+}
+
+fn db_error(error: sea_orm::DbErr) -> TidewayError {
+    TidewayError::Database(error.to_string())
+}
+
+mod impersonation_session {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "impersonation_sessions")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub session_id: String,
+        pub admin_id: String,
+        pub target_user_id: String,
+        pub reason: Option<String>,
+        pub blocked_actions: String,
+        pub started_at: i64,
+        pub expires_at: i64,
+        pub ended_at: Option<i64>,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
+
+mod impersonation_audit {
+    use sea_orm::entity::prelude::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
+    #[sea_orm(table_name = "impersonation_audit_log")]
+    pub struct Model {
+        #[sea_orm(primary_key, auto_increment = false)]
+        pub id: String,
+        pub event: String,
+        pub session_id: String,
+        pub admin_id: String,
+        pub target_user_id: String,
+        pub reason: Option<String>,
+        pub metadata: Option<String>,
+        pub timestamp: i64,
+    }
+
+    #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
+    pub enum Relation {}
+
+    impl ActiveModelBehavior for ActiveModel {}
+}
