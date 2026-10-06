@@ -1,0 +1,221 @@
+//! Organization API key routes.
+//!
+//! Only organization owners and admins may list, create, or revoke keys.
+//! To accept API keys on your own routes, install `ApiKeyModule::extension()`
+//! as a global layer and use `tideway::auth::ApiKeyAuth` or
+//! `tideway::auth::Principal<_>` in handlers.
+
+use axum::{
+    extract::{Extension, Path},
+    http::StatusCode,
+    routing::{delete, get},
+    Json, Router,
+};
+use sea_orm::DatabaseConnection;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tideway::auth::{
+    AccessTokenClaims, ApiKey, ApiKeyConfig, ApiKeyExtension, ApiKeyManager, JwtVerifier,
+    NewApiKey, SeaOrmApiKeyStore,
+};
+use tideway::{AppContext, MessageResponse, Result, RouteModule, TidewayError};
+
+use crate::auth::RequestActor;
+
+/// Roles allowed to manage organization API keys.
+const MANAGER_ROLES: &[&str] = &["owner", "admin"];
+
+/// API key routes state.
+#[derive(Clone)]
+pub struct ApiKeyState {
+    pub db: Arc<DatabaseConnection>,
+    pub jwt_verifier: JwtVerifier<AccessTokenClaims>,
+    pub manager: ApiKeyManager<SeaOrmApiKeyStore>,
+}
+
+/// API key routes module.
+pub struct ApiKeyModule {
+    state: ApiKeyState,
+}
+
+impl ApiKeyModule {
+    pub fn new(db: Arc<DatabaseConnection>, jwt_verifier: JwtVerifier<AccessTokenClaims>) -> Self {
+        Self::with_config(db, jwt_verifier, ApiKeyConfig::default())
+    }
+
+    pub fn with_config(
+        db: Arc<DatabaseConnection>,
+        jwt_verifier: JwtVerifier<AccessTokenClaims>,
+        config: ApiKeyConfig,
+    ) -> Self {
+        let manager = ApiKeyManager::new(SeaOrmApiKeyStore::new(db.as_ref().clone()), config);
+        Self {
+            state: ApiKeyState {
+                db,
+                jwt_verifier,
+                manager,
+            },
+        }
+    }
+
+    /// Request extension that lets `ApiKeyAuth` / `Principal` authenticate API keys.
+    pub fn extension(&self) -> ApiKeyExtension {
+        ApiKeyExtension::new(self.state.manager.clone())
+    }
+}
+
+impl RouteModule for ApiKeyModule {
+    fn routes(&self) -> Router<AppContext> {
+        // Full paths (no prefix) so this merges alongside OrganizationModule's `/organizations`.
+        Router::new()
+            .route(
+                "/organizations/{org_id}/api-keys",
+                get(list_api_keys).post(create_api_key),
+            )
+            .route(
+                "/organizations/{org_id}/api-keys/{key_id}",
+                delete(revoke_api_key),
+            )
+            .layer(Extension(self.state.clone()))
+    }
+}
+
+// Request / response types
+
+#[derive(Debug, Deserialize)]
+pub struct CreateApiKeyBody {
+    pub name: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    /// Optional lifetime in days; omit for a non-expiring key.
+    pub expires_in_days: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiKeyResponse {
+    pub id: String,
+    pub organization_id: String,
+    pub name: String,
+    pub scopes: Vec<String>,
+    pub created_by: Option<String>,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub last_used_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+impl From<ApiKey> for ApiKeyResponse {
+    fn from(key: ApiKey) -> Self {
+        Self {
+            id: key.id,
+            organization_id: key.organization_id,
+            name: key.name,
+            scopes: key.scopes,
+            created_by: key.created_by,
+            created_at: unix_seconds(key.created_at),
+            expires_at: key.expires_at.map(unix_seconds),
+            last_used_at: key.last_used_at.map(unix_seconds),
+            revoked_at: key.revoked_at.map(unix_seconds),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct ApiKeysListResponse {
+    pub api_keys: Vec<ApiKeyResponse>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreatedApiKeyResponse {
+    pub api_key: ApiKeyResponse,
+    /// The full key. It is only returned once and cannot be recovered.
+    pub key: String,
+}
+
+fn unix_seconds(time: SystemTime) -> i64 {
+    time.duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+async fn authorize(state: &ApiKeyState, headers: &axum::http::HeaderMap, org_id: &str) -> Result<RequestActor> {
+    let actor = RequestActor::for_organization_with_verifier(
+        headers,
+        state.db.as_ref(),
+        &state.jwt_verifier,
+        org_id,
+    )
+    .await?;
+    actor.require_org_role(MANAGER_ROLES)?;
+    Ok(actor)
+}
+
+// Handlers
+
+async fn list_api_keys(
+    Extension(state): Extension<ApiKeyState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+) -> Result<Json<ApiKeysListResponse>> {
+    authorize(&state, &headers, &org_id).await?;
+
+    let api_keys = state
+        .manager
+        .list(&org_id)
+        .await?
+        .into_iter()
+        .map(ApiKeyResponse::from)
+        .collect();
+
+    Ok(Json(ApiKeysListResponse { api_keys }))
+}
+
+async fn create_api_key(
+    Extension(state): Extension<ApiKeyState>,
+    headers: axum::http::HeaderMap,
+    Path(org_id): Path<String>,
+    Json(body): Json<CreateApiKeyBody>,
+) -> Result<(StatusCode, Json<CreatedApiKeyResponse>)> {
+    let actor = authorize(&state, &headers, &org_id).await?;
+
+    let mut request = NewApiKey::new(&org_id, body.name)
+        .scopes(body.scopes)
+        .created_by(actor.user.id.to_string());
+    if let Some(days) = body.expires_in_days {
+        if days == 0 {
+            return Err(TidewayError::BadRequest(
+                "expires_in_days must be at least 1".into(),
+            ));
+        }
+        let seconds = days
+            .checked_mul(24 * 60 * 60)
+            .ok_or_else(|| TidewayError::BadRequest("expires_in_days is too large".into()))?;
+        request = request.expires_in(Duration::from_secs(seconds));
+    }
+
+    let created = state.manager.create(request).await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreatedApiKeyResponse {
+            api_key: created.api_key.into(),
+            key: created.plaintext,
+        }),
+    ))
+}
+
+async fn revoke_api_key(
+    Extension(state): Extension<ApiKeyState>,
+    headers: axum::http::HeaderMap,
+    Path((org_id, key_id)): Path<(String, String)>,
+) -> Result<MessageResponse> {
+    authorize(&state, &headers, &org_id).await?;
+
+    if state.manager.get(&org_id, &key_id).await?.is_none() {
+        return Err(TidewayError::NotFound("API key not found".into()));
+    }
+    state.manager.revoke(&org_id, &key_id).await?;
+
+    Ok(MessageResponse::success("API key revoked"))
+}

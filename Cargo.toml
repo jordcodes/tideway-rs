@@ -158,6 +158,8 @@ test-auth-bypass = ["auth"]
 auth = ["argon2", "dep:jsonwebtoken", "dep:rand"]
 # MFA support (TOTP + backup codes)
 auth-mfa = ["auth", "totp-rs", "aes-gcm"]
+# SeaORM-backed API key storage
+api-keys-seaorm = ["auth", "database"]
 # Password breach checking via HaveIBeenPwned
 auth-breach = ["sha1"]
 # Stripe-based billing

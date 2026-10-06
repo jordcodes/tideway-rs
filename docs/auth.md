@@ -11,6 +11,7 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **Breach Checking**: HaveIBeenPwned integration (opt-in)
 - **Session Management**: List and revoke active sessions
 - **Trusted Devices**: Remember devices to skip MFA on subsequent logins
+- **API Keys**: Hashed, scoped, revocable organization keys with last-used tracking
 - **Account Lockout**: Progressive delays, notifications, admin unlock
 - **Account Deletion**: GDPR-compliant deletion with grace period
 - **Admin Impersonation**: Act as users for support with full audit trail
@@ -1080,6 +1081,138 @@ CREATE TABLE trusted_devices (
 CREATE INDEX idx_trusted_devices_user ON trusted_devices(user_id);
 CREATE INDEX idx_trusted_devices_lookup ON trusted_devices(user_id, token_hash);
 CREATE INDEX idx_trusted_devices_expiry ON trusted_devices(expires_at);
+```
+
+## API Keys
+
+Organization-scoped API keys (personal access tokens) for machine-to-machine access.
+Keys look like `tw_<id>_<secret>`; only a SHA-256 hash is stored and the plaintext is
+returned once at creation.
+
+### ApiKeyStore Trait
+
+```rust
+#[async_trait]
+pub trait ApiKeyStore: Send + Sync {
+    async fn create_api_key(&self, key: &ApiKey) -> Result<()>;
+    async fn find_api_key(&self, id: &str) -> Result<Option<ApiKey>>;
+    async fn list_api_keys(&self, organization_id: &str) -> Result<Vec<ApiKey>>;
+    async fn touch_api_key(&self, id: &str, used_at: SystemTime) -> Result<()>;
+    async fn revoke_api_key(&self, id: &str, revoked_at: SystemTime) -> Result<bool>;
+    // Default implementation provided:
+    async fn revoke_all_api_keys(&self, organization_id: &str, revoked_at: SystemTime) -> Result<usize>;
+}
+```
+
+`InMemoryApiKeyStore` is available under `test-auth-bypass` for tests. For production, enable
+`api-keys-seaorm` and use `SeaOrmApiKeyStore::new(db)`; `tideway add api-keys` generates the
+`api_keys` migration it expects.
+
+### Scaffolding with the CLI
+
+```bash
+tideway add api-keys --wire
+```
+
+This adds the migration and, for apps with the DB-backed organizations scaffold, owner/admin-only
+management routes (`GET/POST /organizations/{org_id}/api-keys`,
+`DELETE /organizations/{org_id}/api-keys/{key_id}`). Creating a key returns the plaintext once in
+the `key` field. `--wire` also installs the key manager as a global `ApiKeyExtension`, so your own
+handlers can accept keys with `ApiKeyAuth` or `Principal<P>`.
+
+### Issuing, Listing, and Revoking
+
+```rust
+use tideway::auth::{ApiKeyConfig, ApiKeyManager, NewApiKey};
+
+let manager = ApiKeyManager::new(store, ApiKeyConfig::default()
+    .max_keys_per_organization(25)
+    .default_ttl(Duration::from_secs(365 * 24 * 60 * 60)));
+
+// Only members whose role can manage org settings (owners/admins by default) may manage keys.
+manager.authorize_management(&membership_store, org_id, &user.id).await?; // 403 otherwise
+
+let created = manager
+    .create(NewApiKey::new(org_id, "CI deploy")
+        .scopes(["projects:read", "deployments:*"])
+        .created_by(&user.id))
+    .await?;
+// Return `created.plaintext` once; it cannot be recovered later.
+
+let keys = manager.list(org_id).await?;           // includes revoked keys
+manager.revoke(org_id, &key_id).await?;           // false if not in this org
+manager.revoke_all(org_id).await?;                // e.g. on org deletion
+```
+
+### Protecting Routes
+
+Install the manager as an extension, then use `ApiKeyAuth` for API-key-only routes or
+`Principal<P>` to accept either a JWT user (via your `AuthProvider`) or an API key:
+
+```rust
+use tideway::auth::{ApiKeyAuth, ApiKeyExtension, Principal};
+
+let app = Router::new()
+    .route("/projects", get(list_projects))
+    .layer(Extension(ApiKeyExtension::new(manager)))
+    .layer(Extension(my_auth_provider));
+
+async fn list_projects(principal: Principal<MyAuthProvider>) -> Result<Json<Vec<Project>>> {
+    let org_id = match &principal {
+        Principal::User(user) => user.current_org_id.clone(),
+        Principal::ApiKey(key) => {
+            key.require_scope("projects:read")?; // 403 if missing
+            key.organization_id.clone()
+        }
+    };
+    // ...
+}
+```
+
+Keys are accepted from `X-API-Key: <key>` or `Authorization: Bearer <key>`. A bearer
+token with the key prefix is treated as an API key; anything else falls through to
+JWT authentication. Unknown, tampered, revoked, and expired keys all return the same
+401 response.
+
+Scopes match exactly, via `*` (everything), or via `resource:*` (any `resource:<action>`).
+
+`authorize_management` (with the `organizations` feature) treats API keys as an organization
+setting: it requires a membership whose role passes `MembershipStore::can_manage_settings`. Apps
+using the generated `RequestActor` get the same rule via `require_org_role(&["owner", "admin"])` in
+the scaffolded routes.
+
+`last_used_at` is updated on successful authentication, throttled by
+`ApiKeyConfig::last_used_update_interval` (default 60 seconds).
+
+### API Key Events
+
+| Target | Level | Description |
+|--------|-------|-------------|
+| `auth.api_key.created` | INFO | Key created |
+| `auth.api_key.revoked` | INFO | Key revoked |
+| `auth.api_key.revoke_all` | WARN | All keys revoked for an organization |
+| `auth.api_key.inactive` | DEBUG | Revoked or expired key presented |
+| `auth.api_key.touch_failed` | WARN | Failed to record last-used timestamp |
+
+### Database Schema
+
+`SeaOrmApiKeyStore` expects this table (timestamps are Unix seconds; `scopes` is a JSON array):
+
+```sql
+CREATE TABLE api_keys (
+    id VARCHAR(32) PRIMARY KEY,           -- public key ID (hex)
+    organization_id VARCHAR(255) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    key_hash VARCHAR(64) NOT NULL,        -- SHA-256 hex of the full key
+    scopes TEXT NOT NULL,                 -- JSON array, e.g. ["projects:read"]
+    created_by VARCHAR(255),
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT,
+    last_used_at BIGINT,
+    revoked_at BIGINT
+);
+
+CREATE INDEX idx_api_keys_organization ON api_keys(organization_id);
 ```
 
 ### Reuse Detection
