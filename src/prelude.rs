@@ -33,7 +33,8 @@ pub use crate::{ConsoleMailer, Email, Mailer, ResendConfig, ResendMailer, SmtpCo
 
 #[cfg(feature = "jobs")]
 pub use crate::{
-    InMemoryJobQueue, Job, JobBackend, JobData, JobQueue, JobRegistry, JobWorker, WorkerPool,
+    InMemoryJobQueue, InMemorySchedulerLock, Job, JobBackend, JobData, JobQueue, JobRegistry,
+    JobScheduler, JobWorker, SchedulerLock, WorkerPool,
 };
 
 #[cfg(feature = "sessions")]

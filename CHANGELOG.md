@@ -267,6 +267,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
+- Recurring jobs: `jobs::JobScheduler` enqueues existing `Job` values on cron schedules (UTC,
+  five- or six-field expressions) and `App::start_scheduler` runs it alongside the workers. Each
+  occurrence is claimed through a `SchedulerLock` before it is enqueued, so only one instance runs
+  it; `RedisSchedulerLock` (or `RedisJobQueue::scheduler_lock`) uses Redis `SET NX PX`. The `jobs`
+  feature now depends on the `cron` crate.
 - `ImpersonationRequestBody` and `DeletionRequestBody` are safe deserializable request bodies with
   no actor field and `deny_unknown_fields`. Their `into_request(actor_id)` method combines the body
   with the authenticated user's ID.

@@ -59,6 +59,7 @@ validator = { version = "0.20", features = ["derive"], optional = true }
 sea-orm = { version = "1.1", features = ["sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros"], optional = true }
 sea-orm-migration = { version = "1.1", optional = true }
 chrono = { version = "0.4", features = ["serde"], optional = true }
+cron = { version = "0.17", optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite"], optional = true }
 testcontainers-modules = { version = "0.13", optional = true, default-features = false, features = ["postgres"] }
 
@@ -137,7 +138,7 @@ cache-redis = ["redis", "cache"]
 # Session management
 sessions = ["cookie", "hex"]
 # Background job processing
-jobs = ["chrono"]
+jobs = ["chrono", "cron"]
 # Redis-backed job queue
 jobs-redis = ["redis", "jobs"]
 # WebSocket support

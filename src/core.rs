@@ -29,7 +29,7 @@ use std::sync::Arc;
 use crate::metrics::{MetricsCollector, authenticated_metrics_route, build_metrics_layer};
 
 #[cfg(feature = "jobs")]
-use crate::jobs::{JobRegistry, WorkerPool};
+use crate::jobs::{JobRegistry, JobScheduler, SchedulerHandle, WorkerPool};
 
 /// Main application structure for Tideway
 pub struct App {
@@ -44,6 +44,8 @@ pub struct App {
     metrics_collector: Option<Arc<MetricsCollector>>,
     #[cfg(feature = "jobs")]
     worker_pool: Option<WorkerPool>,
+    #[cfg(feature = "jobs")]
+    scheduler: Option<SchedulerHandle>,
 }
 
 impl App {
@@ -108,6 +110,8 @@ impl App {
             metrics_collector,
             #[cfg(feature = "jobs")]
             worker_pool: None,
+            #[cfg(feature = "jobs")]
+            scheduler: None,
         }
     }
 
@@ -446,6 +450,25 @@ impl App {
         self
     }
 
+    /// Start the recurring job scheduler if jobs are enabled
+    ///
+    /// Due jobs are enqueued onto the context's job queue and executed by workers
+    /// (see [`start_workers`](Self::start_workers)), which may run in this or any
+    /// other instance. The scheduler stops on the shutdown signal.
+    #[cfg(feature = "jobs")]
+    pub fn start_scheduler(mut self, scheduler: JobScheduler) -> Self {
+        if let Some(ref queue) = self.context.jobs
+            && self.config.jobs.enabled
+            && !scheduler.is_empty()
+        {
+            if let Some(previous) = self.scheduler.take() {
+                tokio::spawn(previous.shutdown());
+            }
+            self.scheduler = Some(scheduler.start(queue.clone()));
+        }
+        self
+    }
+
     /// Start the application server
     pub async fn serve(self) -> Result<(), std::io::Error> {
         let addr = self.config.server.addr().map_err(|e| {
@@ -479,7 +502,7 @@ impl App {
     {
         use futures::FutureExt;
 
-        #[allow(unused_mut)] // Needed for worker_pool.take() when jobs feature is enabled
+        #[allow(unused_mut)] // Needed for worker_pool/scheduler.take() when jobs feature is enabled
         let mut app = self;
 
         let signal = signal.shared();
@@ -487,11 +510,19 @@ impl App {
         #[cfg(feature = "jobs")]
         let workers = {
             let worker_pool = app.worker_pool.take();
+            let scheduler = app.scheduler.take();
             let timeout = std::time::Duration::from_secs(app.config.jobs.shutdown_timeout_seconds);
             let signal = signal.clone();
             tokio::spawn(async move {
+                if worker_pool.is_none() && scheduler.is_none() {
+                    return;
+                }
+                signal.await;
+                // Stop enqueueing before draining workers.
+                if let Some(scheduler) = scheduler {
+                    scheduler.shutdown().await;
+                }
                 if let Some(pool) = worker_pool {
-                    signal.await;
                     pool.shutdown_with_timeout(timeout).await;
                 }
             })
@@ -814,6 +845,63 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(shutdown_started.elapsed() >= Duration::from_secs(2));
+    }
+
+    #[cfg(feature = "jobs")]
+    #[tokio::test]
+    async fn start_scheduler_runs_only_when_jobs_enabled_and_stops_on_shutdown() {
+        use crate::jobs::{InMemoryJobQueue, InMemorySchedulerLock, JobScheduler};
+        use crate::traits::job::Job;
+
+        #[derive(Debug)]
+        struct TickJob;
+
+        #[async_trait::async_trait]
+        impl Job for TickJob {
+            fn job_type(&self) -> &str {
+                "tick"
+            }
+            fn serialize(&self) -> crate::Result<serde_json::Value> {
+                Ok(serde_json::Value::Null)
+            }
+            async fn execute(&self, _ctx: &AppContext) -> crate::Result<()> {
+                Ok(())
+            }
+        }
+
+        let scheduler = || {
+            JobScheduler::new(Arc::new(InMemorySchedulerLock::new()))
+                .add("tick", "* * * * * *", TickJob)
+                .unwrap()
+        };
+        let context = AppContext::builder()
+            .with_job_queue(Arc::new(InMemoryJobQueue::new(0, 60)))
+            .build();
+
+        let disabled = App::new()
+            .with_context(context.clone())
+            .start_scheduler(scheduler());
+        assert!(disabled.scheduler.is_none());
+
+        let mut config = Config::default();
+        config.jobs.enabled = true;
+        let listener = match tokio::net::TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(e) => panic!("should bind ephemeral port: {}", e),
+        };
+        let enabled = App::with_config(config)
+            .with_context(context)
+            .start_scheduler(scheduler());
+        assert!(enabled.scheduler.is_some());
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            enabled.serve_with_shutdown(listener, async {}),
+        )
+        .await
+        .expect("serve should stop the scheduler on shutdown")
+        .unwrap();
     }
 
     #[tokio::test]
