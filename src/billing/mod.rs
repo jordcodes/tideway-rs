@@ -58,6 +58,7 @@ pub mod emails;
 pub mod entitlements;
 pub mod error;
 pub mod events;
+pub mod flags;
 pub mod invoice;
 pub mod live_client;
 pub mod payment;
@@ -152,6 +153,12 @@ pub use refund::{
 pub use entitlements::{
     CachedEntitlementsManager, EntitlementLimits, Entitlements, EntitlementsManager,
     FeatureCheckResult, require_feature, require_seat,
+};
+
+// Feature flag exports
+pub use flags::{
+    FeatureFlag, FeatureFlagManager, FeatureFlagStore, FlagEvaluation, FlagReason,
+    InMemoryFeatureFlagStore, RolloutScope, evaluate_flag, rollout_bucket,
 };
 
 // Audit exports
