@@ -5,6 +5,7 @@
 use crate::app::AppContext;
 use crate::error::{Result, TidewayError};
 use crate::jobs::registry::JobRegistry;
+use crate::observability::{ErrorEvent, ErrorSource, JobInfo, panic_message};
 use crate::traits::job::JobQueue;
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
@@ -89,6 +90,7 @@ impl JobWorker {
         };
 
         let job_id = job_data.job_id.clone();
+        let job_type = job_data.job_type.clone();
         tracing::debug!(
             worker_id = %self.worker_id,
             job_id = %job_id,
@@ -100,15 +102,12 @@ impl JobWorker {
         // like ordinary job failures so the worker survives and the queue retries.
         let result = AssertUnwindSafe(self.registry.execute(job_data, self.ctx.clone()))
             .catch_unwind()
-            .await
-            .unwrap_or_else(|panic| {
-                let message = panic
-                    .downcast_ref::<String>()
-                    .map(String::as_str)
-                    .or_else(|| panic.downcast_ref::<&str>().copied())
-                    .unwrap_or("unknown panic payload");
-                Err(TidewayError::internal(format!("Job panicked: {message}")))
-            });
+            .await;
+        let panicked = result.is_err();
+        let result = result.unwrap_or_else(|panic| {
+            let message = panic_message(panic.as_ref());
+            Err(TidewayError::internal(format!("Job panicked: {message}")))
+        });
         match result {
             Ok(()) => {
                 // Job completed successfully
@@ -123,6 +122,13 @@ impl JobWorker {
             Err(e) => {
                 // Job failed, let the queue handle retry logic
                 let error_msg = format!("{}", e);
+                if let Some(reporter) = self.ctx.error_reporter_opt() {
+                    reporter.report(
+                        &ErrorEvent::new(error_msg.clone())
+                            .with_panic(panicked)
+                            .with_source(ErrorSource::Job(JobInfo::new(&job_id, job_type))),
+                    );
+                }
                 self.queue.fail(&job_id, error_msg).await?;
                 tracing::warn!(
                     worker_id = %self.worker_id,

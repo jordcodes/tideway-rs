@@ -5,6 +5,7 @@ use crate::{
     dev::{build_dev_error_layer, build_request_dumper_layer},
     http::RouteModule,
     middleware::MakeRequestUuid,
+    observability::{self, ErrorReportingLayer},
     ratelimit::build_rate_limit_layer,
     request_logging::build_request_logging_layer,
     security::build_security_headers_layer,
@@ -21,7 +22,7 @@ use axum::{
 use sea_orm_migration::MigratorTrait;
 use tokio::signal;
 use tower_http::request_id::{PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::trace::TraceLayer;
+use tower_http::trace::{DefaultOnResponse, OnResponse, TraceLayer};
 
 use std::sync::Arc;
 
@@ -325,6 +326,7 @@ impl App {
     /// `Router::into_make_service_with_connect_info`, or use
     /// `App::into_make_service_with_connect_info()` for the exact `serve()` path.
     pub fn into_router_with_middleware(mut self) -> Router {
+        self.install_default_error_reporter();
         let router = build_stateful_router(
             std::mem::take(&mut self.router),
             self.context.clone(),
@@ -360,6 +362,12 @@ impl App {
 
     /// Apply Tideway's middleware stack to the fully merged application router
     fn apply_middleware(&self, mut router: Router) -> Router {
+        // Runs after routing, inside the request span, to name it and error reports
+        // after the matched route.
+        if observability::traces_routes() || self.context.error_reporter_opt().is_some() {
+            router = router.route_layer(axum::middleware::from_fn(observability::record_route));
+        }
+
         // Router::layer wraps the existing router: add layers INNERMOST FIRST.
         // Request execution order (outer to inner): metrics, tracing, dev logging,
         // request logging, security headers, compression, rate limit, timeout,
@@ -408,17 +416,22 @@ impl App {
                 router = router.layer(build_request_dumper_layer(dev_config));
             }
         }
-        router = router.layer(TraceLayer::new_for_http().make_span_with(
-            |request: &axum::http::Request<axum::body::Body>| {
-                tracing::debug_span!(
-                    "request",
-                    method = %request.method(),
-                    uri = %request.uri(),
-                    version = ?request.version(),
-                    request_id = ?request.headers().get("x-request-id"),
-                )
-            },
-        ));
+        // Report inside the trace span so reports carry the request's trace ID.
+        if let Some(reporter) = self.context.error_reporter_opt() {
+            router = router.layer(ErrorReportingLayer::new(reporter.clone()));
+        }
+        router = router.layer(
+            TraceLayer::new_for_http()
+                .make_span_with(observability::request_span::<axum::body::Body>)
+                .on_response(
+                    |response: &axum::http::Response<axum::body::Body>,
+                     latency: std::time::Duration,
+                     span: &tracing::Span| {
+                        DefaultOnResponse::default().on_response(response, latency, span);
+                        observability::record_response(response, span);
+                    },
+                ),
+        );
 
         // Keep metrics outside all middleware that can synthesize a response.
         #[cfg(feature = "metrics")]
@@ -432,6 +445,7 @@ impl App {
     /// Start background job workers if jobs are enabled
     #[cfg(feature = "jobs")]
     pub fn start_workers(mut self, registry: Arc<JobRegistry>) -> Self {
+        self.install_default_error_reporter();
         if let Some(ref queue) = self.context.jobs
             && self.config.jobs.enabled
         {
@@ -483,7 +497,30 @@ impl App {
         tracing::info!("Server starting on http://{}", addr);
         tracing::info!("Health check available at http://{}/health", addr);
 
-        self.serve_with_shutdown(listener, shutdown_signal()).await
+        let mut app = self;
+        app.install_default_error_reporter();
+        let reporter = app.context.error_reporter_opt().cloned();
+
+        let result = app.serve_with_shutdown(listener, shutdown_signal()).await;
+
+        // Deliver spans and error reports still buffered from the final requests.
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Some(reporter) = reporter {
+                reporter.flush(std::time::Duration::from_secs(2));
+            }
+            observability::shutdown_tracing();
+        })
+        .await;
+
+        result
+    }
+
+    /// Register the environment-configured reporter (Sentry via `SENTRY_DSN`)
+    /// when the application has not set one.
+    fn install_default_error_reporter(&mut self) {
+        if self.context.error_reporter.is_none() {
+            self.context.error_reporter = observability::default_error_reporter();
+        }
     }
 
     /// Serve on `listener` until `signal` resolves, then drain HTTP connections and

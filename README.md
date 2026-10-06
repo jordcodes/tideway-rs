@@ -37,6 +37,8 @@ Feature flags are opt-in unless marked Default.
 | `openapi` | `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
 | `validation` | `validation` | `docs/validation.md` | `examples/validation_example.rs` | — |
 | `metrics` | `metrics` | `README.md#built-in-middleware` | `tests/metrics_integration_test.rs` | — |
+| `otel` | `observability::otel` | `docs/observability.md` | `tests/otel_export_test.rs` | OTLP trace export, enabled by `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `sentry` | `observability` | `docs/observability.md` | `tests/sentry_reporter_test.rs` | Sentry issues for 5xx errors, panics, and failed jobs, enabled by `SENTRY_DSN` |
 | `cache` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
 | `cache-redis` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
 | `sessions` | `session` | `docs/sessions.md` | `examples/sessions_example.rs` | — |
@@ -943,6 +945,7 @@ cargo test
 - [x] Request/response logging
 - [x] Timeout middleware
 - [x] Prometheus metrics
+- [x] OpenTelemetry (OTLP) trace export, Sentry error reporting, and an error reporting hook
 - [x] Global request body size limit (DoS protection)
 - [x] Trait-based database abstraction (SeaORM)
 - [x] Trait-based caching (in-memory, Redis)

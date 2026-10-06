@@ -41,3 +41,20 @@ OPENAPI_SWAGGER_UI=true
 OPENAPI_SERVE_SPEC=true
 
 {{/if}}
+{{#if has_otel_feature}}
+# Observability (OpenTelemetry). Set an OTLP/HTTP endpoint to export traces;
+# 5xx errors are recorded on the request span. Leave empty to disable.
+OTEL_EXPORTER_OTLP_ENDPOINT=
+# Backend auth headers, e.g. x-honeycomb-team=KEY or Authorization=Basic%20...
+OTEL_EXPORTER_OTLP_HEADERS=
+OTEL_SERVICE_NAME={{project_crate}}
+OTEL_RESOURCE_ATTRIBUTES=deployment.environment=development
+
+{{/if}}
+{{#if has_sentry_feature}}
+# Error reporting (Sentry). Set the project DSN to send 5xx errors, panics,
+# and failed jobs as Sentry issues. Leave empty to disable.
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=development
+
+{{/if}}

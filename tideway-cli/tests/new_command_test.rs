@@ -75,6 +75,18 @@ fn test_new_command_no_prompt_defaults_to_api_preset() {
         &project_dir.join(".env.example"),
         "ALLOW_PUBLIC_REGISTRATION=false",
     );
+    // Production observability works by setting the standard OTel variables.
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"otel\"");
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "OTEL_EXPORTER_OTLP_ENDPOINT=",
+    );
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "OTEL_SERVICE_NAME=my_app",
+    );
+    assert_file_contains(&project_dir.join("Cargo.toml"), "\"sentry\"");
+    assert_file_contains(&project_dir.join(".env.example"), "SENTRY_DSN=");
     assert_file_not_contains(
         &project_dir.join(".github/workflows/ci.yml"),
         "TEST_DATABASE_URL",
@@ -126,6 +138,8 @@ fn test_new_command_includes_features_and_env() {
     assert_file_contains(&project_dir.join(".env.example"), "JWT_SECRET=");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_ISSUER=my_app");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_AUDIENCE=my_app");
+    assert_file_not_contains(&project_dir.join(".env.example"), "OTEL_");
+    assert_file_not_contains(&project_dir.join(".env.example"), "SENTRY_DSN");
     assert_file_contains(&project_dir.join("src/main.rs"), "DATABASE_URL");
     assert_file_contains(&project_dir.join("src/main.rs"), "JwtAuth");
     assert!(project_dir.join("src/auth/mod.rs").exists());
@@ -772,8 +786,15 @@ fn test_new_command_with_preset_saas() {
     assert_file_contains(&cargo_toml, "\"organizations\"");
     assert_file_contains(&cargo_toml, "\"admin\"");
     assert_file_contains(&cargo_toml, "\"email\"");
+    assert_file_contains(&cargo_toml, "\"otel\"");
+    assert_file_contains(&cargo_toml, "\"sentry\"");
     assert_file_not_contains(&cargo_toml, "\"openapi\"");
     assert!(project_dir.join(".env.example").exists());
+    assert_file_contains(
+        &project_dir.join(".env.example"),
+        "OTEL_EXPORTER_OTLP_ENDPOINT=",
+    );
+    assert_file_contains(&project_dir.join(".env.example"), "SENTRY_DSN=");
     assert!(project_dir.join("docker-compose.yml").exists());
     assert!(project_dir.join(".github/workflows/ci.yml").exists());
     assert_file_contains(

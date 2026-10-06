@@ -23,6 +23,14 @@ Use this checklist before exposing a generated Tideway application to internet t
   limits.
 - Store JWT, MFA, database, email, and billing secrets in the deployment secret manager.
 
+## Observability
+
+- Set `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and `OTEL_SERVICE_NAME` so
+  traces and 5xx errors reach your tracing backend. Lower `OTEL_TRACES_SAMPLER_ARG` for
+  high-traffic services.
+- Set `SENTRY_DSN` and `SENTRY_ENVIRONMENT` so 5xx errors, panics, and failed jobs become Sentry
+  issues, or register an `ErrorReporter` for another error tracker. See `docs/observability.md`.
+
 ## PostgreSQL Security Tests
 
 PostgreSQL-backed generated presets include a CI PostgreSQL service and expose

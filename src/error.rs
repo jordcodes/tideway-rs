@@ -348,6 +348,7 @@ impl TidewayError {
                 error = %self, // Full error message for server logs
                 "Request failed"
             );
+            crate::observability::on_server_error(status, &error_id, self.to_string());
         } else {
             tracing::warn!(
                 status = status.as_u16(),
