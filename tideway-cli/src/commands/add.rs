@@ -554,6 +554,8 @@ fn scaffold_api_keys(
         has_database_feature: true,
         has_billing_feature: false,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: false,
         has_config: false,
     };

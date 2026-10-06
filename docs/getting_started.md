@@ -17,6 +17,7 @@ The default API scaffold uses SQLite locally, so this path boots without extra d
 It also includes a sample `todo` resource wired through entity, repository, and service layers, with pagination and `q` search already enabled on the list endpoint.
 `tideway dev --fix-env` creates `.env` from `.env.example`, replaces known development placeholders with cryptographically random local secrets, and runs pending migrations. It is safe to rerun: configured secrets are preserved.
 If you want local Postgres instead, run `tideway new my_app --with-docker`, then `docker compose up -d` before `tideway dev --fix-env`.
+Every scaffold also includes a production `Dockerfile`; see `docs/deployment.md` for building it and deploying to Fly.io or Railway.
 
 ## 2) Run the server
 
