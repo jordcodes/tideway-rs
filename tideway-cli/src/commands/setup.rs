@@ -58,6 +58,13 @@ pub fn run_with_runtime(args: SetupArgs, runtime: CommandRuntime) -> Result<()> 
 
     match args.framework {
         Framework::Vue => setup_vue(&args, runtime)?,
+        Framework::React | Framework::Next => {
+            return Err(anyhow!(error_contract(
+                "`tideway setup` only automates Vue projects.",
+                "React and Next.js templates only need Tailwind CSS; follow your framework's Tailwind install guide, then run `tideway generate auth --framework react` (or `--framework next`).",
+                "Use `tideway generate client --spec openapi.json` for a framework-agnostic typed API client."
+            )));
+        }
     }
 
     if !runtime.json_output() {

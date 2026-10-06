@@ -80,21 +80,24 @@ fn test_root_help_mentions_primary_path_trailer() {
 }
 
 #[test]
-fn test_generate_help_marks_vue_only_advanced_path() {
+fn test_generate_help_marks_advanced_frontend_and_client_path() {
     let output = run_tideway(&["generate", "--help"]);
     assert_success(&output, "tideway generate --help");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Advanced: generate Vue frontend helpers for existing Vue apps"),
-        "expected Vue-only advanced generate marker, got:\n{}",
+        stdout.contains("Advanced: generate Vue/React/Next frontend helpers or a typed API client"),
+        "expected advanced generate marker, got:\n{}",
         stdout
     );
-    assert!(
-        stdout.contains("current helpers are Vue-only"),
-        "expected Vue-only framework note, got:\n{}",
-        stdout
-    );
+    for expected in ["vue", "react", "next", "client", "--spec"] {
+        assert!(
+            stdout.contains(expected),
+            "expected `{}` in generate help, got:\n{}",
+            expected,
+            stdout
+        );
+    }
 }
 
 #[test]

@@ -40,7 +40,7 @@ for line in "${required_advanced_docs[@]}"; do
 done
 
 required_advanced_help=(
-  "/// Advanced: generate Vue frontend helpers for existing Vue apps (secondary to the API path)"
+  "/// Advanced: generate Vue/React/Next frontend helpers or a typed API client (secondary to the API path)"
   "/// Advanced: generate backend scaffolding for existing/nonstandard projects (not for greenfield)"
   "/// Advanced: add features/scaffolding to an existing project (not the default new-app path)"
   "/// Advanced: initialize main.rs by scanning modules in existing projects (not for greenfield)"

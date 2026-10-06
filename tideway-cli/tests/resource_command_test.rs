@@ -1886,6 +1886,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
             search: false,
             db_backend: tideway_cli::cli::DbBackend::Auto,
             profile,
+            fields: Vec::new(),
         };
         tideway_cli::commands::resource::run(args).expect("run resource command");
 
@@ -2030,6 +2031,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
         search: false,
         db_backend: tideway_cli::cli::DbBackend::Auto,
         profile: tideway_cli::cli::ResourceProfile::Tenant,
+        fields: Vec::new(),
     };
     tideway_cli::commands::resource::run(args).expect("run resource command");
 

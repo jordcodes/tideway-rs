@@ -4,7 +4,7 @@
 [![Documentation](https://docs.rs/tideway/badge.svg)](https://docs.rs/tideway)
 [![License](https://img.shields.io/crates/l/tideway.svg)](https://github.com/jordcodes/tideway-rs)
 
-**Tideway** is a batteries-included Rust web framework built on [Axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs/). It provides opinionated defaults for building SaaS applications quickly while maintaining the performance and flexibility you expect from Rust. The primary CLI path and tested scaffolds target backend/API workflows; frontend helpers are advanced and currently Vue-focused.
+**Tideway** is a batteries-included Rust web framework built on [Axum](https://github.com/tokio-rs/axum) and [Tokio](https://tokio.rs/). It provides opinionated defaults for building SaaS applications quickly while maintaining the performance and flexibility you expect from Rust. The primary CLI path and tested scaffolds target backend/API workflows; frontend helpers are advanced: Vue components for every module, React/Next.js auth components, and `tideway generate client` for a typed TypeScript client from your OpenAPI spec.
 
 ## Features
 

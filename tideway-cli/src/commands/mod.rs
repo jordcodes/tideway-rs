@@ -3,6 +3,7 @@
 pub mod add;
 pub mod app_builder;
 pub mod backend;
+pub mod client;
 pub mod dev;
 pub mod doctor;
 pub mod file_ops;

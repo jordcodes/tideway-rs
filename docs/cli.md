@@ -301,7 +301,7 @@ Compatibility note:
 
 ### `tideway generate` (advanced)
 
-Generate Vue frontend helpers for existing Vue apps.
+Generate frontend helpers for existing frontend apps, or a typed API client from your OpenAPI spec.
 This is a secondary workflow and is not part of the primary API path.
 
 ```bash
@@ -309,7 +309,29 @@ tideway generate auth
 tideway generate organizations --with-views
 tideway generate billing --with-views
 tideway generate all --framework vue
+tideway generate auth --framework react
+tideway generate auth --framework next
+tideway generate client --spec openapi.json --output web/src/api/client.ts
 ```
+
+Framework coverage:
+
+| Module | `vue` | `react` / `next` |
+| --- | --- | --- |
+| `auth` | yes | yes |
+| `billing`, `organizations`, `admin`, `all` | yes | no (use `generate client`) |
+| `--with-views` | yes | no |
+| `client` | framework-agnostic | framework-agnostic |
+
+React and Next.js components are plain React + TypeScript styled with Tailwind utility classes
+(`--style` applies to Vue only). The Next.js variant marks components with `'use client'` and reads
+`NEXT_PUBLIC_API_URL`; the React variant reads `VITE_API_URL`.
+
+`tideway generate client` reads an OpenAPI 3.x JSON document (default `openapi.json`) and writes a
+single dependency-free TypeScript module (default `./src/api/client.ts`). See
+[`docs/openapi.md`](openapi.md#typescript-client) for exporting the spec and using the client.
+Re-running the command replaces a previously generated client; any other existing file at the
+output path is skipped unless you pass `--force`.
 
 `tideway generate organizations` is frontend-only. It does not generate backend organization routes, membership storage, or migrations.
 
@@ -383,4 +405,4 @@ entity `ActiveModel`s for portable inserts.
 - Canonical path: `new` -> `dev` -> `resource <name>` -> `migrate` -> `seed` (optional demo data).
 - `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
 - `tideway doctor` is a quick sanity check and repair tool, not a required first-run step.
-- Frontend `generate` / `setup` flows are currently Vue-focused advanced helpers, not a co-equal onboarding path with the backend/API workflow.
+- Frontend `generate` / `setup` flows are advanced helpers, not a co-equal onboarding path with the backend/API workflow. `generate` covers Vue (all modules), React/Next.js (auth), and a framework-agnostic typed client; `setup` automates Vue projects only.

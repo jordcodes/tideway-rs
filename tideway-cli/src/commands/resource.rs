@@ -1326,6 +1326,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                         args.id_type,
                         args.profile,
                         generation_context,
+                        &custom_fields,
                     )?;
                 }
                 generate_service(
@@ -3667,6 +3668,7 @@ fn generate_policy(
     id_type: ResourceIdType,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> Result<()> {
     let policies_dir = project_dir.join("src/policies");
     ensure_dir(&policies_dir)
@@ -3681,7 +3683,14 @@ fn generate_policy(
     wire_services_mod(&policies_mod, resource_name)?;
 
     let policy_path = policies_dir.join(format!("{}.rs", resource_name));
-    let policy_contents = render_policy(resource_name, resource_plural, id_type, profile, context);
+    let policy_contents = render_policy(
+        resource_name,
+        resource_plural,
+        id_type,
+        profile,
+        context,
+        custom_fields,
+    );
     write_file_with_force(&policy_path, &policy_contents, false)?;
     print_success("Generated policy");
     Ok(())
@@ -3693,9 +3702,10 @@ fn render_policy(
     id_type: ResourceIdType,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile, context);
+    let schema = resource_schema(profile, context, custom_fields);
     let owner_scoped = context.saas_owned_scope;
     // Members may delete their own `owned` records; shared org records need an admin.
     let member_actions: &[&str] = if owner_scoped {
