@@ -395,6 +395,7 @@ fn generate_auth(
         ("mod.rs", "auth/mod"),
         ("routes.rs", "auth/routes"),
         ("store.rs", "auth/store"),
+        ("impersonation.rs", "auth/impersonation"),
         ("tests.rs", "auth/tests"),
     ];
 
@@ -571,6 +572,10 @@ fn generate_migrations(
         (
             "m012_add_webhook_claim_lifecycle.rs",
             "migrations/m012_add_webhook_claim_lifecycle",
+        ),
+        (
+            "m017_create_impersonation_sessions.rs",
+            "migrations/m017_create_impersonation_sessions",
         ),
     ];
 

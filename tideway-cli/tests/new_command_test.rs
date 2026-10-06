@@ -1418,6 +1418,10 @@ fn test_saas_admin_compiles_and_tests_with_and_without_billing_and_mfa() {
             output.contains(expected),
             "billing={has_billing_feature} mfa={has_auth_mfa_feature}: missing `{expected}` in:\n{output}"
         );
+        assert!(
+            output.contains("impersonation_token_works_until_ended ... ok"),
+            "{output}"
+        );
         if has_auth_mfa_feature {
             assert!(
                 output.contains("mfa_requires_an_enrolled_secret ... ok"),

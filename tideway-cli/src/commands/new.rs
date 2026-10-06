@@ -844,6 +844,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "src/auth/mod.rs".to_string(),
         "src/auth/routes.rs".to_string(),
         "src/auth/store.rs".to_string(),
+        "src/auth/impersonation.rs".to_string(),
         "src/auth/tests.rs".to_string(),
         "src/billing/mod.rs".to_string(),
         "src/billing/events.rs".to_string(),
@@ -862,6 +863,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "migration/src/m009_create_webhook_processed_events.rs".to_string(),
         "migration/src/m010_create_billing_processed_events.rs".to_string(),
         "migration/src/m012_add_webhook_claim_lifecycle.rs".to_string(),
+        "migration/src/m017_create_impersonation_sessions.rs".to_string(),
     ];
 
     if *preset == BackendPreset::B2b {

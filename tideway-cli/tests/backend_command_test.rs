@@ -85,6 +85,63 @@ fn test_backend_generates_webhook_idempotency_migrations() {
 }
 
 #[test]
+fn test_backend_admin_impersonation_uses_session_bound_tokens() {
+    for preset in ["b2c", "b2b"] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let output_dir = temp_dir.path().join("src");
+        let migrations_dir = temp_dir.path().join("migration/src");
+
+        let output = run_tideway(&[
+            "backend",
+            preset,
+            "--name",
+            "my_app",
+            "--output",
+            output_dir.to_str().expect("output dir utf8"),
+            "--migrations-output",
+            migrations_dir.to_str().expect("migrations dir utf8"),
+        ]);
+        assert_success(&output, &format!("tideway backend {preset}"));
+
+        let admin_routes =
+            fs::read_to_string(output_dir.join("admin/routes.rs")).expect("read admin routes");
+        assert!(admin_routes.contains("Json<ImpersonationRequestBody>"));
+        assert!(admin_routes.contains("body.into_request(actor.user.id.to_string())"));
+        assert!(admin_routes.contains("ImpersonationConfig::default()"));
+        assert!(
+            admin_routes.contains("issue_access_token_expiring_at(subject, session.expires_at)")
+        );
+        assert!(admin_routes.contains(".end_impersonation(&claims.imp_session)"));
+        assert!(!admin_routes.contains("refresh_token"));
+        assert!(!admin_routes.contains("ImpersonateRequest"));
+        assert!(!admin_routes.contains("jwt_issuer.issue("));
+
+        let actor = fs::read_to_string(output_dir.join("auth/actor.rs")).expect("read actor");
+        assert!(actor.contains("AccessTokenClaims<ImpersonationClaims>"));
+        assert!(actor.contains("ensure_session_active(db, claims"));
+
+        let store =
+            fs::read_to_string(output_dir.join("auth/impersonation.rs")).expect("read store");
+        assert!(store.contains("impl ImpersonationStore for DbImpersonationStore"));
+        assert!(store.contains("async fn record_audit"));
+        assert!(
+            fs::read_to_string(output_dir.join("admin/mod.rs"))
+                .expect("read admin mod")
+                .contains("mod tests;")
+        );
+        assert!(output_dir.join("admin/tests.rs").exists());
+
+        let migration =
+            fs::read_to_string(migrations_dir.join("m017_create_impersonation_sessions.rs"))
+                .expect("read impersonation migration");
+        assert!(migration.contains("ImpersonationSessions::EndedAt"));
+        assert!(migration.contains("ImpersonationAuditLog::Table"));
+        let lib_rs = fs::read_to_string(migrations_dir.join("lib.rs")).expect("read migration lib");
+        assert!(lib_rs.contains("Box::new(m017_create_impersonation_sessions::Migration),"));
+    }
+}
+
+#[test]
 fn test_backend_migration_lib_matches_generated_files_for_b2c_and_b2b() {
     assert_migration_lib_matches_generated_files("b2c");
     assert_migration_lib_matches_generated_files("b2b");

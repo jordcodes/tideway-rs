@@ -449,6 +449,44 @@ impl JwtIssuer {
         Ok((token, self.config.access_token_ttl.as_secs()))
     }
 
+    /// Issue only an access token that expires at `expires_at` (unix seconds)
+    /// instead of after the configured access token TTL.
+    ///
+    /// Use this for tokens bound to a server-side session with its own
+    /// lifetime, such as impersonation sessions. The caller is responsible
+    /// for rejecting the token once that session ends early. Returns the
+    /// token and its remaining lifetime in seconds.
+    pub fn issue_access_token_expiring_at<T: Serialize>(
+        &self,
+        subject: TokenSubject<'_, T>,
+        expires_at: u64,
+    ) -> Result<(String, u64)> {
+        let now = current_timestamp();
+        let exp = expires_at.max(now);
+
+        let claims = AccessTokenClaims {
+            standard: StandardClaims {
+                sub: subject.user_id.to_string(),
+                iss: self.config.issuer.clone(),
+                aud: self.config.audience.clone(),
+                exp,
+                iat: now,
+                nbf: Some(now),
+                jti: generate_jti(),
+            },
+            token_type: TokenType::Access,
+            session_version: subject.session_version,
+            email: subject.email.map(String::from),
+            name: subject.name.map(String::from),
+            custom: subject.custom,
+        };
+
+        let token = encode(&self.build_header(), &claims, &self.encoding_key)
+            .map_err(|e| TidewayError::Internal(format!("Failed to encode access token: {}", e)))?;
+
+        Ok((token, exp - now))
+    }
+
     /// Issue a rotated refresh token (increment generation).
     pub fn rotate_refresh_token(&self, old_claims: &RefreshTokenClaims) -> Result<String> {
         let now = current_timestamp();
