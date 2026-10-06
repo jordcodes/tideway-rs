@@ -844,6 +844,10 @@ mod tests {
             failed_attempts: Set(0),
             session_version: Set(0),
             failed_mfa_attempts: Set(0),
+            {{#if has_auth_mfa_feature}}
+            mfa_enabled: Set(false),
+            mfa_totp_secret_encrypted: Set(None),
+            {{/if}}
             is_platform_admin: Set(false),
             created_at: Set(timestamp.into()),
             updated_at: Set(timestamp.into()),

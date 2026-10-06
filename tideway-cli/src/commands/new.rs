@@ -850,6 +850,7 @@ fn backend_preset_expected_files(preset: &BackendPreset) -> Vec<String> {
         "src/billing/routes.rs".to_string(),
         "src/admin/mod.rs".to_string(),
         "src/admin/routes.rs".to_string(),
+        "src/admin/tests.rs".to_string(),
         "migration/Cargo.toml".to_string(),
         "migration/src/lib.rs".to_string(),
         "migration/src/main.rs".to_string(),

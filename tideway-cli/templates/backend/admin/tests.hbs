@@ -1,0 +1,355 @@
+use std::sync::Arc;
+
+use axum::{
+    body::{to_bytes, Body},
+    http::{header, Method, Request, StatusCode},
+    Router,
+};
+use chrono::Utc;
+use migration::{Migrator, MigratorTrait};
+{{#if has_billing_feature}}
+use sea_orm::sea_query::{Alias, Query};
+{{/if}}
+use sea_orm::{
+    entity::*, ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection,
+    Statement,
+};
+use serde_json::Value;
+use tideway::{
+    auth::{AccessTokenClaims, JwtAuth, JwtAuthConfig, TokenSubject},
+    App,
+};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+use super::AdminModule;
+{{#if has_organizations}}
+use crate::entities::organization;
+{{/if}}
+use crate::entities::user;
+
+const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
+const JWT_ISSUER: &str = env!("CARGO_PKG_NAME");
+
+async fn connect_test_database() -> DatabaseConnection {
+    let Ok(database_url) = std::env::var("TEST_DATABASE_URL") else {
+        return Database::connect("sqlite::memory:")
+            .await
+            .expect("connect to in-memory sqlite");
+    };
+    let schema = format!("test_{}", Uuid::new_v4().simple());
+    let admin = Database::connect(&database_url)
+        .await
+        .expect("connect to PostgreSQL test database");
+    admin
+        .execute(Statement::from_string(
+            DatabaseBackend::Postgres,
+            format!("CREATE SCHEMA \"{schema}\""),
+        ))
+        .await
+        .expect("create isolated PostgreSQL test schema");
+    let mut options = ConnectOptions::new(database_url);
+    options.set_schema_search_path(schema);
+    Database::connect(options)
+        .await
+        .expect("connect to isolated PostgreSQL test schema")
+}
+
+struct TestApp {
+    router: Router,
+    db: Arc<DatabaseConnection>,
+    admin: user::Model,
+    token: String,
+}
+
+async fn test_app() -> TestApp {
+    let db = connect_test_database().await;
+    Migrator::up(&db, None).await.expect("run migrations");
+    let db = Arc::new(db);
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(JWT_SECRET, JWT_ISSUER)
+            .expect("valid secret")
+            .audience(JWT_ISSUER),
+    )
+    .expect("create paired auth");
+    let issuer = jwt.issuer();
+
+    let admin = insert_user(&db, "admin@example.com", true).await;
+    let token = issuer
+        .issue(
+            TokenSubject {
+                user_id: &admin.id.to_string(),
+                email: Some(&admin.email),
+                name: None,
+                session_version: 0,
+                custom: None::<()>,
+            },
+            false,
+        )
+        .expect("issue admin token")
+        .access_token;
+
+    let router = App::new()
+        .register_module(AdminModule::new(
+            db.clone(),
+            jwt.verifier::<AccessTokenClaims>().expect("create verifier"),
+            issuer,
+        ))
+        .into_router();
+
+    TestApp { router, db, admin, token }
+}
+
+async fn insert_user(db: &DatabaseConnection, email: &str, is_platform_admin: bool) -> user::Model {
+    let now = Utc::now();
+    user::ActiveModel {
+        id: Set(Uuid::new_v4()),
+        email: Set(email.to_string()),
+        password_hash: Set("test-hash".to_string()),
+        name: Set(None),
+        {{#if has_organizations}}
+        organization_id: Set(None),
+        {{/if}}
+        email_verified_at: Set(Some(now.into())),
+        locked_until: Set(None),
+        failed_attempts: Set(0),
+        failed_mfa_attempts: Set(0),
+        {{#if has_auth_mfa_feature}}
+        mfa_enabled: Set(false),
+        mfa_totp_secret_encrypted: Set(None),
+        {{/if}}
+        session_version: Set(0),
+        is_platform_admin: Set(is_platform_admin),
+        created_at: Set(now.into()),
+        updated_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("insert user")
+}
+
+{{#if has_organizations}}
+async fn insert_organization(db: &DatabaseConnection, owner: &user::Model, slug: &str) -> organization::Model {
+    let now = Utc::now().timestamp();
+    organization::ActiveModel {
+        id: Set(Uuid::new_v4().to_string()),
+        name: Set(slug.to_string()),
+        slug: Set(slug.to_string()),
+        owner_id: Set(owner.id),
+        contact_email: Set(owner.email.clone()),
+        created_at: Set(now),
+        updated_at: Set(now),
+    }
+    .insert(db)
+    .await
+    .expect("insert organization")
+}
+{{/if}}
+
+{{#if has_billing_feature}}
+async fn insert_plan(db: &DatabaseConnection, id: &str, price_cents: i64, interval: &str) {
+    let insert = Query::insert()
+        .into_table(Alias::new("billing_plans"))
+        .columns(["id", "name", "stripe_price_id", "price_cents", "interval"].map(Alias::new))
+        .values_panic([
+            id.into(),
+            id.into(),
+            format!("price_{id}").into(),
+            price_cents.into(),
+            interval.into(),
+        ])
+        .to_owned();
+    db.execute(db.get_database_backend().build(&insert))
+        .await
+        .expect("insert billing plan");
+}
+
+async fn insert_subscription(
+    db: &DatabaseConnection,
+    billable_id: &str,
+    plan_id: &str,
+    status: &str,
+    extra_seats: i32,
+) {
+    let now = Utc::now().timestamp();
+    let insert = Query::insert()
+        .into_table(Alias::new("billing_subscriptions"))
+        .columns(
+            [
+                "billable_id",
+                "stripe_subscription_id",
+                "stripe_customer_id",
+                "plan_id",
+                "status",
+                "current_period_start",
+                "current_period_end",
+                "extra_seats",
+                "updated_at",
+            ]
+            .map(Alias::new),
+        )
+        .values_panic([
+            billable_id.into(),
+            format!("sub_{billable_id}").into(),
+            format!("cus_{billable_id}").into(),
+            plan_id.into(),
+            status.into(),
+            now.into(),
+            (now + 30 * 24 * 60 * 60).into(),
+            extra_seats.into(),
+            now.into(),
+        ])
+        .to_owned();
+    db.execute(db.get_database_backend().build(&insert))
+        .await
+        .expect("insert billing subscription");
+}
+{{/if}}
+
+async fn get(app: &TestApp, path: &str) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(path)
+        .header(header::AUTHORIZATION, format!("Bearer {}", app.token))
+        .body(Body::empty())
+        .expect("build request");
+    let response = app.router.clone().oneshot(request).await.expect("route response");
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("read response body");
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+{{#if has_billing_feature}}
+#[tokio::test]
+async fn stats_count_active_subscriptions_and_mrr() {
+    let app = test_app().await;
+    insert_plan(&app.db, "team", 2_500, "monthly").await;
+    insert_subscription(&app.db, "billable-active", "team", "active", 0).await;
+    insert_subscription(&app.db, "billable-canceled", "team", "canceled", 0).await;
+
+    let (status, stats) = get(&app, "/admin/stats").await;
+    assert_eq!(status, StatusCode::OK, "stats response: {stats}");
+    assert_eq!(stats["active_subscriptions"], 1);
+    assert_eq!(stats["mrr_cents"], 2_500);
+    assert_eq!(stats["mrr_currency"], "usd");
+    assert!(stats.get("mrr_unavailable_reason").is_none());
+}
+
+#[tokio::test]
+async fn mrr_normalizes_yearly_plans_and_excludes_trials() {
+    let app = test_app().await;
+    insert_plan(&app.db, "monthly", 1_000, "monthly").await;
+    insert_plan(&app.db, "annual", 12_000, "yearly").await;
+    insert_subscription(&app.db, "billable-monthly", "monthly", "active", 0).await;
+    insert_subscription(&app.db, "billable-annual", "annual", "active", 0).await;
+    insert_subscription(&app.db, "billable-trial", "monthly", "trialing", 0).await;
+
+    let (status, stats) = get(&app, "/admin/stats").await;
+    assert_eq!(status, StatusCode::OK, "stats response: {stats}");
+    assert_eq!(stats["active_subscriptions"], 3);
+    assert_eq!(stats["mrr_cents"], 1_000 + 1_000);
+}
+
+#[tokio::test]
+async fn mrr_is_omitted_when_it_cannot_be_priced() {
+    let app = test_app().await;
+    insert_plan(&app.db, "seats", 1_000, "monthly").await;
+    insert_subscription(&app.db, "billable-seats", "seats", "active", 2).await;
+
+    let (_, stats) = get(&app, "/admin/stats").await;
+    assert!(stats.get("mrr_cents").is_none(), "stats response: {stats}");
+    assert!(stats["mrr_unavailable_reason"].as_str().unwrap_or_default().contains("extra seats"));
+
+    let app = test_app().await;
+    insert_subscription(&app.db, "billable-unknown", "not-a-plan", "active", 0).await;
+
+    let (_, stats) = get(&app, "/admin/stats").await;
+    assert!(stats.get("mrr_cents").is_none(), "stats response: {stats}");
+    assert!(stats["mrr_unavailable_reason"].as_str().unwrap_or_default().contains("not-a-plan"));
+}
+{{else}}
+#[tokio::test]
+async fn stats_omit_billing_fields_without_billing() {
+    let app = test_app().await;
+
+    let (status, stats) = get(&app, "/admin/stats").await;
+    assert_eq!(status, StatusCode::OK, "stats response: {stats}");
+    assert!(stats.get("active_subscriptions").is_none());
+    assert!(stats.get("mrr_cents").is_none());
+}
+{{/if}}
+
+#[tokio::test]
+async fn user_pagination_echoes_the_values_used() {
+    let app = test_app().await;
+
+    let (status, page) = get(&app, "/admin/users?page=0&per_page=500").await;
+    assert_eq!(status, StatusCode::OK, "users response: {page}");
+    assert_eq!(page["page"], 1);
+    assert_eq!(page["per_page"], 100);
+    assert_eq!(page["total_pages"], 1);
+    assert_eq!(page["items"][0]["id"], app.admin.id.to_string());
+    assert_eq!(page["items"][0]["mfa_enabled"], false);
+}
+
+{{#if has_auth_mfa_feature}}
+#[tokio::test]
+async fn mfa_requires_an_enrolled_secret() {
+    let app = test_app().await;
+    let flag_only = insert_user(&app.db, "flag-only@example.com", false).await;
+    let mut active: user::ActiveModel = flag_only.clone().into();
+    active.mfa_enabled = Set(true);
+    active.update(app.db.as_ref()).await.expect("enable mfa flag");
+
+    let enrolled = insert_user(&app.db, "enrolled@example.com", false).await;
+    let mut active: user::ActiveModel = enrolled.clone().into();
+    active.mfa_enabled = Set(true);
+    active.mfa_totp_secret_encrypted = Set(Some("encrypted-secret".to_string()));
+    active.update(app.db.as_ref()).await.expect("enroll mfa");
+
+    let (_, user) = get(&app, &format!("/admin/users/{}", flag_only.id)).await;
+    assert_eq!(user["mfa_enabled"], false, "user response: {user}");
+    let (_, user) = get(&app, &format!("/admin/users/{}", enrolled.id)).await;
+    assert_eq!(user["mfa_enabled"], true, "user response: {user}");
+}
+{{/if}}
+
+{{#if has_organizations}}
+#[tokio::test]
+async fn organizations_report_subscription_status() {
+    let app = test_app().await;
+    let subscribed = insert_organization(&app.db, &app.admin, "subscribed").await;
+    let unsubscribed = insert_organization(&app.db, &app.admin, "unsubscribed").await;
+    {{#if has_billing_feature}}
+    insert_subscription(&app.db, &subscribed.id, "pro", "past_due", 0).await;
+    {{/if}}
+
+    let (status, page) = get(&app, "/admin/organizations?per_page=0").await;
+    assert_eq!(status, StatusCode::OK, "organizations response: {page}");
+    assert_eq!(page["page"], 1);
+    assert_eq!(page["per_page"], 1);
+    assert_eq!(page["total_pages"], 2);
+
+    let (_, page) = get(&app, "/admin/organizations").await;
+    let items = page["items"].as_array().expect("organization items");
+    let status_of = |id: &str| {
+        items
+            .iter()
+            .find(|item| item["id"] == id)
+            .map(|item| item.get("subscription_status").cloned())
+            .expect("organization listed")
+    };
+    {{#if has_billing_feature}}
+    assert_eq!(status_of(&subscribed.id), Some(Value::from("past_due")));
+    assert_eq!(status_of(&unsubscribed.id), Some(Value::Null));
+
+    let (_, org) = get(&app, &format!("/admin/organizations/{}", subscribed.id)).await;
+    assert_eq!(org["subscription_status"], "past_due", "organization response: {org}");
+    {{else}}
+    assert_eq!(status_of(&subscribed.id), None);
+    assert_eq!(status_of(&unsubscribed.id), None);
+    {{/if}}
+}
+{{/if}}
