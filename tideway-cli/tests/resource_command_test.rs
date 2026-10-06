@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::sync::Mutex;
 
 use tideway_cli::cli::{NewArgs, NewPreset, ResourceArgs};
 
@@ -2340,8 +2341,8 @@ fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold()
     );
 
     patch_scaffold_to_workspace(&project_dir);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
-    assert_generated_policy_tests_pass(temp_dir.path(), &project_dir);
+    run_cargo_in_project(&project_dir, &["check"]);
+    assert_generated_policy_tests_pass(&project_dir);
 }
 
 #[test]
@@ -2408,8 +2409,8 @@ fn test_resource_api_and_tenant_profiles_compile_against_saas_preset_workspace_s
     }
 
     patch_scaffold_to_workspace(&project_dir);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
-    assert_generated_policy_tests_pass(temp_dir.path(), &project_dir);
+    run_cargo_in_project(&project_dir, &["check"]);
+    assert_generated_policy_tests_pass(&project_dir);
 }
 
 #[test]
@@ -2991,7 +2992,7 @@ fn test_resource_inline_fields_compile_against_api_preset_scaffold() {
     }
 
     patch_scaffold_to_workspace(&project_dir);
-    run_cargo_in_project(temp_dir.path(), &project_dir, &["check", "--all-targets"]);
+    run_cargo_in_project(&project_dir, &["check", "--all-targets"]);
 }
 
 fn read_single_migration(project_dir: &Path, suffix: &str) -> String {
@@ -3145,13 +3146,13 @@ fn patch_scaffold_to_workspace(project_dir: &Path) {
     fs::write(cargo_path, contents).expect("write Cargo.toml patch section");
 }
 
-fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("cargo")
+fn run_cargo_in_project(project_dir: &Path, args: &[&str]) -> String {
+    let mut command = Command::new("cargo");
+    command
         .args(args)
         .current_dir(project_dir)
-        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
-        .output()
-        .expect("run cargo");
+        .env("CARGO_TARGET_DIR", scaffold_target_dir(false));
+    let output = output_serialized(&mut command, "run cargo");
 
     if !output.status.success() {
         panic!(
@@ -3165,9 +3166,37 @@ fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) -> 
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// Serialises nested cargo builds within this test binary so parallel test
+/// threads don't each spawn a full-core build at once.
+static CARGO_LOCK: Mutex<()> = Mutex::new(());
+
+/// Shared target dir for scaffold builds. Scaffolds are patched to the
+/// workspace sources, so dependency artifacts are reused across tests and runs.
+/// `-Dwarnings` builds get a sibling dir so the RUSTFLAGS change doesn't
+/// invalidate the shared artifacts.
+fn scaffold_target_dir(deny_warnings: bool) -> PathBuf {
+    let name = if deny_warnings {
+        "scaffold-tests-deny-warnings"
+    } else {
+        "scaffold-tests"
+    };
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("target")
+        .join(name)
+}
+
+fn output_serialized(command: &mut Command, context: &str) -> Output {
+    let _guard = CARGO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    command.output().expect(context)
+}
+
 /// Runs the generated policy unit tests against the real entity models.
-fn assert_generated_policy_tests_pass(temp_root: &Path, project_dir: &Path) {
-    let stdout = run_cargo_in_project(temp_root, project_dir, &["test", "--lib", "policies::"]);
+fn assert_generated_policy_tests_pass(project_dir: &Path) {
+    let stdout = run_cargo_in_project(project_dir, &["test", "--lib", "policies::"]);
     assert!(
         stdout.contains("policies::") && !stdout.contains(" 0 passed"),
         "expected generated policy tests to run:\n{stdout}"
