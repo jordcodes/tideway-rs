@@ -6,8 +6,14 @@
 const SOURCES: &[(&str, &str)] = &[
     ("src/lib.rs", include_str!("../src/lib.rs")),
     ("src/openapi/mod.rs", include_str!("../src/openapi/mod.rs")),
-    ("src/testing/database.rs", include_str!("../src/testing/database.rs")),
-    ("src/utils/ensure.rs", include_str!("../src/utils/ensure.rs")),
+    (
+        "src/testing/database.rs",
+        include_str!("../src/testing/database.rs"),
+    ),
+    (
+        "src/utils/ensure.rs",
+        include_str!("../src/utils/ensure.rs"),
+    ),
 ];
 
 /// Returns `(macro_name, has_doc_comment, is_hidden)` for each exported macro.
@@ -55,7 +61,9 @@ fn public_macros_are_documented_and_hidden_helpers_are_not() {
                 ));
             }
             if !hidden && !documented {
-                problems.push(format!("{path}: public macro `{name}!` has no doc comments"));
+                problems.push(format!(
+                    "{path}: public macro `{name}!` has no doc comments"
+                ));
             }
         }
     }
