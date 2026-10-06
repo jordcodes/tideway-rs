@@ -1303,6 +1303,134 @@ fn test_saas_app_with_api_keys_wired_compiles_against_workspace_source() {
     );
 }
 
+/// The SaaS preset always renders admin with billing on and MFA off. Re-render the admin
+/// module (and the user schema it reads) for the other combinations and run the generated
+/// admin tests for each.
+#[test]
+fn test_saas_admin_compiles_and_tests_with_and_without_billing_and_mfa() {
+    use tideway_cli::templates::{BackendTemplateContext, BackendTemplateEngine};
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run new command");
+    patch_scaffold_to_workspace(&project_dir);
+
+    let admin_files = [
+        ("admin/routes", "src/admin/routes.rs"),
+        ("admin/tests", "src/admin/tests.rs"),
+    ];
+    let mfa_files = [
+        ("entities/user", "src/entities/user.rs"),
+        ("auth/routes", "src/auth/routes.rs"),
+        ("auth/store", "src/auth/store.rs"),
+        (
+            "organizations/invitations",
+            "src/organizations/invitations.rs",
+        ),
+        (
+            "migrations/m001_create_users",
+            "migration/src/m001_create_users.rs",
+        ),
+    ];
+
+    for (has_billing_feature, has_auth_mfa_feature) in
+        [(true, false), (false, false), (true, true), (false, true)]
+    {
+        let engine = BackendTemplateEngine::new(BackendTemplateContext {
+            project_name: "my_app".to_string(),
+            project_crate: "my_app".to_string(),
+            project_name_pascal: "MyApp".to_string(),
+            has_organizations: true,
+            has_invitations: true,
+            database: "postgres".to_string(),
+            database_url: "postgres://postgres:postgres@localhost:5432/my_app".to_string(),
+            is_sqlite_database: false,
+            tideway_version: tideway_cli::TIDEWAY_VERSION.to_string(),
+            tideway_features: Vec::new(),
+            has_tideway_features: false,
+            has_auth_feature: true,
+            has_auth_mfa_feature,
+            has_database_feature: true,
+            has_billing_feature,
+            has_openapi_feature: false,
+            has_otel_feature: true,
+            has_sentry_feature: true,
+            needs_arc: false,
+            has_config: false,
+        })
+        .expect("create backend template engine");
+        for (template, path) in admin_files.iter().chain(&mfa_files) {
+            fs::write(
+                project_dir.join(path),
+                engine.render(template).expect("render template"),
+            )
+            .expect("write rendered template");
+        }
+        let routes =
+            fs::read_to_string(project_dir.join("src/admin/routes.rs")).expect("read routes");
+        assert!(!routes.contains("TODO"), "admin routes still contain TODOs");
+        assert_eq!(
+            routes.contains("billing_subscriptions"),
+            has_billing_feature
+        );
+        assert_eq!(
+            routes.contains("user.mfa_totp_secret_encrypted.is_some()"),
+            has_auth_mfa_feature
+        );
+
+        if has_auth_mfa_feature {
+            let cargo_path = project_dir.join("Cargo.toml");
+            let cargo = fs::read_to_string(&cargo_path).expect("read Cargo.toml");
+            if !cargo.contains("\"auth-mfa\"") {
+                fs::write(
+                    &cargo_path,
+                    cargo.replacen("\"auth\",", "\"auth\", \"auth-mfa\",", 1),
+                )
+                .expect("enable auth-mfa");
+            }
+        }
+
+        let output = cargo_output_in_project(
+            temp_dir.path(),
+            &project_dir,
+            &["test", "--all-targets", "admin::tests"],
+        );
+        let expected = if has_billing_feature {
+            "stats_count_active_subscriptions_and_mrr ... ok"
+        } else {
+            "stats_omit_billing_fields_without_billing ... ok"
+        };
+        assert!(
+            output.contains(expected),
+            "billing={has_billing_feature} mfa={has_auth_mfa_feature}: missing `{expected}` in:\n{output}"
+        );
+        assert!(
+            output.contains("impersonation_token_works_until_ended ... ok"),
+            "{output}"
+        );
+        if has_auth_mfa_feature {
+            assert!(
+                output.contains("mfa_requires_an_enrolled_secret ... ok"),
+                "{output}"
+            );
+        }
+    }
+}
+
 #[test]
 fn test_individual_auth_and_openapi_features_compile_without_warnings() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
@@ -1413,6 +1541,26 @@ fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
 
 fn run_cargo_in_project_with_denied_warnings(temp_root: &Path, project_dir: &Path, args: &[&str]) {
     run_cargo_in_project_inner(temp_root, project_dir, args, true);
+}
+
+/// Runs cargo with warnings denied and returns stdout.
+fn cargo_output_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("cargo")
+        .args(args)
+        .current_dir(project_dir)
+        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
+        .env("RUSTFLAGS", "-Dwarnings")
+        .output()
+        .expect("run cargo");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "cargo {} failed.\nstdout:\n{}\nstderr:\n{}",
+        args.join(" "),
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
 }
 
 fn run_cargo_in_project_inner(

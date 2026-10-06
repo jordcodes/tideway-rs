@@ -19,6 +19,10 @@ pub struct Model {
     pub locked_until: Option<DateTimeWithTimeZone>,
     pub failed_attempts: i32,
     pub failed_mfa_attempts: i32,
+    {{#if has_auth_mfa_feature}}
+    pub mfa_enabled: bool,
+    pub mfa_totp_secret_encrypted: Option<String>,
+    {{/if}}
     pub session_version: i64,
     pub is_platform_admin: bool,
     pub created_at: DateTimeWithTimeZone,
