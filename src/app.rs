@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::observability::ErrorReporter;
+
 #[cfg(feature = "metrics")]
 use crate::metrics::MetricsCollector;
 #[cfg(feature = "cache")]
@@ -53,6 +55,9 @@ pub struct AppContext {
     /// Note: Stored as `Arc<dyn Any>` due to AuthProvider's associated types.
     /// Applications should downcast to their concrete auth provider type when needed.
     pub(crate) auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
+
+    /// Error tracker hook for 5xx responses, panics and failed jobs
+    pub(crate) error_reporter: Option<Arc<dyn ErrorReporter>>,
 }
 
 /// Internal request-extension wrapper for typed auth-provider lookup.
@@ -80,6 +85,7 @@ impl AppContext {
             #[cfg(feature = "storage")]
             storage: None,
             auth_provider: None,
+            error_reporter: None,
         }
     }
 
@@ -108,6 +114,7 @@ impl AppContext {
             #[cfg(feature = "storage")]
             storage: self.storage.clone(),
             auth_provider: self.auth_provider.clone(),
+            error_reporter: self.error_reporter.clone(),
         }
     }
 
@@ -223,6 +230,11 @@ impl AppContext {
         self.storage.as_ref()
     }
 
+    /// Get the error reporter as an Option
+    pub fn error_reporter_opt(&self) -> Option<&Arc<dyn ErrorReporter>> {
+        self.error_reporter.as_ref()
+    }
+
     /// Get the auth provider, downcast to the concrete type
     ///
     /// # Example
@@ -301,6 +313,8 @@ pub struct AppContextBuilder {
     storage: Option<Arc<dyn FileStorage>>,
 
     auth_provider: Option<Arc<dyn std::any::Any + Send + Sync>>,
+
+    error_reporter: Option<Arc<dyn ErrorReporter>>,
 }
 
 impl AppContextBuilder {
@@ -323,6 +337,7 @@ impl AppContextBuilder {
             #[cfg(feature = "storage")]
             storage: None,
             auth_provider: None,
+            error_reporter: None,
         }
     }
 
@@ -458,6 +473,22 @@ impl AppContextBuilder {
         }
     }
 
+    /// Set the error reporter that receives 5xx responses, handler panics and
+    /// failed jobs.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let context = AppContext::builder()
+    ///     .with_error_reporter(Arc::new(|event: &tideway::ErrorEvent| {
+    ///         sentry::capture_message(&event.message, sentry::Level::Error);
+    ///     }))
+    ///     .build();
+    /// ```
+    pub fn with_error_reporter(mut self, reporter: Arc<dyn ErrorReporter>) -> Self {
+        self.error_reporter = Some(reporter);
+        self
+    }
+
     pub fn build(self) -> AppContext {
         AppContext {
             #[cfg(feature = "database")]
@@ -477,6 +508,7 @@ impl AppContextBuilder {
             #[cfg(feature = "storage")]
             storage: self.storage,
             auth_provider: self.auth_provider,
+            error_reporter: self.error_reporter,
         }
     }
 }

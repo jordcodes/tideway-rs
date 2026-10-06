@@ -123,6 +123,7 @@ pub mod metrics {
 #[deprecated(note = "Enable the `metrics` feature to use tideway::metrics")]
 pub mod metrics {}
 mod middleware;
+pub mod observability;
 #[cfg(feature = "openapi")]
 pub mod openapi;
 #[cfg(all(not(feature = "openapi"), feature = "feature-gate-errors"))]
@@ -223,6 +224,7 @@ pub use http::{
 };
 #[cfg(feature = "metrics")]
 pub use metrics::{MetricsCollector, MetricsConfig, MetricsConfigBuilder};
+pub use observability::{ErrorEvent, ErrorReporter, shutdown_tracing};
 pub use ratelimit::{ClientIpResolver, TrustedProxyParseError};
 pub use ratelimit::{RateLimitConfig, RateLimitConfigBuilder};
 pub use request_logging::{RequestLoggingConfig, RequestLoggingConfigBuilder};
@@ -484,13 +486,16 @@ pub use websocket::{
 #[cfg(feature = "macros")]
 pub use tideway_macros::api;
 
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Initialize tracing/logging with sensible defaults
 ///
 /// This should be called early in your application, typically in main()
 /// before creating the App. Safe to call multiple times - subsequent calls
 /// are ignored if tracing is already initialized.
+///
+/// With the `otel` feature, spans are also exported over OTLP when
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` is set (see [`observability`]).
 ///
 /// # Environment Variables
 ///
@@ -509,53 +514,45 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 /// }
 /// ```
 pub fn init_tracing() {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let directives = std::env::var(EnvFilter::DEFAULT_ENV)
+        .ok()
+        .filter(|directives| EnvFilter::try_new(directives).is_ok())
+        .unwrap_or_else(|| "info".to_string());
 
     let json_logs = std::env::var("TIDEWAY_LOG_JSON")
         .map(|v| v.parse::<bool>().unwrap_or(false))
         .unwrap_or(false);
 
-    let result = if json_logs {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer().json())
-            .try_init()
-    } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer())
-            .try_init()
-    };
-
-    // Silently ignore if already initialized (e.g., in tests or called twice)
-    if let Err(e) = result {
-        // Only log if it's not the "already initialized" error
-        if !e.to_string().contains("already") {
-            eprintln!("Warning: Failed to initialize tracing: {}", e);
-        }
-    }
+    install_subscriber(&directives, json_logs);
 }
 
 /// Initialize tracing with a custom configuration
 ///
 /// Safe to call multiple times - subsequent calls are ignored if tracing
-/// is already initialized.
+/// is already initialized. With the `otel` feature, spans are also exported
+/// over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
 pub fn init_tracing_with_config(config: &Config) {
-    let env_filter = EnvFilter::new(&config.logging.level);
+    install_subscriber(&config.logging.level, config.logging.json);
+}
 
-    let result = if config.logging.json {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer().json())
-            .try_init()
+fn install_subscriber(directives: &str, json: bool) {
+    type Registry = tracing_subscriber::Registry;
+
+    // Filters are per layer so the OpenTelemetry exporter can enable request
+    // spans without changing what is printed.
+    let fmt_layer: Box<dyn Layer<Registry> + Send + Sync> = if json {
+        tracing_subscriber::fmt::layer().json().boxed()
     } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(tracing_subscriber::fmt::layer())
-            .try_init()
+        tracing_subscriber::fmt::layer().boxed()
     };
+    let subscriber =
+        tracing_subscriber::registry().with(fmt_layer.with_filter(EnvFilter::new(directives)));
+    #[cfg(feature = "otel")]
+    let subscriber = subscriber.with(observability::otel::build_layer(directives));
 
-    // Silently ignore if already initialized
+    let result = subscriber.try_init();
+
+    // Silently ignore if already initialized (e.g., in tests or called twice)
     if let Err(e) = result
         && !e.to_string().contains("already")
     {

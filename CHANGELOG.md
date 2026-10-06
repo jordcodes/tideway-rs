@@ -268,6 +268,22 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
+- Observability: the `otel` feature exports traces over OTLP/HTTP when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set, with no code changes for apps that call
+  `init_tracing*` and `App::serve`. Requests become server spans named after their route.
+  They continue incoming W3C `traceparent` headers, and 5xx errors are recorded as span
+  exceptions. `observability::inject_trace_context` propagates the trace to outgoing calls,
+  and `shutdown_tracing` flushes spans for apps that serve manually. Separately, an
+  `ErrorReporter` registered with `AppContextBuilder::with_error_reporter` receives every 5xx
+  response (with the full internal message and client `error_id`), handler panics, and failed
+  jobs, for forwarding to an error tracker. Request spans now use the `tideway::request`
+  tracing target. See `docs/observability.md`.
+- Sentry: the `sentry` feature adds `observability::SentryReporter`, and `App` registers it
+  automatically when `SENTRY_DSN` is set and the context has no reporter. Errors become Sentry
+  issues with the route as transaction, the client `error_id` and request ID as tags, and the
+  OpenTelemetry trace ID as trace context. `App::serve` flushes them on shutdown. The new
+  `ErrorReporter::flush` method has a default implementation, so existing reporters still
+  compile.
 - File storage: the `storage` feature adds a `FileStorage` trait over `object_store` with a
   `LocalStorage` backend (HMAC-signed presigned URLs served by `LocalStorage::router()`) and an
   in-memory backend for tests; `storage-s3` adds `ObjectStorage::s3` and `ObjectStorage::r2`
@@ -425,6 +441,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 ## [tideway-cli 0.9.0] - Unreleased
 
 ### Changed
+
+- The `api`, `saas`, and `worker` presets and backend presets enable Tideway's `otel` and
+  `sentry` features. Their `.env.example` documents `OTEL_*`, `SENTRY_DSN`, and
+  `SENTRY_ENVIRONMENT`, so generated apps can export traces to an OTLP backend and errors to
+  Sentry by setting those variables. Both features are also accepted by `--features` and
+  offered in the custom feature picker.
 
 - The CLI now shares the framework's major.minor version: tideway-cli 0.9.0 follows 0.1.48 and
   is released alongside Tideway 0.9.0. CLI 0.9.x targets Tideway 0.9.x; patch releases stay

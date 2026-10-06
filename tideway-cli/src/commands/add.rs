@@ -439,6 +439,8 @@ fn scaffold_credits(
         has_database_feature: true,
         has_billing_feature: false,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: false,
         has_config: false,
     };
@@ -718,6 +720,8 @@ fn scaffold_billing_schema_repair(
         has_database_feature: true,
         has_billing_feature: true,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: false,
         has_config: false,
     };
@@ -890,6 +894,8 @@ fn scaffold_auth(
         has_database_feature: false,
         has_billing_feature: false,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: true,
         has_config: false,
     };
@@ -1157,6 +1163,8 @@ fn scaffold_organizations(
         has_database_feature: true,
         has_billing_feature: false,
         has_openapi_feature: false,
+        has_otel_feature: false,
+        has_sentry_feature: false,
         needs_arc: true,
         has_config: false,
     };

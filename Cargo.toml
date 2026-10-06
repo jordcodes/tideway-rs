@@ -71,6 +71,15 @@ utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"], optional
 # Metrics (optional)
 prometheus = { version = "0.14", optional = true }
 
+# OpenTelemetry OTLP trace export (optional)
+opentelemetry = { version = "0.31", default-features = false, features = ["trace"], optional = true }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client", "reqwest-rustls"], optional = true }
+tracing-opentelemetry = { version = "0.32", default-features = false, optional = true }
+
+# Sentry error reporting (optional)
+sentry = { version = "0.49", default-features = false, features = ["ureq", "rustls", "contexts"], optional = true }
+
 # Cache (optional)
 moka = { version = "0.12", features = ["future"], optional = true }
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"], optional = true }
@@ -134,12 +143,16 @@ openapi = ["utoipa", "utoipa-axum", "utoipa-swagger-ui"]
 validation = ["validator"]
 # Prometheus metrics collection
 metrics = ["prometheus"]
+# OpenTelemetry trace export over OTLP/HTTP (enabled at runtime by OTEL_EXPORTER_OTLP_ENDPOINT)
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 # Base cache abstraction (enables moka-backed in-memory cache)
 cache = ["moka"]
 # Redis-backed caching
 cache-redis = ["redis", "cache"]
 # Session management
 sessions = ["cookie", "hex"]
+# Sentry error reporting (enabled at runtime by SENTRY_DSN)
+sentry = ["dep:sentry"]
 # Background job processing
 jobs = ["chrono", "cron"]
 # Redis-backed job queue
@@ -200,6 +213,14 @@ harness = false
 name = "hot_paths"
 harness = false
 required-features = ["auth", "jobs", "websocket"]
+
+[[test]]
+name = "otel_export_test"
+required-features = ["otel"]
+
+[[test]]
+name = "sentry_reporter_test"
+required-features = ["sentry"]
 
 [[example]]
 name = "email_example"
