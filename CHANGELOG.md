@@ -31,6 +31,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
+- Added resource-level authorization policies in `tideway::policy`: a deny-by-default
+  `Policy<Actor, Resource>` trait (`view_any`, `view`, `create`, `update`, `delete`, and a
+  `before` hook), `RolePermissions` for attaching permission strings (with `*` and `resource.*`
+  wildcards) to roles, and an `OrgActor` subject for organization-scoped records. On SaaS
+  scaffolds, `tideway resource` with the `api`, `tenant`, or `owned` profile now generates
+  `src/policies/<name>.rs` and authorizes every handler through it. By default, members can no
+  longer delete `api`/`tenant` records; edit the generated grants to change this. Existing
+  generated resources are unchanged. See `docs/organizations.md#resource-authorization-policies`.
 - `ConfigBuilder::from_env()` now applies environment variables on top of existing builder
   values instead of replacing configured settings with defaults. Values set on the builder
   survive when the corresponding environment variables are absent; present environment

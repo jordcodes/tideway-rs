@@ -1616,7 +1616,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "let organization_id = actor.organization_id()?;",
+        "fn policy_actor(actor: &RequestActor) -> Result<OrgActor> {",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1644,15 +1644,15 @@ uuid = { version = "1", features = ["v4", "serde"] }
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        ".create_owned(organization_id, &owner_id, name, status)",
+        "self.create_owned(&actor.organization_id, &actor.user_id, name, status)",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        ".update_owned(id, organization_id, &owner_id, name, status)",
+        "self.update_owned(id, &actor.organization_id, &actor.user_id, name, status)",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
-        "let model = self.get_required_for_actor(actor, id).await?;",
+        ".delete_authorized(&Self::policy_actor(actor)?, id)",
     );
     assert_file_contains(
         &project_dir.join("src/services/subscription.rs"),
@@ -1749,7 +1749,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
     assert_file_not_contains(&repo, "OwnerId");
     let service = project_dir.join("src/services/project.rs");
     assert_file_contains(&service, "model.organization_id == organization_id");
-    assert_file_contains(&service, ".create_owned(organization_id, name)");
+    assert_file_contains(&service, "self.create_owned(&actor.organization_id, name)");
     assert_file_not_contains(&service, "owner_id: &str");
 }
 
@@ -1789,21 +1789,231 @@ uuid = { version = "1", features = ["v4", "serde"] }
     let route = project_dir.join("src/routes/workspace.rs");
     assert_file_contains(
         &route,
-        "async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor>",
+        "async fn resolve_org_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OrgActor>",
     );
     assert_file_contains(
         &route,
-        "let actor = resolve_owned_actor(&headers, &db).await?;",
+        "let actor = resolve_org_actor(&headers, &db).await?;",
     );
     assert_file_contains(
         &route,
-        ".create_owned(&actor.organization_id, body.name, body.slug, body.status)",
+        ".create_authorized(&actor, body.name, body.slug, body.status)",
     );
+    assert_file_not_contains(&route, "_owned(");
     assert_file_not_contains(&route, "owner_id");
     assert_file_contains(
         &project_dir.join("src/entities/workspace.rs"),
         "pub organization_id: String,",
     );
+}
+
+#[test]
+fn test_resource_scoped_profiles_authorize_every_handler_through_a_policy() {
+    for (profile, name, plural, shared_actor) in [
+        (
+            tideway_cli::cli::ResourceProfile::Tenant,
+            "workspace",
+            "workspaces",
+            true,
+        ),
+        (
+            tideway_cli::cli::ResourceProfile::Tenant,
+            "workspace",
+            "workspaces",
+            false,
+        ),
+        (
+            tideway_cli::cli::ResourceProfile::Owned,
+            "note",
+            "notes",
+            true,
+        ),
+        (
+            tideway_cli::cli::ResourceProfile::Owned,
+            "note",
+            "notes",
+            false,
+        ),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path().join("my_app");
+        create_resource_project_fixture(
+            &project_dir,
+            r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+        );
+        create_saas_resource_markers(&project_dir, true, true, shared_actor);
+
+        let args = ResourceArgs {
+            name: name.to_string(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: false,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+        };
+        tideway_cli::commands::resource::run(args).expect("run resource command");
+
+        let context = format!("{profile:?} (shared actor: {shared_actor})");
+        let pascal = if name == "note" { "Note" } else { "Workspace" };
+
+        // A policy with role permission grants is generated and wired.
+        let policy = project_dir.join(format!("src/policies/{name}.rs"));
+        assert_file_contains(
+            &policy,
+            "use tideway::policy::{OrgActor, Policy, RolePermissions};",
+        );
+        assert_file_contains(
+            &policy,
+            &format!("impl Policy<OrgActor, {name}::Model> for {pascal}Policy {{"),
+        );
+        assert_file_contains(&policy, &format!(".grant(\"admin\", [\"{plural}.*\"])"));
+        for action in ["view", "create", "update", "delete"] {
+            assert_file_contains(
+                &policy,
+                &format!("actor.can(&self.permissions, \"{plural}.{action}\")"),
+            );
+        }
+        assert_file_contains(
+            &project_dir.join("src/policies/mod.rs"),
+            &format!("pub mod {name};"),
+        );
+        assert_file_contains(&project_dir.join("src/main.rs"), "mod policies;");
+
+        // Member delete rights and record checks follow the profile.
+        if name == "note" {
+            assert_file_contains(
+                &policy,
+                "actor.belongs_to(&model.organization_id)\n            && actor.is(&model.owner_id)",
+            );
+            assert_file_contains(
+                &policy,
+                ".grant(\"member\", [\"notes.view\", \"notes.create\", \"notes.update\", \"notes.delete\"])",
+            );
+        } else {
+            assert_file_not_contains(&policy, "owner_id");
+            assert_file_contains(
+                &policy,
+                ".grant(\"member\", [\"workspaces.view\", \"workspaces.create\", \"workspaces.update\"])",
+            );
+        }
+
+        // The service holds the policy and checks it before every operation.
+        let service = project_dir.join(format!("src/services/{name}.rs"));
+        assert_file_contains(&service, &format!("    policy: {pascal}Policy,\n"));
+        assert_file_contains(
+            &service,
+            &format!("pub fn with_policy(mut self, policy: {pascal}Policy) -> Self {{"),
+        );
+        for (method, check) in [
+            ("list_authorized", "Action::ViewAny, None"),
+            ("get_required_authorized", "Action::View, Some(&model)"),
+            ("create_authorized", "Action::Create, None"),
+            ("update_authorized", "Action::Update, Some(&model)"),
+            ("delete_authorized", "Action::Delete, Some(&model)"),
+        ] {
+            let contents = fs::read_to_string(&service).expect("read service");
+            let start = contents
+                .find(&format!("pub async fn {method}("))
+                .unwrap_or_else(|| panic!("{context}: {method} missing"));
+            let body = &contents[start..];
+            let body = &body[..body.find("\n    }\n").expect("method end")];
+            assert!(
+                body.contains(&format!("self.policy.authorize(actor, {check})?;")),
+                "{context}: {method} must authorize through the policy:\n{body}"
+            );
+        }
+
+        // Every route handler goes through an authorized service method.
+        let route = project_dir.join(format!("src/routes/{name}.rs"));
+        let contents = fs::read_to_string(&route).expect("read route");
+        let suffix = if shared_actor {
+            "_for_actor("
+        } else {
+            "_authorized("
+        };
+        for handler in [
+            format!("async fn list_{plural}("),
+            format!("async fn get_{name}("),
+            format!("async fn create_{name}("),
+            format!("async fn update_{name}("),
+            format!("async fn delete_{name}("),
+        ] {
+            let body = &contents[contents.find(&handler).expect("handler exists")..];
+            let body = &body[..body.find("\n}\n").expect("handler end")];
+            assert!(
+                body.contains(suffix) && !body.contains("_owned("),
+                "{context}: {handler} must call an authorized service method:\n{body}"
+            );
+        }
+        if shared_actor {
+            for method in [
+                "list_for_actor",
+                "get_required_for_actor",
+                "create_for_actor",
+                "update_for_actor",
+                "delete_for_actor",
+            ] {
+                let contents = fs::read_to_string(&service).expect("read service");
+                let body = &contents[contents
+                    .find(&format!("pub async fn {method}("))
+                    .unwrap_or_else(|| panic!("{context}: {method} missing"))..];
+                let body = &body[..body.find("\n    }\n").expect("method end")];
+                assert!(
+                    body.contains("_authorized(&Self::policy_actor(actor)?"),
+                    "{context}: {method} must delegate to the authorized method:\n{body}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_resource_unscoped_profiles_do_not_generate_policies() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+
+    let args = ResourceArgs {
+        name: "workspace".to_string(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Tenant,
+    };
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    assert!(!project_dir.join("src/policies").exists());
+    assert_file_not_contains(&project_dir.join("src/main.rs"), "mod policies;");
+    let service = project_dir.join("src/services/workspace.rs");
+    assert_file_not_contains(&service, "policy");
+    assert_file_contains(&service, "Self { repo }");
 }
 
 #[test]
@@ -1948,7 +2158,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
     assert_file_contains(
         &project_dir.join("src/routes/subscription.rs"),
-        "async fn resolve_owned_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OwnedActor>",
+        "async fn resolve_org_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OrgActor>",
     );
     assert_file_contains(
         &project_dir.join("src/routes/subscription.rs"),
@@ -2100,6 +2310,7 @@ fn test_resource_profile_owned_compiles_against_saas_preset_workspace_scaffold()
 
     patch_scaffold_to_workspace(&project_dir);
     run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    assert_generated_policy_tests_pass(temp_dir.path(), &project_dir);
 }
 
 #[test]
@@ -2152,6 +2363,7 @@ fn test_resource_api_and_tenant_profiles_compile_against_saas_preset_workspace_s
 
     patch_scaffold_to_workspace(&project_dir);
     run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    assert_generated_policy_tests_pass(temp_dir.path(), &project_dir);
 }
 
 #[test]
@@ -2535,7 +2747,7 @@ fn patch_scaffold_to_workspace(project_dir: &Path) {
     fs::write(cargo_path, contents).expect("write Cargo.toml patch section");
 }
 
-fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
+fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) -> String {
     let output = Command::new("cargo")
         .args(args)
         .current_dir(project_dir)
@@ -2551,6 +2763,17 @@ fn run_cargo_in_project(temp_root: &Path, project_dir: &Path, args: &[&str]) {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Runs the generated policy unit tests against the real entity models.
+fn assert_generated_policy_tests_pass(temp_root: &Path, project_dir: &Path) {
+    let stdout = run_cargo_in_project(temp_root, project_dir, &["test", "--lib", "policies::"]);
+    assert!(
+        stdout.contains("policies::") && !stdout.contains(" 0 passed"),
+        "expected generated policy tests to run:\n{stdout}"
+    );
 }
 
 fn escape_toml_path(path: &Path) -> String {
