@@ -55,6 +55,7 @@ const SUPPORTED_TIDEWAY_FEATURES: &[&str] = &[
     "auth",
     "auth-breach",
     "auth-mfa",
+    "auth-oauth",
     "billing",
     "billing-seaorm",
     "credits",

@@ -521,6 +521,62 @@ where
         Ok(LoginResponse::error("Invalid MFA code"))
     }
 
+    /// Complete a login for a user already authenticated by an external identity provider
+    /// (for example after [`crate::auth::oauth::OAuthFlow::callback`]).
+    ///
+    /// Skips the password and email-verification checks, but still enforces account lockout
+    /// and MFA: users with MFA enabled receive an `mfa_required` challenge to finish with
+    /// [`Self::verify_mfa`]. On success, tokens are issued and the token family is recorded
+    /// exactly like a password login.
+    pub async fn complete_external_login(
+        &self,
+        user: &U::User,
+        remember_me: bool,
+    ) -> Result<LoginResponse> {
+        let user_id = self.user_store.user_id(user);
+
+        if let Some(until) = self.user_store.is_locked(user).await?
+            && until > SystemTime::now()
+        {
+            tracing::warn!(
+                target: "auth.login.locked",
+                user_id = %user_id,
+                locked_until = ?until,
+                method = "external",
+                "Login blocked: account locked"
+            );
+            return Ok(LoginResponse::error(
+                "Account temporarily locked. Try again later.",
+            ));
+        }
+
+        if self.user_store.has_mfa_enabled(user).await? {
+            #[cfg(feature = "auth-mfa")]
+            {
+                let backup_remaining = self.user_store.get_backup_codes(user).await?.len();
+                let mfa_token = self.generate_mfa_token(user).await?;
+                tracing::info!(
+                    target: "auth.login.mfa_required",
+                    user_id = %user_id,
+                    method = "external",
+                    backup_codes_remaining = backup_remaining,
+                    "MFA challenge issued"
+                );
+                return Ok(LoginResponse::mfa_required(
+                    mfa_token,
+                    Some(backup_remaining),
+                ));
+            }
+
+            #[cfg(not(feature = "auth-mfa"))]
+            {
+                return Ok(LoginResponse::error("MFA enabled but not supported"));
+            }
+        }
+
+        self.complete_login(user, remember_me).await
+    }
+
     async fn complete_login(&self, user: &U::User, remember_me: bool) -> Result<LoginResponse> {
         // Clear failed attempts
         self.user_store.clear_failed_attempts(user).await?;

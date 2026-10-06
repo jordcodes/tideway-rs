@@ -381,6 +381,22 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
         self
     }
 
+    /// Accept any of several issuer values (some providers use more than one spelling).
+    ///
+    /// An empty list leaves issuer validation unconfigured.
+    pub fn with_issuers<I, S>(mut self, issuers: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let issuers: Vec<String> = issuers.into_iter().map(Into::into).collect();
+        if !issuers.is_empty() {
+            self.validation.set_issuer(&issuers);
+            self.issuer_configured = true;
+        }
+        self
+    }
+
     /// Set the expected audience claim
     ///
     /// **Strongly recommended for production use.** Without audience validation,
