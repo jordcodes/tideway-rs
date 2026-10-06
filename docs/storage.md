@@ -119,7 +119,7 @@ Presigned URLs default to 15 minutes and are capped at 7 days.
 
 Use `ObjectStorage::in_memory()` for handlers that only read and write files. Use a `LocalStorage`
 in a temporary directory to exercise the full presigned upload flow in-process, as
-`tests/storage_test.rs` does.
+`tests/it/storage_test.rs` does.
 
 ## Custom backends
 

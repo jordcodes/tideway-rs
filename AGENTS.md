@@ -17,7 +17,7 @@ Follow these conventions to work efficiently and safely.
 - CLI: `tideway-cli/src/`
 - CLI templates: `tideway-cli/templates/`
 - Docs: `docs/`
-- Tests: `tests/`, `tideway-cli/tests/`
+- Tests: `tests/it/` (framework), `tideway-cli/tests/`
 
 ## CLI Conventions
 - `--json` emits machine-readable output (useful for agents).
@@ -49,3 +49,8 @@ Follow these conventions to work efficiently and safely.
 - Feature-gated code (auth, billing, Redis, jobs, email, metrics, ...) is not covered by
   `cargo test`. Also run `cargo test -p tideway --all-features`; CI runs both via
   `scripts/verify.sh`.
+- Framework integration tests are one binary, `it`: each `tests/it/<name>.rs` is a module declared
+  in `tests/it/main.rs`. Add new files there (not as top-level `tests/*.rs`), gating feature-only
+  modules with `#[cfg(feature = "...")]`. Run one module with `cargo test --test it <name>::`.
+- Tests share one process. Any test that sets env vars or installs global state (tracing
+  subscriber, Sentry hub, OTel provider) must run via `support::isolated` in `tests/it/support.rs`.

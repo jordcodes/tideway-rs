@@ -1,5 +1,5 @@
-//! End-to-end OTLP export: one test per binary because it installs the global
-//! subscriber and tracer provider from the environment, like a real app.
+//! End-to-end OTLP export: runs in its own child process because it installs the
+//! global subscriber and tracer provider from the environment, like a real app.
 
 use axum::{Router, body::Bytes, extract::State, routing::get, routing::post};
 use std::sync::{Arc, Mutex};
@@ -25,6 +25,13 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn requests_are_exported_as_otlp_server_spans_with_errors() {
+    if crate::support::isolated(
+        module_path!(),
+        "requests_are_exported_as_otlp_server_spans_with_errors",
+        |_| {},
+    ) {
+        return;
+    }
     // Mock OTLP/HTTP collector.
     let received: Arc<Mutex<Vec<u8>>> = Arc::default();
     let collector = Router::new()
@@ -41,7 +48,8 @@ async fn requests_are_exported_as_otlp_server_spans_with_errors() {
     let collector_addr = collector_listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(collector_listener, collector).await });
 
-    // SAFETY: set before any other thread in this test binary reads the environment.
+    // SAFETY: this child process runs only this test, and nothing else reads the
+    // environment concurrently.
     unsafe {
         std::env::set_var(
             "OTEL_EXPORTER_OTLP_ENDPOINT",

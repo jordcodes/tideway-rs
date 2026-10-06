@@ -216,17 +216,11 @@ name = "hot_paths"
 harness = false
 required-features = ["auth", "jobs", "websocket"]
 
+# All integration tests live in one binary, so tideway is linked once per feature set rather than
+# once per file. Add test files as modules of tests/it/main.rs and gate them with #[cfg(feature)].
 [[test]]
-name = "oauth_test"
-required-features = ["auth-oauth"]
-
-[[test]]
-name = "otel_export_test"
-required-features = ["otel"]
-
-[[test]]
-name = "sentry_reporter_test"
-required-features = ["sentry"]
+name = "it"
+path = "tests/it/main.rs"
 
 [[example]]
 name = "email_example"

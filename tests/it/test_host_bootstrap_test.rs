@@ -50,6 +50,14 @@ async fn test_host_bootstrap_supports_config_builder_before_app_build() -> Resul
 
 #[tokio::test]
 async fn test_host_bootstrap_supports_env_backed_config_without_leaking_env() -> Result<()> {
+    // Setting TIDEWAY_MAX_BODY_SIZE would leak into env-backed config in other tests.
+    if crate::support::isolated(
+        module_path!(),
+        "test_host_bootstrap_supports_env_backed_config_without_leaking_env",
+        |_| {},
+    ) {
+        return Ok(());
+    }
     unsafe {
         std::env::set_var("TIDEWAY_MAX_BODY_SIZE", "128");
     }

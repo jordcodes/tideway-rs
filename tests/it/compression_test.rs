@@ -160,29 +160,17 @@ async fn compression_response_uses_configured_quality() {
 // Run environment-dependent cases in child processes without mutating the
 // process environment shared by the test runner's other threads.
 fn isolated(test: &str, overrides: &[(&str, &str)]) -> bool {
-    if std::env::var("COMPRESSION_TEST_CHILD").as_deref() == Ok(test) {
-        return false;
-    }
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", test, "--nocapture"])
-        .env("COMPRESSION_TEST_CHILD", test);
-    for key in [
-        "COMPRESSION_ENABLED",
-        "COMPRESSION_ALGORITHM",
-        "COMPRESSION_LEVEL",
-        "COMPRESSION_BROTLI_QUALITY",
-    ] {
-        command.env_remove(key).env_remove(format!("TIDEWAY_{key}"));
-    }
-    let output = command.envs(overrides.iter().copied()).output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    true
+    crate::support::isolated(module_path!(), test, |command| {
+        for key in [
+            "COMPRESSION_ENABLED",
+            "COMPRESSION_ALGORITHM",
+            "COMPRESSION_LEVEL",
+            "COMPRESSION_BROTLI_QUALITY",
+        ] {
+            command.env_remove(key).env_remove(format!("TIDEWAY_{key}"));
+        }
+        command.envs(overrides.iter().copied());
+    })
 }
 
 #[test]

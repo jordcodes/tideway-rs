@@ -48,6 +48,13 @@ fn app() -> App {
 
 #[tokio::test]
 async fn generated_ids_reach_responses_and_logs() {
+    if crate::support::isolated(
+        module_path!(),
+        "generated_ids_reach_responses_and_logs",
+        |_| {},
+    ) {
+        return;
+    }
     let output = LogBuffer::default();
     let writer = output.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -56,8 +63,8 @@ async fn generated_ids_reach_responses_and_logs() {
         .with_max_level(tracing::Level::INFO)
         .with_writer(move || writer.clone())
         .finish();
-    // This integration-test binary owns its subscriber so parallel unit tests
-    // cannot interfere with tracing callsite interest.
+    // This test runs in its own child process and owns its subscriber, so
+    // parallel tests cannot interfere with tracing callsite interest.
     tracing::subscriber::set_global_default(subscriber).unwrap();
     {
         // Each router has a fresh rate limiter. Exercise ordinary, fallback,

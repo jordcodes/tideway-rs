@@ -1,5 +1,5 @@
 //! Repeatable in-process concurrent request benchmark (no socket/network overhead).
-//! cargo test --release --features billing,test-billing --test request_overhead -- --ignored --nocapture
+//! cargo test --release --features billing,test-billing --test it request_overhead:: -- --ignored --nocapture
 #![cfg(all(feature = "billing", feature = "test-billing"))]
 
 use axum::{Router, body::Body, http::Request, routing::get};
