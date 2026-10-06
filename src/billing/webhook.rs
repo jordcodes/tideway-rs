@@ -9,7 +9,9 @@ use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
 use super::error::BillingError;
-use super::events::{BillingEvent, BillingEventContext, BillingEventSink, NoOpBillingEventSink};
+use super::events::{
+    BillingEvent, BillingEventContext, BillingEventSink, InvoiceSummary, NoOpBillingEventSink,
+};
 use super::plans::Plans;
 use super::storage::BillingStore;
 use super::subscription::{
@@ -207,6 +209,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 self.handle_subscription_updated(&event).await
             }
             "customer.subscription.deleted" => self.handle_subscription_deleted(&event).await,
+            "customer.subscription.trial_will_end" => self.handle_trial_will_end(&event).await,
             "invoice.paid" => self.handle_invoice_paid(&event).await,
             "invoice.payment_failed" => self.handle_payment_failed(&event).await,
             "charge.refunded" => self.handle_charge_refunded(&event).await,
@@ -407,6 +410,20 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
         Ok(WebhookOutcome::Processed)
     }
 
+    /// Handle customer.subscription.trial_will_end event.
+    ///
+    /// Notification only: the trial's state changes arrive as `customer.subscription.updated`.
+    async fn handle_trial_will_end(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
+        let subscription = self.parse_subscription_data(&event.data.object)?;
+        self.event_sink
+            .handle(&BillingEvent::TrialWillEnd {
+                context: event_context(event),
+                subscription,
+            })
+            .await?;
+        Ok(WebhookOutcome::Processed)
+    }
+
     /// Handle invoice.paid event.
     async fn handle_invoice_paid(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
         // Invoice paid - subscription period updated
@@ -419,6 +436,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 invoice_id: value_id(event.data.object.get("id")),
                 subscription_id: value_id(event.data.object.get("subscription")),
                 customer_id: value_id(event.data.object.get("customer")),
+                invoice: invoice_summary(&event.data.object),
             })
             .await?;
 
@@ -436,6 +454,7 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 invoice_id: value_id(event.data.object.get("id")),
                 subscription_id: value_id(event.data.object.get("subscription")),
                 customer_id: value_id(event.data.object.get("customer")),
+                invoice: invoice_summary(&event.data.object),
             })
             .await?;
 
@@ -604,6 +623,29 @@ fn event_context(event: &WebhookEvent) -> BillingEventContext {
     }
 }
 
+fn invoice_summary(invoice: &serde_json::Value) -> InvoiceSummary {
+    let string = |key: &str| {
+        invoice
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(String::from)
+    };
+    InvoiceSummary {
+        number: string("number"),
+        customer_email: string("customer_email"),
+        amount_due: invoice
+            .get("amount_due")
+            .and_then(serde_json::Value::as_u64),
+        amount_paid: invoice
+            .get("amount_paid")
+            .and_then(serde_json::Value::as_u64),
+        currency: string("currency"),
+        hosted_invoice_url: string("hosted_invoice_url"),
+        billing_reason: string("billing_reason"),
+    }
+}
+
 fn value_id(value: Option<&serde_json::Value>) -> Option<String> {
     value.and_then(|value| {
         value
@@ -678,6 +720,7 @@ fn is_supported_event_type(event_type: &str) -> bool {
             | "customer.subscription.created"
             | "customer.subscription.updated"
             | "customer.subscription.deleted"
+            | "customer.subscription.trial_will_end"
             | "invoice.paid"
             | "invoice.payment_failed"
             | "charge.refunded"
@@ -1115,6 +1158,153 @@ mod tests {
                 && subscription_id == "sub_123"
                 && customer_id == "cus_123"
         ));
+    }
+
+    #[tokio::test]
+    async fn invoice_events_carry_customer_facing_details() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let event = WebhookEvent {
+            id: "evt_invoice_failed".to_string(),
+            event_type: "invoice.payment_failed".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "in_123",
+                    "customer": "cus_123",
+                    "number": "ACME-0001",
+                    "customer_email": "payer@example.com",
+                    "amount_due": 4900,
+                    "amount_paid": 0,
+                    "currency": "usd",
+                    "hosted_invoice_url": "https://invoice.stripe.com/i/abc",
+                    "billing_reason": "subscription_cycle"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert_eq!(
+            handler.handle_event(event).await.unwrap(),
+            WebhookOutcome::Processed
+        );
+        let events = sink.events.lock().unwrap();
+        let BillingEvent::InvoicePaymentFailed { invoice, .. } = &events[0] else {
+            panic!("expected payment failed event, got {:?}", events[0]);
+        };
+        assert_eq!(invoice.number.as_deref(), Some("ACME-0001"));
+        assert_eq!(invoice.customer_email.as_deref(), Some("payer@example.com"));
+        assert_eq!(invoice.amount_due, Some(4900));
+        assert_eq!(invoice.amount_paid, Some(0));
+        assert_eq!(invoice.currency.as_deref(), Some("usd"));
+        assert_eq!(
+            invoice.hosted_invoice_url.as_deref(),
+            Some("https://invoice.stripe.com/i/abc")
+        );
+        assert_eq!(
+            invoice.billing_reason.as_deref(),
+            Some("subscription_cycle")
+        );
+    }
+
+    #[tokio::test]
+    async fn trial_will_end_is_delivered_with_subscription_state() {
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store, "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone());
+        let event = WebhookEvent {
+            id: "evt_trial".to_string(),
+            event_type: "customer.subscription.trial_will_end".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "sub_123",
+                    "customer": "cus_123",
+                    "status": "trialing",
+                    "trial_end": 1_700_259_200u64,
+                    "items": {"data": [{"id": "si_1", "price": {"id": "price_starter"}, "quantity": 1}]},
+                    "metadata": {"billable_id": "org_1"}
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        assert_eq!(
+            handler.handle_event(event).await.unwrap(),
+            WebhookOutcome::Processed
+        );
+        let events = sink.events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind(), "trial_will_end");
+        let BillingEvent::TrialWillEnd { subscription, .. } = &events[0] else {
+            panic!("expected trial will end event");
+        };
+        assert_eq!(subscription.plan_id, "starter");
+        assert_eq!(subscription.trial_end, Some(1_700_259_200));
+        assert_eq!(subscription.metadata.billable_id.as_deref(), Some("org_1"));
+    }
+
+    #[cfg(feature = "email")]
+    #[tokio::test]
+    async fn payment_failed_webhook_sends_lifecycle_email() {
+        use crate::billing::LifecycleEmailBillingSink;
+        use crate::email::{EmailBranding, LifecycleEmailer};
+        use crate::traits::mailer::{Email, Mailer};
+
+        #[derive(Default)]
+        struct RecordingMailer(std::sync::Mutex<Vec<Email>>);
+
+        #[async_trait::async_trait]
+        impl Mailer for RecordingMailer {
+            async fn send(&self, email: &Email) -> Result<()> {
+                self.0.lock().unwrap().push(email.clone());
+                Ok(())
+            }
+
+            fn is_healthy(&self) -> bool {
+                true
+            }
+        }
+
+        let mailer = Arc::new(RecordingMailer::default());
+        let emailer = LifecycleEmailer::direct(
+            mailer.clone(),
+            "billing@acme.test",
+            EmailBranding::new("Acme"),
+        );
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_test",
+            create_test_plans(),
+        )
+        .with_event_sink(LifecycleEmailBillingSink::new(
+            emailer,
+            "https://acme.test/billing",
+        ));
+        let event = WebhookEvent {
+            id: "evt_failed_email".to_string(),
+            event_type: "invoice.payment_failed".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "in_123",
+                    "customer": "cus_123",
+                    "customer_email": "payer@example.com",
+                    "amount_due": 4900,
+                    "currency": "usd"
+                }),
+            },
+            created: 1_700_000_000,
+        };
+
+        handler.handle_event(event.clone()).await.unwrap();
+        // Stripe redelivery is deduplicated, so the customer gets one email.
+        handler.handle_event(event).await.unwrap();
+
+        let sent = mailer.0.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, vec!["payer@example.com".to_string()]);
+        assert!(sent[0].text.as_deref().unwrap().contains("USD 49.00"));
     }
 
     #[tokio::test]

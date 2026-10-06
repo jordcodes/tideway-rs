@@ -1,0 +1,144 @@
+//! Application-owned lifecycle email setup.
+//!
+//! Tideway ships default templates for verification, password reset, invitation, trial-ending,
+//! payment-failed, and receipt emails. Customize copy or branding in [`AppEmailTemplates`]; the
+//! auth store only decides *when* to send.
+//!
+//! Emails are rendered on the request path and delivered by background job workers started in
+//! `main.rs`. The in-memory queue loses undelivered emails on restart; enable the `jobs-redis`
+//! feature and use `tideway::RedisJobQueue` when delivery must survive restarts.
+
+use std::sync::Arc;
+use std::time::Duration;
+use tideway::email::{EmailBranding, EmailTemplates, LifecycleEmail, LifecycleEmailer};
+use tideway::{ConsoleMailer, JobQueue, Mailer, ResendMailer, Result, SmtpMailer, TidewayError};
+
+/// Lifecycle email templates. Every method defaults to Tideway's built-in templates.
+///
+/// Override `content` to change copy for specific emails, `layout` to rebrand every email, or
+/// `render` to use your own template engine:
+///
+/// ```ignore
+/// fn content(&self, email: &LifecycleEmail, branding: &EmailBranding) -> Result<EmailContent> {
+///     let mut content = tideway::email::default_content(email, branding)?;
+///     if let LifecycleEmail::VerifyEmail { .. } = email {
+///         content.subject = format!("Welcome to {}! Confirm your email", branding.app_name);
+///     }
+///     Ok(content)
+/// }
+/// ```
+pub struct AppEmailTemplates;
+
+impl EmailTemplates for AppEmailTemplates {}
+
+/// Sends the auth lifecycle emails with links into the frontend at `APP_URL`.
+#[derive(Clone)]
+pub struct AppEmails {
+    emailer: LifecycleEmailer,
+    app_url: Arc<str>,
+}
+
+impl AppEmails {
+    pub fn new(emailer: LifecycleEmailer, app_url: &str) -> Self {
+        Self {
+            emailer,
+            app_url: app_url.trim_end_matches('/').into(),
+        }
+    }
+
+    pub async fn send_verification(
+        &self,
+        recipient: &str,
+        token: &str,
+        expires_in: Duration,
+    ) -> Result<()> {
+        let link = format!("{}/verify-email?token={token}", self.app_url);
+        self.emailer
+            .send(recipient, &LifecycleEmail::verify_email(link, expires_in))
+            .await
+    }
+
+    pub async fn send_password_reset(
+        &self,
+        recipient: &str,
+        token: &str,
+        expires_in: Duration,
+    ) -> Result<()> {
+        let link = format!("{}/reset-password?token={token}", self.app_url);
+        self.emailer
+            .send(recipient, &LifecycleEmail::password_reset(link, expires_in))
+            .await
+    }
+}
+
+/// Email delivery configured from the environment.
+pub struct EmailSetup {
+    /// Provider used by job workers to deliver queued emails.
+    pub mailer: Arc<dyn Mailer>,
+    /// Queues lifecycle emails from request handlers.
+    pub emails: AppEmails,
+}
+
+impl EmailSetup {
+    /// Configure delivery from `EMAIL_PROVIDER` (`console`, `resend`, or `smtp`), `EMAIL_FROM`,
+    /// and `APP_URL`.
+    ///
+    /// Returns `Ok(None)` when `EMAIL_PROVIDER` is unset, which leaves email-dependent auth
+    /// routes unmounted. `console` is only allowed when `TIDEWAY_ENV` is a development
+    /// environment, and production `APP_URL`s must use HTTPS.
+    pub fn from_env(queue: Arc<dyn JobQueue>) -> Result<Option<Self>> {
+        let Ok(provider) = std::env::var("EMAIL_PROVIDER") else {
+            return Ok(None);
+        };
+        let environment = std::env::var("TIDEWAY_ENV").unwrap_or_else(|_| "production".into());
+        let is_development = matches!(
+            environment.trim().to_ascii_lowercase().as_str(),
+            "development" | "dev" | "local" | "test"
+        );
+
+        let mailer: Arc<dyn Mailer> = match provider.trim().to_ascii_lowercase().as_str() {
+            "resend" => Arc::new(ResendMailer::from_env()?),
+            "smtp" => Arc::new(SmtpMailer::from_env()?),
+            "console" if is_development => {
+                let show_body = std::env::var("EMAIL_CONSOLE_SHOW_BODY")
+                    .is_ok_and(|value| value.eq_ignore_ascii_case("true"));
+                Arc::new(ConsoleMailer::new().with_full_output(show_body))
+            }
+            "console" => {
+                return Err(TidewayError::internal(
+                    "EMAIL_PROVIDER=console requires TIDEWAY_ENV=development; configure resend or smtp",
+                ));
+            }
+            _ => {
+                return Err(TidewayError::internal(
+                    "EMAIL_PROVIDER must be one of: console, resend, smtp",
+                ));
+            }
+        };
+
+        let from = std::env::var("EMAIL_FROM")
+            .ok()
+            .filter(|from| !from.trim().is_empty())
+            .ok_or_else(|| TidewayError::internal("EMAIL_FROM must be set"))?;
+        let app_url = std::env::var("APP_URL")
+            .map_err(|_| TidewayError::internal("APP_URL must be set to build email links"))?;
+        if !is_development && !app_url.to_ascii_lowercase().starts_with("https://") {
+            return Err(TidewayError::internal(
+                "APP_URL must use https outside development environments",
+            ));
+        }
+        let app_name = std::env::var("APP_NAME").unwrap_or_else(|_| "{{project_name_pascal}}".into());
+
+        let emailer = LifecycleEmailer::queued(
+            queue,
+            from,
+            EmailBranding::new(app_name).app_url(app_url.clone()),
+        )
+        .with_templates(Arc::new(AppEmailTemplates));
+
+        Ok(Some(Self {
+            mailer,
+            emails: AppEmails::new(emailer, &app_url),
+        }))
+    }
+}

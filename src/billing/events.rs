@@ -15,6 +15,28 @@ pub struct BillingEventContext {
     pub created: u64,
 }
 
+/// Customer-facing invoice details carried by invoice events.
+///
+/// Every field is optional because Stripe omits fields depending on API version and invoice type.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct InvoiceSummary {
+    /// Customer-facing invoice number, such as `ABCD-0001`.
+    pub number: Option<String>,
+    /// Email address Stripe has on file for the customer.
+    pub customer_email: Option<String>,
+    /// Amount due in the currency's smallest unit.
+    pub amount_due: Option<u64>,
+    /// Amount paid in the currency's smallest unit.
+    pub amount_paid: Option<u64>,
+    /// ISO 4217 currency code (lowercase, as sent by Stripe).
+    pub currency: Option<String>,
+    /// Stripe-hosted page where the customer can view or pay the invoice.
+    pub hosted_invoice_url: Option<String>,
+    /// Why the invoice was created, such as `subscription_cycle` or `subscription_create`.
+    pub billing_reason: Option<String>,
+}
+
 /// Typed billing lifecycle event emitted after Tideway's core processing succeeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -118,6 +140,16 @@ pub enum BillingEvent {
         /// Application billable ID from Stripe metadata, when present.
         billable_id: Option<String>,
     },
+    /// Stripe will end a subscription's trial soon (`customer.subscription.trial_will_end`).
+    ///
+    /// Stripe sends this three days before `subscription.trial_end`, or immediately when a trial
+    /// shorter than three days starts.
+    TrialWillEnd {
+        /// Shared Stripe event metadata.
+        context: BillingEventContext,
+        /// Normalized subscription state.
+        subscription: StripeSubscriptionData,
+    },
     /// Stripe marked an invoice as paid.
     InvoicePaid {
         /// Shared Stripe event metadata.
@@ -128,6 +160,8 @@ pub enum BillingEvent {
         subscription_id: Option<String>,
         /// Related Stripe customer ID, when included in the event.
         customer_id: Option<String>,
+        /// Customer-facing invoice details.
+        invoice: InvoiceSummary,
     },
     /// Stripe reported that an invoice payment failed.
     InvoicePaymentFailed {
@@ -139,6 +173,8 @@ pub enum BillingEvent {
         subscription_id: Option<String>,
         /// Related Stripe customer ID, when included in the event.
         customer_id: Option<String>,
+        /// Customer-facing invoice details.
+        invoice: InvoiceSummary,
     },
 }
 
@@ -167,6 +203,7 @@ impl BillingEvent {
             Self::SubscriptionUpdated { .. } => "subscription_updated",
             Self::DuplicateSubscription { .. } => "duplicate_subscription",
             Self::SubscriptionDeleted { .. } => "subscription_deleted",
+            Self::TrialWillEnd { .. } => "trial_will_end",
             Self::InvoicePaid { .. } => "invoice_paid",
             Self::InvoicePaymentFailed { .. } => "invoice_payment_failed",
         }
@@ -182,6 +219,7 @@ impl BillingEvent {
             | Self::SubscriptionUpdated { context, .. }
             | Self::DuplicateSubscription { context, .. }
             | Self::SubscriptionDeleted { context, .. }
+            | Self::TrialWillEnd { context, .. }
             | Self::InvoicePaid { context, .. }
             | Self::InvoicePaymentFailed { context, .. } => context,
         }

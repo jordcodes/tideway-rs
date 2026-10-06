@@ -30,8 +30,37 @@ TIDEWAY_RATE_LIMIT_STRATEGY=per_ip
 # Keep this equal to TRUSTED_PROXY_IPS when a trusted proxy is configured.
 TIDEWAY_RATE_LIMIT_TRUSTED_PROXIES=
 REFRESH_TOKEN_RETENTION_DAYS=120
-# Keep false unless a verification-email delivery integration is wired.
+{{#if has_database_feature}}
+# Requires email delivery (EMAIL_PROVIDER below).
 REQUIRE_EMAIL_VERIFICATION=false
+
+# Environment: console email is only allowed in development.
+TIDEWAY_ENV=development
+# Frontend URL used for verification and password-reset links (https outside development).
+APP_URL=http://localhost:5173
+APP_NAME={{project_name_pascal}}
+
+# Email: console, resend, or smtp. Unset to disable verification and password-reset routes.
+EMAIL_PROVIDER=console
+EMAIL_FROM="{{project_name}} <noreply@example.com>"
+# true prints full emails, including one-time links. Trusted development machines only.
+EMAIL_CONSOLE_SHOW_BODY=false
+# Required when EMAIL_PROVIDER=resend
+RESEND_API_KEY=
+# Required when EMAIL_PROVIDER=smtp
+SMTP_HOST=
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+SMTP_STARTTLS=true
+
+# Background workers that deliver queued emails.
+TIDEWAY_JOBS_WORKER_COUNT=2
+TIDEWAY_JOBS_MAX_RETRIES=3
+TIDEWAY_JOBS_RETRY_BACKOFF_SECONDS=60
+{{else}}
+REQUIRE_EMAIL_VERIFICATION=false
+{{/if}}
 
 {{/if}}
 {{#if has_openapi_feature}}
