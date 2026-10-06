@@ -58,6 +58,14 @@ async fn error_body() -> serde_json::Value {
 
 #[tokio::test]
 async fn test_dev_mode_is_ignored_in_production_environment() {
+    // Production env vars would disable dev mode for every test in this process.
+    if crate::support::isolated(
+        module_path!(),
+        "test_dev_mode_is_ignored_in_production_environment",
+        |_| {},
+    ) {
+        return;
+    }
     for (key, value) in [
         ("TIDEWAY_ENV", "production"),
         ("APP_ENV", "prod"),

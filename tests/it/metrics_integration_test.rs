@@ -275,24 +275,12 @@ mod tests {
     /// Re-runs `test` in a child process with a controlled metrics environment so
     /// env var changes cannot race with other tests. Returns `true` in the parent.
     fn isolated(test: &str, overrides: &[(&str, &str)]) -> bool {
-        if std::env::var("METRICS_TEST_CHILD").as_deref() == Ok(test) {
-            return false;
-        }
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-        command
-            .args(["--exact", &format!("tests::{test}"), "--nocapture"])
-            .env("METRICS_TEST_CHILD", test);
-        for key in ["METRICS_ENABLED", "METRICS_PATH", "METRICS_BEARER_TOKEN"] {
-            command.env_remove(key).env_remove(format!("TIDEWAY_{key}"));
-        }
-        let output = command.envs(overrides.iter().copied()).output().unwrap();
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            output.status.success() && stdout.contains("1 passed"),
-            "{stdout}\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        true
+        crate::support::isolated(module_path!(), test, |command| {
+            for key in ["METRICS_ENABLED", "METRICS_PATH", "METRICS_BEARER_TOKEN"] {
+                command.env_remove(key).env_remove(format!("TIDEWAY_{key}"));
+            }
+            command.envs(overrides.iter().copied());
+        })
     }
 
     async fn assert_metrics_scrapable(config: tideway::Config, path: &str, token: &str) {

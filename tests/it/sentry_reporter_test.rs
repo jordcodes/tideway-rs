@@ -127,9 +127,13 @@ async fn server_errors_become_sentry_issues() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn sentry_dsn_alone_enables_reporting() {
+    // The env-derived reporter is cached process-wide and binds Sentry's main hub.
+    if crate::support::isolated(module_path!(), "sentry_dsn_alone_enables_reporting", |_| {}) {
+        return;
+    }
     let (dsn, envelopes) = mock_sentry().await;
-    // SAFETY: the other test in this binary passes its DSN explicitly and never
-    // reads SENTRY_DSN.
+    // SAFETY: this child process runs only this test, and no app has read
+    // SENTRY_DSN yet.
     unsafe { std::env::set_var("SENTRY_DSN", &dsn) };
 
     // No reporter configured: the app picks Sentry up from the environment.

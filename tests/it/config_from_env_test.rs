@@ -6,38 +6,26 @@ use tideway::{
 /// Re-runs `test` in a child process with the given environment so env var
 /// changes cannot race with other tests. Returns `true` in the parent.
 fn isolated(test: &str, overrides: &[(&str, &str)]) -> bool {
-    if std::env::var("CONFIG_FROM_ENV_TEST_CHILD").as_deref() == Ok(test) {
-        return false;
-    }
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", test, "--nocapture"])
-        .env("CONFIG_FROM_ENV_TEST_CHILD", test);
-    // Drop any inherited Tideway configuration so the child sees only `overrides`.
-    for (key, _) in std::env::vars() {
-        if key.starts_with("TIDEWAY_")
-            || [
-                "CORS_",
-                "RATE_LIMIT_",
-                "SECURITY_",
-                "TIMEOUT_",
-                "REQUEST_LOGGING_",
-                "DEV_",
-            ]
-            .iter()
-            .any(|prefix| key.starts_with(prefix))
-        {
-            command.env_remove(key);
+    crate::support::isolated(module_path!(), test, |command| {
+        // Drop any inherited Tideway configuration so the child sees only `overrides`.
+        for (key, _) in std::env::vars() {
+            if key.starts_with("TIDEWAY_")
+                || [
+                    "CORS_",
+                    "RATE_LIMIT_",
+                    "SECURITY_",
+                    "TIMEOUT_",
+                    "REQUEST_LOGGING_",
+                    "DEV_",
+                ]
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+            {
+                command.env_remove(key);
+            }
         }
-    }
-    let output = command.envs(overrides.iter().copied()).output().unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success() && stdout.contains("1 passed"),
-        "{stdout}\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    true
+        command.envs(overrides.iter().copied());
+    })
 }
 
 fn builder() -> ConfigBuilder {

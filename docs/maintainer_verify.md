@@ -27,7 +27,7 @@ bash scripts/verify.sh
 15. `cargo check --features billing`
 16. `cargo check --all-features`
 17. `bash scripts/check_downstream_upgrade.sh`
-18. `cargo test --test prelude_smoke_test`
+18. `cargo test --test it prelude_smoke_test::`
 19. `bash scripts/check_feature_gates.sh`
 
 ## Common Failures and Fixes

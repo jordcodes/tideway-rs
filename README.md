@@ -36,9 +36,9 @@ Feature flags are opt-in unless marked Default.
 | `database-sqlx` | `database` | `docs/database_traits.md` | — | Experimental placeholder only; not implemented yet |
 | `openapi` | `openapi` | `docs/openapi.md` | `examples/api_macro_example.rs` | Default |
 | `validation` | `validation` | `docs/validation.md` | `examples/validation_example.rs` | — |
-| `metrics` | `metrics` | `README.md#built-in-middleware` | `tests/metrics_integration_test.rs` | — |
-| `otel` | `observability::otel` | `docs/observability.md` | `tests/otel_export_test.rs` | OTLP trace export, enabled by `OTEL_EXPORTER_OTLP_ENDPOINT` |
-| `sentry` | `observability` | `docs/observability.md` | `tests/sentry_reporter_test.rs` | Sentry issues for 5xx errors, panics, and failed jobs, enabled by `SENTRY_DSN` |
+| `metrics` | `metrics` | `README.md#built-in-middleware` | `tests/it/metrics_integration_test.rs` | — |
+| `otel` | `observability::otel` | `docs/observability.md` | `tests/it/otel_export_test.rs` | OTLP trace export, enabled by `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `sentry` | `observability` | `docs/observability.md` | `tests/it/sentry_reporter_test.rs` | Sentry issues for 5xx errors, panics, and failed jobs, enabled by `SENTRY_DSN` |
 | `cache` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
 | `cache-redis` | `cache` | `docs/caching.md` | `examples/redis_cache.rs` | — |
 | `sessions` | `session` | `docs/sessions.md` | `examples/sessions_example.rs` | — |
@@ -46,13 +46,13 @@ Feature flags are opt-in unless marked Default.
 | `jobs-redis` | `jobs` | `docs/background_jobs.md` | — | — |
 | `websocket` | `websocket` | `docs/websockets.md` | `examples/websocket_chat.rs` | — |
 | `email` | `email` | `docs/email.md` | `examples/email_example.rs` | — |
-| `storage` | `storage` | `docs/storage.md` | `tests/storage_test.rs` | Local filesystem + in-memory, presigned uploads |
-| `storage-s3` | `storage` | `docs/storage.md` | `tests/storage_test.rs` | AWS S3, Cloudflare R2, S3-compatible |
+| `storage` | `storage` | `docs/storage.md` | `tests/it/storage_test.rs` | Local filesystem + in-memory, presigned uploads |
+| `storage-s3` | `storage` | `docs/storage.md` | `tests/it/storage_test.rs` | AWS S3, Cloudflare R2, S3-compatible |
 | `auth` | `auth` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-mfa` | `auth::mfa` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-breach` | `auth::breach` | `docs/auth.md` | — | — |
-| `auth-oauth` | `auth::oauth` | `docs/auth.md` | `tests/oauth_test.rs` | Google, GitHub, and OIDC social login |
-| `test-auth-bypass` | `auth` | `docs/auth.md` | `tests/auth_integration_test.rs` | Tests only |
+| `auth-oauth` | `auth::oauth` | `docs/auth.md` | `tests/it/oauth_test.rs` | Google, GitHub, and OIDC social login |
+| `test-auth-bypass` | `auth` | `docs/auth.md` | `tests/it/auth_integration_test.rs` | Tests only |
 | `billing` | `billing` | `docs/billing.md` | — | — |
 | `billing-seaorm` | `billing` | `docs/billing.md` | — | — |
 | `credits` | `credits` | `docs/credits.md` | — | Provider-neutral in-memory/reference ledger |

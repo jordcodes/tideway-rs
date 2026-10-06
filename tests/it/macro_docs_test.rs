@@ -4,15 +4,18 @@
 //! `#[doc(hidden)]` helper silently disappear from the public API docs.
 
 const SOURCES: &[(&str, &str)] = &[
-    ("src/lib.rs", include_str!("../src/lib.rs")),
-    ("src/openapi/mod.rs", include_str!("../src/openapi/mod.rs")),
+    ("src/lib.rs", include_str!("../../src/lib.rs")),
+    (
+        "src/openapi/mod.rs",
+        include_str!("../../src/openapi/mod.rs"),
+    ),
     (
         "src/testing/database.rs",
-        include_str!("../src/testing/database.rs"),
+        include_str!("../../src/testing/database.rs"),
     ),
     (
         "src/utils/ensure.rs",
-        include_str!("../src/utils/ensure.rs"),
+        include_str!("../../src/utils/ensure.rs"),
     ),
 ];
 
@@ -73,7 +76,7 @@ fn public_macros_are_documented_and_hidden_helpers_are_not() {
 
 #[test]
 fn module_macro_is_documented() {
-    let macros = exported_macros(include_str!("../src/lib.rs"));
+    let macros = exported_macros(include_str!("../../src/lib.rs"));
     let module = macros
         .iter()
         .find(|(name, _, _)| name == "module")

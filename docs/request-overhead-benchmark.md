@@ -3,7 +3,7 @@
 Run the opt-in benchmark with:
 
 ```sh
-cargo test --release --features billing,test-billing --test request_overhead -- --ignored --nocapture
+cargo test --release --features billing,test-billing --test it request_overhead:: -- --ignored --nocapture
 ```
 
 The benchmark sends 200,000 in-process Axum requests per round, using eight Tokio
