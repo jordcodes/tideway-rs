@@ -2,6 +2,10 @@
 name = "{{project_name}}"
 version = "0.1.0"
 edition = "2021"
+{{#if has_database_feature}}
+# `src/bin/seed.rs` is a second binary; keep `cargo run` pointed at the server.
+default-run = "{{project_name}}"
+{{/if}}
 
 {{#if has_database_feature}}
 [workspace]

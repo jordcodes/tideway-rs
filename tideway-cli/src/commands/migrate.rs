@@ -203,14 +203,14 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
     }
 }
 
-fn ensure_database_url(project_dir: &Path) -> Result<()> {
+pub(crate) fn ensure_database_url(project_dir: &Path) -> Result<()> {
     let env_map = read_env_map(&project_dir.join(".env"));
     let Some(value) = resolve_database_url(&env_map) else {
         return Err(anyhow::anyhow!(
             "{}",
             error_contract(
                 "DATABASE_URL is missing.",
-                "Set DATABASE_URL in `.env` and rerun `tideway migrate`.",
+                "Set DATABASE_URL in `.env` and rerun the command.",
                 &format!(
                     "Run {} to bootstrap `.env` from `.env.example`.",
                     DEV_FIX_ENV_COMMAND

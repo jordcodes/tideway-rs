@@ -10,6 +10,7 @@ Follow these conventions to work efficiently and safely.
 - Run the app:
   - `tideway dev --fix-env`
   - `tideway migrate` for DB migrations
+  - `tideway seed` for idempotent dev/demo data (`src/bin/seed.rs`)
 
 ## File Map
 - Core framework: `src/`

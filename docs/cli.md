@@ -16,6 +16,7 @@ Primary (recommended for most users):
 - `resource`
 - `doctor`
 - `migrate`
+- `seed`
 
 Advanced (existing projects, nonstandard workflows, or legacy compatibility):
 - `add`
@@ -326,9 +327,34 @@ tideway migrate init
 tideway migrate up -- --num 2
 ```
 
+### `tideway seed`
+
+Load development or demo data with one command.
+
+```bash
+tideway seed
+tideway seed --fix-env            # bootstrap .env from .env.example first
+tideway seed --bin demo_data      # run a different seed binary
+tideway seed -- --any-app-arg     # args after `--` go to the seed binary
+```
+
+Convention: the seed program is the app's own Cargo binary `src/bin/seed.rs` (or any `[[bin]]`
+named `seed`). `tideway seed` loads `.env` (shell variables win), validates `DATABASE_URL`, and
+runs `cargo run --bin seed`. Database-backed apps from `tideway new` include one. It applies
+pending migrations, reuses the app's SeaORM entities through `src/entities/mod.rs`, and in the
+API preset inserts sample todos. Keep seeds idempotent: insert a row only when it is missing,
+so reruns are safe. The generated `Cargo.toml` sets `default-run` so `cargo run` and
+`tideway dev` still start the server.
+
+To start from an empty database, reset it first: `tideway migrate fresh && tideway seed`.
+
+To promote test fixtures to demo data, move the inserts from `TestDb::seed(&[...])` or a test
+setup function into `src/bin/seed.rs`. Use `db.execute_unprepared(sql)` for raw SQL fixtures, or
+entity `ActiveModel`s for portable inserts.
+
 ## Notes
 
-- Canonical path: `new` -> `dev` -> `resource <name>` -> `migrate`.
+- Canonical path: `new` -> `dev` -> `resource <name>` -> `migrate` -> `seed` (optional demo data).
 - `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
 - `tideway doctor` is a quick sanity check and repair tool, not a required first-run step.
 - Frontend `generate` / `setup` flows are currently Vue-focused advanced helpers, not a co-equal onboarding path with the backend/API workflow.

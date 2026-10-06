@@ -35,6 +35,7 @@ tideway migrate
 
 The default API profile scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring. Use the shape flags in the CLI reference only when you intentionally want a partial or customized scaffold.
 If `tideway dev --fix-env` is not already running, start it now.
+Run `tideway seed` to load demo data from `src/bin/seed.rs` (the API preset seeds sample todos).
 Run `tideway doctor` when you want a quick sanity check; it is not required for the happy path.
 
 ## 4) OpenAPI docs
