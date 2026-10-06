@@ -23,25 +23,193 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ResourceFieldType {
     String,
+    Text,
     Bool,
+    I32,
     I64,
 }
 
 impl ResourceFieldType {
     fn rust_type(self) -> &'static str {
         match self {
-            Self::String => "String",
+            Self::String | Self::Text => "String",
             Self::Bool => "bool",
+            Self::I32 => "i32",
             Self::I64 => "i64",
         }
+    }
+
+    fn is_string(self) -> bool {
+        matches!(self, Self::String | Self::Text)
     }
 
     fn migration_column(self, column_enum: &str) -> String {
         match self {
             Self::String => format!("ColumnDef::new({column_enum}).string().not_null()"),
+            Self::Text => format!("ColumnDef::new({column_enum}).text().not_null()"),
             Self::Bool => format!("ColumnDef::new({column_enum}).boolean().not_null()"),
+            Self::I32 => format!("ColumnDef::new({column_enum}).integer().not_null()"),
             Self::I64 => format!("ColumnDef::new({column_enum}).big_integer().not_null()"),
         }
+    }
+}
+
+/// A field parsed from an inline `name:type` definition on the command line.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InlineField {
+    name: String,
+    ty: ResourceFieldType,
+    stub_value: &'static str,
+    json_value: &'static str,
+}
+
+const INLINE_FIELD_TYPES: &str = "string, text, bool, int, bigint, datetime";
+
+/// Names that collide with generated identifiers (handler locals, method params,
+/// the migration `Iden` enum, or the primary key).
+const RESERVED_FIELD_NAMES: [&str; 11] = [
+    "id", "active", "model", "actor", "db", "query", "search", "limit", "offset", "q", "table",
+];
+
+const RUST_KEYWORDS: [&str; 51] = [
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn", "else", "enum", "extern",
+    "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
+    "where", "while", "abstract", "become", "box", "do", "final", "gen", "macro", "override",
+    "priv", "try", "typeof", "unsized", "virtual", "yield",
+];
+
+fn parse_inline_fields(definitions: &[String]) -> Result<Vec<InlineField>> {
+    let mut fields: Vec<InlineField> = Vec::with_capacity(definitions.len());
+    for definition in definitions {
+        let invalid = |problem: &str| {
+            anyhow::anyhow!(error_contract(
+                &format!("Invalid field definition `{definition}`: {problem}."),
+                "Use `name:type`, e.g. `tideway resource post title:string body:text published:bool`.",
+                &format!("Supported types: {INLINE_FIELD_TYPES}."),
+            ))
+        };
+
+        let (name, ty) = definition
+            .split_once(':')
+            .ok_or_else(|| invalid("expected `name:type`"))?;
+        let name = name.trim();
+        let ty = ty.trim().to_ascii_lowercase();
+
+        let mut chars = name.chars();
+        let valid_ident = chars
+            .next()
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch == '_')
+            && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+        if !valid_ident || name == "_" {
+            return Err(invalid("field names must be snake_case identifiers"));
+        }
+        if RUST_KEYWORDS.contains(&name) {
+            return Err(invalid("field name is a Rust keyword"));
+        }
+        if RESERVED_FIELD_NAMES.contains(&name) {
+            return Err(invalid("field name is reserved by the generated code"));
+        }
+        if fields.iter().any(|field| field.name == name) {
+            return Err(invalid("field is defined more than once"));
+        }
+
+        let (ty, stub_value, json_value) = match ty.as_str() {
+            "string" | "str" => (
+                ResourceFieldType::String,
+                "\"Example\".to_string()",
+                "\"Example\"",
+            ),
+            "text" => (
+                ResourceFieldType::Text,
+                "\"Example\".to_string()",
+                "\"Example\"",
+            ),
+            "bool" | "boolean" => (ResourceFieldType::Bool, "true", "true"),
+            "int" | "integer" | "i32" => (ResourceFieldType::I32, "1", "1"),
+            "bigint" | "i64" => (ResourceFieldType::I64, "1", "1"),
+            // Stored as unix seconds, matching the generated created_at/updated_at columns.
+            "datetime" | "timestamp" => (ResourceFieldType::I64, "1_700_000_000", "1_700_000_000"),
+            _ => return Err(invalid(&format!("unknown type `{ty}`"))),
+        };
+
+        fields.push(InlineField {
+            name: name.to_string(),
+            ty,
+            stub_value,
+            json_value,
+        });
+    }
+    Ok(fields)
+}
+
+/// Build the full field list for inline definitions, keeping the profile's structural
+/// fields (scope columns first, generated timestamps last) around the user's fields.
+fn inline_schema_fields<'a>(
+    profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    inline_fields: &'a [InlineField],
+) -> Result<Vec<ResourceFieldSpec<'a>>> {
+    if inline_fields.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let base = resource_schema(profile, context, &[]);
+    let scope_fields = base
+        .fields
+        .iter()
+        .copied()
+        .filter(|field| matches!(field.name, "organization_id" | "owner_id"));
+    let timestamp_fields = base
+        .fields
+        .iter()
+        .copied()
+        .filter(|field| field.create_source == FieldSource::CurrentTimestamp);
+
+    let search_name = inline_fields
+        .iter()
+        .find(|field| field.ty.is_string())
+        .map(|field| field.name.as_str());
+    let custom_fields = inline_fields.iter().map(|field| ResourceFieldSpec {
+        name: &field.name,
+        ty: field.ty,
+        include_in_create: true,
+        include_in_update: true,
+        create_source: FieldSource::Request,
+        update_source: Some(FieldSource::Request),
+        search: Some(field.name.as_str()) == search_name,
+        stub_value: field.stub_value,
+        json_value: field.json_value,
+    });
+
+    let fields: Vec<_> = scope_fields
+        .chain(custom_fields)
+        .chain(timestamp_fields)
+        .collect();
+    for (index, field) in fields.iter().enumerate() {
+        if fields[..index].iter().any(|other| other.name == field.name) {
+            return Err(anyhow::anyhow!(error_contract(
+                &format!(
+                    "Field `{}` is already generated by the `{}` profile.",
+                    field.name,
+                    profile_label(profile)
+                ),
+                "Remove it from the inline field definitions.",
+                "Use `--profile api` for full control over the field list.",
+            )));
+        }
+    }
+    Ok(fields)
+}
+
+fn profile_label(profile: ResourceProfile) -> &'static str {
+    match profile {
+        ResourceProfile::Api => "api",
+        ResourceProfile::Stub => "stub",
+        ResourceProfile::Tenant => "tenant",
+        ResourceProfile::Owned => "owned",
+        ResourceProfile::Admin => "admin",
+        ResourceProfile::Event => "event",
     }
 }
 
@@ -52,23 +220,23 @@ enum FieldSource {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ResourceFieldSpec {
-    name: &'static str,
+struct ResourceFieldSpec<'a> {
+    name: &'a str,
     ty: ResourceFieldType,
     include_in_create: bool,
     include_in_update: bool,
     create_source: FieldSource,
     update_source: Option<FieldSource>,
     search: bool,
-    stub_value: &'static str,
-    json_value: &'static str,
+    stub_value: &'a str,
+    json_value: &'a str,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct ResourceSchema {
-    display_field: &'static str,
-    display_fallback: &'static str,
-    fields: &'static [ResourceFieldSpec],
+struct ResourceSchema<'a> {
+    display_field: &'a str,
+    display_fallback: &'a str,
+    fields: &'a [ResourceFieldSpec<'a>],
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -89,7 +257,7 @@ impl ResourceGenerationContext {
     }
 }
 
-const NAME_FIELDS: [ResourceFieldSpec; 1] = [ResourceFieldSpec {
+const NAME_FIELDS: [ResourceFieldSpec<'static>; 1] = [ResourceFieldSpec {
     name: "name",
     ty: ResourceFieldType::String,
     include_in_create: true,
@@ -101,7 +269,7 @@ const NAME_FIELDS: [ResourceFieldSpec; 1] = [ResourceFieldSpec {
     json_value: "\"Example\"",
 }];
 
-const TENANT_FIELDS: [ResourceFieldSpec; 5] = [
+const TENANT_FIELDS: [ResourceFieldSpec<'static>; 5] = [
     ResourceFieldSpec {
         name: "name",
         ty: ResourceFieldType::String,
@@ -159,7 +327,7 @@ const TENANT_FIELDS: [ResourceFieldSpec; 5] = [
     },
 ];
 
-const ORGANIZATION_ID_FIELD: ResourceFieldSpec = ResourceFieldSpec {
+const ORGANIZATION_ID_FIELD: ResourceFieldSpec<'static> = ResourceFieldSpec {
     name: "organization_id",
     ty: ResourceFieldType::String,
     include_in_create: true,
@@ -172,9 +340,9 @@ const ORGANIZATION_ID_FIELD: ResourceFieldSpec = ResourceFieldSpec {
 };
 
 // SaaS scaffolds scope `api` and `tenant` resources to the caller's organization.
-const ORG_NAME_FIELDS: [ResourceFieldSpec; 2] = [ORGANIZATION_ID_FIELD, NAME_FIELDS[0]];
+const ORG_NAME_FIELDS: [ResourceFieldSpec<'static>; 2] = [ORGANIZATION_ID_FIELD, NAME_FIELDS[0]];
 
-const ORG_TENANT_FIELDS: [ResourceFieldSpec; 6] = [
+const ORG_TENANT_FIELDS: [ResourceFieldSpec<'static>; 6] = [
     ORGANIZATION_ID_FIELD,
     TENANT_FIELDS[0],
     TENANT_FIELDS[1],
@@ -183,7 +351,7 @@ const ORG_TENANT_FIELDS: [ResourceFieldSpec; 6] = [
     TENANT_FIELDS[4],
 ];
 
-const OWNED_FIELDS: [ResourceFieldSpec; 6] = [
+const OWNED_FIELDS: [ResourceFieldSpec<'static>; 6] = [
     ORGANIZATION_ID_FIELD,
     ResourceFieldSpec {
         name: "owner_id",
@@ -242,7 +410,7 @@ const OWNED_FIELDS: [ResourceFieldSpec; 6] = [
     },
 ];
 
-const ADMIN_FIELDS: [ResourceFieldSpec; 5] = [
+const ADMIN_FIELDS: [ResourceFieldSpec<'static>; 5] = [
     ResourceFieldSpec {
         name: "email",
         ty: ResourceFieldType::String,
@@ -300,7 +468,7 @@ const ADMIN_FIELDS: [ResourceFieldSpec; 5] = [
     },
 ];
 
-const EVENT_FIELDS: [ResourceFieldSpec; 6] = [
+const EVENT_FIELDS: [ResourceFieldSpec<'static>; 6] = [
     ResourceFieldSpec {
         name: "event_type",
         ty: ResourceFieldType::String,
@@ -369,7 +537,30 @@ const EVENT_FIELDS: [ResourceFieldSpec; 6] = [
     },
 ];
 
-fn resource_schema(profile: ResourceProfile, context: ResourceGenerationContext) -> ResourceSchema {
+fn resource_schema<'a>(
+    profile: ResourceProfile,
+    context: ResourceGenerationContext,
+    custom_fields: &'a [ResourceFieldSpec<'a>],
+) -> ResourceSchema<'a> {
+    if !custom_fields.is_empty() {
+        let display = custom_fields
+            .iter()
+            .filter(|field| field.include_in_create)
+            .filter(|field| !matches!(field.name, "organization_id" | "owner_id"))
+            .find(|field| field.ty.is_string())
+            .or_else(|| {
+                custom_fields.iter().find(|field| {
+                    field.include_in_create && !matches!(field.name, "organization_id" | "owner_id")
+                })
+            })
+            .expect("inline fields include at least one request field");
+        return ResourceSchema {
+            display_field: display.name,
+            display_fallback: "Example",
+            fields: custom_fields,
+        };
+    }
+
     match profile {
         ResourceProfile::Api if context.saas_org_scope => ResourceSchema {
             display_field: "name",
@@ -511,7 +702,10 @@ fn render_stub_response_fields(
 ) -> String {
     let mut output = format!("{indent}id: \"demo\".to_string(),\n");
     for field in schema.fields {
-        let value = if schema.fields.len() == 1 && field.name == schema.display_field {
+        let value = if schema.fields.len() == 1
+            && field.name == schema.display_field
+            && field.ty.is_string()
+        {
             format!("\"{}\".to_string()", default_display)
         } else {
             field.stub_value.to_string()
@@ -644,7 +838,13 @@ fn render_stub_call_args(schema: ResourceSchema, optional: bool) -> String {
 }
 
 fn display_fallback_value(schema: ResourceSchema, default_display: &str) -> String {
-    if schema.fields.len() == 1 && schema.display_field == "name" {
+    let display = schema
+        .fields
+        .iter()
+        .find(|field| field.name == schema.display_field);
+    if let Some(field) = display.filter(|field| !field.ty.is_string()) {
+        field.stub_value.to_string()
+    } else if schema.fields.len() == 1 && schema.display_field == "name" {
         format!("\"{}\".to_string()", default_display)
     } else {
         format!("\"{}\".to_string()", schema.display_fallback)
@@ -760,7 +960,7 @@ fn render_service_string_normalization_lines(schema: ResourceSchema, optional: b
 
     fields
         .iter()
-        .filter(|field| field.ty == ResourceFieldType::String)
+        .filter(|field| field.ty.is_string())
         .map(|field| {
             let expr = match (field.name, optional) {
                 ("slug", false) => "Self::normalize_slug(slug)?".to_string(),
@@ -987,6 +1187,8 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
     let resource_pascal = to_pascal_case(&resource_name);
     let resource_plural = pluralize(&resource_name);
     let generation_context = detect_generation_context(&project_dir, &args);
+    let inline_fields = parse_inline_fields(&args.fields)?;
+    let custom_fields = inline_schema_fields(args.profile, generation_context, &inline_fields)?;
 
     let cargo_path = project_dir.join("Cargo.toml");
     let library_crate = generation_context
@@ -1047,6 +1249,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         args.paginate,
         args.search,
         generation_context,
+        &custom_fields,
     );
     write_file_with_force(&resource_path, &contents, false)?;
 
@@ -1077,6 +1280,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                 args.id_type,
                 args.profile,
                 generation_context,
+                &custom_fields,
                 migration_name.expect("SeaORM migration is planned before mutation"),
             )?,
             DbBackend::Auto => {
@@ -1097,6 +1301,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                 args.search,
                 args.profile,
                 generation_context,
+                &custom_fields,
             )?;
             if args.repo_tests {
                 let project_name = project_name_from_cargo(&cargo_path, &project_dir);
@@ -1109,6 +1314,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                     args.search,
                     args.profile,
                     generation_context,
+                    &custom_fields,
                 )?;
             }
             if args.service {
@@ -1130,6 +1336,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
                     args.search,
                     args.profile,
                     generation_context,
+                    &custom_fields,
                 )?;
             }
         }
@@ -1616,9 +1823,10 @@ fn render_resource_module(
     paginate: bool,
     search: bool,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let body_extractor = "Json(body): Json<CreateRequest>";
-    let schema = resource_schema(profile, context);
+    let schema = resource_schema(profile, context, custom_fields);
     let route_create_fields = route_request_fields(schema, context, false);
     let route_update_fields = route_request_fields(schema, context, true);
     let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_scoped();
@@ -2861,6 +3069,7 @@ fn render_openapi_docs_file(paths: &[String]) -> String {
     output
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_sea_orm_scaffold(
     project_dir: &Path,
     resource_name: &str,
@@ -2868,6 +3077,7 @@ fn generate_sea_orm_scaffold(
     id_type: ResourceIdType,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
     migration_name: MigrationName,
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
@@ -2884,8 +3094,14 @@ fn generate_sea_orm_scaffold(
     wire_entities_mod(&entities_mod, resource_name)?;
 
     let entity_path = entities_dir.join(format!("{}.rs", resource_name));
-    let entity_contents =
-        render_sea_orm_entity(resource_name, resource_plural, id_type, profile, context);
+    let entity_contents = render_sea_orm_entity(
+        resource_name,
+        resource_plural,
+        id_type,
+        profile,
+        context,
+        custom_fields,
+    );
     write_file_with_force(&entity_path, &entity_contents, false)?;
 
     let migration_root = project_dir.join("migration");
@@ -2900,7 +3116,8 @@ fn generate_sea_orm_scaffold(
 
     let migration_mod = migration_name.module;
     let migration_file = migration_name.file;
-    let migration_contents = render_sea_orm_migration(resource_plural, id_type, profile, context);
+    let migration_contents =
+        render_sea_orm_migration(resource_plural, id_type, profile, context, custom_fields);
     let migration_path = migration_src.join(&migration_file);
     write_file_with_force(&migration_path, &migration_contents, false)?;
 
@@ -2935,9 +3152,10 @@ fn render_sea_orm_entity(
     id_type: ResourceIdType,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile, context);
+    let schema = resource_schema(profile, context, custom_fields);
     let entity_fields = render_entity_fields(schema);
     let id_field = if matches!(id_type, ResourceIdType::Uuid) {
         "    #[sea_orm(primary_key, auto_increment = false)]\n    pub id: Uuid,\n"
@@ -2979,9 +3197,10 @@ fn render_sea_orm_migration(
     id_type: ResourceIdType,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let table_enum = to_pascal_case(resource_plural);
-    let schema = resource_schema(profile, context);
+    let schema = resource_schema(profile, context, custom_fields);
     let columns = render_migration_columns(schema, &table_enum);
     let column_idents = render_migration_idents(schema);
     let id_column = if matches!(id_type, ResourceIdType::Uuid) {
@@ -3162,6 +3381,7 @@ fn wire_routes_mod(routes_dir: &Path, resource_name: &str) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_repository(
     project_dir: &Path,
     resource_name: &str,
@@ -3170,6 +3390,7 @@ fn generate_repository(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let repos_dir = src_dir.join("repositories");
@@ -3184,8 +3405,15 @@ fn generate_repository(
     wire_repositories_mod(&repos_mod, resource_name)?;
 
     let repo_path = repos_dir.join(format!("{}.rs", resource_name));
-    let repo_contents =
-        render_repository(resource_name, id_type, paginate, search, profile, context);
+    let repo_contents = render_repository(
+        resource_name,
+        id_type,
+        paginate,
+        search,
+        profile,
+        context,
+        custom_fields,
+    );
     write_file_with_force(&repo_path, &repo_contents, false)?;
     print_success("Generated repository");
     Ok(())
@@ -3210,9 +3438,10 @@ fn render_repository(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile, context);
+    let schema = resource_schema(profile, context, custom_fields);
     let current_timestamp_helper = render_timestamp_helper_if_needed(schema);
     let (id_type_str, uuid_import) = if matches!(id_type, ResourceIdType::Uuid) {
         ("uuid::Uuid", "use uuid::Uuid;\n")
@@ -3392,6 +3621,7 @@ impl {resource_pascal}Repository {{
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_service(
     project_dir: &Path,
     resource_name: &str,
@@ -3400,6 +3630,7 @@ fn generate_service(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> Result<()> {
     let src_dir = project_dir.join("src");
     let services_dir = src_dir.join("services");
@@ -3415,8 +3646,15 @@ fn generate_service(
     wire_services_mod(&services_mod, resource_name)?;
 
     let service_path = services_dir.join(format!("{}.rs", resource_name));
-    let service_contents =
-        render_service(resource_name, id_type, paginate, search, profile, context);
+    let service_contents = render_service(
+        resource_name,
+        id_type,
+        paginate,
+        search,
+        profile,
+        context,
+        custom_fields,
+    );
     write_file_with_force(&service_path, &service_contents, false)?;
     print_success("Generated service");
     Ok(())
@@ -3630,9 +3868,10 @@ fn render_service(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile, context);
+    let schema = resource_schema(profile, context, custom_fields);
     let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_scoped();
     let uses_shared_saas_admin_actor = context.shared_saas_actor && context.saas_admin_guard;
     // `owned` resources are scoped to organization + owner; `api`/`tenant` to organization only.
@@ -4263,6 +4502,7 @@ fn generate_repository_tests(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> Result<()> {
     let tests_dir = project_dir.join("tests");
     ensure_dir(&tests_dir).with_context(|| format!("Failed to create {}", tests_dir.display()))?;
@@ -4276,12 +4516,14 @@ fn generate_repository_tests(
         search,
         profile,
         context,
+        custom_fields,
     );
     write_file_with_force(&file_path, &contents, false)?;
     print_success("Generated repository tests");
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_repository_tests(
     project_name: &str,
     resource_name: &str,
@@ -4290,9 +4532,10 @@ fn render_repository_tests(
     search: bool,
     profile: ResourceProfile,
     context: ResourceGenerationContext,
+    custom_fields: &[ResourceFieldSpec],
 ) -> String {
     let resource_pascal = to_pascal_case(resource_name);
-    let schema = resource_schema(profile, context);
+    let schema = resource_schema(profile, context, custom_fields);
     let create_call_args = render_stub_call_args(schema, false);
     let list_call = if paginate {
         if search {

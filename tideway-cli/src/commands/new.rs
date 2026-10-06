@@ -1304,6 +1304,7 @@ fn preset_backend_preset(preset: NewPreset) -> Option<BackendPreset> {
 fn scaffold_api_preset(target_dir: &Path, runtime: CommandRuntime) -> Result<()> {
     let args = ResourceArgs {
         name: "todo".to_string(),
+        fields: Vec::new(),
         path: target_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: true,
@@ -1416,6 +1417,7 @@ fn scaffold_wizard_resource(
 ) -> Result<()> {
     let args = ResourceArgs {
         name: resource.name,
+        fields: Vec::new(),
         path: target_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: resource.with_tests,
