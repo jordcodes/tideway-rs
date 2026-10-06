@@ -28,17 +28,21 @@
 //! }
 //! ```
 
-use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
+use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
 use sea_orm_migration::MigratorTrait;
 #[cfg(feature = "test-containers")]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 use url::Url;
 
 #[cfg(feature = "test-containers")]
 mod postgres_container;
 
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Set to `1` to keep per-test PostgreSQL databases instead of dropping them.
+const KEEP_DBS_ENV: &str = "TIDEWAY_TEST_KEEP_DBS";
 
 /// Supported test database backends.
 #[derive(Debug, Clone, Copy, Default)]
@@ -65,12 +69,15 @@ pub struct TestDbConfig {
 /// Supports both SQLite in-memory (fast, no external dependencies) and PostgreSQL
 /// (requires PostgreSQL running on localhost:5432, matches production better).
 ///
-/// **Note on PostgreSQL cleanup**: Test databases are NOT automatically cleaned up
-/// to avoid async operations in Drop which can cause hangs. Use a periodic cleanup
-/// script or CI/CD step to remove orphaned test databases.
+/// **Note on PostgreSQL cleanup**: Each `Postgres`-backend `TestDb` creates its own
+/// `test_db_<pid>_<n>` database on the server. Call [`TestDb::cleanup`] to drop it
+/// explicitly; otherwise `Drop` makes a best-effort, blocking drop on a separate
+/// thread. Set `TIDEWAY_TEST_KEEP_DBS=1` to keep the databases for inspection.
 pub struct TestDb {
     pub connection: DatabaseConnection,
     backend: TestDbBackend,
+    /// The per-test database to drop, for the `Postgres` backend only.
+    postgres: Option<PostgresTestDatabase>,
     #[cfg(feature = "test-containers")]
     #[allow(dead_code)]
     container: Option<Arc<postgres_container::PostgresContainer>>,
@@ -143,6 +150,7 @@ impl TestDb {
         Ok(Self {
             connection,
             backend: TestDbBackend::SqliteMemory,
+            postgres: None,
             #[cfg(feature = "test-containers")]
             container: None,
         })
@@ -179,6 +187,7 @@ impl TestDb {
         Ok(Self {
             connection,
             backend: TestDbBackend::SqliteMemory,
+            postgres: None,
             #[cfg(feature = "test-containers")]
             container: None,
         })
@@ -190,8 +199,8 @@ impl TestDb {
     /// (postgres/postgres). This provides a test environment that matches production PostgreSQL,
     /// especially for tests that use transactions or concurrent operations.
     ///
-    /// Creates a unique database for this test. **Note:** Test databases are NOT automatically
-    /// cleaned up. Run `scripts/cleanup_test_dbs.sh` periodically to remove orphaned databases.
+    /// Creates a unique database for this test. It is dropped by [`TestDb::cleanup`], or on a
+    /// best-effort basis when the `TestDb` is dropped (unless `TIDEWAY_TEST_KEEP_DBS=1`).
     ///
     /// # Example
     ///
@@ -255,6 +264,7 @@ impl TestDb {
         Ok(Self {
             connection,
             backend: TestDbBackend::PostgresContainer,
+            postgres: None,
             container: Some(Arc::new(container)),
         })
     }
@@ -314,9 +324,26 @@ impl TestDb {
         Ok(Self {
             connection,
             backend: TestDbBackend::Postgres,
+            postgres: Some(PostgresTestDatabase {
+                admin_url: base_url.to_string(),
+                db_name,
+            }),
             #[cfg(feature = "test-containers")]
             container: None,
         })
+    }
+
+    /// Close the connection and drop the per-test PostgreSQL database.
+    ///
+    /// Prefer this over relying on `Drop` when you want cleanup errors reported. For the
+    /// SQLite and container backends this only closes the connection.
+    pub async fn cleanup(mut self) -> Result<(), DbErr> {
+        let postgres = self.postgres.take();
+        std::mem::take(&mut self.connection).close().await?;
+        match postgres {
+            Some(postgres) => postgres.drop_database().await,
+            None => Ok(()),
+        }
     }
 
     /// Get a clone of the database connection
@@ -465,6 +492,67 @@ impl TestDb {
             .await?;
 
         Ok(())
+    }
+}
+
+impl Drop for TestDb {
+    fn drop(&mut self) {
+        let Some(postgres) = self.postgres.take() else {
+            return;
+        };
+        if std::env::var(KEEP_DBS_ENV).is_ok_and(|value| value == "1") {
+            return;
+        }
+        // Drop can't await, and blocking on the caller's runtime would panic or deadlock,
+        // so run the drop on its own thread with a small runtime and wait for it.
+        let handle = std::thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            else {
+                return;
+            };
+            let _ = runtime.block_on(postgres.drop_database());
+        });
+        let _ = handle.join();
+    }
+}
+
+/// A per-test PostgreSQL database and the admin URL used to create it.
+struct PostgresTestDatabase {
+    admin_url: String,
+    db_name: String,
+}
+
+impl PostgresTestDatabase {
+    async fn drop_database(&self) -> Result<(), DbErr> {
+        let mut options = ConnectOptions::new(&self.admin_url);
+        options
+            .max_connections(1)
+            .connect_timeout(Duration::from_secs(5))
+            .acquire_timeout(Duration::from_secs(5))
+            .sqlx_logging(false);
+        let admin_connection = Database::connect(options).await?;
+        // FORCE terminates any connections still open to the test database (PostgreSQL 13+).
+        let drop_db_stmt = format!(
+            "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)",
+            escape_identifier(&self.db_name)
+        );
+        let result = admin_connection
+            .execute(Statement::from_string(
+                sea_orm::DatabaseBackend::Postgres,
+                drop_db_stmt,
+            ))
+            .await
+            .map(|_| ())
+            .map_err(|e| {
+                DbErr::Custom(format!(
+                    "Failed to drop test database '{}': {}",
+                    self.db_name, e
+                ))
+            });
+        let _ = admin_connection.close().await;
+        result
     }
 }
 
