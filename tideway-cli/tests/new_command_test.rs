@@ -184,11 +184,7 @@ fn test_new_credits_seaorm_includes_database_and_ledger_schema() {
 }
 
 #[test]
-fn test_new_command_compiles_with_features_smoke() {
-    if std::env::var("TIDEWAY_CLI_SMOKE").is_err() {
-        return;
-    }
-
+fn test_new_command_auth_database_compiles_and_tests_against_workspace_source() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
 
@@ -209,16 +205,10 @@ fn test_new_command_compiles_with_features_smoke() {
 
     tideway_cli::commands::new::run(args).expect("run new command");
 
-    let output = std::process::Command::new("cargo")
-        .arg("check")
-        .current_dir(&project_dir)
-        .output()
-        .expect("run cargo check");
+    patch_scaffold_to_workspace(&project_dir);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("cargo check failed: {}", stderr);
-    }
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
 }
 
 #[test]

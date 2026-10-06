@@ -31,6 +31,9 @@ bash scripts/check_issue_template_dx_ambiguity.sh
 echo "[verify] cli filesystem policy"
 bash scripts/check_cli_fs_writes.sh
 
+echo "[verify] scaffold tests not env-gated"
+bash scripts/check_no_gated_scaffold_tests.sh
+
 echo "[verify] public api surface"
 bash scripts/check_public_api_surface.sh
 
