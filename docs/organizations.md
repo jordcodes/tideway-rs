@@ -199,6 +199,49 @@ For JWT org-context extraction and permission guards, use:
 - `organizations::auth::RequireOrgMembership`
 - `organizations::auth::RequirePermission`
 
+## Resource Authorization Policies
+
+Organization roles (`OrgRolePermissions`) cover org-level actions such as managing members or
+deleting the organization. For app data, use `tideway::policy` to decide whether an actor may act
+on a specific record — for example, whether a member may edit a given project. The module is not
+feature-gated.
+
+- `Policy<Actor, Resource>`: `view_any`, `view`, `create`, `update`, and `delete` abilities, all
+  denied unless implemented, plus a `before` hook for overrides such as super-admins.
+  `authorize(actor, action, resource)` returns `TidewayError::Forbidden` when denied.
+- `RolePermissions`: permission strings attached to role names. A granted `"*"` matches every
+  permission and `"projects.*"` matches `"projects.update"`, `"projects.update.own"`, and so on.
+- `OrgActor`: the caller's user ID, organization ID, and role, with `can`, `is`, and `belongs_to`
+  helpers.
+
+```rust
+use tideway::policy::{Action, OrgActor, Policy, RolePermissions};
+
+struct ProjectPolicy {
+    permissions: RolePermissions,
+}
+
+impl Policy<OrgActor, project::Model> for ProjectPolicy {
+    fn update(&self, actor: &OrgActor, project: &project::Model) -> bool {
+        actor.belongs_to(&project.organization_id)
+            && (actor.can(&self.permissions, "projects.update")
+                || (actor.is(&project.owner_id)
+                    && actor.can(&self.permissions, "projects.update.own")))
+    }
+}
+
+let policy = ProjectPolicy {
+    permissions: RolePermissions::new()
+        .grant("owner", ["*"])
+        .grant("admin", ["projects.*"])
+        .grant("member", ["projects.view", "projects.update.own"]),
+};
+policy.authorize(&actor, Action::Update, Some(&project))?;
+```
+
+On SaaS scaffolds, `tideway resource <name>` with the `api`, `tenant`, or `owned` profile generates
+`src/policies/<name>.rs` and routes every handler through it (see `docs/cli.md`).
+
 ## Billing Integration
 
 When both `organizations` and `billing` features are enabled, you can use

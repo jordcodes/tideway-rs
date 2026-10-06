@@ -218,6 +218,7 @@ Canonical onboarding path:
 - `tideway dev --fix-env`
 - `tideway resource <name>`
 - `tideway migrate`
+- `tideway seed` (optional demo data from `src/bin/seed.rs`)
 
 For advanced/manual composition patterns, see `docs/module_contracts.md`.
 

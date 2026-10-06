@@ -16,7 +16,7 @@ docs=(
   "docs"
 )
 
-allowed_top_level_regex='^(new|doctor|generate|backend|add|init|resource|setup|dev|migrate|templates)$'
+allowed_top_level_regex='^(new|doctor|generate|backend|add|init|resource|setup|dev|migrate|seed|templates)$'
 invalid_top_level=()
 
 while IFS= read -r line; do

@@ -14,5 +14,6 @@ pub mod migrate;
 pub(crate) mod migration_naming;
 pub mod new;
 pub mod resource;
+pub mod seed;
 pub mod setup;
 pub mod templates;

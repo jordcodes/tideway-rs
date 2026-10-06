@@ -16,6 +16,7 @@ Primary (recommended for most users):
 - `resource`
 - `doctor`
 - `migrate`
+- `seed`
 
 Advanced (existing projects, nonstandard workflows, or legacy compatibility):
 - `add`
@@ -45,6 +46,7 @@ If you run it without extra flags, it will prompt for options and default to the
 The first interactive screen promotes `api`, `saas`, and `worker`; `minimal`, backend presets, and custom feature picking stay under an advanced branch.
 In non-interactive/CI use, `--no-prompt` follows the same API-first defaults unless you explicitly choose a different preset or shape flags.
 For the default API path, local development uses SQLite unless you explicitly add `--with-docker` for Postgres.
+`--with-docker` only adds `docker-compose.yml` for local Postgres. Every scaffold gets a multi-stage production `Dockerfile` and `.dockerignore`; see `docs/deployment.md`.
 The API preset seeds a sample `todo` resource wired through entity, repository, and service layers, with `limit`, `offset`, and `q` support on the list endpoint. Generated list queries default to 20 rows and cap `limit` at 100.
 The API preset also generates database-backed registration, login, refresh rotation, logout, password reset, email verification, and `GET /auth/me`. Verification and reset emails use Tideway's default lifecycle templates (customize them in the generated `src/email.rs`) and are delivered by background job workers; set `EMAIL_PROVIDER` to `console` (development), `resend`, or `smtp`, and leave it unset to disable the email-dependent routes. Any `tideway new` app with both `auth` and `database` gets the `email` and `jobs` features for this. Public registration is disabled by default and must be explicitly enabled with `ALLOW_PUBLIC_REGISTRATION=true` for an intentional self-service or bootstrap flow. The SaaS preset goes further with working password-reset and email-verification flows plus provider-neutral Resend, SMTP, development console, and custom `Mailer` options. Keep `REQUIRE_EMAIL_VERIFICATION=false` until a production provider and verified sender are configured.
 The SaaS preset generates the B2B auth/billing/organizations/admin backend scaffold with Postgres Docker, CI, env defaults, secure email-delivered organization invitations, and a public `GET /billing/public/plans` smoke endpoint. Invitation files are generated only on this greenfield path; upgrades never overwrite an application's organization model.
@@ -170,6 +172,30 @@ Recommended full API resource:
 tideway resource user
 ```
 
+Define fields inline as `name:type`:
+
+```bash
+tideway resource post title:string body:text published:bool views:int published_at:datetime
+```
+
+Inline fields drive the entity, migration, request/response DTOs, service validation, and search
+(the first string field is searchable). Supported types:
+
+| Type | Rust | Column |
+|------|------|--------|
+| `string` | `String` | `string()` |
+| `text` | `String` | `text()` |
+| `bool` / `boolean` | `bool` | `boolean()` |
+| `int` / `integer` / `i32` | `i32` | `integer()` |
+| `bigint` / `i64` | `i64` | `big_integer()` |
+| `datetime` / `timestamp` | `i64` (unix seconds) | `big_integer()` |
+
+Inline fields replace the profile's default domain fields; structural fields are kept
+(`organization_id`/`owner_id` for scoped profiles, `created_at`/`updated_at` for timestamped profiles).
+String fields are trimmed and must be non-empty. Names must be snake_case and may not be Rust
+keywords or reserved generator names (`id`, `active`, `model`, `actor`, `db`, `query`, `search`,
+`limit`, `offset`, `q`, `table`).
+
 Intent-specific full-stack profiles:
 
 ```bash
@@ -219,6 +245,7 @@ Use `--service` to generate a validating service layer on top of the repository,
 On SaaS scaffolds with organizations (auth plus `organization_member`), full-stack `api` and `tenant` resources are never public: they add an `organization_id` column, require a bearer access token on every route, resolve the caller's organization membership (honoring `x-organization-id`), and scope every list/get/update/delete to that organization. `organization_id` comes from the caller, not the request body. Records from other organizations return not found.
 On SaaS scaffolds with the shared request actor contract, generated `api`, `tenant`, `owned`, and `admin` resources also move tenant/admin enforcement into the service layer instead of keeping it only in the route handlers.
 Generated `owned` services keep cross-tenant lookups opaque, but return an explicit forbidden error when a record is in the caller's organization and owned by a different user.
+Those organization-scoped `api`, `tenant`, and `owned` resources also generate a resource policy at `src/policies/<name>.rs` (a `tideway::policy::Policy` implementation with `RolePermissions` grants). The service holds the policy (`Service::new(repo).with_policy(...)` swaps it), and every list/get/create/update/delete goes through a `*_authorized` service method that calls `policy.authorize(...)` before touching data, so a denied action returns forbidden. Default grants: `owner` and `admin` get `<plural>.*`; `member` gets `view`, `create`, and `update` (plus `delete` for `owned` records, which are also limited to their owner). Edit the grants or the per-record checks in the policy file to change access.
 Those actor-aware service writes also generate a no-op audit hook seam with a structured event payload (`action`, `actor_id`, `organization_id`, `resource`, `resource_id`) so create/update/delete flows have one obvious place to attach activity logging, event publishing, or outbound side effects.
 Use `--id-type` to switch ID generation (int or uuid) for DB scaffolding. Use `--add-uuid` to automatically add the `uuid` dependency.
 Use `--paginate` to add limit/offset query params to list endpoints.
@@ -348,9 +375,34 @@ tideway migrate init
 tideway migrate up -- --num 2
 ```
 
+### `tideway seed`
+
+Load development or demo data with one command.
+
+```bash
+tideway seed
+tideway seed --fix-env            # bootstrap .env from .env.example first
+tideway seed --bin demo_data      # run a different seed binary
+tideway seed -- --any-app-arg     # args after `--` go to the seed binary
+```
+
+Convention: the seed program is the app's own Cargo binary `src/bin/seed.rs` (or any `[[bin]]`
+named `seed`). `tideway seed` loads `.env` (shell variables win), validates `DATABASE_URL`, and
+runs `cargo run --bin seed`. Database-backed apps from `tideway new` include one. It applies
+pending migrations, reuses the app's SeaORM entities through `src/entities/mod.rs`, and in the
+API preset inserts sample todos. Keep seeds idempotent: insert a row only when it is missing,
+so reruns are safe. The generated `Cargo.toml` sets `default-run` so `cargo run` and
+`tideway dev` still start the server.
+
+To start from an empty database, reset it first: `tideway migrate fresh && tideway seed`.
+
+To promote test fixtures to demo data, move the inserts from `TestDb::seed(&[...])` or a test
+setup function into `src/bin/seed.rs`. Use `db.execute_unprepared(sql)` for raw SQL fixtures, or
+entity `ActiveModel`s for portable inserts.
+
 ## Notes
 
-- Canonical path: `new` -> `dev` -> `resource <name>` -> `migrate`.
+- Canonical path: `new` -> `dev` -> `resource <name>` -> `migrate` -> `seed` (optional demo data).
 - `tideway new` is intended to steer new users into the API-first path by default; use `--preset minimal` only when you want the lighter scaffold explicitly.
 - `tideway doctor` is a quick sanity check and repair tool, not a required first-run step.
 - Frontend `generate` / `setup` flows are advanced helpers, not a co-equal onboarding path with the backend/API workflow. `generate` covers Vue (all modules), React/Next.js (auth), and a framework-agnostic typed client; `setup` automates Vue projects only.

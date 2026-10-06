@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1
+# Production image for {{project_name}}. Build with: docker build -t {{project_name}} .
+
+# --- Build stages ---
+# cargo-chef compiles dependencies in their own layer, so rebuilds after code-only changes
+# skip recompiling them.
+FROM lukemathwalker/cargo-chef:latest-rust-1-bookworm AS chef
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+# Fresh scaffolds don't ship a lockfile; commit Cargo.lock for reproducible builds.
+RUN test -f Cargo.lock || cargo generate-lockfile
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --locked --bin {{project_name}} --recipe-path recipe.json
+COPY . .
+COPY --from=planner /app/Cargo.lock Cargo.lock
+RUN cargo build --release --locked --bin {{project_name}}
+
+# --- Runtime stage ---
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --system --create-home --home-dir /app --uid 10001 app
+WORKDIR /app
+{{#if is_sqlite_database}}
+
+# SQLite data lives here; mount a persistent volume at /app/data in production.
+RUN mkdir -p /app/data && chown app:app /app/data
+ENV DATABASE_URL=sqlite:///app/data/{{project_name}}.db?mode=rwc
+{{/if}}
+
+COPY --from=builder /app/target/release/{{project_name}} /usr/local/bin/{{project_name}}
+
+USER app
+
+# Hosts such as Fly and Railway route traffic to $PORT.
+ENV TIDEWAY_HOST=0.0.0.0 \
+    PORT=8000 \
+    TIDEWAY_LOG_JSON=true
+EXPOSE 8000
+
+CMD ["{{project_name}}"]

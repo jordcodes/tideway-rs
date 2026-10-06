@@ -17,6 +17,7 @@ The default API scaffold uses SQLite locally, so this path boots without extra d
 It also includes a sample `todo` resource wired through entity, repository, and service layers, with pagination and `q` search already enabled on the list endpoint.
 `tideway dev --fix-env` creates `.env` from `.env.example`, replaces known development placeholders with cryptographically random local secrets, and runs pending migrations. It is safe to rerun: configured secrets are preserved.
 If you want local Postgres instead, run `tideway new my_app --with-docker`, then `docker compose up -d` before `tideway dev --fix-env`.
+Every scaffold also includes a production `Dockerfile`; see `docs/deployment.md` for building it and deploying to Fly.io or Railway.
 
 ## 2) Run the server
 
@@ -35,6 +36,7 @@ tideway migrate
 
 The default API profile scaffolds routes, database entity/migration, repository, service, pagination, search, and wiring. Use the shape flags in the CLI reference only when you intentionally want a partial or customized scaffold.
 If `tideway dev --fix-env` is not already running, start it now.
+Run `tideway seed` to load demo data from `src/bin/seed.rs` (the API preset seeds sample todos).
 Run `tideway doctor` when you want a quick sanity check; it is not required for the happy path.
 
 ## 4) OpenAPI docs

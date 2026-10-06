@@ -277,9 +277,14 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         }
         println!();
         println!("Optional: run `tideway doctor` for a project/setup audit.");
+        println!(
+            "Deploy: `docker build -t {} .` builds a production image (see Tideway's docs/deployment.md).",
+            project_name
+        );
         println!();
         if should_suggest_migrate(args.preset, has_database_feature) {
             println!("Tip: run `tideway migrate` when you need explicit migration control.");
+            println!("Tip: run `tideway seed` to load demo data from src/bin/seed.rs.");
             println!();
         }
 
@@ -394,6 +399,16 @@ fn scaffold_files(
         &engine.render("starter/gitignore")?,
         args.force,
     )?;
+    write_file_with_force_or_error_default(
+        &target_dir.join("Dockerfile"),
+        &engine.render("starter/Dockerfile")?,
+        args.force,
+    )?;
+    write_file_with_force_or_error_default(
+        &target_dir.join(".dockerignore"),
+        &engine.render("starter/dockerignore")?,
+        args.force,
+    )?;
 
     write_file_with_force_or_error_default(
         &target_dir.join("tests/health.rs"),
@@ -428,6 +443,16 @@ fn scaffold_files(
         write_file_with_force_or_error_default(
             &target_dir.join("src/entities/mod.rs"),
             &engine.render("starter/src/entities/mod.rs")?,
+            args.force,
+        )?;
+        let seed_template = if matches!(args.preset, Some(NewPreset::Api)) {
+            "starter/src/bin/seed_api.rs"
+        } else {
+            "starter/src/bin/seed.rs"
+        };
+        write_file_with_force_or_error_default(
+            &target_dir.join("src/bin/seed.rs"),
+            &engine.render(seed_template)?,
             args.force,
         )?;
 
@@ -576,10 +601,16 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
     }
 
     files.push(".gitignore".to_string());
+    files.push("Dockerfile".to_string());
+    files.push(".dockerignore".to_string());
     files.push("tests/health.rs".to_string());
 
     if needs_env {
         files.push(".env.example".to_string());
+    }
+
+    if has_database_feature {
+        files.push("src/bin/seed.rs".to_string());
     }
 
     if backend_preset.is_none() && has_database_feature {
@@ -1273,6 +1304,7 @@ fn preset_backend_preset(preset: NewPreset) -> Option<BackendPreset> {
 fn scaffold_api_preset(target_dir: &Path, runtime: CommandRuntime) -> Result<()> {
     let args = ResourceArgs {
         name: "todo".to_string(),
+        fields: Vec::new(),
         path: target_dir.to_string_lossy().to_string(),
         wire: false,
         with_tests: true,
@@ -1385,6 +1417,7 @@ fn scaffold_wizard_resource(
 ) -> Result<()> {
     let args = ResourceArgs {
         name: resource.name,
+        fields: Vec::new(),
         path: target_dir.to_string_lossy().to_string(),
         wire: true,
         with_tests: resource.with_tests,

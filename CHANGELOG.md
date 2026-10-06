@@ -31,6 +31,14 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
+- Added resource-level authorization policies in `tideway::policy`: a deny-by-default
+  `Policy<Actor, Resource>` trait (`view_any`, `view`, `create`, `update`, `delete`, and a
+  `before` hook), `RolePermissions` for attaching permission strings (with `*` and `resource.*`
+  wildcards) to roles, and an `OrgActor` subject for organization-scoped records. On SaaS
+  scaffolds, `tideway resource` with the `api`, `tenant`, or `owned` profile now generates
+  `src/policies/<name>.rs` and authorizes every handler through it. By default, members can no
+  longer delete `api`/`tenant` records; edit the generated grants to change this. Existing
+  generated resources are unchanged. See `docs/organizations.md#resource-authorization-policies`.
 - `ConfigBuilder::from_env()` now applies environment variables on top of existing builder
   values instead of replacing configured settings with defaults. Values set on the builder
   survive when the corresponding environment variables are absent; present environment
@@ -284,6 +292,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   OpenTelemetry trace ID as trace context. `App::serve` flushes them on shutdown. The new
   `ErrorReporter::flush` method has a default implementation, so existing reporters still
   compile.
+- `tideway new` now generates a multi-stage production `Dockerfile` (cargo-chef dependency
+  caching, slim non-root Debian runtime listening on `$PORT`) and `.dockerignore` for every
+  scaffold. The new `docs/deployment.md` covers building the image and deploying to Fly.io and
+  Railway.
 - File storage: the `storage` feature adds a `FileStorage` trait over `object_store` with a
   `LocalStorage` backend (HMAC-signed presigned URLs served by `LocalStorage::router()`) and an
   in-memory backend for tests; `storage-s3` adds `ObjectStorage::s3` and `ObjectStorage::r2`
@@ -442,6 +454,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
+- `tideway seed` loads development/demo data with one command: it loads `.env`, validates
+  `DATABASE_URL`, and runs the app's `seed` binary (`cargo run --bin seed`; `--bin` selects
+  another). New database-backed apps include an idempotent `src/bin/seed.rs` that applies pending
+  migrations and reuses the app's SeaORM entities; the API preset seeds sample todos. Their
+  `Cargo.toml` sets `default-run`, and `tideway dev` watch mode now honours `default-run` when
+  an app has more than one binary. Existing apps can adopt the convention by adding
+  `src/bin/seed.rs` and `default-run`; see `docs/cli.md#tideway-seed`.
 - `tideway generate client --spec openapi.json` generates a typed, dependency-free TypeScript
   client (`./src/api/client.ts` by default) from an app's OpenAPI document: an interface or type
   per `components.schemas` entry and one typed function per operation, with path/query/body

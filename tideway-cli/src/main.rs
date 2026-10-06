@@ -31,6 +31,7 @@ fn main() -> Result<()> {
         Commands::Setup(args) => tideway_cli::commands::setup::run_with_runtime(args, runtime),
         Commands::Dev(args) => tideway_cli::commands::dev::run_with_runtime(args, runtime),
         Commands::Migrate(args) => tideway_cli::commands::migrate::run_with_runtime(args, runtime),
+        Commands::Seed(args) => tideway_cli::commands::seed::run_with_runtime(args, runtime),
         Commands::Templates => tideway_cli::commands::templates::run_with_runtime(runtime),
     };
 
