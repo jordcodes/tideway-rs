@@ -5,7 +5,10 @@ use axum::{
     routing::{get, patch, post},
     Json, Router,
 };
-use sea_orm::{entity::*, ColumnTrait, DatabaseConnection, PaginatorTrait, QueryFilter, QueryOrder};
+use sea_orm::{
+    entity::*, ColumnTrait, DatabaseConnection, PaginatorTrait, QueryFilter, QueryOrder,
+    TransactionTrait,
+};
 {{#if has_billing_feature}}
 use sea_orm::{FromQueryResult, QuerySelect};
 {{/if}}
@@ -23,7 +26,7 @@ use uuid::Uuid;
 use chrono::{Duration, Utc};
 
 use crate::auth::RequestActor;
-use crate::entities::user;
+use crate::entities::{refresh_token_family, user};
 {{#if has_organizations}}
 use crate::entities::{organization, organization_member};
 {{/if}}
@@ -499,11 +502,30 @@ async fn update_user(
     let target_uuid = Uuid::parse_str(&user_id)
         .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
 
+    // Admins cannot lock or demote themselves; another admin must do it.
+    if target_uuid == actor.user.id
+        && (body.locked == Some(true) || body.is_platform_admin == Some(false))
+    {
+        return Err(TidewayError::BadRequest(
+            "Admins cannot lock or demote their own account".into(),
+        ));
+    }
+
+    let txn = state.db.begin().await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
     let user = user::Entity::find_by_id(target_uuid)
-        .one(state.db.as_ref())
+        .one(&txn)
         .await
         .map_err(|e| TidewayError::Database(e.to_string()))?
         .ok_or_else(|| TidewayError::NotFound("User not found".into()))?;
+
+    // Locking or demoting must end existing sessions: bumping session_version
+    // rejects outstanding access tokens, and deleting refresh token families
+    // stops them minting new ones.
+    let revoke_sessions = body.locked == Some(true)
+        || (user.is_platform_admin && body.is_platform_admin == Some(false));
+    let next_session_version = user.session_version + 1;
 
     let mut active: user::ActiveModel = user.into();
 
@@ -531,11 +553,26 @@ async fn update_user(
         active.is_platform_admin = Set(is_admin);
     }
 
+    if revoke_sessions {
+        active.session_version = Set(next_session_version);
+    }
+
     active.updated_at = Set(Utc::now().into());
 
     active
-        .update(state.db.as_ref())
+        .update(&txn)
         .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+    if revoke_sessions {
+        refresh_token_family::Entity::delete_many()
+            .filter(refresh_token_family::Column::UserId.eq(target_uuid))
+            .exec(&txn)
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+    }
+
+    txn.commit().await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
     Ok(MessageResponse::success("User updated"))
