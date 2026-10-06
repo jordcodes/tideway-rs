@@ -26,7 +26,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 >
 > Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
 > `CreateRefundRequest` has a new `idempotency_key` field,
-> `BillingEvent::OneTimeCheckoutCompleted` and `Refund` have new fields, `CreditTransactionKind` is
+> `BillingEvent::OneTimeCheckoutCompleted`, `BillingEvent::InvoicePaid`,
+> `BillingEvent::InvoicePaymentFailed`, and `Refund` have new fields, `CreditTransactionKind` is
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
@@ -267,6 +268,17 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
+- Default, overridable lifecycle emails (`tideway::email::lifecycle`): templates for email
+  verification, password reset, organization invitation, trial ending, payment failed, and
+  receipt, rendered through an `EmailTemplates`/`EmailLayout` pair that applications can override
+  per email or wholesale. `LifecycleEmailer::queued` delivers them through the new
+  `SendEmailJob` (`register_email_jobs`) when the `jobs` feature is enabled. `Email` now derives
+  `Serialize`, `Deserialize`, `PartialEq`, and `Eq`.
+- `billing::LifecycleEmailBillingSink` (with `email`) sends the trial-ending, payment-failed, and
+  receipt lifecycle emails from Stripe webhooks, resolving recipients from the invoice's customer
+  email or an application `BillingEmailRecipients`. The webhook handler now processes
+  `customer.subscription.trial_will_end` as `BillingEvent::TrialWillEnd`, and invoice events carry
+  an `InvoiceSummary` (number, customer email, amounts, currency, hosted invoice URL).
 - `ImpersonationRequestBody` and `DeletionRequestBody` are safe deserializable request bodies with
   no actor field and `deny_unknown_fields`. Their `into_request(actor_id)` method combines the body
   with the authenticated user's ID.
@@ -319,6 +331,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   listed at the top of this release mean it cannot ship as a 0.8.x patch release.
 - `BillingEvent::OneTimeCheckoutCompleted` has a new `payment_intent_id` field. Code that
   constructs it, or destructures it without `..`, must be updated.
+- `BillingEvent::InvoicePaid` and `BillingEvent::InvoicePaymentFailed` have a new
+  `invoice: InvoiceSummary` field. Code that constructs them, or destructures them without `..`,
+  must be updated. `InvoiceSummary` is `#[non_exhaustive]` and implements `Default`.
 - `CreditTransactionKind` has a new `Revoke` variant and is now `#[non_exhaustive]`. Exhaustive
   matches on it must add a wildcard arm; later kinds will not be breaking.
 - `CreditTopUpEventSink` now keys grants by `stripe-payment-intent:{id}` instead of
@@ -403,6 +418,15 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   is released alongside Tideway 0.9.0. CLI 0.9.x targets Tideway 0.9.x; patch releases stay
   independent, so CLI fixes can ship without a framework release. Newly generated applications
   use Tideway 0.9.0.
+- New database-backed auth apps (the API preset, or `--features auth,database`) send email
+  verification and password-reset emails out of the box. The generated `DbUserStore` implements
+  `VerificationStore` (reusing the `auth_tokens` table) and queues Tideway's default lifecycle
+  templates; `main.rs` starts background workers to deliver them. The new `src/email.rs` selects
+  the provider from `EMAIL_PROVIDER`/`EMAIL_FROM`/`APP_URL` and holds the `AppEmailTemplates`
+  override point. `/auth/email/verify` and `/auth/email/verification/resend` are mounted with the
+  password-reset routes when email delivery is configured. These apps now enable the `email` and
+  `jobs` features, and `AuthModule::with_email_delivery` takes the `AppEmails` handle. Existing
+  applications are unaffected; see `docs/email.md` to adopt the same wiring by hand.
 
 ### Migration Notes
 

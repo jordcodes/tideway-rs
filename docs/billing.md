@@ -1229,7 +1229,10 @@ async fn stripe_webhook(
 Construct the handler with `.with_event_sink(AppBillingEvents)`. Without that call Tideway uses
 `NoOpBillingEventSink`, so applications that do not need hooks require no additional configuration.
 Tideway currently emits typed events for subscription-mode checkout completion, subscription
-creation/update/deletion, paid invoices, and failed invoice payments.
+creation/update/deletion, trials about to end (`customer.subscription.trial_will_end`), paid
+invoices, and failed invoice payments. Invoice events include an `InvoiceSummary` with the
+invoice number, customer email, amounts, currency, and hosted invoice URL. Subscribe your Stripe
+webhook endpoint to each of these event types.
 
 The sink runs after Tideway's core subscription-state mutation. If it returns an error, Tideway
 releases the webhook claim so Stripe can retry; the core mutation and sink may consequently run
@@ -1240,6 +1243,35 @@ network calls inside the webhook request.
 The built-in `billing_processed_events` table belongs to one Tideway billing webhook consumer. If
 an application also processes Stripe Connect or another independent Stripe webhook stream, give
 that consumer a separate idempotency table or use a store keyed by both consumer name and event ID.
+
+### Billing lifecycle emails
+
+With the `email` feature, `LifecycleEmailBillingSink` sends the built-in trial-ending,
+payment-failed, and receipt emails (see [Lifecycle Emails](./email.md#lifecycle-emails)):
+
+| Stripe event | Email |
+|--------------|-------|
+| `customer.subscription.trial_will_end` | Trial ending (while the subscription is still `trialing`) |
+| `invoice.payment_failed` | Payment failed, with the amount due |
+| `invoice.paid` | Receipt, linking to the hosted invoice (skipped for $0 invoices) |
+
+```rust
+use tideway::billing::{BillingEmailRecipients, LifecycleEmailBillingSink};
+use tideway::email::LifecycleEmailKind;
+
+let sink = LifecycleEmailBillingSink::new(emailer, "https://app.example.com/settings/billing")
+    .with_recipients(Arc::new(OwnerEmails { db }))   // needed for trial reminders
+    .with_plans(plans.clone())                       // plan display names in emails
+    .without(LifecycleEmailKind::Receipt)            // e.g. if Stripe already sends receipts
+    .with_inner(AppBillingEvents);                   // your existing sink runs first
+let handler = WebhookHandler::new(store, secret, plans).with_event_sink(sink);
+```
+
+Invoice emails go to the invoice's `customer_email`. Trial reminders, and invoices without one,
+use `BillingEmailRecipients::recipient(customer_id, billable_id)`; if it returns `None` the email
+is skipped with a warning. Emails are sent only after the inner sink succeeds, and Tideway's
+webhook idempotency prevents duplicates on Stripe redelivery. Use `LifecycleEmailer::queued` so
+delivery runs in a background job instead of the webhook request.
 
 ### Rotating webhook signing secrets
 

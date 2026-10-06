@@ -12,9 +12,13 @@ use sea_orm::{
     DatabaseConnection, EntityTrait, QueryFilter, Set, Statement,
 };
 use serde_json::{json, Value};
+use std::{sync::Mutex, time::Duration};
 use tideway::{auth::{AccessTokenClaims, AuthProvider, JwtAuth, JwtAuthConfig, PasswordResetStore, TokenSubject{{#if has_auth_mfa_feature}}, MfaSecretCipher, TotpConfig, TotpManager{{/if}}}, App};
+use tideway::email::{EmailBranding, LifecycleEmailer};
+use tideway::{AppContext, Email, InMemoryJobQueue, JobQueue, JobRegistry, Mailer};
 use tower::ServiceExt;
 use super::{AuthModule, DbUserStore, SimpleAuthProvider};
+use crate::email::AppEmails;
 use crate::entities::{auth_token, refresh_token_family, user};
 
 const JWT_SECRET: &str = "test-only-secret-with-at-least-32-bytes";
@@ -284,6 +288,186 @@ async fn test_app() -> Router {
         .register_module(auth)
         .into_router()
         .layer(Extension(provider))
+}
+
+#[derive(Default)]
+struct RecordingMailer(Mutex<Vec<Email>>);
+
+#[async_trait::async_trait]
+impl Mailer for RecordingMailer {
+    async fn send(&self, email: &Email) -> tideway::Result<()> {
+        self.0.lock().expect("mailer lock").push(email.clone());
+        Ok(())
+    }
+
+    fn is_healthy(&self) -> bool {
+        true
+    }
+}
+
+/// An app whose lifecycle emails are queued on `queue`, as in production.
+async fn test_app_with_emails(require_verification: bool, queue: Arc<InMemoryJobQueue>) -> Router {
+    let db = connect_test_database().await;
+    Migrator::up(&db, None).await.expect("run migrations");
+    let db = Arc::new(db);
+    let jwt = JwtAuth::new(
+        JwtAuthConfig::with_secure_secret(JWT_SECRET, JWT_ISSUER)
+            .expect("valid secret")
+            .audience(JWT_AUDIENCE),
+    )
+    .expect("create paired auth");
+    let issuer = jwt.issuer();
+    let verifier = jwt
+        .verifier::<AccessTokenClaims<serde_json::Value>>()
+        .expect("create verifier");
+    let provider = SimpleAuthProvider::new(verifier, db.clone());
+    let emailer = LifecycleEmailer::queued(
+        queue,
+        "noreply@example.com",
+        EmailBranding::new(DISPLAY_APP_NAME),
+    );
+    let auth = AuthModule::new(db, issuer, JWT_SECRET.to_owned(), DISPLAY_APP_NAME)
+        .with_public_registration(true)
+        .with_email_delivery(AppEmails::new(emailer, "https://app.example.com"))
+        .with_email_verification_required(require_verification)
+        {{#if has_auth_mfa_feature}}
+        .with_mfa_cipher(Arc::new(
+            MfaSecretCipher::from_base64("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+                .expect("valid test MFA key"),
+        ))
+        {{/if}}
+        ;
+
+    App::new()
+        .register_module(auth)
+        .into_router()
+        .layer(Extension(provider))
+}
+
+/// Run the next queued email job the way the background worker does.
+async fn deliver_next_email(queue: &InMemoryJobQueue) -> Email {
+    let mailer = Arc::new(RecordingMailer::default());
+    let registry = JobRegistry::new();
+    tideway::email::register_email_jobs(&registry).await;
+    let worker_context = Arc::new(AppContext::builder().with_mailer(mailer.clone()).build());
+    for _ in 0..300 {
+        if let Some(job) = queue.dequeue().await.expect("dequeue email job") {
+            registry
+                .execute(job, worker_context)
+                .await
+                .expect("deliver email");
+            return mailer.0.lock().expect("mailer lock").pop().expect("email sent");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no email was queued");
+}
+
+fn link_token(email: &Email, path: &str) -> String {
+    let text = email.text.as_deref().expect("plain-text body");
+    let marker = format!("https://app.example.com{path}?token=");
+    text.split(&marker)
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("missing {path} link in: {text}"))
+        .to_owned()
+}
+
+#[tokio::test]
+async fn password_reset_email_is_queued_and_its_link_resets_the_password() {
+    let queue = Arc::new(InMemoryJobQueue::new(3, 60));
+    let app = test_app_with_emails(false, queue.clone()).await;
+    let email = "reset-flow@example.com";
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/auth/register",
+        json!({"email": email, "password": "correct horse battery staple"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = request(&app, Method::POST, "/auth/password/reset", json!({"email": email})).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let sent = deliver_next_email(&queue).await;
+    assert_eq!(sent.to, vec![email.to_owned()]);
+    assert_eq!(sent.subject, format!("Reset your {DISPLAY_APP_NAME} password"));
+    assert!(sent.html.is_some());
+    let token = link_token(&sent, "/reset-password");
+
+    let new_password = "a brand new correct horse battery";
+    let (status, body) = request(
+        &app,
+        Method::POST,
+        "/auth/password/reset/complete",
+        json!({"token": token, "new_password": new_password}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reset response: {body}");
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/auth/login",
+        json!({"email": email, "password": new_password}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn registration_queues_verification_email_that_unlocks_login() {
+    let queue = Arc::new(InMemoryJobQueue::new(3, 60));
+    let app = test_app_with_emails(true, queue.clone()).await;
+    let email = "verify-flow@example.com";
+    let password = "correct horse battery staple";
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/auth/register",
+        json!({"email": email, "password": password}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/auth/login",
+        json!({"email": email, "password": password}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let sent = deliver_next_email(&queue).await;
+    assert_eq!(sent.to, vec![email.to_owned()]);
+    assert_eq!(sent.subject, format!("Verify your {DISPLAY_APP_NAME} email"));
+
+    // A resend issues a second, independently valid link.
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/auth/email/verification/resend",
+        json!({"email": email}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let resent = deliver_next_email(&queue).await;
+    let token = link_token(&resent, "/verify-email");
+
+    let (status, body) = request(&app, Method::POST, "/auth/email/verify", json!({"token": token})).await;
+    assert_eq!(status, StatusCode::OK, "verify response: {body}");
+    let (status, _) = request(&app, Method::POST, "/auth/email/verify", json!({"token": token})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "verification links are single-use");
+
+    let (status, login) = request(
+        &app,
+        Method::POST,
+        "/auth/login",
+        json!({"email": email, "password": password}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login response: {login}");
 }
 
 #[tokio::test]

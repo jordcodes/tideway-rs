@@ -53,6 +53,8 @@ pub mod audit;
 pub mod checkout;
 pub mod client;
 pub mod customer;
+#[cfg(feature = "email")]
+pub mod emails;
 pub mod entitlements;
 pub mod error;
 pub mod events;
@@ -112,7 +114,13 @@ pub use portal::{
 pub use webhook::{WebhookEvent, WebhookEventData, WebhookHandler, WebhookOutcome};
 
 // Billing lifecycle event exports
-pub use events::{BillingEvent, BillingEventContext, BillingEventSink, NoOpBillingEventSink};
+pub use events::{
+    BillingEvent, BillingEventContext, BillingEventSink, InvoiceSummary, NoOpBillingEventSink,
+};
+
+// Billing lifecycle email exports
+#[cfg(feature = "email")]
+pub use emails::{BillingEmailRecipients, LifecycleEmailBillingSink};
 
 // Invoice exports
 pub use invoice::{

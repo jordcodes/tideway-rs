@@ -116,11 +116,20 @@ fn test_new_command_includes_features_and_env() {
 
     tideway_cli::commands::new::run(args).expect("run new command");
 
+    // Database-backed auth delivers lifecycle emails through background jobs.
     assert_file_contains(
         &project_dir.join("Cargo.toml"),
-        "features = [\"auth\", \"database\"]",
+        "features = [\"auth\", \"database\", \"email\", \"jobs\"]",
     );
     assert_file_contains(&project_dir.join("Cargo.toml"), "default-features = false");
+    assert_file_contains(&project_dir.join(".env.example"), "EMAIL_PROVIDER=console");
+    assert_file_contains(
+        &project_dir.join("src/email.rs"),
+        "impl EmailTemplates for AppEmailTemplates",
+    );
+    assert_file_contains(&project_dir.join("src/main.rs"), ".with_email_delivery(");
+    assert_file_contains(&project_dir.join("src/main.rs"), "register_email_jobs");
+    assert_file_not_contains(&project_dir.join("src/auth/store.rs"), "implement delivery");
     assert_file_contains(&project_dir.join("Cargo.toml"), "sea-orm");
     assert_file_contains(&project_dir.join(".env.example"), "DATABASE_URL=");
     assert_file_contains(&project_dir.join(".env.example"), "JWT_SECRET=");

@@ -5,6 +5,11 @@
 //! - `SmtpMailer` - Sends emails via SMTP using lettre
 //! - `ResendMailer` - Sends emails through Resend's HTTPS API
 //!
+//! It also ships default, overridable lifecycle emails (verification, password
+//! reset, invitation, trial ending, payment failed, receipt) rendered by
+//! [`LifecycleEmailer`]. With the `jobs` feature they are delivered by a
+//! background worker through [`SendEmailJob`]. See [`lifecycle`] for details.
+//!
 //! # Example
 //!
 //! ```rust,ignore
@@ -26,10 +31,20 @@
 //! ```
 
 mod console;
+#[cfg(feature = "jobs")]
+mod job;
+pub mod lifecycle;
 mod resend;
 mod smtp;
 
 pub use console::ConsoleMailer;
+#[cfg(feature = "jobs")]
+pub use job::{SEND_EMAIL_JOB_TYPE, SendEmailJob, register_email_jobs};
+pub use lifecycle::{
+    Amount, DefaultEmailLayout, DefaultEmailTemplates, EmailAction, EmailBranding, EmailContent,
+    EmailLayout, EmailTemplates, LifecycleEmail, LifecycleEmailKind, LifecycleEmailer,
+    RenderedEmail, default_content,
+};
 pub use resend::{ResendConfig, ResendMailer};
 pub use smtp::{SmtpConfig, SmtpMailer};
 
