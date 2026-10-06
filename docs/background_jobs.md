@@ -11,6 +11,7 @@ The background job system consists of:
 - **Job Registry**: Maps job types to handler functions
 - **Workers**: Poll the queue and execute jobs
 - **Scheduling**: Schedule jobs for future execution
+- **Recurring jobs**: Enqueue jobs on cron schedules with a cross-instance lock
 
 ## Defining Jobs
 
@@ -133,6 +134,57 @@ let run_at = Utc::now() + Duration::hours(24);
 let job_id = queue.schedule(&job, run_at).await?;
 ```
 
+## Recurring Jobs (Cron)
+
+`JobScheduler` enqueues an existing `Job` on a cron schedule. The job goes onto the normal queue
+and is executed by workers through the `JobRegistry`, so recurring work needs no separate
+definition: register the handler once, then add the job to the scheduler.
+
+```rust
+use std::sync::Arc;
+use tideway::jobs::{InMemorySchedulerLock, JobScheduler};
+
+let scheduler = JobScheduler::new(Arc::new(InMemorySchedulerLock::new()))
+    // minute hour day-of-month month day-of-week (UTC)
+    .add("trial_ending_reminders", "0 9 * * *", TrialEndingRemindersJob)?
+    .add("sync_usage_to_stripe", "15 * * * *", SyncUsageJob)?
+    .add("cleanup_expired_tokens", "30 3 * * *", CleanupExpiredTokensJob)?;
+
+let app = App::with_config(config)
+    .with_context(ctx)
+    .start_workers(registry)
+    .start_scheduler(scheduler);
+```
+
+- Expressions are evaluated in UTC. Five-field expressions are standard cron; six- or
+  seven-field expressions add a leading seconds field and an optional trailing year.
+- Schedule names must be unique. They identify an occurrence across instances.
+- The job value is serialized and enqueued again for every occurrence.
+- Occurrences missed while no instance was running are not backfilled.
+- `App::start_scheduler` does nothing unless jobs are enabled and the context has a job queue. On
+  the shutdown signal it stops enqueueing before workers drain.
+- To manage the scheduler yourself, call `scheduler.start(queue)` and later
+  `handle.shutdown().await`.
+
+### Running multiple instances
+
+Each instance can run the same scheduler. Before an occurrence is enqueued, the instance claims a
+lock keyed by the schedule name and the occurrence time (`jobs:scheduler:lock:{name}:{unix_ts}`).
+Only the instance that gets the lock enqueues the job. With Redis this is `SET key 1 NX PX ttl`:
+
+```rust
+let queue = Arc::new(RedisJobQueue::new(&redis_url, None, 3, 60)?);
+let scheduler = JobScheduler::new(Arc::new(queue.scheduler_lock()))
+    .add("cleanup_expired_tokens", "30 3 * * *", CleanupExpiredTokensJob)?;
+// or: JobScheduler::new(Arc::new(RedisSchedulerLock::new(&redis_url)?))
+```
+
+`InMemorySchedulerLock` only excludes schedulers in the same process, so use it for
+single-instance deployments and tests. Locks last for an hour by default
+(`with_lock_ttl` changes this). That covers clock skew between instances. If the lock cannot
+be acquired, for example because Redis is unreachable, the occurrence is skipped rather than
+enqueued without the lock. Implement `SchedulerLock` to use another coordination backend.
+
 ## Redis Queue (Production)
 
 For production deployments with multiple workers, use Redis:
@@ -245,4 +297,3 @@ Future versions may include:
 - Job progress tracking
 - Dead letter queue for permanently failed jobs
 - Cloud provider backends (AWS SQS, Google Cloud Tasks)
-- Cron-style scheduling with cron expressions

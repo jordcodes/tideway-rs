@@ -193,11 +193,7 @@ fn test_new_credits_seaorm_includes_database_and_ledger_schema() {
 }
 
 #[test]
-fn test_new_command_compiles_with_features_smoke() {
-    if std::env::var("TIDEWAY_CLI_SMOKE").is_err() {
-        return;
-    }
-
+fn test_new_command_auth_database_compiles_and_tests_against_workspace_source() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
 
@@ -218,16 +214,10 @@ fn test_new_command_compiles_with_features_smoke() {
 
     tideway_cli::commands::new::run(args).expect("run new command");
 
-    let output = std::process::Command::new("cargo")
-        .arg("check")
-        .current_dir(&project_dir)
-        .output()
-        .expect("run cargo check");
+    patch_scaffold_to_workspace(&project_dir);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("cargo check failed: {}", stderr);
-    }
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["check"]);
+    run_cargo_in_project(temp_dir.path(), &project_dir, &["test"]);
 }
 
 #[test]
@@ -1063,6 +1053,50 @@ fn test_new_command_saas_preset_compiles_against_workspace_source() {
     assert!(
         !project_dir.join("migration/Cargo.lock").exists(),
         "workspace members should share the root Cargo.lock"
+    );
+}
+
+#[test]
+fn test_saas_app_with_api_keys_wired_compiles_against_workspace_source() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run new command");
+
+    tideway_cli::commands::add::run(tideway_cli::cli::AddArgs {
+        feature: tideway_cli::cli::AddFeature::ApiKeys,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: true,
+        db: false,
+    })
+    .expect("add api keys");
+
+    assert!(project_dir.join("src/api_keys/routes.rs").exists());
+    assert_file_contains(
+        &project_dir.join("src/main.rs"),
+        ".register_module(api_key_module)",
+    );
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project_with_denied_warnings(
+        temp_dir.path(),
+        &project_dir,
+        &["check", "--all-targets"],
     );
 }
 

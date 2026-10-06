@@ -396,6 +396,181 @@ fn test_add_credits_ambiguous_migration_style_is_non_mutating() {
 }
 
 #[test]
+fn test_add_api_keys_without_organizations_adds_migration_only() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB,
+    )
+    .expect("write migration lib");
+    write_migration_cargo(&project_dir, false);
+
+    let args = || AddArgs {
+        feature: AddFeature::ApiKeys,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    };
+    tideway_cli::commands::add::run(args()).expect("add api keys");
+
+    let cargo = project_dir.join("Cargo.toml");
+    assert_file_contains(&cargo, "\"auth\"");
+    assert_file_contains(&cargo, "\"database\"");
+    assert_file_contains(&cargo, "\"api-keys-seaorm\"");
+    let migrations = api_key_migrations(&project_dir);
+    assert_eq!(migrations.len(), 1, "{migrations:?}");
+    let module = migrations[0].trim_end_matches(".rs").to_string();
+    let migration = project_dir.join("migration/src").join(&migrations[0]);
+    assert_file_contains(&migration, "ApiKeys::Table");
+    assert_file_contains(&migration, "KeyHash");
+    assert_file_contains(
+        &project_dir.join("migration/src/lib.rs"),
+        &format!("Box::new({module}::Migration)"),
+    );
+    assert!(!project_dir.join("src/api_keys").exists());
+
+    // Rerunning reuses the existing migration instead of adding another.
+    tideway_cli::commands::add::run(args()).expect("rerun add api keys");
+    assert_eq!(api_key_migrations(&project_dir), migrations);
+    let lib = fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read lib");
+    assert_eq!(lib.matches(&format!("mod {module};")).count(), 1);
+}
+
+#[test]
+fn test_add_api_keys_scaffolds_org_admin_routes_and_wires_main() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    write_organization_prerequisites(&project_dir, STANDARD_MIGRATION_LIB);
+    write_migration_cargo(&project_dir, false);
+
+    let main_rs = r#"
+use std::sync::Arc;
+use tideway::{App, AppContext, ConfigBuilder};
+
+mod auth;
+mod routes;
+
+use crate::auth::AuthModule;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let config = ConfigBuilder::new().build()?;
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");
+    let db = sea_orm::Database::connect(&database_url).await?;
+    let auth_module = AuthModule::new();
+    let context = AppContext::builder().build();
+
+    App::with_config(config)
+        .with_context(context)
+        .register_module(auth_module)
+        .serve()
+        .await?;
+
+    Ok(())
+}
+"#;
+    fs::write(project_dir.join("src/main.rs"), main_rs).expect("write main.rs");
+
+    let add = |feature, db| {
+        tideway_cli::commands::add::run(AddArgs {
+            feature,
+            path: project_dir.to_string_lossy().to_string(),
+            force: false,
+            wire: true,
+            db,
+        })
+    };
+    add(AddFeature::Organizations, true).expect("add organizations");
+    add(AddFeature::ApiKeys, false).expect("add api keys");
+
+    let routes = project_dir.join("src/api_keys/routes.rs");
+    assert!(project_dir.join("src/api_keys/mod.rs").exists());
+    assert_file_contains(&routes, "\"/organizations/{org_id}/api-keys\"");
+    assert_file_contains(
+        &routes,
+        "const MANAGER_ROLES: &[&str] = &[\"owner\", \"admin\"];",
+    );
+    assert_file_contains(&routes, "actor.require_org_role(MANAGER_ROLES)?;");
+    assert_file_contains(&routes, "SeaOrmApiKeyStore");
+    assert_eq!(api_key_migrations(&project_dir).len(), 1);
+
+    let main_path = project_dir.join("src/main.rs");
+    let main = fs::read_to_string(&main_path).expect("read main.rs");
+    assert!(main.contains("mod api_keys;"));
+    assert!(main.contains("use crate::api_keys::ApiKeyModule;"));
+    assert!(main.contains("let api_key_module = ApiKeyModule::new("));
+    assert!(main.contains("Arc::new(db.clone())"));
+    assert!(main.contains("api_key_jwt_verifier"));
+    assert!(main.contains(".with_global_layer(axum::Extension(api_key_extension))"));
+    assert!(main.contains(".register_module(api_key_module)"));
+    assert!(main.contains(".register_module(organization_module)"));
+    assert!(
+        main.find(".register_module(api_key_module)").unwrap() < main.find(".serve()").unwrap(),
+        "module must be registered before serving:\n{main}"
+    );
+    // The API key module is built before the app builder that consumes it.
+    assert!(main.find("let api_key_module").unwrap() < main.find("App::with_config").unwrap());
+
+    // Wiring is idempotent and never overwrites the app-owned routes.
+    fs::write(&routes, "// customised by the app\n").expect("customise routes");
+    add(AddFeature::ApiKeys, false).expect("rerun add api keys");
+    assert_eq!(fs::read_to_string(&main_path).expect("read main.rs"), main);
+    assert_eq!(
+        fs::read_to_string(&routes).expect("read routes"),
+        "// customised by the app\n"
+    );
+}
+
+#[test]
+fn test_add_api_keys_requires_migration_crate_without_mutating() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    write_basic_cargo(&project_dir);
+    let cargo_before = fs::read_to_string(project_dir.join("Cargo.toml")).expect("read cargo");
+
+    let error = tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::ApiKeys,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    })
+    .expect_err("missing migration crate");
+
+    assert!(
+        error
+            .to_string()
+            .contains("API keys require an existing SeaORM migration crate")
+    );
+    assert_eq!(
+        fs::read_to_string(project_dir.join("Cargo.toml")).expect("read cargo"),
+        cargo_before
+    );
+}
+
+fn api_key_migrations(project_dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(project_dir.join("migration/src"))
+        .expect("read migrations")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.contains("create_api_keys"))
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
 fn test_add_billing_schema_creates_an_additive_idempotent_repair() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -817,6 +992,13 @@ async fn main() -> anyhow::Result<()> {
     assert!(updated.contains("Arc::new(db.clone())"));
     assert!(updated.contains(".register_module(organization_module)"));
     assert!(updated.contains(".serve()"));
+    assert!(
+        updated
+            .find(".register_module(organization_module)")
+            .unwrap()
+            < updated.find(".serve()").unwrap(),
+        "module must be registered before serving:\n{updated}"
+    );
 }
 
 #[test]

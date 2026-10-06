@@ -59,6 +59,7 @@ validator = { version = "0.20", features = ["derive"], optional = true }
 sea-orm = { version = "1.1", features = ["sqlx-postgres", "sqlx-sqlite", "runtime-tokio-rustls", "macros"], optional = true }
 sea-orm-migration = { version = "1.1", optional = true }
 chrono = { version = "0.4", features = ["serde"], optional = true }
+cron = { version = "0.17", optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "sqlite"], optional = true }
 testcontainers-modules = { version = "0.13", optional = true, default-features = false, features = ["postgres"] }
 
@@ -110,6 +111,9 @@ lettre = { version = "0.11.22", default-features = false, features = ["tokio1-ru
 
 # Jobs (optional - chrono already added for database)
 
+# File storage (optional)
+object_store = { version = "0.14", default-features = false, features = ["fs"], optional = true }
+
 # Rate limiting
 governor = "0.10"
 ipnet = "2.11"
@@ -137,19 +141,25 @@ cache-redis = ["redis", "cache"]
 # Session management
 sessions = ["cookie", "hex"]
 # Background job processing
-jobs = ["chrono"]
+jobs = ["chrono", "cron"]
 # Redis-backed job queue
 jobs-redis = ["redis", "jobs"]
 # WebSocket support
 websocket = ["dashmap", "axum/ws"]
 # Email sending
 email = ["lettre"]
+# File storage abstraction (local filesystem + in-memory backends, presigned uploads)
+storage = ["dep:object_store"]
+# S3-compatible storage backends (AWS S3, Cloudflare R2, MinIO)
+storage-s3 = ["storage", "object_store/aws"]
 # Testing helper to bypass auth (for tests only)
 test-auth-bypass = ["auth"]
 # Password hashing with Argon2
 auth = ["argon2", "dep:jsonwebtoken", "dep:rand"]
 # MFA support (TOTP + backup codes)
 auth-mfa = ["auth", "totp-rs", "aes-gcm"]
+# SeaORM-backed API key storage
+api-keys-seaorm = ["auth", "database"]
 # Password breach checking via HaveIBeenPwned
 auth-breach = ["sha1"]
 # Stripe-based billing

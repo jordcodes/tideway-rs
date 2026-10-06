@@ -212,6 +212,11 @@ impl RedisJobQueue {
         }
     }
 
+    /// A [`RedisSchedulerLock`](crate::jobs::RedisSchedulerLock) sharing this queue's connection.
+    pub fn scheduler_lock(&self) -> crate::jobs::RedisSchedulerLock {
+        crate::jobs::RedisSchedulerLock::from_connection(self.connection.clone())
+    }
+
     /// Clone the shared connection manager
     async fn get_connection(&self) -> Result<redis::aio::ConnectionManager> {
         self.connection.get().await

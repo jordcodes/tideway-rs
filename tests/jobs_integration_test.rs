@@ -436,4 +436,75 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unregistered"));
     }
+
+    #[tokio::test]
+    async fn cron_scheduler_runs_registered_job_through_workers() {
+        use tideway::jobs::{InMemorySchedulerLock, JobScheduler, SchedulerLock};
+
+        let queue = Arc::new(InMemoryJobQueue::new(3, 60));
+        let registry = Arc::new(JobRegistry::new());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        registry
+            .register("test_job", move |data, _| {
+                let tx = tx.clone();
+                Box::pin(async move {
+                    let job: TestJob = serde_json::from_value(data.payload)?;
+                    tx.send(job.message).unwrap();
+                    Ok(())
+                })
+            })
+            .await;
+        let pool = WorkerPool::new(queue.clone(), registry, Arc::new(AppContext::new()), 2);
+
+        // Two "instances" share one lock, as two processes would share Redis.
+        let lock: Arc<dyn SchedulerLock> = Arc::new(InMemorySchedulerLock::new());
+        let schedulers: Vec<_> = (0..2)
+            .map(|_| {
+                JobScheduler::new(lock.clone())
+                    .add(
+                        "every_second",
+                        "* * * * * *",
+                        TestJob {
+                            message: "tick".into(),
+                            should_fail: false,
+                        },
+                    )
+                    .unwrap()
+                    .start(queue.clone())
+            })
+            .collect();
+
+        sleep(TokioDuration::from_millis(2_500)).await;
+        for scheduler in schedulers {
+            scheduler.shutdown().await;
+        }
+        sleep(TokioDuration::from_millis(500)).await;
+        pool.shutdown().await;
+        queue.shutdown().await;
+
+        let mut runs = 0;
+        while let Ok(message) = rx.try_recv() {
+            assert_eq!(message, "tick");
+            runs += 1;
+        }
+        assert!((2..=3).contains(&runs), "ran {runs} times");
+    }
+
+    #[cfg(feature = "jobs-redis")]
+    #[tokio::test]
+    #[ignore = "requires an isolated Redis database at TIDEWAY_TEST_REDIS_URL"]
+    async fn redis_scheduler_lock_is_exclusive_per_key() {
+        use tideway::jobs::{RedisSchedulerLock, SchedulerLock};
+
+        let url = std::env::var("TIDEWAY_TEST_REDIS_URL").expect("isolated Redis URL required");
+        let a = RedisSchedulerLock::new(&url).unwrap();
+        let b = RedisSchedulerLock::new(&url).unwrap();
+        let key = format!("jobs:scheduler:lock:test:{}", uuid::Uuid::new_v4());
+        let ttl = std::time::Duration::from_millis(500);
+
+        assert!(a.try_acquire(&key, ttl).await.unwrap());
+        assert!(!b.try_acquire(&key, ttl).await.unwrap());
+        sleep(TokioDuration::from_millis(700)).await;
+        assert!(b.try_acquire(&key, ttl).await.unwrap());
+    }
 }
