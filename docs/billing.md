@@ -1184,6 +1184,47 @@ println!("Features: {:?}", entitlements.features);
 println!("Limits: {:?}", entitlements.limits);
 ```
 
+### Feature flags and rollouts
+
+`FeatureFlagManager` layers per-organization overrides and percentage rollouts on top of
+plan entitlements. Evaluation order:
+
+1. A per-org override (`set_override(org, key, true|false)`) always wins.
+2. Otherwise the flag's `RolloutScope` applies:
+   - `AllBillables` (default): plans that include the feature keep it, and the rollout
+     enables it for a percentage of everyone else.
+   - `PlanSubscribers` (`.plan_subscribers_only()`): only orgs whose active plan includes
+     the feature are eligible, and the rollout enables it for a percentage of them.
+3. Features with no flag definition fall back to the plan entitlement.
+
+Rollout bucketing is a SHA-256 hash of the flag key and org ID, so an org stays in the
+same bucket across processes and deploys, raising the percentage only adds orgs, and
+each flag selects an independent cohort.
+
+```rust
+use tideway::billing::{FeatureFlag, FeatureFlagManager, InMemoryFeatureFlagStore};
+
+let flags = FeatureFlagManager::new(InMemoryFeatureFlagStore::new());
+
+// Release the "new_reports" plan feature to 10% of orgs on plans that include it.
+flags.save_flag(&FeatureFlag::new("new_reports").rollout(10).plan_subscribers_only()).await?;
+// Let a design partner in early, and hold one org back.
+flags.set_override("org_partner", "new_reports", true).await?;
+flags.set_override("org_sensitive", "new_reports", false).await?;
+// Widen later.
+flags.set_rollout("new_reports", 50).await?;
+
+let entitlements = manager.get_entitlements("org_123").await?;
+let eval = flags.evaluate("org_123", "new_reports", &entitlements).await?;
+if !eval.enabled {
+    // eval.reason: Override, PlanEntitlement, NotEntitled, InRollout, OutsideRollout
+}
+```
+
+`InMemoryFeatureFlagStore` suits tests, single-instance apps, and flags configured at
+startup. For multi-instance deployments, implement `FeatureFlagStore` over your database
+so overrides and rollout changes are shared.
+
 ## Webhooks
 
 Handle Stripe webhook events and attach optional application lifecycle hooks:
