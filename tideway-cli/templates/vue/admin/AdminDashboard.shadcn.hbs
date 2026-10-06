@@ -11,10 +11,10 @@ onMounted(() => {
   fetchStats()
 })
 
-function formatCurrency(cents: number, currency = 'GBP'): string {
-  return new Intl.NumberFormat('en-GB', {
+function formatCurrency(cents: number, currency = 'usd'): string {
+  return new Intl.NumberFormat(undefined, {
     style: 'currency',
-    currency,
+    currency: currency.toUpperCase(),
   }).format(cents / 100)
 }
 </script>
@@ -77,7 +77,7 @@ function formatCurrency(cents: number, currency = 'GBP'): string {
         </CardHeader>
         <CardContent>
           <Skeleton v-if="isLoading" class="h-8 w-20" />
-          <div v-else class="text-2xl font-bold">\{{ stats?.active_subscriptions ?? 0 }}</div>
+          <div v-else class="text-2xl font-bold">\{{ stats?.active_subscriptions ?? '—' }}</div>
           <p class="text-xs text-muted-foreground">
             Active subscriptions
           </p>
@@ -94,9 +94,12 @@ function formatCurrency(cents: number, currency = 'GBP'): string {
         </CardHeader>
         <CardContent>
           <Skeleton v-if="isLoading" class="h-8 w-24" />
-          <div v-else class="text-2xl font-bold">\{{ formatCurrency(stats?.mrr_cents ?? 0) }}</div>
+          <div v-else-if="stats?.mrr_cents != null" class="text-2xl font-bold">
+            \{{ formatCurrency(stats.mrr_cents, stats.mrr_currency) }}
+          </div>
+          <div v-else class="text-2xl font-bold">—</div>
           <p class="text-xs text-muted-foreground">
-            Monthly recurring revenue
+            \{{ stats?.mrr_unavailable_reason ?? 'Monthly recurring revenue' }}
           </p>
         </CardContent>
       </Card>

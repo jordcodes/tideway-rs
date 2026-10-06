@@ -505,6 +505,7 @@ fn generate_admin(
         ("mod.rs", "admin/mod"),
         ("routes.rs", "admin/routes"),
         ("store.rs", "admin/store"),
+        ("tests.rs", "admin/tests"),
     ];
 
     for (filename, template_name) in templates {
