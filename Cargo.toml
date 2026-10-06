@@ -111,6 +111,9 @@ lettre = { version = "0.11.22", default-features = false, features = ["tokio1-ru
 
 # Jobs (optional - chrono already added for database)
 
+# File storage (optional)
+object_store = { version = "0.14", default-features = false, features = ["fs"], optional = true }
+
 # Rate limiting
 governor = "0.10"
 ipnet = "2.11"
@@ -145,6 +148,10 @@ jobs-redis = ["redis", "jobs"]
 websocket = ["dashmap", "axum/ws"]
 # Email sending
 email = ["lettre"]
+# File storage abstraction (local filesystem + in-memory backends, presigned uploads)
+storage = ["dep:object_store"]
+# S3-compatible storage backends (AWS S3, Cloudflare R2, MinIO)
+storage-s3 = ["storage", "object_store/aws"]
 # Testing helper to bypass auth (for tests only)
 test-auth-bypass = ["auth"]
 # Password hashing with Argon2

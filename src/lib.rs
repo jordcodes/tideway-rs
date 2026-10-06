@@ -11,6 +11,7 @@
 //! - **Health Checks**: Built-in health check system
 //! - **OpenAPI**: Automatic API documentation with utoipa
 //! - **Webhooks**: Webhook handling with verification and idempotency
+//! - **Storage**: Optional local/S3/R2 file storage with presigned uploads
 //! - **Credits**: Optional atomic allowances and prepaid product-credit ledger
 //! - **Testing**: Alba-style HTTP testing utilities
 //!
@@ -162,6 +163,15 @@ pub mod email {
 #[cfg(all(not(feature = "email"), feature = "feature-gate-warnings"))]
 #[deprecated(note = "Enable the `email` feature to use tideway::email")]
 pub mod email {}
+#[cfg(feature = "storage")]
+pub mod storage;
+#[cfg(all(not(feature = "storage"), feature = "feature-gate-errors"))]
+pub mod storage {
+    compile_error!("Enable the `storage` feature to use tideway::storage");
+}
+#[cfg(all(not(feature = "storage"), feature = "feature-gate-warnings"))]
+#[deprecated(note = "Enable the `storage` feature to use tideway::storage")]
+pub mod storage {}
 pub mod testing;
 pub mod timeout;
 #[cfg(any(
@@ -169,7 +179,8 @@ pub mod timeout;
     feature = "cache",
     feature = "sessions",
     feature = "jobs",
-    feature = "email"
+    feature = "email",
+    feature = "storage"
 ))]
 pub mod traits;
 pub use testing::{TestFactory, TestUser, fake};
@@ -458,6 +469,8 @@ pub use traits::job::{Job, JobData, JobQueue};
 pub use traits::mailer::{Email, Mailer};
 #[cfg(feature = "sessions")]
 pub use traits::session::{SessionData, SessionStore};
+#[cfg(feature = "storage")]
+pub use traits::storage::{FileStorage, PresignOptions, PresignedRequest, StoredObject};
 #[cfg(feature = "validation")]
 pub use validation::{
     ValidatedForm, ValidatedJson, ValidatedQuery, validate_form, validate_json, validator,
