@@ -51,6 +51,7 @@ Feature flags are opt-in unless marked Default.
 | `auth` | `auth` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-mfa` | `auth::mfa` | `docs/auth.md` | `examples/seaorm_auth.rs` | — |
 | `auth-breach` | `auth::breach` | `docs/auth.md` | — | — |
+| `auth-oauth` | `auth::oauth` | `docs/auth.md` | `tests/oauth_test.rs` | Google, GitHub, and OIDC social login |
 | `test-auth-bypass` | `auth` | `docs/auth.md` | `tests/auth_integration_test.rs` | Tests only |
 | `billing` | `billing` | `docs/billing.md` | — | — |
 | `billing-seaorm` | `billing` | `docs/billing.md` | — | — |

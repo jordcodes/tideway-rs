@@ -7,6 +7,7 @@
 //!
 //! - `auth` - Enables password hashing with Argon2
 //! - `auth-mfa` - Enables TOTP and backup code support
+//! - `auth-oauth` - Enables social login via OAuth 2.0 / OpenID Connect ([`oauth`])
 //!
 //! # Example
 //!
@@ -46,6 +47,8 @@ pub mod jwt_issuer;
 pub mod lockout;
 #[cfg(feature = "auth-mfa")]
 pub mod mfa;
+#[cfg(feature = "auth-oauth")]
+pub mod oauth;
 pub mod password;
 pub mod refresh;
 pub mod sessions;

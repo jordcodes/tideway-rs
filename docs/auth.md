@@ -7,6 +7,7 @@ Tideway provides a complete authentication system with password hashing, JWT tok
 - **Password Hashing**: Argon2id with automatic rehashing
 - **JWT Tokens**: Access and refresh tokens with rotation
 - **MFA**: TOTP (Google Authenticator) and backup codes
+- **Social Login**: Google, GitHub, and any OpenID Connect provider via OAuth 2.0 + PKCE (opt-in)
 - **Auth Flows**: Login, registration, password reset/change, email verification
 - **Breach Checking**: HaveIBeenPwned integration (opt-in)
 - **Session Management**: List and revoke active sessions
@@ -702,6 +703,176 @@ if let Some(index) = BackupCodeGenerator::verify("ABCD-1234", &in_memory_plainte
     stored_codes.remove(index);
 }
 ```
+
+## Social Login (OAuth 2.0 / OpenID Connect)
+
+Requires the `auth-oauth` feature:
+
+```toml
+[dependencies]
+tideway = { version = "0.9.0", features = ["auth", "auth-oauth"] }
+```
+
+`tideway::auth::oauth` implements the authorization-code flow with PKCE for Google, GitHub,
+and any OpenID Connect provider (Microsoft Entra ID, Okta, Auth0, Keycloak, ...).
+
+### Providers
+
+```rust
+use tideway::auth::oauth::{InMemoryOAuthStateStore, OAuthFlow, OAuthProvider};
+
+let oauth = OAuthFlow::new(InMemoryOAuthStateStore::new(), accounts.clone())?
+    .with_provider(OAuthProvider::google(
+        env("GOOGLE_CLIENT_ID"),
+        env("GOOGLE_CLIENT_SECRET"),
+        "https://app.example.com/auth/google/callback",
+    ))
+    .with_provider(OAuthProvider::github(
+        env("GITHUB_CLIENT_ID"),
+        env("GITHUB_CLIENT_SECRET"),
+        "https://app.example.com/auth/github/callback",
+    ))
+    // Any OIDC issuer, configured from its discovery document:
+    .with_provider(
+        OAuthProvider::discover("okta", "https://example.okta.com", id, secret, redirect).await?,
+    );
+```
+
+Use `with_scopes`, `with_authorize_param("prompt", "select_account")`, or `with_name` to customize
+a provider. `InMemoryOAuthStateStore` only works for a single instance; implement
+`OAuthStateStore` on Redis or your database when running several instances.
+
+### SocialAccountStore
+
+`SocialAccountStore` extends `UserStore`, so social sign-in shares user lookup, lockout, and MFA
+state with password login. Store identities in a table with a unique `(provider, subject)` key:
+
+```rust
+use tideway::auth::oauth::{OAuthIdentity, SocialAccountStore};
+
+#[async_trait]
+impl SocialAccountStore for MyUserStore {
+    async fn find_by_identity(&self, provider: &str, subject: &str) -> Result<Option<User>>;
+
+    // Insert into user_identities (user_id, provider, subject, ...).
+    async fn link_identity(&self, user: &User, identity: &OAuthIdentity) -> Result<()>;
+
+    // Optional: refresh stored profile data / tokens on every sign-in.
+    async fn update_identity(&self, user: &User, identity: &OAuthIdentity) -> Result<()>;
+
+    // Create a user with the provider-verified email, marked as verified. `password_hash` is the
+    // hash of a random secret, so password login fails until the user resets their password.
+    async fn create_user_from_identity(
+        &self,
+        identity: &OAuthIdentity,
+        email: &str,
+        password_hash: &str,
+    ) -> Result<User>;
+}
+```
+
+```sql
+CREATE TABLE user_identities (
+    provider TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    access_token_encrypted TEXT,
+    refresh_token_encrypted TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (provider, subject)
+);
+```
+
+Sign-in does not need the provider's tokens. If you persist them to call the provider's API later,
+encrypt them with `OAuthTokenCipher` (AES-256-GCM, bound to the provider and subject):
+
+```rust
+let cipher = OAuthTokenCipher::from_env("OAUTH_TOKEN_KEY")?; // base64 32-byte key
+let encrypted = cipher.encrypt(&identity.provider, &identity.subject, &identity.tokens.access_token)?;
+```
+
+### Routes
+
+```rust
+use axum::extract::{Path, Query, State};
+use axum::http::{HeaderMap, header::SET_COOKIE};
+use tideway::auth::LoginHttpResponse;
+use tideway::auth::oauth::{
+    AuthorizeOptions, OAuthCallbackParams, clear_state_cookie, state_from_cookies,
+};
+
+// GET /auth/:provider
+async fn start(State(app): State<AppState>, Path(provider): Path<String>) -> Result<Response> {
+    let request = app.oauth.authorize(&provider, AuthorizeOptions::new()).await?;
+    // Redirects to the provider and sets the HttpOnly state cookie.
+    Ok(request.redirect())
+}
+
+// GET /auth/:provider/callback
+async fn callback(
+    State(app): State<AppState>,
+    Path(provider): Path<String>,
+    headers: HeaderMap,
+    Query(params): Query<OAuthCallbackParams>,
+) -> Result<impl IntoResponse> {
+    let browser_state = state_from_cookies(&headers);
+    let outcome = app.oauth.callback(&provider, params, browser_state.as_deref()).await?;
+    // Issues JWTs like a password login; returns an MFA challenge if MFA is enabled.
+    let login = app.login.complete_external_login(&outcome.user, false).await?;
+    Ok(([(SET_COOKIE, clear_state_cookie())], LoginHttpResponse::from(login)))
+}
+```
+
+The callback only succeeds in the browser that started the flow: `state` must match the
+`tideway_oauth_state` cookie (`HttpOnly`, `SameSite=Lax`, `Secure`). This blocks login CSRF and
+attackers attaching a victim's provider account to their own user. For plain-HTTP local
+development, set `OAuthFlowConfig::secure_cookie(false)`. Clients that cannot use cookies (native
+apps) must store `AuthorizationRequest::state` themselves and pass it back as `browser_state`.
+
+For cookie sessions, create the session for `outcome.user` instead of calling
+`complete_external_login`, and check `has_mfa_enabled` yourself if you use MFA.
+
+`AuthorizeOptions::redirect_to("/dashboard")` round-trips a same-origin path through
+`outcome.redirect_to` (absolute and protocol-relative URLs are rejected). To let a signed-in user
+connect another provider, use `AuthorizeOptions::new().link_to_user(current_user_id)`.
+
+### Account Resolution
+
+On callback, the identity is resolved in this order:
+
+1. An identity already linked to a user signs that user in.
+2. Otherwise, if the provider **verified** the email and a local account with that email exists,
+   the identity is linked when the local account is also verified
+   (`AccountLinking::VerifiedEmail`, the default). Unverified local accounts are refused with
+   `409 Conflict` to prevent account pre-hijacking. Set `AccountLinking::Never` to require
+   explicit linking.
+3. Otherwise a new verified user is created (disable with `OAuthFlowConfig::allow_signup(false)`).
+
+Identities without a provider-verified email can only sign in to accounts they are already linked
+to. Locked accounts are refused.
+
+### Security Properties
+
+- Single-use, hashed `state` that expires after 10 minutes, is bound to the provider, and must
+  match the browser's HttpOnly state cookie (CSRF and login-CSRF protection).
+- PKCE (`S256`) on every request, including GitHub.
+- OIDC `id_token` verified against the provider JWKS: RS256 signature, `iss`, `aud`, `exp`,
+  `nonce`, and `azp`.
+- Identities keyed on the stable subject (`sub`, or GitHub's numeric user ID), never on email or
+  username. GitHub emails are only trusted when primary and verified.
+- Client secrets, provider tokens, PKCE verifiers, and nonces are redacted from `Debug` output.
+- Provider HTTP calls have timeouts, a 1 MiB response limit, and do not follow redirects.
+
+### Social Login Events
+
+| Target | Description |
+|--------|-------------|
+| `auth.oauth.started` | Authorization redirect issued |
+| `auth.oauth.denied` | Provider returned an error (user cancelled) |
+| `auth.oauth.failed` | Invalid state, failed code exchange, or invalid identity |
+| `auth.oauth.linked` | Identity linked to an existing account |
+| `auth.oauth.signup` | Account created from social sign-in |
+| `auth.oauth.success` | Identity resolved to a user |
 
 ## Token Refresh
 
@@ -2052,7 +2223,6 @@ The following features are not currently implemented but may be added in future 
 |---------|-------------|----------|
 | **Password History** | Prevent reuse of last N passwords | Enterprise compliance (SOC2, HIPAA) |
 | **Magic Links** | Passwordless login via email link | Improved UX, reduced friction |
-| **OAuth/Social Login** | Google, GitHub, Apple sign-in | Consumer apps, reduced registration friction |
 | **API Keys** | Long-lived tokens with scopes for service-to-service auth | Developer APIs, integrations |
 | **Login Notifications** | Email alerts on new device/location login | Security-conscious users |
 | **Remember Me Tokens** | Persistent login across browser sessions | Long-lived user sessions |

@@ -173,6 +173,8 @@ auth = ["argon2", "dep:jsonwebtoken", "dep:rand"]
 auth-mfa = ["auth", "totp-rs", "aes-gcm"]
 # SeaORM-backed API key storage
 api-keys-seaorm = ["auth", "database"]
+# OAuth 2.0 / OpenID Connect social login (Google, GitHub, generic OIDC)
+auth-oauth = ["auth", "aes-gcm"]
 # Password breach checking via HaveIBeenPwned
 auth-breach = ["sha1"]
 # Stripe-based billing
@@ -213,6 +215,10 @@ harness = false
 name = "hot_paths"
 harness = false
 required-features = ["auth", "jobs", "websocket"]
+
+[[test]]
+name = "oauth_test"
+required-features = ["auth-oauth"]
 
 [[test]]
 name = "otel_export_test"
