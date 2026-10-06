@@ -440,6 +440,19 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [tideway-cli 0.9.0] - Unreleased
 
+### Added
+
+- `tideway generate client --spec openapi.json` generates a typed, dependency-free TypeScript
+  client (`./src/api/client.ts` by default) from an app's OpenAPI document: an interface or type
+  per `components.schemas` entry and one typed function per operation, with path/query/body
+  arguments, a bearer-token hook, and an `ApiError` for non-2xx responses. Re-running the command
+  overwrites a previously generated client; other files at the target path still need `--force`.
+- `tideway generate auth --framework react` and `--framework next` generate React auth components
+  (`LoginForm`, `RegisterForm`, `ForgotPassword`, `ResetPassword`, `MfaVerify`), a `useAuth` hook,
+  and shared `lib/api.ts`/`types/index.ts` helpers styled with Tailwind classes. The Next.js variant
+  adds `'use client'` and reads `NEXT_PUBLIC_API_URL`; the React variant reads `VITE_API_URL`.
+  Billing, organization, and admin components remain Vue-only.
+
 ### Changed
 
 - The `api`, `saas`, and `worker` presets and backend presets enable Tideway's `otel` and

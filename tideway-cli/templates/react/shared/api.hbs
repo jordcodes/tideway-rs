@@ -1,0 +1,172 @@
+/**
+ * Base API client for making HTTP requests to the tideway backend.
+ * Handles authentication headers and token refresh automatically.
+ *
+ * For fully typed access to every endpoint in your API, generate a client from
+ * your OpenAPI document with `tideway generate client`.
+ */
+
+{{#if is_next}}
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || '{{api_base_url}}'
+{{else}}
+const API_BASE_URL = import.meta.env.VITE_API_URL || '{{api_base_url}}'
+{{/if}}
+
+const ACCESS_TOKEN_KEY = 'access_token'
+const REFRESH_TOKEN_KEY = 'refresh_token'
+
+type Listener = () => void
+
+const listeners = new Set<Listener>()
+
+function storage(): Storage | null {
+  return typeof window === 'undefined' ? null : window.localStorage
+}
+
+function notify() {
+  listeners.forEach((listener) => listener())
+}
+
+/**
+ * Token storage shared by every component. Subscribe with React's
+ * `useSyncExternalStore` (see `useAuth`) to re-render when tokens change.
+ */
+export const tokenStore = {
+  getAccessToken(): string | null {
+    return storage()?.getItem(ACCESS_TOKEN_KEY) ?? null
+  },
+  getRefreshToken(): string | null {
+    return storage()?.getItem(REFRESH_TOKEN_KEY) ?? null
+  },
+  set(accessToken: string, refreshToken: string) {
+    storage()?.setItem(ACCESS_TOKEN_KEY, accessToken)
+    storage()?.setItem(REFRESH_TOKEN_KEY, refreshToken)
+    notify()
+  },
+  clear() {
+    storage()?.removeItem(ACCESS_TOKEN_KEY)
+    storage()?.removeItem(REFRESH_TOKEN_KEY)
+    notify()
+  },
+  subscribe(listener: Listener): () => void {
+    listeners.add(listener)
+    return () => {
+      listeners.delete(listener)
+    }
+  },
+}
+
+export interface RequestOptions extends Omit<RequestInit, 'body'> {
+  body?: unknown
+}
+
+export class ApiError extends Error {
+  status: number
+  data?: unknown
+
+  constructor(message: string, status: number, data?: unknown) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.data = data
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const token = tokenStore.getAccessToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+async function tryRefreshToken(): Promise<boolean> {
+  const refreshToken = tokenStore.getRefreshToken()
+  if (!refreshToken) {
+    return false
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+    if (!response.ok) {
+      return false
+    }
+
+    const data = await response.json()
+    if (data.access_token && data.refresh_token) {
+      tokenStore.set(data.access_token, data.refresh_token)
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+async function parseBody<T>(response: Response): Promise<T> {
+  const text = await response.text()
+  return (text ? JSON.parse(text) : {}) as T
+}
+
+export async function apiRequest<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
+  const url = `${API_BASE_URL}${endpoint}`
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...authHeaders(),
+    ...((options.headers as Record<string, string>) || {}),
+  }
+  const config: RequestInit = {
+    ...options,
+    headers,
+    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+  }
+
+  const response = await fetch(url, config)
+
+  // Handle 401 - try to refresh the access token once
+  if (response.status === 401 && !endpoint.startsWith('/auth/')) {
+    if (await tryRefreshToken()) {
+      const retryResponse = await fetch(url, { ...config, headers: { ...headers, ...authHeaders() } })
+      if (!retryResponse.ok) {
+        throw new ApiError(
+          'Request failed after token refresh',
+          retryResponse.status,
+          await retryResponse.json().catch(() => null)
+        )
+      }
+      return parseBody<T>(retryResponse)
+    }
+
+    tokenStore.clear()
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login'
+    }
+    throw new ApiError('Session expired', 401)
+  }
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => null)
+    const message = data?.message || data?.error || `Request failed with status ${response.status}`
+    throw new ApiError(message, response.status, data)
+  }
+
+  return parseBody<T>(response)
+}
+
+export const api = {
+  get: <T>(endpoint: string, options?: RequestOptions) =>
+    apiRequest<T>(endpoint, { ...options, method: 'GET' }),
+
+  post: <T>(endpoint: string, body?: unknown, options?: RequestOptions) =>
+    apiRequest<T>(endpoint, { ...options, method: 'POST', body }),
+
+  put: <T>(endpoint: string, body?: unknown, options?: RequestOptions) =>
+    apiRequest<T>(endpoint, { ...options, method: 'PUT', body }),
+
+  patch: <T>(endpoint: string, body?: unknown, options?: RequestOptions) =>
+    apiRequest<T>(endpoint, { ...options, method: 'PATCH', body }),
+
+  delete: <T>(endpoint: string, options?: RequestOptions) =>
+    apiRequest<T>(endpoint, { ...options, method: 'DELETE' }),
+}

@@ -45,7 +45,18 @@ pub fn run_with_runtime(runtime: CommandRuntime) -> Result<()> {
     println!("  - types/index.ts       TypeScript types for API");
     println!("  - useApi.ts            Base API composable");
 
-    println!("\n{}", "Styling Options:".cyan());
+    println!("\n{}", "React / Next.js (--framework react|next):".yellow());
+    println!(
+        "  - auth/*.tsx           LoginForm, RegisterForm, ForgotPassword, ResetPassword, MfaVerify"
+    );
+    println!("  - auth/useAuth.ts      Auth hook");
+    println!("  - lib/api.ts           Base API client with token refresh");
+    println!("  - types/index.ts       TypeScript types for API");
+
+    println!("\n{}", "Typed API Client (framework-agnostic):".yellow());
+    println!("  - client.ts            Generated from your OpenAPI spec");
+
+    println!("\n{}", "Styling Options (Vue):".cyan());
     println!(
         "  --style shadcn     {} shadcn-vue components",
         "(default)".dimmed()
@@ -57,6 +68,8 @@ pub fn run_with_runtime(runtime: CommandRuntime) -> Result<()> {
     println!("  tideway generate auth --style shadcn");
     println!("  tideway generate billing --output ./src/components");
     println!("  tideway generate all --framework vue");
+    println!("  tideway generate auth --framework next");
+    println!("  tideway generate client --spec openapi.json");
 
     println!();
 

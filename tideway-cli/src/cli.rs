@@ -30,7 +30,7 @@ pub enum Commands {
     /// Primary: diagnose feature and project setup issues
     Doctor(DoctorArgs),
 
-    /// Advanced: generate Vue frontend helpers for existing Vue apps (secondary to the API path)
+    /// Advanced: generate Vue/React/Next frontend helpers or a typed API client (secondary to the API path)
     Generate(GenerateArgs),
 
     /// Advanced: generate backend scaffolding for existing/nonstandard projects (not for greenfield)
@@ -427,21 +427,26 @@ pub enum BackendPreset {
 
 #[derive(Parser, Debug)]
 pub struct GenerateArgs {
-    /// Vue frontend module to generate (auth, billing, organizations, admin, or all)
+    /// Frontend module to generate, or `client` for a typed TypeScript API client
     #[arg(value_enum)]
     pub module: Module,
 
-    /// Frontend framework to use (current helpers are Vue-only)
+    /// Frontend framework (vue: all modules; react/next: auth + shared)
     #[arg(short, long, default_value = "vue")]
     pub framework: Framework,
 
-    /// Styling approach
+    /// Styling approach (Vue only; React/Next templates use Tailwind classes)
     #[arg(short, long, default_value = "shadcn")]
     pub style: Style,
 
-    /// Output directory for generated files
-    #[arg(short, long, default_value = "./src/components/tideway")]
-    pub output: String,
+    /// Output directory for components [default: ./src/components/tideway],
+    /// or output file for `client` [default: ./src/api/client.ts]
+    #[arg(short, long)]
+    pub output: Option<String>,
+
+    /// OpenAPI JSON document to generate the client from (only used by `client`)
+    #[arg(long, default_value = "openapi.json")]
+    pub spec: String,
 
     /// API base URL for fetch calls (fallback if VITE_API_URL env var not set)
     #[arg(long, default_value = "http://localhost:3000")]
@@ -476,13 +481,18 @@ pub enum Module {
     Admin,
     /// Generate all modules
     All,
+    /// Typed TypeScript API client generated from an OpenAPI document (framework-agnostic)
+    Client,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
 pub enum Framework {
     /// Vue 3 with Composition API
     Vue,
-    // Future: React, Svelte
+    /// React 18+ (Vite or any bundler exposing `import.meta.env`)
+    React,
+    /// Next.js App Router (client components, `NEXT_PUBLIC_API_URL`)
+    Next,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -495,6 +505,22 @@ pub enum Style {
     Unstyled,
 }
 
+pub const DEFAULT_COMPONENTS_OUTPUT: &str = "./src/components/tideway";
+pub const DEFAULT_CLIENT_OUTPUT: &str = "./src/api/client.ts";
+
+impl GenerateArgs {
+    /// Output directory (components) or file (`client`), applying the per-module default.
+    pub fn output_path(&self) -> String {
+        self.output.clone().unwrap_or_else(|| {
+            match self.module {
+                Module::Client => DEFAULT_CLIENT_OUTPUT,
+                _ => DEFAULT_COMPONENTS_OUTPUT,
+            }
+            .to_string()
+        })
+    }
+}
+
 impl std::fmt::Display for Module {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -503,6 +529,7 @@ impl std::fmt::Display for Module {
             Module::Organizations => write!(f, "organizations"),
             Module::Admin => write!(f, "admin"),
             Module::All => write!(f, "all"),
+            Module::Client => write!(f, "client"),
         }
     }
 }
@@ -511,6 +538,8 @@ impl std::fmt::Display for Framework {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Framework::Vue => write!(f, "vue"),
+            Framework::React => write!(f, "react"),
+            Framework::Next => write!(f, "next"),
         }
     }
 }

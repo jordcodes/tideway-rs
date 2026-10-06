@@ -1,0 +1,133 @@
+import { useState, useSyncExternalStore } from 'react'
+import { api, tokenStore } from '../lib/api'
+import type {
+  LoginRequest,
+  LoginResponse,
+  RegisterRequest,
+  RegisterResponse,
+  PasswordResetRequest,
+  PasswordResetCompleteRequest,
+  MfaVerifyRequest,
+  RefreshResponse,
+} from '../types'
+
+type MessageResponse = { success: boolean; message: string }
+
+// Tokens live in localStorage, which does not exist during server rendering.
+const getServerSnapshot = () => null
+
+export function useAuth() {
+  const accessToken = useSyncExternalStore(
+    tokenStore.subscribe,
+    tokenStore.getAccessToken,
+    getServerSnapshot
+  )
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function run<T>(fallbackMessage: string, action: () => Promise<T>): Promise<T> {
+    setIsLoading(true)
+    setError(null)
+    try {
+      return await action()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : fallbackMessage)
+      throw e
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  function storeTokens(response: LoginResponse) {
+    if (response.access_token && response.refresh_token) {
+      tokenStore.set(response.access_token, response.refresh_token)
+    }
+  }
+
+  function login(request: LoginRequest): Promise<LoginResponse> {
+    return run('Login failed', async () => {
+      const response = await api.post<LoginResponse>('/auth/login', request)
+      storeTokens(response)
+      return response
+    })
+  }
+
+  function register(request: RegisterRequest): Promise<RegisterResponse> {
+    return run('Registration failed', () => api.post<RegisterResponse>('/auth/register', request))
+  }
+
+  async function logout(): Promise<void> {
+    setIsLoading(true)
+    setError(null)
+    try {
+      const refreshToken = tokenStore.getRefreshToken()
+      if (refreshToken) {
+        await api.post('/auth/logout', { refresh_token: refreshToken })
+      }
+    } catch (e) {
+      // Ignore logout errors - clear tokens anyway
+      console.warn('Logout request failed:', e)
+    } finally {
+      tokenStore.clear()
+      setIsLoading(false)
+    }
+  }
+
+  async function refreshAccessToken(): Promise<boolean> {
+    const refreshToken = tokenStore.getRefreshToken()
+    if (!refreshToken) return false
+
+    try {
+      const response = await api.post<RefreshResponse>('/auth/refresh', {
+        refresh_token: refreshToken,
+      })
+      if (response.access_token && response.refresh_token) {
+        tokenStore.set(response.access_token, response.refresh_token)
+        return true
+      }
+      return false
+    } catch {
+      tokenStore.clear()
+      return false
+    }
+  }
+
+  function requestPasswordReset(email: string): Promise<MessageResponse> {
+    const request: PasswordResetRequest = { email }
+    return run('Password reset request failed', () =>
+      api.post<MessageResponse>('/auth/password/reset', request)
+    )
+  }
+
+  function completePasswordReset(request: PasswordResetCompleteRequest): Promise<MessageResponse> {
+    return run('Password reset failed', () =>
+      api.post<MessageResponse>('/auth/password/reset/complete', request)
+    )
+  }
+
+  function verifyMfa(request: MfaVerifyRequest): Promise<LoginResponse> {
+    return run('MFA verification failed', async () => {
+      const response = await api.post<LoginResponse>('/auth/mfa/verify', request)
+      storeTokens(response)
+      return response
+    })
+  }
+
+  return {
+    // State
+    accessToken,
+    isAuthenticated: !!accessToken,
+    isLoading,
+    error,
+
+    // Actions
+    login,
+    register,
+    logout,
+    refreshAccessToken,
+    requestPasswordReset,
+    completePasswordReset,
+    verifyMfa,
+    clearTokens: tokenStore.clear,
+  }
+}

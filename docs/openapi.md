@@ -278,16 +278,58 @@ struct ApiDoc;
 
 ## Generating Client SDKs
 
-You can use the OpenAPI spec to generate type-safe client libraries:
+You can use the OpenAPI spec to generate type-safe client libraries.
 
-### TypeScript/Vue
+### TypeScript client
+
+`tideway generate client` turns the spec into a single TypeScript module with no runtime
+dependencies. It works in Vue, React, Next.js, and Node 18+.
 
 ```bash
-# Install openapi-typescript
-npm install -D openapi-typescript
+# With the app running (OPENAPI_ENABLED=true, OPENAPI_SERVE_SPEC=true)
+curl -o openapi.json http://localhost:8000/api-docs/openapi.json
 
-# Generate TypeScript types
-npx openapi-typescript http://localhost:8080/api-docs/openapi.json -o src/api/types.ts
+# Writes ./src/api/client.ts by default
+tideway generate client --spec openapi.json --output web/src/api/client.ts
+```
+
+Each `components.schemas` entry becomes an exported interface or type. Each operation becomes a
+function named after its `operationId` in camelCase. utoipa uses the handler name, so `list_todos`
+becomes `listTodos`. Arguments go in this order: path parameters, the request body, the query
+object, then per-request options:
+
+```ts
+import { ApiError, createClient, type Todo } from './api/client'
+
+const api = createClient({
+  baseUrl: import.meta.env.VITE_API_URL, // or process.env.NEXT_PUBLIC_API_URL
+  getToken: () => localStorage.getItem('access_token'),
+})
+
+const todos: Todo[] = await api.listTodos({ limit: 20, q: 'ship' })
+const todo = await api.getTodo(42)
+await api.updateTodo(42, { completed: true })
+
+try {
+  await api.getTodo(404)
+} catch (error) {
+  if (error instanceof ApiError) console.log(error.status, error.body)
+}
+```
+
+`createClient` also accepts `headers`, `credentials`, and a custom `fetch`, which is useful for
+tests and Next.js server components. Non-2xx responses throw `ApiError` with the parsed error body.
+Commit the generated file and re-run the command after API changes. It replaces a previously
+generated client in place.
+
+Supported: OpenAPI 3.0 and 3.1 JSON, `$ref`, `oneOf`/`anyOf`/`allOf`, enums, nullable fields, and
+JSON, form, text, and binary bodies. Header and cookie parameters are not part of the generated
+signatures. Pass them through the `headers` option instead.
+
+If you prefer the wider ecosystem, `openapi-typescript` generates types only:
+
+```bash
+npx openapi-typescript http://localhost:8000/api-docs/openapi.json -o src/api/types.ts
 ```
 
 ### Other Languages
