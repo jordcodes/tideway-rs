@@ -8,7 +8,8 @@ use axum::{
 };
 use migration::{Migrator, MigratorTrait};
 use sea_orm::{
-    ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement,
+    sea_query::Expr, ColumnTrait, ConnectOptions, ConnectionTrait, Database, DatabaseBackend,
+    DatabaseConnection, EntityTrait, QueryFilter, Statement,
 };
 use serde_json::{json, Value};
 use tideway::{
@@ -18,6 +19,8 @@ use tideway::{
 use tower::ServiceExt;
 
 use super::AuthModule;
+use crate::admin::AdminModule;
+use crate::entities::user;
 {{#if has_organizations}}
 use crate::organizations::OrganizationModule;
 {{/if}}
@@ -52,6 +55,10 @@ async fn connect_test_database() -> DatabaseConnection {
 }
 
 async fn test_app() -> Router {
+    test_app_with_db().await.0
+}
+
+async fn test_app_with_db() -> (Router, Arc<DatabaseConnection>) {
     let db = connect_test_database().await;
     Migrator::up(&db, None).await.expect("run migrations");
     let db = Arc::new(db);
@@ -70,14 +77,20 @@ async fn test_app() -> Router {
     )
     .with_public_registration(true);
 
-    let app = App::new().register_module(auth);
+    let admin = AdminModule::new(
+        db.clone(),
+        jwt.verifier().expect("create verifier"),
+        jwt.issuer(),
+    );
+
+    let app = App::new().register_module(auth).register_module(admin);
     {{#if has_organizations}}
     let app = app.register_module(OrganizationModule::new(
-        db,
+        db.clone(),
         jwt.verifier().expect("create verifier"),
     ));
     {{/if}}
-    app.into_router()
+    (app.into_router(), db)
 }
 
 #[tokio::test]
@@ -269,4 +282,176 @@ async fn registration_and_login_work_with_generated_migrations() {
 #[test]
 fn display_name_does_not_change_jwt_identity() {
     assert_ne!(DISPLAY_APP_NAME, JWT_ISSUER);
+}
+
+struct TestSession {
+    access_token: String,
+    refresh_token: String,
+}
+
+async fn register_and_login(app: &Router, email: &str) -> TestSession {
+    let (status, registered) = request(
+        app,
+        Method::POST,
+        "/auth/register",
+        json!({
+            "email": email,
+            "password": "correct horse battery staple"
+            {{#if has_organizations}}, "organization_name": format!("{email} Organization"){{/if}}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "registration response: {registered}");
+    login(app, email).await
+}
+
+async fn login(app: &Router, email: &str) -> TestSession {
+    let (status, login) = request(
+        app,
+        Method::POST,
+        "/auth/login",
+        json!({
+            "email": email,
+            "password": "correct horse battery staple",
+            "remember_me": false
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login response: {login}");
+    TestSession {
+        access_token: login["access_token"].as_str().expect("access token").to_owned(),
+        refresh_token: login["refresh_token"].as_str().expect("refresh token").to_owned(),
+    }
+}
+
+async fn promote_to_admin(db: &DatabaseConnection, email: &str) {
+    user::Entity::update_many()
+        .col_expr(user::Column::IsPlatformAdmin, Expr::value(true))
+        .filter(user::Column::Email.eq(email))
+        .exec(db)
+        .await
+        .expect("promote user to platform admin");
+}
+
+async fn admin_stats_status(app: &Router, access_token: &str) -> StatusCode {
+    request_with_token(app, Method::GET, "/admin/stats", Value::Null, Some(access_token))
+        .await
+        .0
+}
+
+async fn refresh_status(app: &Router, refresh_token: &str) -> StatusCode {
+    request(
+        app,
+        Method::POST,
+        "/auth/refresh",
+        json!({"refresh_token": refresh_token}),
+    )
+    .await
+    .0
+}
+
+async fn admin_update_user(
+    app: &Router,
+    admin_token: &str,
+    user_id: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    request_with_token(
+        app,
+        Method::PATCH,
+        &format!("/admin/users/{user_id}"),
+        body,
+        Some(admin_token),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn admin_lock_revokes_existing_access_and_refresh_tokens() {
+    let (app, db) = test_app_with_db().await;
+    register_and_login(&app, "admin@example.com").await;
+    promote_to_admin(&db, "admin@example.com").await;
+    let admin = login(&app, "admin@example.com").await;
+    let target = register_and_login(&app, "target@example.com").await;
+    let target_id = user_id_for(&db, "target@example.com").await;
+
+    // A valid non-admin token authenticates, then fails authorization.
+    assert_eq!(admin_stats_status(&app, &target.access_token).await, StatusCode::FORBIDDEN);
+
+    let (status, body) =
+        admin_update_user(&app, &admin.access_token, &target_id, json!({"locked": true})).await;
+    assert_eq!(status, StatusCode::OK, "lock response: {body}");
+
+    assert_eq!(
+        admin_stats_status(&app, &target.access_token).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        refresh_status(&app, &target.refresh_token).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // The acting admin's own session is untouched.
+    assert_eq!(admin_stats_status(&app, &admin.access_token).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_demotion_revokes_admin_access() {
+    let (app, db) = test_app_with_db().await;
+    register_and_login(&app, "admin@example.com").await;
+    register_and_login(&app, "second-admin@example.com").await;
+    promote_to_admin(&db, "admin@example.com").await;
+    promote_to_admin(&db, "second-admin@example.com").await;
+    let admin = login(&app, "admin@example.com").await;
+    let demoted = login(&app, "second-admin@example.com").await;
+    let demoted_id = user_id_for(&db, "second-admin@example.com").await;
+    assert_eq!(admin_stats_status(&app, &demoted.access_token).await, StatusCode::OK);
+
+    let (status, body) = admin_update_user(
+        &app,
+        &admin.access_token,
+        &demoted_id,
+        json!({"is_platform_admin": false}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "demote response: {body}");
+
+    assert_eq!(
+        admin_stats_status(&app, &demoted.access_token).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        refresh_status(&app, &demoted.refresh_token).await,
+        StatusCode::UNAUTHORIZED
+    );
+    let fresh = login(&app, "second-admin@example.com").await;
+    assert_eq!(admin_stats_status(&app, &fresh.access_token).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admins_cannot_lock_or_demote_themselves() {
+    let (app, db) = test_app_with_db().await;
+    register_and_login(&app, "admin@example.com").await;
+    promote_to_admin(&db, "admin@example.com").await;
+    let admin = login(&app, "admin@example.com").await;
+    let admin_id = user_id_for(&db, "admin@example.com").await;
+
+    for body in [json!({"locked": true}), json!({"is_platform_admin": false})] {
+        let (status, response) =
+            admin_update_user(&app, &admin.access_token, &admin_id, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "self-update response: {response}");
+    }
+
+    assert_eq!(admin_stats_status(&app, &admin.access_token).await, StatusCode::OK);
+    assert_eq!(refresh_status(&app, &admin.refresh_token).await, StatusCode::OK);
+}
+
+async fn user_id_for(db: &DatabaseConnection, email: &str) -> String {
+    user::Entity::find()
+        .filter(user::Column::Email.eq(email))
+        .one(db)
+        .await
+        .expect("load user")
+        .expect("user exists")
+        .id
+        .to_string()
 }
