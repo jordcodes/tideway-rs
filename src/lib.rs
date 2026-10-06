@@ -443,10 +443,13 @@ macro_rules! module {
 pub use database::SeaOrmPool;
 #[cfg(feature = "email")]
 pub use email::{ConsoleMailer, ResendConfig, ResendMailer, SmtpConfig, SmtpMailer};
-#[cfg(all(feature = "jobs", feature = "jobs-redis"))]
-pub use jobs::RedisJobQueue;
 #[cfg(feature = "jobs")]
-pub use jobs::{InMemoryJobQueue, JobBackend, JobRegistry, JobWorker, WorkerPool};
+pub use jobs::{
+    InMemoryJobQueue, InMemorySchedulerLock, JobBackend, JobRegistry, JobScheduler, JobWorker,
+    SchedulerHandle, SchedulerLock, WorkerPool,
+};
+#[cfg(all(feature = "jobs", feature = "jobs-redis"))]
+pub use jobs::{RedisJobQueue, RedisSchedulerLock};
 #[cfg(feature = "database")]
 pub use traits::database::{DatabaseConnection, DatabasePool};
 #[cfg(feature = "jobs")]
