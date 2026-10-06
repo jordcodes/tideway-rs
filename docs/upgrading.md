@@ -103,6 +103,7 @@ through the application's normal migration and deployment workflow.
 | `SecureRefundManager::get_refund` takes the billable ID | See [refund lookups](#08x-to-090-refund-lookups-scoped-to-the-billable-entity) |
 | `Refund` has a new `replayed` field | Set it in struct literals and custom `StripeRefundClient`s; see [replayed refunds](#08x-to-090-replayed-refunds) |
 | `BillingEvent::OneTimeCheckoutCompleted` field, `CreditTransactionKind` `#[non_exhaustive]`, `credits-seaorm` migration | See [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes) |
+| `BillingEvent::InvoicePaid` / `InvoicePaymentFailed` have a new `invoice` field | Add `..` to patterns or set `invoice: InvoiceSummary::default()`; see [invoice summaries](#08x-to-090-invoice-summaries-on-billing-events) |
 | `JobsConfig` has a new `shutdown_timeout_seconds` field | Set it in struct literals or use `..Default::default()`; see [bounded job shutdown](#08x-to-090-bounded-job-shutdown) |
 
 The remaining 0.9.0 sections below describe behavior changes that need review but no code change.
@@ -441,6 +442,31 @@ need no change. Before deploying:
    again through the queue's normal retry handling.
 3. If you manage a `WorkerPool` directly, prefer `pool.shutdown_with_timeout(timeout)` over
    `pool.shutdown()`, which still waits without a limit.
+
+## 0.8.x to 0.9.0: invoice summaries on billing events
+
+`BillingEvent::InvoicePaid` and `BillingEvent::InvoicePaymentFailed` now carry an
+`invoice: InvoiceSummary` with the invoice number, customer email, amounts, currency, hosted
+invoice URL, and billing reason. Patterns without `..` and struct literals (typically in tests) no
+longer compile:
+
+```rust
+// Patterns: add `..`
+BillingEvent::InvoicePaid { invoice_id, customer_id, .. } => { /* ... */ }
+
+// Literals: set the new field
+BillingEvent::InvoicePaid {
+    context,
+    invoice_id: Some("in_1".into()),
+    subscription_id: None,
+    customer_id: Some("cus_1".into()),
+    invoice: InvoiceSummary::default(),
+}
+```
+
+The webhook handler also processes `customer.subscription.trial_will_end` as
+`BillingEvent::TrialWillEnd`. `BillingEvent` is `#[non_exhaustive]`, so existing matches already
+have a wildcard arm; add the event type to your Stripe endpoint to receive it.
 
 ## 0.8.x to 0.9.0: scheduled JWKS refresh
 
@@ -1070,6 +1096,7 @@ Upgrade findings emitted with `--json` contain a stable `code`, `affected_path`,
 | `TW-UPGRADE-BILLING-MIGRATION-MISSING` | The built-in billing store's event migration is absent. |
 | `TW-UPGRADE-BILLING-MIGRATION-PRIMARY-KEY` | The event-ID uniqueness constraint could not be confirmed. |
 | `TW-UPGRADE-CREDIT-REVOCATION-SCHEMA` | Migration source lacks the credit revocation columns and `revoke` transaction kind. |
+| `TW-UPGRADE-API-KEYS-SCHEMA` | `api-keys-seaorm` / `SeaOrmApiKeyStore` is used but no `api_keys` migration was found; run `tideway add api-keys`. |
 | `TW-UPGRADE-JWT-ISSUER-SECRET` | The deprecated unchecked JWT issuer constructor is present. |
 | `TW-UPGRADE-JWT-VERIFIER-SECRET` | The deprecated unchecked JWT verifier constructor is present. |
 | `TW-UPGRADE-JWT-IDENTITY-DRIFT` | JWT issuance uses a display name while verification expects the Cargo package name. |

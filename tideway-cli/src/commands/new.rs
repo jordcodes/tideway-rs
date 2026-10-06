@@ -76,6 +76,8 @@ const SUPPORTED_TIDEWAY_FEATURES: &[&str] = &[
     "organizations",
     "organizations-billing",
     "organizations-seaorm",
+    "otel",
+    "sentry",
     "sessions",
     "test-auth-bypass",
     "test-billing",
@@ -117,6 +119,14 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         apply_preset(preset, &mut args);
     }
 
+    let backend_preset = args
+        .preset
+        .and_then(preset_backend_preset)
+        .or(wizard.backend_preset.clone());
+    if backend_preset.is_none() {
+        add_starter_lifecycle_email_features(&mut args.features);
+    }
+
     let dir_name = args.path.clone().unwrap_or_else(|| name.clone());
     let project_name = normalize_project_name(&name);
     let project_name_pascal = to_pascal_case(&project_name);
@@ -128,10 +138,6 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
     let has_openapi_feature = features.contains("openapi");
     let has_tideway_features = !features.is_empty();
     let starter_database = starter_database_for(&args);
-    let backend_preset = args
-        .preset
-        .and_then(preset_backend_preset)
-        .or(wizard.backend_preset.clone());
 
     let target_dir = PathBuf::from(&dir_name);
     if target_dir.exists() {
@@ -182,6 +188,8 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         has_database_feature,
         has_billing_feature: features.contains("billing"),
         has_openapi_feature,
+        has_otel_feature: features.contains("otel"),
+        has_sentry_feature: features.contains("sentry"),
         needs_arc,
         has_config: args.with_config,
     };
@@ -204,6 +212,10 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
             &project_name,
             backend_preset.clone(),
             args.without_invitations,
+            ObservabilityFeatures {
+                otel: features.contains("otel"),
+                sentry: features.contains("sentry"),
+            },
             runtime,
         )?;
         ensure_backend_dependencies(
@@ -319,6 +331,14 @@ fn scaffold_files(
             write_file_with_force_or_error_default(
                 &target_dir.join("src/openapi_docs.rs"),
                 &engine.render("starter/src/openapi_docs.rs")?,
+                args.force,
+            )?;
+        }
+
+        if has_database_auth {
+            write_file_with_force_or_error_default(
+                &target_dir.join("src/email.rs"),
+                &engine.render("starter/src/email.rs")?,
                 args.force,
             )?;
         }
@@ -552,6 +572,7 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
             files.push("src/auth/routes.rs".to_string());
             if has_database_auth {
                 files.push("src/auth/tests.rs".to_string());
+                files.push("src/email.rs".to_string());
             }
         }
 
@@ -1142,7 +1163,14 @@ fn apply_advanced_wizard_choice(
 fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
     let preset_features: &[&str] = match preset {
         NewPreset::Minimal => &[],
-        NewPreset::Api => &["auth", "database", "openapi", "validation"],
+        NewPreset::Api => &[
+            "auth",
+            "database",
+            "openapi",
+            "validation",
+            "otel",
+            "sentry",
+        ],
         NewPreset::Saas => &[
             "auth",
             "database",
@@ -1153,8 +1181,17 @@ fn apply_preset(preset: NewPreset, args: &mut NewArgs) {
             "admin",
             "validation",
             "metrics",
+            "otel",
+            "sentry",
         ],
-        NewPreset::Worker => &["database", "jobs", "jobs-redis", "metrics"],
+        NewPreset::Worker => &[
+            "database",
+            "jobs",
+            "jobs-redis",
+            "metrics",
+            "otel",
+            "sentry",
+        ],
         NewPreset::List => &[],
     };
 
@@ -1198,6 +1235,8 @@ fn apply_backend_defaults(args: &mut NewArgs, has_organizations: bool) {
         "billing",
         "billing-seaorm",
         "admin",
+        "otel",
+        "sentry",
     ];
     if has_organizations {
         features.push("organizations");
@@ -1230,13 +1269,13 @@ fn print_presets(runtime: CommandRuntime) {
     println!("Available presets:");
     println!("  - minimal: basic starter (no extra features)");
     println!(
-        "  - api: auth + database + openapi + validation, plus config, CI, env, and a sample todo resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add --with-docker for Postgres)"
+        "  - api: auth + database + openapi + validation + otel + sentry, plus config, CI, env, and a sample todo resource with entity/repository/service layers, pagination, and search (SQLite local dev by default; add --with-docker for Postgres)"
     );
     println!(
-        "  - saas: b2b backend scaffold with auth, provider-neutral email, billing, organizations, admin, docker, CI, and env defaults"
+        "  - saas: b2b backend scaffold with auth, provider-neutral email, billing, organizations, admin, OpenTelemetry, Sentry, docker, CI, and env defaults"
     );
     println!(
-        "  - worker: jobs-first starter (database + jobs + redis + metrics) with config, docker, CI, and env"
+        "  - worker: jobs-first starter (database + jobs + redis + metrics + otel + sentry) with config, docker, CI, and env"
     );
 }
 
@@ -1274,6 +1313,7 @@ fn scaffold_backend_preset(
     project_name: &str,
     preset: BackendPreset,
     without_invitations: bool,
+    observability: ObservabilityFeatures,
     runtime: CommandRuntime,
 ) -> Result<()> {
     let has_organizations = matches!(preset, BackendPreset::B2b);
@@ -1300,6 +1340,7 @@ fn scaffold_backend_preset(
         project_name,
         has_organizations,
         has_organizations && !without_invitations,
+        observability,
     )?;
     write_file_with_force_or_error_default(
         &target_dir.join("migration/Cargo.toml"),
@@ -1314,10 +1355,18 @@ fn scaffold_backend_preset(
     Ok(())
 }
 
+/// Observability features requested for a backend preset scaffold.
+#[derive(Clone, Copy)]
+struct ObservabilityFeatures {
+    otel: bool,
+    sentry: bool,
+}
+
 fn backend_template_engine(
     project_name: &str,
     has_organizations: bool,
     has_invitations: bool,
+    observability: ObservabilityFeatures,
 ) -> Result<BackendTemplateEngine> {
     let context = BackendTemplateContext {
         project_name: project_name.to_string(),
@@ -1336,6 +1385,8 @@ fn backend_template_engine(
         has_database_feature: true,
         has_billing_feature: true,
         has_openapi_feature: false,
+        has_otel_feature: observability.otel,
+        has_sentry_feature: observability.sentry,
         needs_arc: false,
         has_config: false,
     };
@@ -1457,6 +1508,20 @@ fn should_default_to_api_preset(args: &NewArgs) -> bool {
         && (args.no_prompt || !Term::stdout().is_term())
 }
 
+/// Database-backed starter auth sends verification and password-reset emails through Tideway's
+/// lifecycle emails, delivered by background job workers.
+fn add_starter_lifecycle_email_features(features: &mut Vec<String>) {
+    let normalized = normalize_features(features);
+    if !(normalized.contains("auth") && normalized.contains("database")) {
+        return;
+    }
+    for feature in ["email", "jobs"] {
+        if !normalized.contains(feature) {
+            features.push(feature.to_string());
+        }
+    }
+}
+
 fn should_suggest_migrate(preset: Option<NewPreset>, has_database_feature: bool) -> bool {
     if !has_database_feature {
         return false;
@@ -1565,6 +1630,8 @@ fn prompt_for_options(args: &mut NewArgs) -> Result<WizardOptions> {
                 "email",
                 "websocket",
                 "metrics",
+                "otel",
+                "sentry",
                 "validation",
                 "openapi",
             ];

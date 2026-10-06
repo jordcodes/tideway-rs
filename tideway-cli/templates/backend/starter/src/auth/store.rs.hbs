@@ -14,8 +14,8 @@ use std::{
     time::SystemTime,
 };
 use tideway::auth::{
-    JwtIssuer, MfaTokenStore, PasswordResetStore, RefreshTokenStore, TokenIssuer, UserCreator,
-    UserLoader, UserStore,
+    EmailVerificationFlow, JwtIssuer, MfaTokenStore, PasswordResetStore, RefreshTokenStore,
+    TokenIssuer, UserCreator, UserLoader, UserStore, VerificationStore,
 };
 {{#if has_auth_mfa_feature}}
 use tideway::auth::{BackupCodeGenerator, MfaSecretCipher};
@@ -23,6 +23,7 @@ use tideway::auth::{BackupCodeGenerator, MfaSecretCipher};
 use tideway::{Result, TidewayError};
 use uuid::Uuid;
 
+use crate::email::AppEmails;
 use crate::entities::{auth_token, refresh_token_family, user};
 {{#if has_auth_mfa_feature}}
 use crate::entities::mfa_backup_code;
@@ -32,6 +33,7 @@ use crate::entities::mfa_backup_code;
 pub struct DbUserStore {
     db: Arc<DatabaseConnection>,
     require_email_verification: bool,
+    emails: Option<AppEmails>,
     {{#if has_auth_mfa_feature}}
     mfa_cipher: Arc<MfaSecretCipher>,
     {{/if}}
@@ -48,10 +50,23 @@ impl DbUserStore {
         Self {
             db,
             require_email_verification,
+            emails: None,
             {{#if has_auth_mfa_feature}}
             mfa_cipher,
             {{/if}}
         }
+    }
+
+    /// Queue verification and password-reset emails through `emails`.
+    pub fn with_emails(mut self, emails: Option<AppEmails>) -> Self {
+        self.emails = emails;
+        self
+    }
+
+    fn emails(&self) -> Result<&AppEmails> {
+        self.emails
+            .as_ref()
+            .ok_or_else(|| TidewayError::internal("Email delivery is not configured (set EMAIL_PROVIDER)"))
     }
 
     fn parse_user_id(id: &str) -> Result<Uuid> {
@@ -455,13 +470,85 @@ impl UserCreator for DbUserStore {
     }
 
     async fn send_verification_email(&self, user: &Self::User) -> Result<()> {
-        if self.require_email_verification {
-            tracing::warn!(
-                user_id = %user.id,
-                "Email verification is required; implement delivery in DbUserStore::send_verification_email"
-            );
+        if !self.require_email_verification || user.email_verified_at.is_some() {
+            return Ok(());
         }
+        EmailVerificationFlow::new(self.clone())
+            .send_verification(&user.id.to_string(), &user.email)
+            .await
+    }
+}
+
+#[async_trait]
+impl VerificationStore for DbUserStore {
+    async fn store_verification_token(
+        &self,
+        user_id: &str,
+        token_hash: &str,
+        expires: SystemTime,
+    ) -> Result<()> {
+        let expires_at: chrono::DateTime<Utc> = expires.into();
+        auth_token::ActiveModel {
+            id: Set(Uuid::new_v4()),
+            user_id: Set(Self::parse_user_id(user_id)?),
+            token_hash: Set(token_hash.to_owned()),
+            token_type: Set("email_verification".to_owned()),
+            expires_at: Set(expires_at.into()),
+            used_at: Set(None),
+            created_at: Set(Utc::now().into()),
+        }
+        .insert(self.db.as_ref())
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
         Ok(())
+    }
+
+    async fn consume_verification_token(&self, token_hash: &str) -> Result<Option<String>> {
+        let now = Utc::now();
+        let token = auth_token::Entity::find()
+            .filter(auth_token::Column::TokenHash.eq(token_hash))
+            .filter(auth_token::Column::TokenType.eq("email_verification"))
+            .filter(auth_token::Column::UsedAt.is_null())
+            .filter(auth_token::Column::ExpiresAt.gt(now))
+            .one(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        let Some(token) = token else {
+            return Ok(None);
+        };
+
+        let update = auth_token::Entity::update_many()
+            .col_expr(auth_token::Column::UsedAt, Expr::value(Some(Utc::now())))
+            .filter(auth_token::Column::Id.eq(token.id))
+            .filter(auth_token::Column::UsedAt.is_null())
+            .filter(auth_token::Column::ExpiresAt.gt(Utc::now()))
+            .exec(self.db.as_ref())
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        Ok((update.rows_affected == 1).then(|| token.user_id.to_string()))
+    }
+
+    async fn mark_user_verified(&self, user_id: &str) -> Result<()> {
+        let user = UserStore::find_by_id(self, user_id)
+            .await?
+            .ok_or_else(|| TidewayError::not_found("User not found"))?;
+        self.mark_verified(&user).await
+    }
+
+    async fn verification_email(&self, user_id: &str) -> Result<Option<String>> {
+        Ok(UserStore::find_by_id(self, user_id).await?.map(|user| user.email))
+    }
+
+    async fn send_verification_email(
+        &self,
+        _user_id: &str,
+        email: &str,
+        token: &str,
+        expires_in: std::time::Duration,
+    ) -> Result<()> {
+        self.emails()?.send_verification(email, token, expires_in).await
     }
 }
 
@@ -645,14 +732,12 @@ impl PasswordResetStore for DbUserStore {
     async fn send_reset_email(
         &self,
         user: &Self::User,
-        _token: &str,
-        _expires_in: std::time::Duration,
+        token: &str,
+        expires_in: std::time::Duration,
     ) -> Result<()> {
-        tracing::warn!(
-            user_id = %user.id,
-            "Password reset requested; implement delivery in DbUserStore::send_reset_email"
-        );
-        Ok(())
+        self.emails()?
+            .send_password_reset(&user.email, token, expires_in)
+            .await
     }
 }
 

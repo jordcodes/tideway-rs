@@ -155,6 +155,10 @@ pub struct BackendTemplateContext {
     pub has_billing_feature: bool,
     /// Whether openapi is requested (starter templates)
     pub has_openapi_feature: bool,
+    /// Whether OpenTelemetry trace export is requested
+    pub has_otel_feature: bool,
+    /// Whether Sentry error reporting is requested
+    pub has_sentry_feature: bool,
     /// Whether starter templates need Arc
     pub needs_arc: bool,
     /// Whether starter templates should include config/error modules

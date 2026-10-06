@@ -160,6 +160,7 @@ pub enum AddFeature {
     Email,
     Organizations,
     Credits,
+    ApiKeys,
     BillingSchema,
 }
 
@@ -548,6 +549,7 @@ impl std::fmt::Display for AddFeature {
             AddFeature::Email => "email",
             AddFeature::Organizations => "organizations",
             AddFeature::Credits => "credits",
+            AddFeature::ApiKeys => "api-keys",
             AddFeature::BillingSchema => "billing-schema",
         };
         write!(f, "{}", name)

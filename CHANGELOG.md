@@ -26,7 +26,8 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 >
 > Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
 > `CreateRefundRequest` has a new `idempotency_key` field,
-> `BillingEvent::OneTimeCheckoutCompleted` and `Refund` have new fields, `CreditTransactionKind` is
+> `BillingEvent::OneTimeCheckoutCompleted`, `BillingEvent::InvoicePaid`,
+> `BillingEvent::InvoicePaymentFailed`, and `Refund` have new fields, `CreditTransactionKind` is
 > `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
 > migration.
 
@@ -267,9 +268,26 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
-- `tideway new` now generates a multi-stage production `Dockerfile` (cargo-chef dependency caching, slim non-root
-  Debian runtime listening on `$PORT`) and `.dockerignore` for every scaffold. The new
-  `docs/deployment.md` covers building the image and deploying to Fly.io and Railway.
+- Observability: the `otel` feature exports traces over OTLP/HTTP when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set, with no code changes for apps that call
+  `init_tracing*` and `App::serve`. Requests become server spans named after their route.
+  They continue incoming W3C `traceparent` headers, and 5xx errors are recorded as span
+  exceptions. `observability::inject_trace_context` propagates the trace to outgoing calls,
+  and `shutdown_tracing` flushes spans for apps that serve manually. Separately, an
+  `ErrorReporter` registered with `AppContextBuilder::with_error_reporter` receives every 5xx
+  response (with the full internal message and client `error_id`), handler panics, and failed
+  jobs, for forwarding to an error tracker. Request spans now use the `tideway::request`
+  tracing target. See `docs/observability.md`.
+- Sentry: the `sentry` feature adds `observability::SentryReporter`, and `App` registers it
+  automatically when `SENTRY_DSN` is set and the context has no reporter. Errors become Sentry
+  issues with the route as transaction, the client `error_id` and request ID as tags, and the
+  OpenTelemetry trace ID as trace context. `App::serve` flushes them on shutdown. The new
+  `ErrorReporter::flush` method has a default implementation, so existing reporters still
+  compile.
+- `tideway new` now generates a multi-stage production `Dockerfile` (cargo-chef dependency
+  caching, slim non-root Debian runtime listening on `$PORT`) and `.dockerignore` for every
+  scaffold. The new `docs/deployment.md` covers building the image and deploying to Fly.io and
+  Railway.
 - File storage: the `storage` feature adds a `FileStorage` trait over `object_store` with a
   `LocalStorage` backend (HMAC-signed presigned URLs served by `LocalStorage::router()`) and an
   in-memory backend for tests; `storage-s3` adds `ObjectStorage::s3` and `ObjectStorage::r2`
@@ -282,6 +300,17 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   occurrence is claimed through a `SchedulerLock` before it is enqueued, so only one instance runs
   it; `RedisSchedulerLock` (or `RedisJobQueue::scheduler_lock`) uses Redis `SET NX PX`. The `jobs`
   feature now depends on the `cron` crate.
+- Default, overridable lifecycle emails (`tideway::email::lifecycle`): templates for email
+  verification, password reset, organization invitation, trial ending, payment failed, and
+  receipt, rendered through an `EmailTemplates`/`EmailLayout` pair that applications can override
+  per email or wholesale. `LifecycleEmailer::queued` delivers them through the new
+  `SendEmailJob` (`register_email_jobs`) when the `jobs` feature is enabled. `Email` now derives
+  `Serialize`, `Deserialize`, `PartialEq`, and `Eq`.
+- `billing::LifecycleEmailBillingSink` (with `email`) sends the trial-ending, payment-failed, and
+  receipt lifecycle emails from Stripe webhooks, resolving recipients from the invoice's customer
+  email or an application `BillingEmailRecipients`. The webhook handler now processes
+  `customer.subscription.trial_will_end` as `BillingEvent::TrialWillEnd`, and invoice events carry
+  an `InvoiceSummary` (number, customer email, amounts, currency, hosted invoice URL).
 - `ImpersonationRequestBody` and `DeletionRequestBody` are safe deserializable request bodies with
   no actor field and `deny_unknown_fields`. Their `into_request(actor_id)` method combines the body
   with the authenticated user's ID.
@@ -334,6 +363,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   listed at the top of this release mean it cannot ship as a 0.8.x patch release.
 - `BillingEvent::OneTimeCheckoutCompleted` has a new `payment_intent_id` field. Code that
   constructs it, or destructures it without `..`, must be updated.
+- `BillingEvent::InvoicePaid` and `BillingEvent::InvoicePaymentFailed` have a new
+  `invoice: InvoiceSummary` field. Code that constructs them, or destructures them without `..`,
+  must be updated. `InvoiceSummary` is `#[non_exhaustive]` and implements `Default`.
 - `CreditTransactionKind` has a new `Revoke` variant and is now `#[non_exhaustive]`. Exhaustive
   matches on it must add a wildcard arm; later kinds will not be breaking.
 - `CreditTopUpEventSink` now keys grants by `stripe-payment-intent:{id}` instead of
@@ -414,10 +446,25 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Changed
 
+- The `api`, `saas`, and `worker` presets and backend presets enable Tideway's `otel` and
+  `sentry` features. Their `.env.example` documents `OTEL_*`, `SENTRY_DSN`, and
+  `SENTRY_ENVIRONMENT`, so generated apps can export traces to an OTLP backend and errors to
+  Sentry by setting those variables. Both features are also accepted by `--features` and
+  offered in the custom feature picker.
+
 - The CLI now shares the framework's major.minor version: tideway-cli 0.9.0 follows 0.1.48 and
   is released alongside Tideway 0.9.0. CLI 0.9.x targets Tideway 0.9.x; patch releases stay
   independent, so CLI fixes can ship without a framework release. Newly generated applications
   use Tideway 0.9.0.
+- New database-backed auth apps (the API preset, or `--features auth,database`) send email
+  verification and password-reset emails out of the box. The generated `DbUserStore` implements
+  `VerificationStore` (reusing the `auth_tokens` table) and queues Tideway's default lifecycle
+  templates; `main.rs` starts background workers to deliver them. The new `src/email.rs` selects
+  the provider from `EMAIL_PROVIDER`/`EMAIL_FROM`/`APP_URL` and holds the `AppEmailTemplates`
+  override point. `/auth/email/verify` and `/auth/email/verification/resend` are mounted with the
+  password-reset routes when email delivery is configured. These apps now enable the `email` and
+  `jobs` features, and `AuthModule::with_email_delivery` takes the `AppEmails` handle. Existing
+  applications are unaffected; see `docs/email.md` to adopt the same wiring by hand.
 
 ### Migration Notes
 
