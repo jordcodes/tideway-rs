@@ -276,6 +276,8 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
         &project_dir.join("migration/src/main.rs"),
         "cli::run_cli(migration::Migrator).await",
     );
+    assert_file_contains(&project_dir.join("src/bin/seed.rs"), "SAMPLE_TODOS");
+    assert_file_contains(&project_dir.join("Cargo.toml"), "default-run = \"my_app\"");
 
     patch_scaffold_to_workspace(&project_dir);
 
@@ -303,6 +305,37 @@ fn test_new_command_api_preset_compiles_and_tests_against_workspace_source() {
             "--all-targets",
         ],
     );
+
+    // One command seeds a fresh database (migrations included), and reruns are idempotent.
+    let first = run_tideway_seed(temp_dir.path(), &project_dir);
+    assert!(
+        first.contains("todos: 3 inserted, 0 already present"),
+        "unexpected first seed output:\n{first}"
+    );
+    let second = run_tideway_seed(temp_dir.path(), &project_dir);
+    assert!(
+        second.contains("todos: 0 inserted, 3 already present"),
+        "unexpected second seed output:\n{second}"
+    );
+}
+
+fn run_tideway_seed(temp_root: &Path, project_dir: &Path) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .args(["seed", "--fix-env", "--path"])
+        .arg(project_dir)
+        .current_dir(project_dir)
+        .env("CARGO_TARGET_DIR", temp_root.join("cargo-target"))
+        .env_remove("DATABASE_URL")
+        .output()
+        .expect("run tideway seed");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success(),
+        "tideway seed failed.\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    stdout
 }
 
 #[test]

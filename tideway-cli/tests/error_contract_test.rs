@@ -117,6 +117,39 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
 }
 
 #[test]
+fn test_seed_missing_seed_binary_uses_error_contract() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_basic_project(&project_dir);
+
+    let output = run_tideway(&["seed", "--path", project_dir.to_str().expect("utf8 path")]);
+    assert_failure(&output, "tideway seed");
+    assert_error_contract(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("src/bin/seed.rs"),
+        "expected the seed convention in the fix hint"
+    );
+}
+
+#[test]
+fn test_seed_missing_database_url_uses_error_contract() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_basic_project(&project_dir);
+    fs::create_dir_all(project_dir.join("src/bin")).expect("create src/bin");
+    fs::write(project_dir.join("src/bin/seed.rs"), "fn main() {}\n").expect("write seed.rs");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .args(["seed", "--no-env", "--path"])
+        .arg(&project_dir)
+        .env_remove("DATABASE_URL")
+        .output()
+        .expect("run tideway");
+    assert_failure(&output, "tideway seed --no-env");
+    assert_error_contract(&output);
+}
+
+#[test]
 fn test_dev_unreachable_postgres_uses_error_contract() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

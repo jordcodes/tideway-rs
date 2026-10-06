@@ -280,6 +280,7 @@ pub fn run_with_runtime(mut args: NewArgs, runtime: CommandRuntime) -> Result<()
         println!();
         if should_suggest_migrate(args.preset, has_database_feature) {
             println!("Tip: run `tideway migrate` when you need explicit migration control.");
+            println!("Tip: run `tideway seed` to load demo data from src/bin/seed.rs.");
             println!();
         }
 
@@ -428,6 +429,16 @@ fn scaffold_files(
         write_file_with_force_or_error_default(
             &target_dir.join("src/entities/mod.rs"),
             &engine.render("starter/src/entities/mod.rs")?,
+            args.force,
+        )?;
+        let seed_template = if matches!(args.preset, Some(NewPreset::Api)) {
+            "starter/src/bin/seed_api.rs"
+        } else {
+            "starter/src/bin/seed.rs"
+        };
+        write_file_with_force_or_error_default(
+            &target_dir.join("src/bin/seed.rs"),
+            &engine.render(seed_template)?,
             args.force,
         )?;
 
@@ -580,6 +591,10 @@ fn expected_files_for(args: &NewArgs, backend_preset: Option<&BackendPreset>) ->
 
     if needs_env {
         files.push(".env.example".to_string());
+    }
+
+    if has_database_feature {
+        files.push("src/bin/seed.rs".to_string());
     }
 
     if backend_preset.is_none() && has_database_feature {

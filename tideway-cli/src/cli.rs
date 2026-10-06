@@ -54,6 +54,9 @@ pub enum Commands {
     /// Primary: run database migrations
     Migrate(MigrateArgs),
 
+    /// Primary: load development/demo data by running the app's seed binary (src/bin/seed.rs)
+    Seed(SeedArgs),
+
     /// Advanced: list available templates (not needed for the primary API path)
     Templates,
 }
@@ -252,6 +255,29 @@ pub struct MigrateArgs {
     pub fix_env: bool,
 
     /// Extra args passed to the backend CLI (use `--` before them)
+    #[arg(trailing_var_arg = true)]
+    pub args: Vec<String>,
+}
+
+#[derive(Parser, Debug)]
+pub struct SeedArgs {
+    /// Project directory
+    #[arg(short, long, default_value = ".")]
+    pub path: String,
+
+    /// Cargo binary that seeds the database
+    #[arg(long, default_value = "seed")]
+    pub bin: String,
+
+    /// Skip loading .env
+    #[arg(long, default_value = "false")]
+    pub no_env: bool,
+
+    /// Legacy alias: eagerly create .env from .env.example when missing
+    #[arg(long, default_value = "false")]
+    pub fix_env: bool,
+
+    /// Extra args passed to the seed binary (use `--` before them)
     #[arg(trailing_var_arg = true)]
     pub args: Vec<String>,
 }

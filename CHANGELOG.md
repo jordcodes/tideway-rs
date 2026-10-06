@@ -440,6 +440,16 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [tideway-cli 0.9.0] - Unreleased
 
+### Added
+
+- `tideway seed` loads development/demo data with one command: it loads `.env`, validates
+  `DATABASE_URL`, and runs the app's `seed` binary (`cargo run --bin seed`; `--bin` selects
+  another). New database-backed apps include an idempotent `src/bin/seed.rs` that applies pending
+  migrations and reuses the app's SeaORM entities; the API preset seeds sample todos. Their
+  `Cargo.toml` sets `default-run`, and `tideway dev` watch mode now honours `default-run` when
+  an app has more than one binary. Existing apps can adopt the convention by adding
+  `src/bin/seed.rs` and `default-run`; see `docs/cli.md#tideway-seed`.
+
 ### Changed
 
 - The `api`, `saas`, and `worker` presets and backend presets enable Tideway's `otel` and

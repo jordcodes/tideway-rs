@@ -1,0 +1,28 @@
+//! Development and demo seed data for {{project_name_pascal}}.
+//!
+//! Run with `tideway seed` (loads `.env` and `DATABASE_URL`). Pending migrations are applied
+//! first. Keep seeds idempotent so they are safe to rerun against an existing database.
+
+use migration::MigratorTrait;
+use sea_orm::{Database, DatabaseConnection, DbErr};
+
+// Reuse the application's SeaORM entities.
+#[allow(dead_code)]
+#[path = "../entities/mod.rs"]
+mod entities;
+
+#[tokio::main]
+async fn main() -> Result<(), DbErr> {
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL is not set");
+    let db = Database::connect(&database_url).await?;
+    migration::Migrator::up(&db, None).await?;
+
+    seed(&db).await?;
+    println!("Seed complete");
+    Ok(())
+}
+
+async fn seed(_db: &DatabaseConnection) -> Result<(), DbErr> {
+    // Insert demo rows with `entities::<name>::ActiveModel`, skipping rows that already exist.
+    Ok(())
+}
