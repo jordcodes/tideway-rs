@@ -51,6 +51,7 @@ mod sqlx_feature_contract_test;
 mod storage_test;
 mod test_auth_bypass_test;
 mod test_db_cleanup_test;
+mod test_db_template_test;
 mod test_host_bootstrap_test;
 mod test_host_builder_test;
 mod test_host_test;
