@@ -28,16 +28,16 @@
 //! }
 //! ```
 
-use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbErr, Statement};
 use sea_orm_migration::MigratorTrait;
 #[cfg(feature = "test-containers")]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
 use url::Url;
 
 #[cfg(feature = "test-containers")]
 mod postgres_container;
+mod template;
 
 static TEST_DB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -202,6 +202,16 @@ impl TestDb {
     /// Creates a unique database for this test. It is dropped by [`TestDb::cleanup`], or on a
     /// best-effort basis when the `TestDb` is dropped (unless `TIDEWAY_TEST_KEEP_DBS=1`).
     ///
+    /// Migrations run once per migration list, into a template database named
+    /// `test_tpl_<hash>` (the hash covers the migration names). Each test database is a copy of
+    /// that template, so it starts migrated without running any migrations. The template is
+    /// kept between runs and rebuilt when the migration list changes. If you edit an existing
+    /// migration without renaming it, drop the `test_tpl_*` databases to rebuild. If copying
+    /// from the template fails, the database is created empty and migrated instead.
+    ///
+    /// The first PostgreSQL test database in a process also sweeps up databases that earlier
+    /// test processes left behind; see [`TestDb::sweep_orphaned_postgres_databases`].
+    ///
     /// # Example
     ///
     /// ```rust,ignore
@@ -225,9 +235,43 @@ impl TestDb {
     /// }
     /// ```
     pub async fn new_postgres_with_migrator<M: MigratorTrait>() -> Result<Self, DbErr> {
-        let instance = Self::create_postgres_db().await?;
+        let base_url = test_database_url();
+        if let Ok(template) = template::ensure_template::<M>(&base_url).await {
+            match Self::create_postgres_db_with_template(&base_url, Some(&template)).await {
+                Ok(instance) => return Ok(instance),
+                Err(e) => {
+                    tracing::warn!(
+                        template = %template,
+                        error = %e,
+                        "could not create the test database from its template; running migrations instead"
+                    );
+                    template::forget_template(&base_url, &template);
+                }
+            }
+        }
+        let instance = Self::create_postgres_db_from_base_url(&base_url).await?;
         M::up(&instance.connection, None).await?;
         Ok(instance)
+    }
+
+    /// Name of the template database that [`TestDb::new_postgres_with_migrator`] copies for
+    /// `M`'s migration list. Drop it to force a rebuild.
+    pub fn postgres_template_name<M: MigratorTrait>() -> String {
+        template::template_name::<M>()
+    }
+
+    /// Drop PostgreSQL databases that earlier test processes left behind on the server at
+    /// `admin_url`, and return their names.
+    ///
+    /// This drops `test_db_<pid>_<n>` databases whose process is no longer running on this
+    /// machine, and `test_tpl_<hash>` templates that this process isn't using and no other
+    /// process is building or copying. Databases with open connections are never dropped.
+    ///
+    /// Runs automatically once per process when the first PostgreSQL test database is created,
+    /// unless `TIDEWAY_TEST_KEEP_DBS=1`. Process liveness is only checked on Unix; elsewhere
+    /// only unused templates are dropped.
+    pub async fn sweep_orphaned_postgres_databases(admin_url: &str) -> Result<Vec<String>, DbErr> {
+        template::sweep(admin_url, true).await
     }
 
     /// Create a new PostgreSQL test database without migrations
@@ -279,38 +323,46 @@ impl TestDb {
 
     /// Internal helper for PostgreSQL database creation to avoid code duplication
     async fn create_postgres_db() -> Result<Self, DbErr> {
-        let base_url = std::env::var("TEST_DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/postgres".to_string());
-        Self::create_postgres_db_from_base_url(&base_url).await
+        Self::create_postgres_db_from_base_url(&test_database_url()).await
     }
 
     async fn create_postgres_db_from_base_url(base_url: &str) -> Result<Self, DbErr> {
+        Self::create_postgres_db_with_template(base_url, None).await
+    }
+
+    async fn create_postgres_db_with_template(
+        base_url: &str,
+        template: Option<&str>,
+    ) -> Result<Self, DbErr> {
+        template::sweep_test_dbs_once(base_url).await;
+
         // Connect to the default postgres database to create a new test database
-        let admin_connection = Database::connect(base_url).await?;
+        let admin_connection = template::connect_admin(base_url).await?;
 
         let counter = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
         let db_name = format!("test_db_{}_{}", std::process::id(), counter);
 
         // Create the test database with proper identifier quoting
-        let create_db_stmt = format!("CREATE DATABASE \"{}\"", escape_identifier(&db_name));
-        admin_connection
-            .execute(Statement::from_string(
-                sea_orm::DatabaseBackend::Postgres,
-                create_db_stmt,
-            ))
-            .await
-            .map_err(|e| {
-                DbErr::Custom(format!(
-                    "Failed to create test database '{}': {}",
-                    db_name, e
+        let created = match template {
+            Some(template) => {
+                template::create_from_template(&admin_connection, &db_name, template).await
+            }
+            None => admin_connection
+                .execute_unprepared(&format!(
+                    "CREATE DATABASE \"{}\"",
+                    escape_identifier(&db_name)
                 ))
-            })?;
-
-        // Close admin connection explicitly
-        admin_connection
-            .close()
-            .await
-            .map_err(|e| DbErr::Custom(format!("Failed to close admin connection: {}", e)))?;
+                .await
+                .map(|_| ()),
+        };
+        let closed = admin_connection.close().await;
+        created.map_err(|e| {
+            DbErr::Custom(format!(
+                "Failed to create test database '{}': {}",
+                db_name, e
+            ))
+        })?;
+        closed.map_err(|e| DbErr::Custom(format!("Failed to close admin connection: {}", e)))?;
 
         // Parse the base URL and replace the database name
         let test_db_url = build_test_db_url(base_url, &db_name)?;
@@ -526,25 +578,10 @@ struct PostgresTestDatabase {
 
 impl PostgresTestDatabase {
     async fn drop_database(&self) -> Result<(), DbErr> {
-        let mut options = ConnectOptions::new(&self.admin_url);
-        options
-            .max_connections(1)
-            .connect_timeout(Duration::from_secs(5))
-            .acquire_timeout(Duration::from_secs(5))
-            .sqlx_logging(false);
-        let admin_connection = Database::connect(options).await?;
+        let admin_connection = template::connect_admin(&self.admin_url).await?;
         // FORCE terminates any connections still open to the test database (PostgreSQL 13+).
-        let drop_db_stmt = format!(
-            "DROP DATABASE IF EXISTS \"{}\" WITH (FORCE)",
-            escape_identifier(&self.db_name)
-        );
-        let result = admin_connection
-            .execute(Statement::from_string(
-                sea_orm::DatabaseBackend::Postgres,
-                drop_db_stmt,
-            ))
+        let result = template::drop_database(&admin_connection, &self.db_name, true)
             .await
-            .map(|_| ())
             .map_err(|e| {
                 DbErr::Custom(format!(
                     "Failed to drop test database '{}': {}",
@@ -554,6 +591,11 @@ impl PostgresTestDatabase {
         let _ = admin_connection.close().await;
         result
     }
+}
+
+fn test_database_url() -> String {
+    std::env::var("TEST_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://postgres:postgres@localhost:5432/postgres".to_string())
 }
 
 /// Escape a PostgreSQL identifier to prevent SQL injection

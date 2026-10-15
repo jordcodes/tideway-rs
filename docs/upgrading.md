@@ -105,8 +105,24 @@ through the application's normal migration and deployment workflow.
 | `BillingEvent::OneTimeCheckoutCompleted` field, `CreditTransactionKind` `#[non_exhaustive]`, `credits-seaorm` migration | See [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes) |
 | `BillingEvent::InvoicePaid` / `InvoicePaymentFailed` have a new `invoice` field | Add `..` to patterns or set `invoice: InvoiceSummary::default()`; see [invoice summaries](#08x-to-090-invoice-summaries-on-billing-events) |
 | `JobsConfig` has a new `shutdown_timeout_seconds` field | Set it in struct literals or use `..Default::default()`; see [bounded job shutdown](#08x-to-090-bounded-job-shutdown) |
+| `CreateRefundRequest` has a new `idempotency_key` field | Set `idempotency_key: None`, use `..Default::default()`, or use the `for_charge` / `for_payment_intent` builders; see [replayed refunds](#08x-to-090-replayed-refunds) |
+| `MetricsConfig` has a new `bearer_token` field | Set it in struct literals or use `..Default::default()`; see [metrics scrape authentication](#metrics-scrape-authentication) |
+| `SessionManager` and `RedisCache` are no longer `UnwindSafe` / `RefUnwindSafe` | Wrap them in `std::panic::AssertUnwindSafe` where code passes them to `catch_unwind` |
 
-The remaining 0.9.0 sections below describe behavior changes that need review but no code change.
+These behavior changes compile unchanged but can break a deployment:
+
+- The metrics route returns 404 until a bearer token is configured; see
+  [metrics scrape authentication](#metrics-scrape-authentication).
+- The `imp_blocked` claim uses snake_case action names (`delete_account`, not `deleteaccount`).
+- `allow_admin_impersonation` no longer overrides a user's opt-out; see
+  [impersonation opt-out](#08x-to-090-impersonation-opt-out-always-enforced).
+- `ConfigBuilder::from_env()` keeps builder values when the environment variable is absent.
+- Stripe errors map to different HTTP statuses and `TidewayError` variants; see
+  [Stripe API errors](#08x-to-090-stripe-api-errors).
+- `credits-seaorm` apps must run a migration before deploying; see
+  [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes).
+
+The remaining 0.9.0 sections below describe these and other behavior changes in detail.
 
 ## 0.8.x to 0.9.0: prelude database trait
 

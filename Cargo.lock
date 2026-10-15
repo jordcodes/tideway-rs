@@ -5902,6 +5902,7 @@ dependencies = [
  "ipnet",
  "jsonwebtoken",
  "lettre",
+ "libc",
  "moka",
  "object_store",
  "opentelemetry",

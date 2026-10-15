@@ -304,6 +304,25 @@ Tideway supports two integration profiles:
 - Default SQLite in-memory with `TestDb::new()` (fast, zero infra).
 - PostgreSQL-backed tests via `TestDb::new_postgres()` (local Postgres required) or `TestDb::new_postgres_container()` with the `test-containers` feature (starts a temporary Docker-managed container).
 
+#### PostgreSQL test databases
+
+Each PostgreSQL `TestDb` gets its own `test_db_<pid>_<n>` database on the server at
+`TEST_DATABASE_URL`, dropped when the test finishes. Set `TIDEWAY_TEST_KEEP_DBS=1` to keep them for
+inspection.
+
+`TestDb::new_postgres_with_migrator::<M>()` runs your migrations only once per migration list. It
+migrates a template database, `test_tpl_<hash>`, and creates each test database as a copy of it.
+The template stays on the server between runs, and a new one is built when the list of migration
+names changes. If you edit an existing migration without renaming it, drop the template to rebuild
+it (`TestDb::postgres_template_name::<M>()` gives its name). If copying the template fails, the
+test database is created empty and migrated instead.
+
+The first PostgreSQL `TestDb` in each test process also drops databases left behind by runs that
+crashed or were killed: `test_db_<pid>_*` databases whose process is no longer running on this
+machine, and templates for other migration lists. Databases that anything is connected to are
+never dropped. The sweep is skipped when `TIDEWAY_TEST_KEEP_DBS=1`, and you can run it yourself
+with `TestDb::sweep_orphaned_postgres_databases(url)`.
+
 Test database operations in isolation:
 
 ```rust

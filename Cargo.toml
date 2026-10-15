@@ -135,6 +135,10 @@ object_store = { version = "0.14", default-features = false, features = ["fs"], 
 governor = "0.10"
 ipnet = "2.11"
 
+[target.'cfg(unix)'.dependencies]
+# Checks whether the process that created a leftover test database is still running
+libc = { version = "0.2", optional = true }
+
 [features]
 default = ["database", "openapi", "macros"]
 feature-gate-errors = []
@@ -142,7 +146,7 @@ feature-gate-warnings = []
 # Proc macros for handler definitions with OpenAPI integration
 macros = ["tideway-macros", "openapi"]
 # Database support with SeaORM
-database = ["sea-orm", "sea-orm-migration", "chrono"]
+database = ["sea-orm", "sea-orm-migration", "chrono", "dep:libc"]
 # SQLx database support (experimental placeholder; not yet implemented)
 database-sqlx = ["database", "sqlx"]
 # OpenAPI/Swagger documentation

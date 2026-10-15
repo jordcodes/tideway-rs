@@ -7,11 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
-## [0.9.0] - Unreleased
+## [0.9.0] - 2026-10-15
 
 > **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update: applications
 > using the APIs below stop compiling, so `cargo update` keeps `^0.8` applications on 0.8.x.
 > Change the dependency to `0.9.0` and follow `docs/upgrading.md#08x-to-090-breaking-changes`.
+>
+> These stop compiling:
 >
 > - `ImpersonationRequest` and `DeletionRequest` no longer derive `Deserialize`. Deserialize
 >   `ImpersonationRequestBody` / `DeletionRequestBody` and call `into_request` with the
@@ -23,13 +25,24 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 > - `CachedInvoiceManager::list_invoices` returns `Arc<InvoiceList>` instead of `InvoiceList`, and
 >   `CachedInvoiceManager::get_upcoming_invoice` returns `Option<Arc<Invoice>>` instead of
 >   `Option<Invoice>`.
+> - `SecureRefundManager::get_refund` takes the billable ID.
+> - New fields break struct literals and exhaustive patterns: `CreateRefundRequest::idempotency_key`,
+>   `Refund::replayed`, `JobsConfig::shutdown_timeout_seconds`, `MetricsConfig::bearer_token`,
+>   `BillingEvent::OneTimeCheckoutCompleted::payment_intent_id`, and `invoice` on
+>   `BillingEvent::InvoicePaid` / `BillingEvent::InvoicePaymentFailed`.
+> - `CreditTransactionKind` is `#[non_exhaustive]`; exhaustive matches need a wildcard arm.
+> - `SessionManager` and `RedisCache` are no longer `UnwindSafe` / `RefUnwindSafe`.
 >
-> Also breaking, see below: `SecureRefundManager::get_refund` takes the billable ID,
-> `CreateRefundRequest` has a new `idempotency_key` field,
-> `BillingEvent::OneTimeCheckoutCompleted`, `BillingEvent::InvoicePaid`,
-> `BillingEvent::InvoicePaymentFailed`, and `Refund` have new fields, `CreditTransactionKind` is
-> `#[non_exhaustive]`, `JobsConfig` has a new field, and `credits-seaorm` apps need a database
-> migration.
+> These compile but change behaviour that a deployment may rely on:
+>
+> - The metrics route returns 404 until `TIDEWAY_METRICS_BEARER_TOKEN` is set, and 401 without it.
+> - The `imp_blocked` claim uses snake_case action names (`delete_account`, not `deleteaccount`).
+> - `allow_admin_impersonation` no longer overrides a user's impersonation opt-out.
+> - `ConfigBuilder::from_env()` keeps builder values when the environment variable is absent.
+> - Stripe errors convert to `TidewayError::Billing` and map to 400/404/429 instead of 500.
+> - `credits-seaorm` apps must run a database migration before deploying.
+>
+> Each is described below.
 
 - Added resource-level authorization policies in `tideway::policy`: a deny-by-default
   `Policy<Actor, Resource>` trait (`view_any`, `view`, `create`, `update`, `delete`, and a
@@ -292,6 +305,17 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ### Added
 
+- PostgreSQL test databases from `TestDb::new_postgres_with_migrator` are now copied from a
+  migrated template instead of running every migration per test. The template,
+  `test_tpl_<hash>`, is built once per migration list under an advisory lock (so parallel test
+  binaries don't race), kept between runs, and rebuilt when the list of migration names changes.
+  If copying fails, the test database is migrated as before. The first PostgreSQL `TestDb` in a
+  process also drops databases left behind by crashed or killed runs: `test_db_<pid>_*`
+  databases whose process is no longer running on this machine, and templates for other
+  migration lists, skipping anything with open connections. `TIDEWAY_TEST_KEEP_DBS=1` skips the
+  sweep. Added `TestDb::postgres_template_name` and
+  `TestDb::sweep_orphaned_postgres_databases`. Editing an existing migration without renaming it
+  reuses the old template; drop `test_tpl_*` to rebuild. See `docs/testing.md`.
 - `JwtIssuer::issue_access_token_expiring_at` issues an access token with an explicit expiry, for
   tokens bound to a server-side session such as impersonation. `JwtVerifier::with_claims` reuses a
   verifier's keys and validation rules to decode another claims type, e.g. reading
