@@ -45,7 +45,8 @@ Follow these conventions to work efficiently and safely.
 
 ## Testing
 - CLI tests: `cargo test -p tideway-cli`
-- Full test suite: `cargo test`
+- Full test suite: `cargo test` (runs `tideway`, `tideway-cli`, and `tideway-macros` via
+  `workspace.default-members`)
 - Feature-gated code (auth, billing, Redis, jobs, email, metrics, ...) is not covered by
   `cargo test`. Also run `cargo test -p tideway --all-features`; CI runs both via
   `scripts/verify.sh`.
