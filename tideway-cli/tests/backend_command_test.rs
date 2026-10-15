@@ -112,9 +112,44 @@ fn test_backend_admin_impersonation_uses_session_bound_tokens() {
             admin_routes.contains("issue_access_token_expiring_at(subject, session.expires_at)")
         );
         assert!(admin_routes.contains(".end_impersonation(&claims.imp_session)"));
-        assert!(!admin_routes.contains("refresh_token"));
         assert!(!admin_routes.contains("ImpersonateRequest"));
-        assert!(!admin_routes.contains("jwt_issuer.issue("));
+
+        // Admin routes may touch refresh tokens only to revoke them: locking or
+        // demoting a user deletes their `refresh_token_family` rows. They must
+        // never issue one, since impersonation is limited to a session-bound
+        // access token. Compare without whitespace so calls split across lines
+        // are still caught.
+        let compact: String = admin_routes
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let update_user = compact
+            .split("asyncfnupdate_user(")
+            .nth(1)
+            .and_then(|rest| rest.split("asyncfn").next())
+            .expect("update_user handler");
+        assert!(
+            update_user.contains(
+                "ifrevoke_sessions{refresh_token_family::Entity::delete_many()\
+                 .filter(refresh_token_family::Column::UserId.eq(target_uuid))"
+            ),
+            "{preset}: lock/demote must revoke the user's refresh token families"
+        );
+        let without_revocation = compact.replace("refresh_token_family", "");
+        for forbidden in [
+            "refresh_token",
+            "RefreshToken",
+            "TokenPair",
+            "RefreshFlow",
+            "TokenIssuer",
+            ".issue(",
+            ".issue::<",
+        ] {
+            assert!(
+                !without_revocation.contains(forbidden),
+                "{preset}: admin routes must not issue refresh tokens (found `{forbidden}`)"
+            );
+        }
 
         let actor = fs::read_to_string(output_dir.join("auth/actor.rs")).expect("read actor");
         assert!(actor.contains("AccessTokenClaims<ImpersonationClaims>"));
