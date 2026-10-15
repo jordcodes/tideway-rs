@@ -29,8 +29,9 @@ static RUN_ID: LazyLock<u128> = LazyLock::new(|| {
 /// How many times each test's migration has run in this process.
 static MIGRATION_RUNS: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
 
-/// Held by tests that sweep, or whose child process does, so one sweep can't remove another
-/// test's orphan fixtures.
+/// Held by every test that builds a template or sweeps (directly or in a child process). A
+/// child process doesn't know which templates this process is using, so without the lock its
+/// sweep could drop another test's template or orphan fixtures mid-test.
 static SWEEP_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// A one-migration migrator per test, so tests don't share templates or counters.
@@ -107,6 +108,7 @@ async fn has_widgets_table(test_db: &TestDb) -> bool {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via TEST_DATABASE_URL"]
 async fn second_database_is_copied_from_the_template_without_migrating() {
+    let _sweeping = SWEEP_LOCK.lock().await;
     type Migrator = CountingMigrator<0>;
     let template = TestDb::postgres_template_name::<Migrator>();
 
@@ -131,6 +133,7 @@ async fn second_database_is_copied_from_the_template_without_migrating() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via TEST_DATABASE_URL"]
 async fn falls_back_to_migrating_when_the_template_cannot_be_copied() {
+    let _sweeping = SWEEP_LOCK.lock().await;
     type Migrator = CountingMigrator<1>;
     let template = TestDb::postgres_template_name::<Migrator>();
 
