@@ -174,6 +174,8 @@ pub mod storage {
 #[cfg(all(not(feature = "storage"), feature = "feature-gate-warnings"))]
 #[deprecated(note = "Enable the `storage` feature to use tideway::storage")]
 pub mod storage {}
+#[cfg(test)]
+mod test_logs;
 pub mod testing;
 pub mod timeout;
 #[cfg(any(

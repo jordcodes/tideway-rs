@@ -2510,39 +2510,17 @@ mod tests {
 
     #[test]
     fn stripe_auth_errors_preserve_operator_logs() {
-        #[derive(Clone, Default)]
-        struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
-
-        impl std::io::Write for LogBuffer {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
         for status in [401, 403] {
-            let logs = LogBuffer::default();
-            let writer = logs.clone();
-            let subscriber = tracing_subscriber::fmt()
-                .without_time()
-                .with_ansi(false)
-                .with_writer(move || writer.clone())
-                .finish();
+            let logs = crate::test_logs::LogCapture::start();
             let raw_message = "Invalid API Key provided: sk_test_private";
-            let err = tracing::subscriber::with_default(subscriber, || {
-                map_stripe_error(
-                    stripe::StripeError::Stripe(stripe::RequestError {
-                        http_status: status,
-                        message: Some(raw_message.to_string()),
-                        ..Default::default()
-                    }),
-                    "create_customer",
-                )
-            });
+            let err = map_stripe_error(
+                stripe::StripeError::Stripe(stripe::RequestError {
+                    http_status: status,
+                    message: Some(raw_message.to_string()),
+                    ..Default::default()
+                }),
+                "create_customer",
+            );
             let crate::error::TidewayError::Billing { public, .. } = &err else {
                 panic!("expected TidewayError::Billing, got {err:?}");
             };
@@ -2550,7 +2528,7 @@ mod tests {
                 matches!(public.as_ref(), crate::error::TidewayError::Internal(message)
                 if message == "Unable to process billing request. Please try again later.")
             );
-            let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+            let output = logs.output();
             assert!(output.contains(raw_message), "missing diagnostic: {output}");
             assert!(output.contains("create_customer"));
             assert!(output.contains(&status.to_string()));

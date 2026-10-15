@@ -1218,31 +1218,24 @@ mod tests {
         );
     }
 
-    #[derive(Clone, Default)]
-    struct CapturedLogs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for CapturedLogs {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let capture = crate::test_logs::LogCapture::start();
+        f();
+        capture.output()
     }
 
-    fn capture_logs(f: impl FnOnce()) -> String {
-        let logs = CapturedLogs::default();
-        let writer = logs.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::TRACE)
-            .with_ansi(false)
-            .with_writer(move || writer.clone())
-            .finish();
-        tracing::subscriber::with_default(subscriber, f);
-        let bytes = logs.0.lock().unwrap().clone();
-        String::from_utf8(bytes).unwrap()
+    #[test]
+    fn test_log_capture_sees_callsites_first_registered_on_other_threads() {
+        // A callsite caches its `Interest` the first time it fires. If that happens on a thread
+        // that can't see the capturing subscriber, the capture must still receive the event.
+        fn emit() {
+            tracing::warn!("cross-thread callsite");
+        }
+        let logs = capture_logs(|| {
+            std::thread::spawn(emit).join().unwrap();
+            emit();
+        });
+        assert_eq!(logs.matches("cross-thread callsite").count(), 1, "{logs}");
     }
 
     #[test]
