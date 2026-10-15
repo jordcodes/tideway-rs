@@ -112,15 +112,69 @@ fn test_backend_admin_impersonation_uses_session_bound_tokens() {
             admin_routes.contains("issue_access_token_expiring_at(subject, session.expires_at)")
         );
         assert!(admin_routes.contains(".end_impersonation(&claims.imp_session)"));
-        // Impersonation must never issue refresh tokens; the only allowed reference is revoking
-        // the target's `refresh_token_family` rows when an admin locks or demotes them.
-        assert!(
-            !admin_routes
-                .replace("refresh_token_family", "")
-                .contains("refresh_token")
-        );
         assert!(!admin_routes.contains("ImpersonateRequest"));
-        assert!(!admin_routes.contains("jwt_issuer.issue("));
+
+        // Admin routes may touch refresh tokens only to revoke them: locking or
+        // demoting a user deletes their `refresh_token_family` rows. They must
+        // never issue one, since impersonation is limited to a session-bound
+        // access token. Compare without whitespace so calls split across lines
+        // are still caught.
+        let compact: String = admin_routes
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let update_user = compact
+            .split("asyncfnupdate_user(")
+            .nth(1)
+            .and_then(|rest| rest.split("asyncfn").next())
+            .expect("update_user handler");
+        // The delete must run (`exec` + `await` + `?`) inside the lock/demote
+        // branch before the transaction commits, not just be built.
+        assert!(
+            update_user.contains(
+                "ifrevoke_sessions{refresh_token_family::Entity::delete_many()\
+                 .filter(refresh_token_family::Column::UserId.eq(target_uuid))\
+                 .exec(&txn).await\
+                 .map_err(|e|TidewayError::Database(e.to_string()))?;}\
+                 txn.commit().await"
+            ),
+            "{preset}: lock/demote must revoke the user's refresh token families"
+        );
+        let without_revocation = compact.replace("refresh_token_family", "");
+        for forbidden in [
+            "refresh_token",
+            "RefreshToken",
+            "TokenPair",
+            "RefreshFlow",
+            "TokenIssuer",
+        ] {
+            assert!(
+                !without_revocation.contains(forbidden),
+                "{preset}: admin routes must not issue refresh tokens (found `{forbidden}`)"
+            );
+        }
+        // `JwtIssuer::issue` mints an access + refresh pair. Reject any
+        // reference to an `issue` item, whether a method call (`x.issue(`),
+        // an associated function (`JwtIssuer::issue(`, `<JwtIssuer>::issue::<T>(`)
+        // or a function path (`.map(JwtIssuer::issue)`). The `issue_access_token*`
+        // methods are allowed because `issue` is followed by an identifier char.
+        let issue_refs: Vec<&str> = without_revocation
+            .match_indices("issue")
+            .filter(|(at, _)| {
+                let before = &without_revocation[..*at];
+                let after = without_revocation[at + "issue".len()..].chars().next();
+                (before.ends_with('.') || before.ends_with("::"))
+                    && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            })
+            .map(|(at, _)| {
+                let context = at.saturating_sub(24)..(at + 8).min(without_revocation.len());
+                without_revocation.get(context).unwrap_or("issue")
+            })
+            .collect();
+        assert!(
+            issue_refs.is_empty(),
+            "{preset}: admin routes must not issue refresh tokens (found {issue_refs:?})"
+        );
 
         let actor = fs::read_to_string(output_dir.join("auth/actor.rs")).expect("read actor");
         assert!(actor.contains("AccessTokenClaims<ImpersonationClaims>"));

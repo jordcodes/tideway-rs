@@ -664,7 +664,7 @@ fn wizard_resource_expected_files(
     resource: &ResourceWizardOptions,
 ) -> Vec<String> {
     let resource_name = normalize_resource_name(&resource.name);
-    let resource_plural = pluralize_resource_name(&resource_name);
+    let resource_plural = crate::commands::naming::pluralize(&resource_name);
     let mut files = vec![format!("src/routes/{resource_name}.rs")];
 
     if resource.db {
@@ -730,14 +730,6 @@ fn next_planned_migration_file(planned_files: &[String], resource_plural: &str) 
 
 fn normalize_resource_name(name: &str) -> String {
     name.trim().to_lowercase().replace('-', "_")
-}
-
-fn pluralize_resource_name(name: &str) -> String {
-    if name.ends_with('s') {
-        format!("{name}es")
-    } else {
-        format!("{name}s")
-    }
 }
 
 fn emit_new_plan(

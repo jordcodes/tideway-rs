@@ -15,6 +15,7 @@ use crate::commands::messaging::{
     TIDEWAY_ADD_DATABASE_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
 };
 use crate::commands::migration_naming::{MigrationName, next_migration_name};
+use crate::commands::naming::pluralize;
 use crate::{
     CommandRuntime, ensure_dir, error_contract, print_info, print_success, print_warning,
     write_file,
@@ -27,6 +28,8 @@ enum ResourceFieldType {
     Bool,
     I32,
     I64,
+    /// UTC timestamp: `TIMESTAMPTZ` in the database, an ISO-8601 string in JSON.
+    DateTime,
 }
 
 impl ResourceFieldType {
@@ -36,6 +39,7 @@ impl ResourceFieldType {
             Self::Bool => "bool",
             Self::I32 => "i32",
             Self::I64 => "i64",
+            Self::DateTime => "chrono::DateTime<chrono::Utc>",
         }
     }
 
@@ -50,9 +54,17 @@ impl ResourceFieldType {
             Self::Bool => format!("ColumnDef::new({column_enum}).boolean().not_null()"),
             Self::I32 => format!("ColumnDef::new({column_enum}).integer().not_null()"),
             Self::I64 => format!("ColumnDef::new({column_enum}).big_integer().not_null()"),
+            Self::DateTime => {
+                format!("ColumnDef::new({column_enum}).timestamp_with_time_zone().not_null()")
+            }
         }
     }
 }
+
+/// Fixed example timestamp (1_700_000_000 unix seconds) for stubs and generated tests.
+const DATETIME_STUB_VALUE: &str =
+    "chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap_or_default()";
+const DATETIME_JSON_VALUE: &str = "\"2023-11-14T22:13:20Z\"";
 
 /// A field parsed from an inline `name:type` definition on the command line.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -128,8 +140,11 @@ fn parse_inline_fields(definitions: &[String]) -> Result<Vec<InlineField>> {
             "bool" | "boolean" => (ResourceFieldType::Bool, "true", "true"),
             "int" | "integer" | "i32" => (ResourceFieldType::I32, "1", "1"),
             "bigint" | "i64" => (ResourceFieldType::I64, "1", "1"),
-            // Stored as unix seconds, matching the generated created_at/updated_at columns.
-            "datetime" | "timestamp" => (ResourceFieldType::I64, "1_700_000_000", "1_700_000_000"),
+            "datetime" | "timestamp" => (
+                ResourceFieldType::DateTime,
+                DATETIME_STUB_VALUE,
+                DATETIME_JSON_VALUE,
+            ),
             _ => return Err(invalid(&format!("unknown type `{ty}`"))),
         };
 
@@ -305,25 +320,25 @@ const TENANT_FIELDS: [ResourceFieldSpec<'static>; 5] = [
     },
     ResourceFieldSpec {
         name: "created_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: None,
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
     ResourceFieldSpec {
         name: "updated_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: Some(FieldSource::CurrentTimestamp),
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
 ];
 
@@ -388,25 +403,25 @@ const OWNED_FIELDS: [ResourceFieldSpec<'static>; 6] = [
     },
     ResourceFieldSpec {
         name: "created_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: None,
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
     ResourceFieldSpec {
         name: "updated_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: Some(FieldSource::CurrentTimestamp),
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
 ];
 
@@ -446,25 +461,25 @@ const ADMIN_FIELDS: [ResourceFieldSpec<'static>; 5] = [
     },
     ResourceFieldSpec {
         name: "created_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: None,
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
     ResourceFieldSpec {
         name: "updated_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: Some(FieldSource::CurrentTimestamp),
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
 ];
 
@@ -515,25 +530,25 @@ const EVENT_FIELDS: [ResourceFieldSpec<'static>; 6] = [
     },
     ResourceFieldSpec {
         name: "created_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: None,
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
     ResourceFieldSpec {
         name: "updated_at",
-        ty: ResourceFieldType::I64,
+        ty: ResourceFieldType::DateTime,
         include_in_create: false,
         include_in_update: false,
         create_source: FieldSource::CurrentTimestamp,
         update_source: Some(FieldSource::CurrentTimestamp),
         search: false,
-        stub_value: "1_700_000_000_i64",
-        json_value: "1_700_000_000",
+        stub_value: DATETIME_STUB_VALUE,
+        json_value: DATETIME_JSON_VALUE,
     },
 ];
 
@@ -650,11 +665,10 @@ fn uses_generated_timestamps(schema: ResourceSchema) -> bool {
 
 fn current_timestamp_helper() -> &'static str {
     r#"
-fn current_timestamp() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
+fn current_timestamp() -> chrono::DateTime<chrono::Utc> {
+    use chrono::SubsecRound;
+    // Whole seconds keep responses identical before and after a database round trip.
+    chrono::Utc::now().trunc_subsecs(0)
 }
 "#
 }
@@ -1228,6 +1242,17 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
     {
         add_uuid_dependency(&cargo_path)?;
         print_success("Added uuid dependency to Cargo.toml");
+    }
+
+    let uses_datetime = resource_schema(args.profile, generation_context, &custom_fields)
+        .fields
+        .iter()
+        .any(|field| field.ty == ResourceFieldType::DateTime);
+    if uses_datetime
+        && cargo_doc.is_some()
+        && ensure_chrono_dependencies(&cargo_path, args.db, has_openapi)?
+    {
+        print_success("Enabled chrono timestamp support in Cargo.toml");
     }
 
     let routes_dir = src_dir.join("routes");
@@ -4720,14 +4745,6 @@ fn normalize_name(name: &str) -> String {
     name.trim().to_lowercase().replace('-', "_")
 }
 
-fn pluralize(name: &str) -> String {
-    if name.ends_with('s') {
-        format!("{}es", name)
-    } else {
-        format!("{}s", name)
-    }
-}
-
 fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {
     let contents = fs::read_to_string(cargo_path)
         .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
@@ -4748,6 +4765,72 @@ fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {
     write_file(cargo_path, &doc.to_string())
         .with_context(|| format!("Failed to write {}", cargo_path.display()))?;
     Ok(())
+}
+
+/// Date/time fields are `chrono::DateTime<Utc>`: they need chrono's serde support, SeaORM's
+/// chrono column types, and utoipa's chrono schemas. Returns whether Cargo.toml changed.
+fn ensure_chrono_dependencies(cargo_path: &Path, db: bool, openapi: bool) -> Result<bool> {
+    let contents = fs::read_to_string(cargo_path)
+        .with_context(|| format!("Failed to read {}", cargo_path.display()))?;
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let deps = doc["dependencies"].or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+    let deps_table = deps
+        .as_table_mut()
+        .context("dependencies should be a table")?;
+
+    let mut changed = false;
+    if deps_table.contains_key("chrono") {
+        changed |= ensure_dependency_feature(deps_table, "chrono", "serde");
+    } else {
+        let mut table = toml_edit::InlineTable::new();
+        table.get_or_insert("version", "0.4");
+        table.get_or_insert("features", array_value(&["serde"]));
+        deps_table.insert(
+            "chrono",
+            toml_edit::Item::Value(toml_edit::Value::InlineTable(table)),
+        );
+        changed = true;
+    }
+    if db {
+        changed |= ensure_dependency_feature(deps_table, "sea-orm", "with-chrono");
+    }
+    if openapi {
+        changed |= ensure_dependency_feature(deps_table, "utoipa", "chrono");
+    }
+
+    if changed {
+        write_file(cargo_path, &doc.to_string())
+            .with_context(|| format!("Failed to write {}", cargo_path.display()))?;
+    }
+    Ok(changed)
+}
+
+/// Enables `feature` on an existing dependency. Returns whether the entry changed.
+fn ensure_dependency_feature(deps: &mut toml_edit::Table, name: &str, feature: &str) -> bool {
+    let Some(item) = deps.get_mut(name) else {
+        return false;
+    };
+    if let Some(version) = item.as_str().map(str::to_string) {
+        let mut table = toml_edit::InlineTable::new();
+        table.get_or_insert("version", version);
+        table.get_or_insert("features", array_value(&[feature]));
+        *item = toml_edit::Item::Value(toml_edit::Value::InlineTable(table));
+        return true;
+    }
+    let Some(table) = item.as_table_like_mut() else {
+        return false;
+    };
+    if table.get("features").is_none() {
+        table.insert("features", toml_edit::value(toml_edit::Array::new()));
+    }
+    let Some(features) = table.get_mut("features").and_then(|f| f.as_array_mut()) else {
+        return false;
+    };
+    if features.iter().any(|value| value.as_str() == Some(feature)) {
+        return false;
+    }
+    features.push(feature);
+    true
 }
 
 fn project_name_from_cargo(cargo_path: &Path, project_dir: &Path) -> String {

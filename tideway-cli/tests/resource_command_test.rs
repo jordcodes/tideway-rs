@@ -1438,8 +1438,18 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
     );
     assert_file_contains(
         &project_dir.join("src/entities/organization.rs"),
-        "pub created_at: i64,",
+        "pub created_at: chrono::DateTime<chrono::Utc>,",
     );
+    assert_file_contains(
+        &project_dir.join("src/repositories/organization.rs"),
+        "fn current_timestamp() -> chrono::DateTime<chrono::Utc>",
+    );
+    let migration = read_single_migration(&project_dir, "create_organizations");
+    for column in ["Organizations::CreatedAt", "Organizations::UpdatedAt"] {
+        let expected = format!("ColumnDef::new({column}).timestamp_with_time_zone().not_null()");
+        assert!(migration.contains(&expected), "{migration}");
+    }
+    assert!(!migration.contains("big_integer()"), "{migration}");
     assert_file_contains(
         &project_dir.join("src/repositories/organization.rs"),
         "pub async fn create(&self, name: String, slug: String, status: String)",
@@ -2729,7 +2739,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
         "pub body: String,",
         "pub published: bool,",
         "pub views: i32,",
-        "pub published_at: i64,",
+        "pub published_at: chrono::DateTime<chrono::Utc>,",
     ] {
         assert!(entity.contains(line), "entity missing `{line}`:\n{entity}");
     }
@@ -2744,7 +2754,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
         "ColumnDef::new(Posts::Body).text().not_null()",
         "ColumnDef::new(Posts::Published).boolean().not_null()",
         "ColumnDef::new(Posts::Views).integer().not_null()",
-        "ColumnDef::new(Posts::PublishedAt).big_integer().not_null()",
+        "ColumnDef::new(Posts::PublishedAt).timestamp_with_time_zone().not_null()",
     ] {
         assert!(
             migration.contains(column),
@@ -2762,7 +2772,7 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
         "pub body: String,",
         "pub published: bool,",
         "pub views: i32,",
-        "pub published_at: i64,",
+        "pub published_at: chrono::DateTime<chrono::Utc>,",
         "pub title: Option<String>,",
         "pub published: Option<bool>,",
         "pub views: Option<i32>,",
@@ -2779,6 +2789,79 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
     assert_file_contains(
         &project_dir.join("src/repositories/post.rs"),
         "post::Column::Title.contains(search)",
+    );
+
+    let manifest = fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml");
+    assert!(
+        manifest.contains(r#"chrono = { version = "0.4", features = ["serde"] }"#),
+        "{manifest}"
+    );
+    assert!(
+        manifest.contains(
+            r#"sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls", "with-chrono"] }"#
+        ),
+        "{manifest}"
+    );
+}
+
+#[test]
+fn test_resource_datetime_fields_enable_chrono_features_on_existing_dependencies() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "openapi"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "with-chrono"] }
+chrono = "0.4"
+utoipa = { version = "5", features = ["axum_extras"] }
+"#,
+    );
+
+    let resource_args = |name: &str, fields: &[&str]| ResourceArgs {
+        name: name.to_string(),
+        fields: fields.iter().map(|field| field.to_string()).collect(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Api,
+    };
+
+    // No date/time fields: the manifest is left alone.
+    let before = fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml");
+    tideway_cli::commands::resource::run(resource_args("tag", &["label:string"]))
+        .expect("run resource command");
+    assert_eq!(
+        fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml"),
+        before
+    );
+
+    tideway_cli::commands::resource::run(resource_args("talk", &["starts_at:datetime"]))
+        .expect("run resource command");
+    let manifest = fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml");
+    for line in [
+        r#"sea-orm = { version = "1.1", features = ["sqlx-postgres", "with-chrono"] }"#,
+        r#"chrono = { version = "0.4", features = ["serde"] }"#,
+        r#"utoipa = { version = "5", features = ["axum_extras", "chrono"] }"#,
+    ] {
+        assert!(manifest.contains(line), "missing `{line}`:\n{manifest}");
+    }
+
+    tideway_cli::commands::resource::run(resource_args("meeting", &["starts_at:datetime"]))
+        .expect("run resource command");
+    assert_eq!(
+        fs::read_to_string(project_dir.join("Cargo.toml")).expect("Cargo.toml"),
+        manifest,
+        "dependency updates should be idempotent"
     );
 }
 
@@ -2820,8 +2903,8 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
         "pub owner_id: String,",
         "pub title: String,",
         "pub done: bool,",
-        "pub created_at: i64,",
-        "pub updated_at: i64,",
+        "pub created_at: chrono::DateTime<chrono::Utc>,",
+        "pub updated_at: chrono::DateTime<chrono::Utc>,",
     ];
     let positions: Vec<usize> = ordered
         .iter()
@@ -2921,11 +3004,133 @@ sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"
     assert!(!project_dir.join("src/routes/task.rs").exists());
 }
 
+/// Round-trips generated timestamps through SQLite: the generated migration, entity, repository,
+/// service, and routes must store UTC timestamps and serve them as ISO-8601 strings.
 #[test]
-fn test_resource_inline_fields_compile_against_api_preset_scaffold() {
+fn test_resource_timestamps_round_trip_through_sqlite_as_iso_utc() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
+    create_api_preset_scaffold(&project_dir);
 
+    // `tenant` keeps the generated created_at/updated_at around the inline fields.
+    let resource_args = ResourceArgs {
+        name: "meeting".to_string(),
+        fields: vec!["title:string".to_string(), "starts_at:datetime".to_string()],
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Tenant,
+    };
+    tideway_cli::commands::resource::run(resource_args).expect("run tideway resource");
+
+    let route_path = project_dir.join("src/routes/meeting.rs");
+    let mut routes = fs::read_to_string(&route_path).expect("read meeting routes");
+    routes.push_str(
+        r#"
+#[cfg(test)]
+mod timestamp_round_trip_tests {
+    use super::*;
+    use chrono::{DateTime, Utc};
+    use migration::{Migrator, MigratorTrait};
+    use serde_json::{json, Value};
+    use tideway::testing::{get, post, put};
+
+    fn timestamp(record: &Value, field: &str) -> DateTime<Utc> {
+        let text = record[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field} should be a JSON string: {record}"));
+        assert!(
+            text.ends_with('Z') && !text.contains('.'),
+            "{field} should be whole-second UTC ISO-8601: {text}"
+        );
+        text.parse().expect("parse ISO-8601 timestamp")
+    }
+
+    #[tokio::test]
+    async fn timestamps_round_trip_as_iso_utc() {
+        let db = sea_orm::Database::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        Migrator::up(&db, None).await.expect("run migrations");
+        let pool = tideway::SeaOrmPool::new(db, "sqlite::memory:".to_string());
+        let ctx = AppContext::builder()
+            .with_database(std::sync::Arc::new(pool))
+            .build();
+        let app = || {
+            tideway::App::new()
+                .with_context(ctx.clone())
+                .register_module(MeetingModule)
+                .into_router()
+        };
+
+        let before_create = Utc::now() - chrono::Duration::seconds(1);
+        post(app(), "/api/meetings")
+            .json(&json!({ "title": "Kickoff", "starts_at": "2026-10-06T11:53:56+02:00" }))
+            .execute()
+            .await
+            .assert_ok();
+
+        let created = get(app(), "/api/meetings/1")
+            .execute()
+            .await
+            .assert_ok()
+            .json_value()
+            .await;
+        // Offsets are normalized to UTC.
+        assert_eq!(created["starts_at"], json!("2026-10-06T09:53:56Z"));
+        let created_at = timestamp(&created, "created_at");
+        assert!(created_at >= before_create, "{created}");
+        assert_eq!(timestamp(&created, "updated_at"), created_at);
+
+        // Generated timestamps have whole-second precision.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+        put(app(), "/api/meetings/1")
+            .json(&json!({ "starts_at": "2026-11-01T08:00:00Z" }))
+            .execute()
+            .await
+            .assert_ok();
+
+        let updated = get(app(), "/api/meetings/1")
+            .execute()
+            .await
+            .assert_ok()
+            .json_value()
+            .await;
+        assert_eq!(updated["starts_at"], json!("2026-11-01T08:00:00Z"));
+        assert_eq!(updated["created_at"], created["created_at"]);
+        assert!(timestamp(&updated, "updated_at") > created_at, "{updated}");
+
+        let listed = get(app(), "/api/meetings?limit=20")
+            .execute()
+            .await
+            .assert_ok()
+            .json_value()
+            .await;
+        assert_eq!(listed[0], updated);
+    }
+}
+"#,
+    );
+    fs::write(&route_path, routes).expect("write meeting routes");
+
+    patch_scaffold_to_workspace(&project_dir);
+    let stdout = run_cargo_in_project(&project_dir, &["test", "timestamp_round_trip_tests"]);
+    assert!(
+        stdout.contains("timestamps_round_trip_as_iso_utc ... ok"),
+        "expected the generated timestamp round-trip test to run:\n{stdout}"
+    );
+}
+
+fn create_api_preset_scaffold(project_dir: &Path) {
     let new_args = NewArgs {
         name: Some("my_app".to_string()),
         preset: Some(NewPreset::Api),
@@ -2941,6 +3146,13 @@ fn test_resource_inline_fields_compile_against_api_preset_scaffold() {
         force: false,
     };
     tideway_cli::commands::new::run(new_args).expect("run tideway new");
+}
+
+#[test]
+fn test_resource_inline_fields_compile_against_api_preset_scaffold() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_api_preset_scaffold(&project_dir);
 
     for (name, fields, profile) in [
         (
@@ -2962,7 +3174,7 @@ fn test_resource_inline_fields_compile_against_api_preset_scaffold() {
         ),
         (
             "note",
-            vec!["title:string", "pinned:bool"],
+            vec!["title:string", "pinned:bool", "due_at:datetime"],
             tideway_cli::cli::ResourceProfile::Stub,
         ),
         (
@@ -2991,8 +3203,38 @@ fn test_resource_inline_fields_compile_against_api_preset_scaffold() {
         tideway_cli::commands::resource::run(resource_args).expect("run tideway resource");
     }
 
+    // Date/time fields serialize as ISO-8601 UTC strings, not unix seconds.
+    let note_path = project_dir.join("src/routes/note.rs");
+    let mut note = fs::read_to_string(&note_path).expect("read note routes");
+    note.push_str(
+        r#"
+#[cfg(test)]
+mod iso_timestamp_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn datetime_fields_serialize_as_iso_utc() {
+        let app = tideway::App::new().register_module(NoteModule).into_router();
+
+        tideway::testing::get(app, "/api/notes/1")
+            .execute()
+            .await
+            .assert_ok()
+            .assert_contains("\"due_at\":\"2023-11-14T22:13:20Z\"")
+            .await;
+    }
+}
+"#,
+    );
+    fs::write(&note_path, note).expect("write note routes");
+
     patch_scaffold_to_workspace(&project_dir);
     run_cargo_in_project(&project_dir, &["check", "--all-targets"]);
+    let stdout = run_cargo_in_project(&project_dir, &["test", "iso_timestamp_tests"]);
+    assert!(
+        stdout.contains("datetime_fields_serialize_as_iso_utc ... ok"),
+        "expected the generated ISO timestamp test to run:\n{stdout}"
+    );
 }
 
 fn read_single_migration(project_dir: &Path, suffix: &str) -> String {
