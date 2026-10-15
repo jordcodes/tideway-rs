@@ -2,12 +2,16 @@
 //! left behind by dead test processes are swept.
 #![cfg(feature = "database")]
 
+use crate::support;
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, DatabaseConnection, Statement};
 use sea_orm_migration::prelude::*;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tideway::testing::TestDb;
+use tokio::sync::{Mutex, OnceCell};
+
+const KEEP_DBS_ENV: &str = "TIDEWAY_TEST_KEEP_DBS";
 
 fn admin_url() -> String {
     std::env::var("TEST_DATABASE_URL")
@@ -23,7 +27,11 @@ static RUN_ID: LazyLock<u128> = LazyLock::new(|| {
 });
 
 /// How many times each test's migration has run in this process.
-static MIGRATION_RUNS: [AtomicUsize; 3] = [const { AtomicUsize::new(0) }; 3];
+static MIGRATION_RUNS: [AtomicUsize; 6] = [const { AtomicUsize::new(0) }; 6];
+
+/// Held by tests that sweep, or whose child process does, so one sweep can't remove another
+/// test's orphan fixtures.
+static SWEEP_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// A one-migration migrator per test, so tests don't share templates or counters.
 struct CountingMigrator<const N: usize>;
@@ -155,6 +163,7 @@ async fn falls_back_to_migrating_when_the_template_cannot_be_copied() {
 #[tokio::test]
 #[ignore = "requires PostgreSQL via TEST_DATABASE_URL"]
 async fn sweep_drops_databases_of_dead_processes_and_keeps_live_ones() {
+    let _sweeping = SWEEP_LOCK.lock().await;
     type Migrator = CountingMigrator<2>;
     let current_template = TestDb::postgres_template_name::<Migrator>();
     let own_db = TestDb::new_postgres_with_migrator::<Migrator>()
@@ -200,4 +209,132 @@ async fn sweep_drops_databases_of_dead_processes_and_keeps_live_ones() {
     execute_admin(&format!("DROP DATABASE \"{live_db}\"")).await;
     own_db.cleanup().await.unwrap();
     execute_admin(&format!("DROP DATABASE \"{current_template}\"")).await;
+}
+
+/// Databases that look left behind by a dead test process: a test database, a stale template
+/// for another migration list, and a half-built template.
+struct OrphanFixtures {
+    names: [String; 3],
+}
+
+impl OrphanFixtures {
+    async fn create() -> Self {
+        let mut exited = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = exited.id();
+        exited.wait().unwrap();
+        let hash = format!("{:016x}", *RUN_ID as u64);
+        let names = [
+            format!("test_db_{dead_pid}_0"),
+            format!("test_tpl_{hash}"),
+            format!("test_tpl_{hash}_{dead_pid}"),
+        ];
+        for name in &names {
+            execute_admin(&format!("CREATE DATABASE \"{name}\"")).await;
+        }
+        Self { names }
+    }
+
+    async fn drop_all(&self) {
+        for name in &self.names {
+            execute_admin(&format!("DROP DATABASE IF EXISTS \"{name}\"")).await;
+        }
+    }
+}
+
+/// Run a sweep test alone in a child process, so it starts with no sweep done yet and its
+/// `TIDEWAY_TEST_KEEP_DBS` setting can't leak. Returns `true` in the parent once the child passed.
+async fn run_sweep_child(test: &str, keep_dbs: Option<&str>) -> bool {
+    // In the child, skip the parent-side setup below: creating a TestDb here would run the
+    // child's sweep before the test creates its fixtures.
+    if std::env::var("IT_CHILD_TEST").is_ok() {
+        return support::isolated(module_path!(), test, |_| {});
+    }
+    let _sweeping = SWEEP_LOCK.lock().await;
+    // Finish this process's own once-per-process sweeps first, so they can't remove the
+    // child's fixtures while it runs.
+    static PARENT_SWEPT: OnceCell<()> = OnceCell::const_new();
+    PARENT_SWEPT
+        .get_or_init(|| async {
+            type Migrator = CountingMigrator<5>;
+            TestDb::new_postgres_with_migrator::<Migrator>()
+                .await
+                .unwrap()
+                .cleanup()
+                .await
+                .unwrap();
+            let template = TestDb::postgres_template_name::<Migrator>();
+            execute_admin(&format!("DROP DATABASE \"{template}\"")).await;
+        })
+        .await;
+    support::isolated(module_path!(), test, |command| {
+        command.arg("--include-ignored");
+        match keep_dbs {
+            Some(value) => command.env(KEEP_DBS_ENV, value),
+            None => command.env_remove(KEEP_DBS_ENV),
+        };
+    })
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via TEST_DATABASE_URL"]
+async fn first_test_database_sweeps_orphans_automatically() {
+    if run_sweep_child("first_test_database_sweeps_orphans_automatically", None).await {
+        return;
+    }
+    type Migrator = CountingMigrator<3>;
+    let orphans = OrphanFixtures::create().await;
+
+    let test_db = TestDb::new_postgres_with_migrator::<Migrator>()
+        .await
+        .unwrap();
+
+    for name in &orphans.names {
+        assert!(!database_exists(name).await, "{name} should be swept");
+    }
+    assert!(has_widgets_table(&test_db).await);
+    test_db.cleanup().await.unwrap();
+    let template = TestDb::postgres_template_name::<Migrator>();
+    execute_admin(&format!("DROP DATABASE \"{template}\"")).await;
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL via TEST_DATABASE_URL"]
+async fn keep_dbs_skips_the_sweep_and_keeps_dropped_test_databases() {
+    if run_sweep_child(
+        "keep_dbs_skips_the_sweep_and_keeps_dropped_test_databases",
+        Some("1"),
+    )
+    .await
+    {
+        return;
+    }
+    type Migrator = CountingMigrator<4>;
+    let orphans = OrphanFixtures::create().await;
+
+    let test_db = TestDb::new_postgres_with_migrator::<Migrator>()
+        .await
+        .unwrap();
+    let name = test_db
+        .connection
+        .query_one(Statement::from_string(
+            DatabaseBackend::Postgres,
+            "SELECT current_database() AS name",
+        ))
+        .await
+        .unwrap()
+        .unwrap()
+        .try_get::<String>("", "name")
+        .unwrap();
+    drop(test_db);
+
+    for orphan in &orphans.names {
+        assert!(database_exists(orphan).await, "{orphan} should be kept");
+    }
+    assert!(database_exists(&name).await, "{name} should be kept");
+    let template = TestDb::postgres_template_name::<Migrator>();
+    assert!(database_exists(&template).await);
+
+    orphans.drop_all().await;
+    execute_admin(&format!("DROP DATABASE \"{name}\" WITH (FORCE)")).await;
+    execute_admin(&format!("DROP DATABASE \"{template}\"")).await;
 }
