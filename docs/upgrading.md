@@ -605,6 +605,21 @@ if let Some(BillingError::StripeApiError { message, code, http_status, .. }) = e
 }
 ```
 
+## CLI 0.9.0: resource timestamps
+
+`tideway resource` now generates `datetime` fields and `created_at`/`updated_at` as UTC timestamps:
+`timestamp_with_time_zone()` columns and `chrono::DateTime<chrono::Utc>` fields, serialized as
+ISO-8601 strings (`"2026-10-06T09:53:56Z"`). Earlier CLIs generated unix-second `BIGINT` columns and
+`i64` fields.
+
+Existing resources are application-owned and are not changed: their columns, entities, and JSON stay
+integers, and no migration is required. A resource generated with CLI 0.9.0 in the same app uses
+timestamps, so API clients may see both formats. To align an older resource, write an additive
+migration that converts its columns (on PostgreSQL,
+`ALTER COLUMN created_at TYPE TIMESTAMPTZ USING to_timestamp(created_at)`), change its entity and
+DTO fields to `chrono::DateTime<chrono::Utc>`, and replace its `current_timestamp()` helper with the
+one a new resource generates. Treat this as a breaking change for that resource's API clients.
+
 ## 0.7.x to 0.8.0 / CLI 0.1.48: recoverable password resets
 
 > **Action required for existing auth applications.** Tideway 0.8.0 is not a drop-in upgrade from

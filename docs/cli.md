@@ -188,10 +188,16 @@ Inline fields drive the entity, migration, request/response DTOs, service valida
 | `bool` / `boolean` | `bool` | `boolean()` |
 | `int` / `integer` / `i32` | `i32` | `integer()` |
 | `bigint` / `i64` | `i64` | `big_integer()` |
-| `datetime` / `timestamp` | `i64` (unix seconds) | `big_integer()` |
+| `datetime` / `timestamp` | `chrono::DateTime<chrono::Utc>` | `timestamp_with_time_zone()` |
 
 Inline fields replace the profile's default domain fields; structural fields are kept
 (`organization_id`/`owner_id` for scoped profiles, `created_at`/`updated_at` for timestamped profiles).
+Date/time fields, including `created_at`/`updated_at`, are UTC timestamps like the generated auth
+tables and appear in JSON as ISO-8601 strings (`"2026-10-06T09:53:56Z"`). Generated timestamps are
+truncated to whole seconds. When a resource has one, the command adds `chrono` with `serde` and
+enables SeaORM's `with-chrono` and utoipa's `chrono` features in `Cargo.toml`. Resources generated
+before CLI 0.9.0 keep unix-second `BIGINT` columns; see
+[`docs/upgrading.md`](upgrading.md#cli-090-resource-timestamps).
 String fields are trimmed and must be non-empty. Names must be snake_case and may not be Rust
 keywords or reserved generator names (`id`, `active`, `model`, `actor`, `db`, `query`, `search`,
 `limit`, `offset`, `q`, `table`).
