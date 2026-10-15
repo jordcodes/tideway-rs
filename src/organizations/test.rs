@@ -1988,20 +1988,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_does_not_log_invitation_token() {
-        #[derive(Clone, Default)]
-        struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
-
-        impl std::io::Write for LogBuffer {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
         let store = InMemoryOrgStore::new();
         let org_manager = OrganizationManager::new(
             store.clone(),
@@ -2043,15 +2029,8 @@ mod tests {
             revoked: false,
         });
 
-        let logs = LogBuffer::default();
-        let writer = logs.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(move || writer.clone())
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+        // `#[tokio::test]` polls on this thread, which the capture is bound to.
+        let logs = crate::test_logs::LogCapture::start();
 
         inv_manager
             .accept(secret_token, "invitee", |inv, p| TestMembership {
@@ -2063,7 +2042,7 @@ mod tests {
             .await
             .unwrap();
 
-        let output = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let output = logs.output();
         assert!(
             output.contains("Invitation accepted"),
             "expected accept logs: {output}"
