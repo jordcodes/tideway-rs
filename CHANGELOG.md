@@ -524,6 +524,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   Sentry by setting those variables. Both features are also accepted by `--features` and
   offered in the custom feature picker.
 
+- `tideway resource` and the `tideway new` resource wizard share one pluralizer for table names
+  and routes. It follows English rules instead of appending `s`: `category` → `categories`,
+  `box` → `boxes`, `quiz` → `quizzes`, `person` → `people`, `metadata` unchanged, and
+  `product_category` → `product_categories` (only the last word changes). Only newly generated
+  resources are affected; existing apps keep their table names and routes.
+
 - The CLI now shares the framework's major.minor version: tideway-cli 0.9.0 follows 0.1.48 and
   is released alongside Tideway 0.9.0. CLI 0.9.x targets Tideway 0.9.x; patch releases stay
   independent, so CLI fixes can ship without a framework release. Newly generated applications

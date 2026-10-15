@@ -15,6 +15,7 @@ use crate::commands::messaging::{
     TIDEWAY_ADD_DATABASE_COMMAND, TIDEWAY_ADD_DATABASE_WIRE_COMMAND,
 };
 use crate::commands::migration_naming::{MigrationName, next_migration_name};
+use crate::commands::naming::pluralize;
 use crate::{
     CommandRuntime, ensure_dir, error_contract, print_info, print_success, print_warning,
     write_file,
@@ -4718,14 +4719,6 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
 
 fn normalize_name(name: &str) -> String {
     name.trim().to_lowercase().replace('-', "_")
-}
-
-fn pluralize(name: &str) -> String {
-    if name.ends_with('s') {
-        format!("{}es", name)
-    } else {
-        format!("{}s", name)
-    }
 }
 
 fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {
