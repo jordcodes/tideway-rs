@@ -112,7 +112,13 @@ fn test_backend_admin_impersonation_uses_session_bound_tokens() {
             admin_routes.contains("issue_access_token_expiring_at(subject, session.expires_at)")
         );
         assert!(admin_routes.contains(".end_impersonation(&claims.imp_session)"));
-        assert!(!admin_routes.contains("refresh_token"));
+        // Impersonation must never issue refresh tokens; the only allowed reference is revoking
+        // the target's `refresh_token_family` rows when an admin locks or demotes them.
+        assert!(
+            !admin_routes
+                .replace("refresh_token_family", "")
+                .contains("refresh_token")
+        );
         assert!(!admin_routes.contains("ImpersonateRequest"));
         assert!(!admin_routes.contains("jwt_issuer.issue("));
 

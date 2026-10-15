@@ -1,5 +1,8 @@
 [workspace]
 members = [".", "tideway-macros", "tideway-cli", "tests/fixtures/downstream_upgrade"]
+# The root is also the `tideway` package, so without this a bare `cargo test`/`cargo build` only
+# selects `tideway`. The downstream fixture is compile-checked by scripts/check_downstream_upgrade.sh.
+default-members = [".", "tideway-macros", "tideway-cli"]
 exclude = ["load-tests/app"]
 
 # Keep file:line backtraces for workspace code but drop full debuginfo; the test
