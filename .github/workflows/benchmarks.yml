@@ -28,7 +28,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Run hot-path benchmarks
         run: cargo bench --bench hot_paths --features auth,jobs,websocket -- --noplot
@@ -48,7 +48,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build Tideway CLI
         run: cargo build --release --locked -p tideway-cli
