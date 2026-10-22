@@ -78,6 +78,9 @@ fn signing_key() -> &'static SigningKey {
 }
 
 async fn start_mock() -> MockProvider {
+    // Generate the key before any request is in flight. Debug-build RSA keygen can take longer
+    // than the OAuth client's request timeout, and concurrent tests all wait on it.
+    let _ = signing_key();
     let state = Arc::new(Mutex::new(MockState {
         claim_overrides: json!({}),
         github_emails: json!([
