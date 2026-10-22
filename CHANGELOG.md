@@ -86,6 +86,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   consume, so accepted invitations could push an organization past its paid seats.
   `MembershipManager::with_invitation_store` makes `add_member` count pending invitations, as the
   `SeatChecker` contract describes.
+- A WebSocket connection removed by `ConnectionManager` is now closed. When a broadcast found a
+  connection's outbound buffer full, it unregistered the connection and freed its
+  `max_connections` slot but left the socket open and served, and unsolicited pongs kept its
+  heartbeat alive, so clients that stopped reading could hold any number of sockets. Unregistering
+  now signals the connection to tear down and run `on_disconnect`.
 
 ## [0.9.0] - 2026-10-15
 

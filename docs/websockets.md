@@ -172,6 +172,11 @@ manager.broadcast_json(&serde_json::json!({
 })).await?;
 ```
 
+Each connection buffers up to 1000 outbound messages. A broadcast that finds a connection's
+buffer full (a client that has stopped reading) removes that connection and closes its socket,
+running `on_disconnect`, so slow readers cannot hold connections beyond `max_connections`.
+Calling `manager.unregister(id)` closes the socket the same way.
+
 ## Rooms and Channels
 
 Rooms allow you to group connections and broadcast to specific groups.
