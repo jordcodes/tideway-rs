@@ -350,9 +350,9 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
 
         // Map to stored subscription
         let stored = StoredSubscription {
+            plan_id: self.resolve_plan_id(&stripe_subscription.plan_id),
             stripe_subscription_id: stripe_subscription.id,
             stripe_customer_id: stripe_subscription.customer_id,
-            plan_id: stripe_subscription.plan_id,
             status: SubscriptionStatus::from_stripe(&stripe_subscription.status),
             current_period_start: stripe_subscription.current_period_start,
             current_period_end: stripe_subscription.current_period_end,
@@ -516,7 +516,8 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         // Compare key fields
         let status_matches = stored.status == SubscriptionStatus::from_stripe(&stripe_data.status);
         let seats_match = stored.extra_seats == stripe_data.extra_seats;
-        let plan_matches = stored.plan_id == stripe_data.plan_id;
+        let remote_plan_id = self.resolve_plan_id(&stripe_data.plan_id);
+        let plan_matches = stored.plan_id == remote_plan_id;
         let period_matches = stored.current_period_end == stripe_data.current_period_end;
         let cancel_matches = stored.cancel_at_period_end == stripe_data.cancel_at_period_end;
 
@@ -544,7 +545,7 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         if !plan_matches {
             differences.push(ReconcileDifference::Plan {
                 local: stored.plan_id.clone(),
-                remote: stripe_data.plan_id.clone(),
+                remote: remote_plan_id,
             });
         }
 
@@ -571,6 +572,25 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             differences,
             updated_local: update_local,
         })
+    }
+
+    /// Map a reported plan to a catalog plan ID.
+    ///
+    /// Stripe clients report the base item's price ID, which is what the customer is billed
+    /// for, so it is resolved through the plan catalog. Values that are already catalog plan IDs
+    /// (for example from webhooks) are kept.
+    fn resolve_plan_id(&self, plan_or_price_id: &str) -> String {
+        if let Some(plan) = self.plans.find_by_stripe_price(plan_or_price_id) {
+            return plan.id.clone();
+        }
+        if self.plans.get(plan_or_price_id).is_none() {
+            tracing::warn!(
+                target: "tideway::billing",
+                plan_id = %plan_or_price_id,
+                "subscription plan matches no catalog plan or Stripe price"
+            );
+        }
+        plan_or_price_id.to_string()
     }
 }
 
@@ -745,7 +765,8 @@ pub struct StripeSubscriptionData {
     pub id: String,
     /// Stripe customer ID.
     pub customer_id: String,
-    /// Plan ID (from metadata or price lookup).
+    /// Catalog plan ID, or the base item's Stripe price ID (resolved through the plan catalog
+    /// when synced).
     pub plan_id: String,
     /// Subscription status string.
     pub status: String,
@@ -1541,6 +1562,50 @@ mod tests {
         // Should reflect Stripe's current state
         assert_eq!(sub.extra_seats, 10);
         assert_eq!(sub.status, SubscriptionStatus::PastDue);
+    }
+
+    #[tokio::test]
+    async fn test_refresh_and_reconcile_use_billed_price_for_plan() {
+        let store = InMemoryBillingStore::new();
+        let client = MockStripeSubscriptionClient::new();
+        let manager = SubscriptionManager::new(store, client.clone(), create_test_plans());
+
+        // Webhooks stored the subscription on starter after a downgrade from pro.
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        // The live client reports the base item's price, not checkout-time metadata.
+        let mut remote = create_test_subscription_data("org_123");
+        remote.plan_id = "price_starter".to_string();
+        client.add_subscription(remote.clone());
+
+        assert_eq!(
+            manager.reconcile("org_123", false).await.unwrap(),
+            ReconcileResult::InSync
+        );
+        let sub = manager
+            .refresh_from_stripe("org_123")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(sub.plan_id, "starter");
+
+        // A plan change made outside checkout is picked up from the price.
+        remote.plan_id = "price_pro".to_string();
+        client.add_subscription(remote);
+        let result = manager.reconcile("org_123", true).await.unwrap();
+        assert!(matches!(
+            result,
+            ReconcileResult::Diverged { ref differences, updated_local: true }
+                if differences.contains(&ReconcileDifference::Plan {
+                    local: "starter".to_string(),
+                    remote: "pro".to_string(),
+                })
+        ));
+        let sub = manager.get_subscription("org_123").await.unwrap().unwrap();
+        assert_eq!(sub.plan_id, "pro");
     }
 
     #[tokio::test]

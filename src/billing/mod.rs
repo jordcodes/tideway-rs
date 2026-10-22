@@ -112,7 +112,9 @@ pub use portal::{
 };
 
 // Webhook exports
-pub use webhook::{WebhookEvent, WebhookEventData, WebhookHandler, WebhookOutcome};
+pub use webhook::{
+    NoSubscriptionClient, WebhookEvent, WebhookEventData, WebhookHandler, WebhookOutcome,
+};
 
 // Billing lifecycle event exports
 pub use events::{

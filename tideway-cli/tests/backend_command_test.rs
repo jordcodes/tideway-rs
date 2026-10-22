@@ -413,6 +413,7 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert!(billing_routes.contains(".release_owned_event_claim(&claim)"));
     assert!(billing_routes.contains("deactivate_plans_with_price(state, price_id).await?"));
     assert!(billing_routes.contains(".with_event_sink(AppBillingEventSink)"));
+    assert!(billing_routes.contains(".with_subscription_client(state.stripe_client.clone())"));
     assert!(billing_events.contains("impl BillingEventSink for AppBillingEventSink"));
     assert!(billing_events.contains("event.event_id()"));
     assert!(billing_events.contains("BillingEvent::DuplicateSubscription"));

@@ -15,7 +15,8 @@ use super::events::{
 use super::plans::Plans;
 use super::storage::BillingStore;
 use super::subscription::{
-    StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata, SubscriptionSyncOutcome,
+    StripeSubscriptionClient, StripeSubscriptionData, SubscriptionManager, SubscriptionMetadata,
+    SubscriptionSyncOutcome,
 };
 
 /// Webhook handler for Stripe events.
@@ -28,11 +29,21 @@ use super::subscription::{
 /// Multiple signing secrets can be configured so that Stripe secrets can be
 /// rotated without downtime: a webhook is accepted if it is signed with any
 /// configured secret.
-pub struct WebhookHandler<S: BillingStore, E: BillingEventSink = NoOpBillingEventSink> {
+///
+/// Stripe does not deliver events in order and retries failed deliveries, so a
+/// subscription event's payload can be older than state already stored. Attach a
+/// Stripe client with [`with_subscription_client`](Self::with_subscription_client)
+/// so subscription events sync the live subscription instead of the payload.
+pub struct WebhookHandler<
+    S: BillingStore,
+    E: BillingEventSink = NoOpBillingEventSink,
+    C: StripeSubscriptionClient = NoSubscriptionClient,
+> {
     store: S,
     webhook_secrets: Vec<SecretString>,
     plans: Plans,
     event_sink: E,
+    subscription_client: Option<C>,
 }
 
 impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
@@ -48,6 +59,7 @@ impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
             webhook_secrets: vec![webhook_secret.into()],
             plans,
             event_sink: NoOpBillingEventSink,
+            subscription_client: None,
         }
     }
 
@@ -73,19 +85,45 @@ impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
             webhook_secrets,
             plans,
             event_sink: NoOpBillingEventSink,
+            subscription_client: None,
         })
     }
 }
 
-impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
+impl<S: BillingStore + Clone, E: BillingEventSink, C: StripeSubscriptionClient>
+    WebhookHandler<S, E, C>
+{
     /// Attach an application-owned billing lifecycle event sink.
     #[must_use]
-    pub fn with_event_sink<E2: BillingEventSink>(self, event_sink: E2) -> WebhookHandler<S, E2> {
+    pub fn with_event_sink<E2: BillingEventSink>(self, event_sink: E2) -> WebhookHandler<S, E2, C> {
         WebhookHandler {
             store: self.store,
             webhook_secrets: self.webhook_secrets,
             plans: self.plans,
             event_sink,
+            subscription_client: self.subscription_client,
+        }
+    }
+
+    /// Sync subscription events from the live Stripe subscription.
+    ///
+    /// For `customer.subscription.created` and `customer.subscription.updated`, the handler
+    /// fetches the subscription with `client` and stores that instead of the event payload,
+    /// so a late or retried older event cannot overwrite newer state. This costs one Stripe API
+    /// call per subscription event; a failed fetch fails the event so Stripe retries it.
+    ///
+    /// Without a client, the event payload is stored as delivered.
+    #[must_use]
+    pub fn with_subscription_client<C2: StripeSubscriptionClient>(
+        self,
+        client: C2,
+    ) -> WebhookHandler<S, E, C2> {
+        WebhookHandler {
+            store: self.store,
+            webhook_secrets: self.webhook_secrets,
+            plans: self.plans,
+            event_sink: self.event_sink,
+            subscription_client: Some(client),
         }
     }
 
@@ -327,7 +365,15 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
 
     /// Handle subscription created/updated events.
     async fn handle_subscription_updated(&self, event: &WebhookEvent) -> Result<WebhookOutcome> {
-        let sub_data = self.parse_subscription_data(&event.data.object)?;
+        let mut sub_data = self.parse_subscription_data(&event.data.object)?;
+        if let Some(client) = &self.subscription_client {
+            // Events arrive out of order, so trust the live subscription over the snapshot.
+            let mut live = client.get_subscription(&sub_data.id).await?;
+            if let Some(plan) = self.plans.find_by_stripe_price(&live.plan_id) {
+                live.plan_id = plan.id.clone();
+            }
+            sub_data = live;
+        }
         let lifecycle_event = match event.event_type.as_str() {
             "customer.subscription.created" => BillingEvent::SubscriptionCreated {
                 context: event_context(event),
@@ -341,11 +387,8 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
         };
 
         // Update local state
-        let sub_manager = SubscriptionManager::new(
-            self.store.clone(),
-            NullSubscriptionClient,
-            self.plans.clone(),
-        );
+        let sub_manager =
+            SubscriptionManager::new(self.store.clone(), NoSubscriptionClient, self.plans.clone());
         let lifecycle_event = match sub_manager
             .sync_from_stripe_checked(sub_data.clone())
             .await?
@@ -399,11 +442,8 @@ impl<S: BillingStore + Clone, E: BillingEventSink> WebhookHandler<S, E> {
                 .and_then(|object| metadata_value(object, "billable_id")),
         };
 
-        let sub_manager = SubscriptionManager::new(
-            self.store.clone(),
-            NullSubscriptionClient,
-            self.plans.clone(),
-        );
+        let sub_manager =
+            SubscriptionManager::new(self.store.clone(), NoSubscriptionClient, self.plans.clone());
         sub_manager.delete_subscription(subscription_id).await?;
         self.event_sink.handle(&lifecycle_event).await?;
 
@@ -774,10 +814,14 @@ fn compute_signature(secret: &str, payload: &[u8]) -> Result<String> {
     Ok(hex::encode(result.into_bytes()))
 }
 
-/// Null subscription client for webhook handler (doesn't need to make API calls).
-struct NullSubscriptionClient;
+/// Placeholder client for a [`WebhookHandler`] without
+/// [`with_subscription_client`](WebhookHandler::with_subscription_client).
+///
+/// It makes no API calls: reads and updates return an error and other operations do nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoSubscriptionClient;
 
-impl super::subscription::StripeSubscriptionClient for NullSubscriptionClient {
+impl StripeSubscriptionClient for NoSubscriptionClient {
     async fn cancel_subscription(&self, _subscription_id: &str) -> Result<()> {
         Ok(())
     }
@@ -1695,6 +1739,71 @@ mod tests {
 
         let result = handler.handle_event(event).await.unwrap();
         assert_eq!(result, WebhookOutcome::Ignored);
+    }
+
+    #[tokio::test]
+    async fn stale_subscription_event_syncs_live_state_with_subscription_client() {
+        use crate::billing::MockStripeSubscriptionClient;
+
+        // Stripe's current state: the subscription went past_due on the starter price.
+        let client = MockStripeSubscriptionClient::new();
+        client.add_subscription(StripeSubscriptionData {
+            id: "sub_123".to_string(),
+            customer_id: "cus_123".to_string(),
+            plan_id: "price_starter".to_string(),
+            status: "past_due".to_string(),
+            current_period_start: 1_700_000_000,
+            current_period_end: 1_702_592_000,
+            extra_seats: 0,
+            trial_end: None,
+            cancel_at_period_end: false,
+            base_item_id: Some("si_base".to_string()),
+            seat_item_id: None,
+            metadata: SubscriptionMetadata {
+                billable_id: Some("org-1".to_string()),
+                billable_type: Some("org".to_string()),
+            },
+        });
+
+        let store = InMemoryBillingStore::new();
+        let sink = RecordingEventSink::default();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans())
+            .with_event_sink(sink.clone())
+            .with_subscription_client(client);
+
+        // A retried, older event still says "active".
+        let outcome = handler
+            .handle_event(subscription_event(
+                "evt_stale",
+                "customer.subscription.updated",
+                "sub_123",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(outcome, WebhookOutcome::Processed);
+
+        let stored = store.get_subscription("org-1").await.unwrap().unwrap();
+        assert_eq!(stored.status, crate::billing::SubscriptionStatus::PastDue);
+        assert_eq!(stored.plan_id, "starter");
+        {
+            let events = sink.events.lock().unwrap();
+            assert!(matches!(
+                &events[0],
+                BillingEvent::SubscriptionUpdated { subscription, .. }
+                    if subscription.status == "past_due" && subscription.plan_id == "starter"
+            ));
+        }
+
+        // A failed fetch fails the event, so Stripe redelivers it.
+        let missing = handler
+            .handle_event(subscription_event(
+                "evt_missing",
+                "customer.subscription.updated",
+                "sub_unknown",
+            ))
+            .await;
+        assert!(missing.is_err());
+        assert!(!store.is_event_processed("evt_missing").await.unwrap());
     }
 
     #[tokio::test]

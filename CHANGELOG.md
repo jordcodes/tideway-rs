@@ -29,6 +29,19 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   field exported the raw query string to the trace backend, including `LocalStorage` signed-URL
   `sig` values and `?token=` parameters. The span now carries only `url.path` and the route; the
   `uri` field is removed from request spans in debug log output as well.
+- `SubscriptionManager::refresh_from_stripe`, `reconcile`, `extend_trial`, and
+  `resume_paused_subscription` take the plan from the subscription's billed price. Before,
+  `LiveStripeClient` reported the `plan_id` metadata written at checkout, which is never updated
+  when the plan changes in the Customer Portal, the Dashboard, or through `update_subscription`.
+  A refresh or reconcile therefore restored the old plan's entitlements after a downgrade.
+  `LiveStripeClient` now reports the base item's price ID, and `SubscriptionManager` maps it to a
+  catalog plan when syncing; metadata is used only when there is no base price.
+- `WebhookHandler::with_subscription_client(client)` makes `customer.subscription.created` and
+  `customer.subscription.updated` events sync the live subscription from Stripe instead of the
+  event payload. Stripe does not deliver events in order, so a late or retried older event could
+  overwrite newer status, plan, or seats, for example reactivating an unpaid subscription. Handlers
+  built without a client keep storing the payload; pass your `LiveStripeClient` to opt in. The new
+  `NoSubscriptionClient` type is the default client parameter.
 
 ## [0.9.0] - 2026-10-15
 
@@ -518,6 +531,15 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `docs/upgrading.md`.
 
 ## [tideway-cli 0.9.0] - Unreleased
+
+### Security
+
+- Generated billing webhooks pass the app's `LiveStripeClient` to
+  `WebhookHandler::with_subscription_client`, so out-of-order Stripe subscription events cannot
+  overwrite newer billing state. This needs the Tideway release that adds the method (after
+  0.9.0); release it before this CLI. Existing apps can add
+  `.with_subscription_client(state.stripe_client.clone())` after `.with_event_sink(...)` in
+  `src/billing/routes.rs`.
 
 ### Added
 

@@ -1281,6 +1281,14 @@ again. Sink implementations must therefore make side effects idempotent using
 `BillingEvent::event_id`. Prefer enqueueing a durable background job rather than performing slow
 network calls inside the webhook request.
 
+Stripe does not deliver events in order and retries failed deliveries for days, so a
+subscription event's payload can be older than the state you already stored. Add
+`.with_subscription_client(stripe_client)` so `customer.subscription.created` and
+`customer.subscription.updated` events sync the live subscription from Stripe rather than the
+payload. This costs one API call per subscription event, and a failed fetch fails the event so
+Stripe retries it. Without a client, the payload is stored as delivered and a late older event
+can overwrite newer status, plan, or seats. Generated apps pass their `LiveStripeClient`.
+
 The built-in `billing_processed_events` table belongs to one Tideway billing webhook consumer. If
 an application also processes Stripe Connect or another independent Stripe webhook stream, give
 that consumer a separate idempotency table or use a store keyed by both consumer name and event ID.
