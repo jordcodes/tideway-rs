@@ -60,6 +60,15 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - `SessionStore::supports_revocation` (default `true`) reports whether `delete` revokes a session.
   `CookieSessionStore` returns `false`: its `delete` cannot invalidate copies of a cookie, which
   stay valid until they expire. The session docs now say so and describe alternatives.
+- `Claims` and `ClaimsRef` run the new `AuthProvider::validate_claims` after verifying the token.
+  They used to accept any validly signed token, skipping `load_user` and `validate_user`, where
+  providers (including generated ones) enforce `session_version` revocation and banned users.
+  So a revoked access token kept working on claims-only handlers until it expired. The default
+  `validate_claims` loads and validates the user, so these extractors now do a user lookup;
+  override it if `verify_token` already enforces revocation.
+- `ImpersonationManager::validate_session` re-checks that the session's admin still passes
+  `is_admin` and ends the session if not, so a demoted admin can no longer keep using an
+  impersonation token. New `end_all_for_admin` ends an admin's sessions, for example on logout.
 
 ## [0.9.0] - 2026-10-15
 

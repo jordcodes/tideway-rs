@@ -641,6 +641,11 @@ async fn whoami(ClaimsRef(claims): ClaimsRef<MyAuthProvider>) -> String {
 `ClaimsRef` reuses cached claims when available (e.g., after auth middleware), avoiding
 duplicate token verification within the same request.
 
+Both run `AuthProvider::validate_claims` after verifying the token. By default it calls
+`load_user` and `validate_user`, so `session_version` revocation and banned-user checks apply to
+claims-only handlers just as they do to `AuthUser`. If your `verify_token` already enforces
+revocation and you want to skip the user lookup, override `validate_claims`.
+
 ## MFA (Multi-Factor Authentication)
 
 Requires `auth-mfa` feature.
@@ -2085,7 +2090,14 @@ let result = manager.validate_session(&session.session_id, Some("delete_account"
 
 // End impersonation
 manager.end_impersonation(&session.session_id).await?;
+
+// When an admin logs out or loses admin access, end everything they started
+manager.end_all_for_admin(&admin_id).await?;
 ```
+
+`validate_session` also re-checks `ImpersonationStore::is_admin` for the session's admin and
+ends the session if it fails, so demoting an admin cuts off their impersonation tokens on the
+next request.
 
 ### Blocked Actions
 
@@ -2165,13 +2177,15 @@ CREATE INDEX idx_imp_audit_target ON impersonation_audit(target_user_id);
 
 ### Security Notes
 
-1. **Only admins can impersonate**: Check `is_admin()` before allowing
+1. **Only admins can impersonate**: `is_admin()` is checked at start and on every
+   `validate_session`
 2. **Cannot impersonate admins by default**: Prevent privilege escalation
 3. **Cannot impersonate yourself**: Self-impersonation is blocked
 4. **One impersonation per user**: Can't have multiple admins on same user
 5. **Full audit trail**: Every action is logged with timestamp and reason
 6. **Time-limited sessions**: Auto-expire after configured duration
-7. **Explicit end required**: Sessions don't persist across admin logout
+7. **Explicit end required**: Call `end_all_for_admin` from your admin logout handler;
+   sessions otherwise last until they expire or are ended
 
 ## Security Best Practices
 

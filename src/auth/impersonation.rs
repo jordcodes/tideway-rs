@@ -664,6 +664,10 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
     }
 
     /// Validate an impersonation session and check if action is allowed.
+    ///
+    /// Run this on every request made with an impersonation token. It also re-checks that the
+    /// session's admin still passes [`ImpersonationStore::is_admin`], ending the session if not,
+    /// so a demoted or offboarded admin cannot keep acting as the target user.
     pub async fn validate_session(
         &self,
         session_id: &str,
@@ -705,6 +709,21 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
 
             return Err(TidewayError::Unauthorized(
                 "Impersonation session expired".into(),
+            ));
+        }
+
+        // Admin authority is checked at start; re-check it so revocation ends the session.
+        if !self.store.is_admin(&session.admin_id).await? {
+            tracing::warn!(
+                target: "auth.impersonation.admin_revoked",
+                session_id = %session_id,
+                admin_id = %session.admin_id,
+                target_user_id = %session.target_user_id,
+                "Impersonation session ended: admin is no longer authorized"
+            );
+            self.end_impersonation(session_id).await?;
+            return Err(TidewayError::Unauthorized(
+                "Impersonation session ended".into(),
             ));
         }
 
@@ -762,6 +781,33 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
 
         // Filter out expired sessions
         Ok(sessions.into_iter().filter(|s| !s.is_expired()).collect())
+    }
+
+    /// End every active impersonation session started by an admin.
+    ///
+    /// Call this when the admin logs out or loses admin access. Each session is ended through
+    /// [`Self::end_impersonation`], so it is audited and the target is notified if configured.
+    pub async fn end_all_for_admin(&self, admin_id: &str) -> Result<usize> {
+        let mut count = 0;
+        for session in self.store.get_sessions_by_admin(admin_id).await? {
+            match self.end_impersonation(&session.session_id).await {
+                Ok(()) => count += 1,
+                // Already ended concurrently.
+                Err(TidewayError::NotFound(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+
+        if count > 0 {
+            tracing::info!(
+                target: "auth.impersonation.bulk_ended",
+                admin_id = %admin_id,
+                count = count,
+                "Ended all impersonation sessions for admin"
+            );
+        }
+
+        Ok(count)
     }
 
     /// End all impersonation sessions for a user.
@@ -876,6 +922,14 @@ pub mod test {
                 },
             );
             self.admins.write().unwrap().push(user_id.to_string());
+        }
+
+        /// Revoke a user's admin status.
+        pub fn remove_admin(&self, user_id: &str) {
+            self.admins
+                .write()
+                .unwrap()
+                .retain(|admin| admin != user_id);
         }
 
         /// Mark a user as having opted out of impersonation.
@@ -1383,6 +1437,68 @@ mod tests {
             .validate_session(&session.session_id, Some("delete_account"))
             .await;
         assert!(result.is_err());
+    }
+
+    fn start_request(admin_id: &str, target_user_id: &str) -> ImpersonationRequest {
+        ImpersonationRequest {
+            admin_id: admin_id.to_string(),
+            target_user_id: target_user_id.to_string(),
+            reason: Some("Support ticket".to_string()),
+            duration: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_validate_session_ends_session_when_admin_demoted() {
+        let manager = ImpersonationManager::new(setup_store(), ImpersonationConfig::default());
+        let session = manager
+            .start_impersonation(start_request("admin-1", "user-1"))
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .validate_session(&session.session_id, None)
+                .await
+                .is_ok()
+        );
+
+        manager.store().remove_admin("admin-1");
+
+        let result = manager.validate_session(&session.session_id, None).await;
+        assert!(matches!(result, Err(TidewayError::Unauthorized(_))));
+        // The session is ended, not just rejected once.
+        assert!(
+            manager
+                .get_active_session("user-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_end_all_for_admin() {
+        let manager = ImpersonationManager::new(setup_store(), ImpersonationConfig::default());
+        let first = manager
+            .start_impersonation(start_request("admin-1", "user-1"))
+            .await
+            .unwrap();
+        let second = manager
+            .start_impersonation(start_request("admin-1", "user-2"))
+            .await
+            .unwrap();
+
+        assert_eq!(manager.end_all_for_admin("admin-1").await.unwrap(), 2);
+
+        for session in [first, second] {
+            assert!(
+                manager
+                    .validate_session(&session.session_id, None)
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(manager.end_all_for_admin("admin-1").await.unwrap(), 0);
     }
 
     #[tokio::test]

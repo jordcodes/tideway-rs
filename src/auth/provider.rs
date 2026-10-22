@@ -77,6 +77,18 @@ pub trait AuthProvider: Send + Sync + Clone + 'static {
         Ok(())
     }
 
+    /// Check that verified claims still belong to a usable session.
+    ///
+    /// [`Claims`](crate::auth::Claims) and [`ClaimsRef`](crate::auth::ClaimsRef) call this after
+    /// [`Self::verify_token`], so revocation and user-state checks (such as `session_version` or
+    /// banned users) apply to claims-only handlers too. The default runs [`Self::load_user`] and
+    /// [`Self::validate_user`], like [`AuthUser`](crate::auth::AuthUser). Override it to skip the
+    /// user lookup only when `verify_token` already enforces revocation.
+    async fn validate_claims(&self, claims: &Self::Claims) -> Result<()> {
+        let user = self.load_user(claims).await?;
+        self.validate_user(&user).await
+    }
+
     /// Test-only helper for building claims from a synthetic user identity.
     ///
     /// This is only compiled when the `test-auth-bypass` feature is enabled.

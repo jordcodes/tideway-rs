@@ -273,10 +273,11 @@ where
     }
 }
 
-/// Helper extractor for accessing just the JWT claims without loading the full user
+/// Helper extractor for accessing just the JWT claims
 ///
-/// Useful when you only need to verify authentication but don't need
-/// to query the database for user details.
+/// Verifies the token and then runs [`AuthProvider::validate_claims`], which by default loads
+/// and validates the user so revoked tokens are rejected. Providers that enforce revocation in
+/// `verify_token` can override `validate_claims` to avoid the user lookup.
 ///
 /// # Example
 ///
@@ -312,6 +313,7 @@ where
 
             let token = TokenExtractor::from_header(parts)?;
             let claims = provider.verify_token(&token).await?;
+            provider.validate_claims(&claims).await?;
 
             Ok(Claims(claims))
         })
@@ -321,7 +323,8 @@ where
 /// Axum extractor that reuses cached claims if available.
 ///
 /// This avoids re-verifying the token when claims were already verified earlier
-/// in the same request (e.g., by auth middleware).
+/// in the same request (e.g., by auth middleware). Otherwise it verifies the token and runs
+/// [`AuthProvider::validate_claims`] before caching the claims.
 pub struct ClaimsRef<P: AuthProvider>(pub Arc<P::Claims>);
 
 impl<P, S> FromRequestParts<S> for ClaimsRef<P>
@@ -353,6 +356,7 @@ where
 
             let token = TokenExtractor::from_header(parts)?;
             let claims = Arc::new(provider.verify_token(&token).await?);
+            provider.validate_claims(&claims).await?;
             parts.extensions.insert(Arc::clone(&claims));
 
             Ok(ClaimsRef(claims))
