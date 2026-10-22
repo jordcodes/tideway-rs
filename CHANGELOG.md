@@ -85,7 +85,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   on the seat reserved at invite time, which direct `add_member` calls or a seat downgrade could
   consume, so accepted invitations could push an organization past its paid seats.
   `MembershipManager::with_invitation_store` makes `add_member` count pending invitations, as the
-  `SeatChecker` contract describes.
+  `SeatChecker` contract describes. Both `accept` and `add_member` also recount after inserting
+  and remove the new member if concurrent requests took the last seat first; before, 10
+  concurrent accepts all joined an organization with one free seat.
 - A WebSocket connection removed by `ConnectionManager` is now closed. When a broadcast found a
   connection's outbound buffer full, it unregistered the connection and freed its
   `max_connections` slot but left the socket open and served, and unsolicited pongs kept its

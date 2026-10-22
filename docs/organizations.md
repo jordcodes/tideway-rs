@@ -179,7 +179,10 @@ against a production-like copy before rollout. The migration can keep a legacy c
   invitations; without it, direct adds can take those seats
 - `InvitationManager`: invitation issuance and acceptance. `accept` rechecks seat capacity
   against current members and fails with `SeatLimitReached` (leaving the invitation pending) if
-  the organization is full, for example after direct adds or a seat downgrade
+  the organization is full, for example after direct adds or a seat downgrade. `accept` and
+  `add_member` recount after inserting and remove the new member if concurrent requests used the
+  seat first, so racing requests cannot leave the organization over its limit (they may all be
+  refused, and the caller can retry)
 - `InvitationRateLimiter`: zero-configuration, process-local invitation rate limiter
 - `InvitationRateLimitProvider`: asynchronous extension point for shared rate-limit backends
 - `SeatChecker`: plug-in interface for seat limit checks
