@@ -47,10 +47,14 @@ The local signing secret must be at least 32 bytes. `LocalStorage::router()` acc
 | --- | --- | --- | --- |
 | `UploadPolicy::avatar()` | `avatars/` | 5 MiB | PNG, JPEG, WebP, GIF |
 | `UploadPolicy::logo()` | `logos/` | 5 MiB | PNG, JPEG, WebP, GIF |
-| `UploadPolicy::attachment()` | `attachments/` | 25 MiB | Any |
+| `UploadPolicy::attachment()` | `attachments/` | 25 MiB | Any except HTML, SVG, XML, JavaScript |
 
 Adjust them with `.prefix()`, `.max_bytes()`, `.allow_content_types()`, and `.expires_in()`.
-SVG is excluded from the image presets because it can carry scripts.
+SVG is excluded from the image presets because it can carry scripts. Policies without an
+allowlist (`attachment()` and `UploadPolicy::new`) reject types browsers execute when served
+inline (HTML, SVG, XML, JavaScript): S3 and R2 serve an object with the type it was uploaded with,
+so such an upload could run script on the bucket's origin. Allow them explicitly only if you serve
+downloads from an isolated origin.
 
 The upload is a three-step flow:
 
@@ -74,7 +78,7 @@ async fn finish_avatar_upload(ctx: AppContext, body: FinishUpload) -> tideway::R
     let storage = ctx.storage()?;
     let object = UploadPolicy::avatar()
         .prefix(format!("avatars/{}", user.id))
-        .confirm(storage.as_ref(), &body.key)
+        .finalize(storage.as_ref(), &body.key, &body.content_type)
         .await?;
     users.set_avatar_key(user.id, &object.key).await?;
     Ok(())
@@ -86,6 +90,11 @@ length. S3-compatible services cannot bind a size limit into a presigned `PUT` (
 `Content-Length`), so step 3 is required: `confirm` checks that the key is under the policy prefix
 and that the stored size is within limits, and deletes oversized objects. Scope the prefix per user
 or organization so one tenant cannot confirm another's key.
+
+The presigned URL stays valid until it expires, so a client could overwrite a confirmed key, for
+example with a larger file. `finalize` runs `confirm`, then copies the object to a new key the URL
+cannot write and deletes the upload key; record the key it returns. `confirm` alone is enough only
+if you keep `expires_in` short and accept that window.
 
 ## Exports and server-side files
 

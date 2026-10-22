@@ -47,6 +47,9 @@ protocol is supported. If your collector accepts only gRPC, use its HTTP port (4
 
 - Each request becomes a server span named after its route, such as `GET /users/{id}`. Spans
   carry `http.request.method`, `http.route`, `url.path`, and `http.response.status_code`.
+  The span never records the query string, because it can carry credentials such as signed-URL
+  signatures and tokens. Request-log events attached to the span include the query with the same
+  sensitive-key redaction as log output.
 - An incoming W3C `traceparent` header is continued, so the request joins the caller's trace.
   To propagate the trace to services you call, use
   `tideway::observability::inject_trace_context(&mut headers)` on outgoing request headers.

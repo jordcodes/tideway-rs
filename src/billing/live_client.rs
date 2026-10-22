@@ -1853,6 +1853,11 @@ fn map_refund(refund: stripe::Refund) -> Refund {
 /// Uses metadata to identify base plan vs seat items when available,
 /// falling back to position-based detection for backwards compatibility.
 /// All metadata values are sanitized to prevent injection attacks.
+///
+/// `plan_id` is the base item's Stripe price ID, which `SubscriptionManager` maps to a catalog
+/// plan. The checkout-time `plan_id` metadata is only a fallback when no base price is present,
+/// because it is never updated when the plan changes in the portal, the Dashboard, or through
+/// `update_subscription`.
 fn map_subscription_to_data(sub: stripe::Subscription) -> Result<StripeSubscriptionData> {
     let status = match sub.status {
         stripe::SubscriptionStatus::Active => "active",
@@ -1869,14 +1874,14 @@ fn map_subscription_to_data(sub: stripe::Subscription) -> Result<StripeSubscript
     let plan_id = get_sanitized_metadata(&sub.metadata, META_PLAN_ID).unwrap_or_default();
 
     // Parse subscription items using metadata for identification
-    let (base_item_id, seat_item_id, extra_seats, fallback_plan_id) =
+    let (base_item_id, seat_item_id, extra_seats, base_price_id) =
         parse_subscription_items(&sub.items.data);
 
-    // Use metadata plan_id if available, otherwise fall back to price ID
-    let final_plan_id = if plan_id.is_empty() {
-        fallback_plan_id
-    } else {
+    // The billed price wins over checkout-time metadata, which goes stale on plan changes
+    let final_plan_id = if base_price_id.is_empty() {
         plan_id
+    } else {
+        base_price_id
     };
 
     let customer_id = match &sub.customer {
@@ -1908,14 +1913,14 @@ fn map_subscription_to_data(sub: stripe::Subscription) -> Result<StripeSubscript
 
 /// Parse subscription items to extract base plan and seat information.
 ///
-/// Returns (base_item_id, seat_item_id, extra_seats, fallback_plan_id)
+/// Returns (base_item_id, seat_item_id, extra_seats, base_price_id)
 fn parse_subscription_items(
     items: &[stripe::SubscriptionItem],
 ) -> (Option<String>, Option<String>, u32, String) {
     let mut base_item_id = None;
     let mut seat_item_id = None;
     let mut extra_seats = 0u32;
-    let mut fallback_plan_id = String::new();
+    let mut base_price_id = String::new();
 
     for item in items {
         let item_type = item
@@ -1929,7 +1934,7 @@ fn parse_subscription_items(
             Some(META_ITEM_TYPE_BASE) => {
                 base_item_id = Some(item.id.to_string());
                 if let Some(ref price) = item.price {
-                    fallback_plan_id = price.id.to_string();
+                    base_price_id = price.id.to_string();
                 }
             }
             // Explicitly marked as seats
@@ -1943,7 +1948,7 @@ fn parse_subscription_items(
                     // First item without metadata is likely the base plan
                     base_item_id = Some(item.id.to_string());
                     if let Some(ref price) = item.price {
-                        fallback_plan_id = price.id.to_string();
+                        base_price_id = price.id.to_string();
                     }
                 } else if seat_item_id.is_none() {
                     // Second item is likely seats
@@ -1956,7 +1961,7 @@ fn parse_subscription_items(
         }
     }
 
-    (base_item_id, seat_item_id, extra_seats, fallback_plan_id)
+    (base_item_id, seat_item_id, extra_seats, base_price_id)
 }
 
 // ============================================================================
@@ -2506,6 +2511,58 @@ impl StripeUsageClient for LiveStripeClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn subscription_plan_follows_billed_price_not_checkout_metadata() {
+        // Checkout recorded plan_id=pro; the customer later moved to the starter price in the
+        // portal, which leaves subscription metadata untouched.
+        let subscription: stripe::Subscription = serde_json::from_value(serde_json::json!({
+            "id": "sub_123",
+            "object": "subscription",
+            "customer": "cus_123",
+            "status": "active",
+            "created": 1700000000,
+            "start_date": 1700000000,
+            "current_period_start": 1700000000,
+            "current_period_end": 1702592000,
+            "cancel_at_period_end": false,
+            "collection_method": "charge_automatically",
+            "livemode": false,
+            "automatic_tax": { "enabled": false },
+            "billing_cycle_anchor": 1700000000,
+            "currency": "usd",
+            "metadata": { "plan_id": "pro", "billable_id": "org_123" },
+            "items": {
+                "object": "list",
+                "url": "/v1/subscription_items",
+                "has_more": false,
+                "data": [{
+                    "id": "si_base",
+                    "object": "subscription_item",
+                    "created": 1700000000,
+                    "subscription": "sub_123",
+                    "quantity": 1,
+                    "metadata": { "item_type": "base" },
+                    "price": {
+                        "id": "price_starter",
+                        "object": "price",
+                        "active": true,
+                        "currency": "usd",
+                        "type": "recurring",
+                        "billing_scheme": "per_unit",
+                        "created": 1700000000,
+                        "livemode": false,
+                        "metadata": {},
+                        "product": "prod_123"
+                    }
+                }]
+            }
+        }))
+        .expect("valid subscription fixture");
+
+        let data = map_subscription_to_data(subscription).unwrap();
+        assert_eq!(data.plan_id, "price_starter");
+    }
+
     use super::*;
 
     #[test]

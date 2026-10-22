@@ -10,8 +10,20 @@ use super::storage::{
     MembershipStore, OptionalAuditStore, OrgAuditStore, OrganizationStore, WithAuditStore,
 };
 use super::utils::current_timestamp;
+use async_trait::async_trait;
+use std::sync::Arc;
 use tracing::{debug, info, instrument};
 use uuid::Uuid;
+
+/// Reports whether a user's email is verified, for
+/// [`OrganizationConfig::require_verified_email`].
+///
+/// Attach one with [`OrganizationManager::with_email_verification_checker`].
+#[async_trait]
+pub trait EmailVerificationChecker: Send + Sync {
+    /// Whether `user_id` has a verified email address.
+    async fn is_email_verified(&self, user_id: &str) -> crate::error::Result<bool>;
+}
 
 /// Parameters passed to the organization factory function.
 ///
@@ -104,6 +116,7 @@ where
     seat_checker: S,
     audit_store: A,
     config: OrganizationConfig,
+    email_verification: Option<Arc<dyn EmailVerificationChecker>>,
 }
 
 impl<O, M> OrganizationManager<O, M, UnlimitedSeats, ()>
@@ -124,6 +137,7 @@ where
             seat_checker: UnlimitedSeats,
             audit_store: (),
             config,
+            email_verification: None,
         }
     }
 }
@@ -148,6 +162,7 @@ where
             seat_checker,
             audit_store: (),
             config,
+            email_verification: None,
         }
     }
 
@@ -169,6 +184,7 @@ where
             seat_checker: self.seat_checker,
             audit_store: WithAuditStore(audit_store),
             config: self.config,
+            email_verification: self.email_verification,
         }
     }
 }
@@ -195,9 +211,43 @@ where
         &self.seat_checker
     }
 
+    /// Check email verification before users create organizations.
+    ///
+    /// Required when [`OrganizationConfig::require_verified_email`] is set; without a checker,
+    /// creation then fails closed.
+    #[must_use]
+    pub fn with_email_verification_checker(
+        mut self,
+        checker: impl EmailVerificationChecker + 'static,
+    ) -> Self {
+        self.email_verification = Some(Arc::new(checker));
+        self
+    }
+
     /// Get a reference to the configuration.
     pub fn config(&self) -> &OrganizationConfig {
         &self.config
+    }
+
+    /// Enforce `require_verified_email`, failing closed when no checker is configured.
+    async fn check_email_verified(&self, user_id: &str) -> Result<()> {
+        if !self.config.require_verified_email {
+            return Ok(());
+        }
+        let Some(checker) = &self.email_verification else {
+            return Err(OrganizationError::Storage(
+                crate::error::TidewayError::internal(
+                    "OrganizationConfig::require_verified_email is set but no \
+                 EmailVerificationChecker is configured; call \
+                 OrganizationManager::with_email_verification_checker",
+                ),
+            ));
+        };
+        if !checker.is_email_verified(user_id).await? {
+            debug!(user_id, "Organization creation requires a verified email");
+            return Err(OrganizationError::EmailNotVerified);
+        }
+        Ok(())
     }
 
     /// Check the user is below the `max_orgs_per_user` limit.
@@ -215,6 +265,10 @@ where
     /// Create a new organization with the user as owner.
     ///
     /// Returns the store's Organization type.
+    ///
+    /// `max_orgs_per_user` is checked before the insert, so concurrent creates by one user can
+    /// exceed it with stores that offer no atomic primitive. With the SeaORM store, use
+    /// [`Self::create_atomic`], which enforces the limit inside its transaction.
     #[instrument(skip(self, org_factory, membership_factory), fields(org.name = %name))]
     pub async fn create<F, G>(
         &self,
@@ -237,6 +291,7 @@ where
             });
         }
 
+        self.check_email_verified(user_id).await?;
         self.check_can_own_another_org(user_id).await?;
 
         // Generate or validate slug
@@ -597,6 +652,7 @@ where
                 required: "organization_creation".to_string(),
             });
         }
+        self.check_email_verified(user_id).await?;
         self.check_can_own_another_org(user_id).await?;
 
         let slug = slug.map(str::to_string).unwrap_or_else(|| slugify(name));
@@ -621,9 +677,15 @@ where
             joined_at: now,
         };
 
-        self.org_store
-            .create_org_and_member_atomic(&org, &membership)
-            .await?;
+        // The pre-check above fails fast; this enforces the limit against concurrent creates.
+        if !self
+            .org_store
+            .create_org_and_member_within_limit(&org, &membership, self.config.max_orgs_per_user)
+            .await?
+        {
+            let limit = self.config.max_orgs_per_user.unwrap_or_default();
+            return Err(OrganizationError::max_orgs_reached(limit));
+        }
         self.audit_store
             .record(
                 OrgAuditEntry::new(OrgAuditEvent::OrgCreated, &org.id, user_id)

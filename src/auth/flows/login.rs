@@ -328,7 +328,8 @@ where
             return Ok(LoginResponse::error("Invalid credentials"));
         }
 
-        // Check if locked
+        // Check if locked. A locked account answers a correct password exactly like an
+        // incorrect one; a distinct message here would confirm guesses made during the lock.
         if let Some(until) = self.user_store.is_locked(&user).await?
             && until > SystemTime::now()
         {
@@ -339,9 +340,7 @@ where
                 locked_until = ?until,
                 "Login blocked: account locked"
             );
-            return Ok(LoginResponse::error(
-                "Account temporarily locked. Try again later.",
-            ));
+            return Ok(LoginResponse::error("Invalid credentials"));
         }
 
         // Check if verified (if required)
@@ -1064,18 +1063,28 @@ mod tests {
 
         let flow = LoginFlow::new(user_store, mfa_store, token_issuer, config);
 
-        let response = flow
-            .login(LoginRequest {
-                email: "test@example.com".to_string(),
-                password: "password123".to_string(),
-                remember_me: false,
-                mfa_code: None,
-            })
-            .await
-            .unwrap();
+        let mut responses = Vec::new();
+        for password in ["wrongpassword", "password123"] {
+            let response = flow
+                .login(LoginRequest {
+                    email: "test@example.com".to_string(),
+                    password: password.to_string(),
+                    remember_me: false,
+                    mfa_code: None,
+                })
+                .await
+                .unwrap();
+            assert!(is_error(&response));
+            responses.push(serde_json::to_value(response).unwrap());
+        }
 
-        assert!(is_error(&response));
-        assert!(get_error_message(&response).unwrap().contains("locked"));
+        // The correct password must not be distinguishable while the account is locked.
+        assert_eq!(responses[0], responses[1]);
+        assert_eq!(responses[1]["message"], "Invalid credentials");
+
+        // Only the wrong guess counts as a failure.
+        let users = flow.user_store.users.read().unwrap();
+        assert_eq!(users["test@example.com"].failed_attempts, 1);
     }
 
     #[tokio::test]

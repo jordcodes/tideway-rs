@@ -23,6 +23,13 @@ let store = Arc::new(InMemorySessionStore::new(Duration::from_secs(3600)));
 
 Cookie sessions store encrypted session data in HTTP cookies. This is stateless and works across multiple server instances.
 
+Because nothing is stored server-side, cookie sessions **cannot be revoked**. `store.delete(...)`
+does nothing beyond letting the HTTP layer clear the cookie in the browser that sent it. A copy
+of the cookie, for example one stolen before logout, keeps working until it expires
+(`supports_revocation()` returns `false`). If logout or "sign out everywhere" must cut off copied
+cookies, keep the session TTL short and store a per-user generation in the session that you
+compare with a server-side value on each request, or use a server-side store.
+
 ### Security Requirements
 
 **Cookie sessions require an encryption key.** This is a security measure to prevent:
@@ -115,7 +122,7 @@ async fn example(store: Arc<dyn SessionStore>) -> tideway::Result<()> {
         let user_id = session.get("user_id");
     }
 
-    // Delete session
+    // Delete session (does not revoke copies of a cookie session; see `supports_revocation`)
     store.delete(session_id).await?;
 
     Ok(())

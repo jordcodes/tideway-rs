@@ -154,8 +154,13 @@ pub(crate) async fn run_connection<H, Si, St>(
         Connection::from_upgrade(conn_id.clone(), tx.clone(), request),
     ));
 
-    // Register connection with manager (check connection limit)
-    if let Err(e) = manager.register(conn_handle.clone()).await {
+    // Register connection with manager (check connection limit). The manager fires `close`
+    // when it unregisters the connection, e.g. after evicting it from a broadcast.
+    let close = Arc::new(tokio::sync::Notify::new());
+    if let Err(e) = manager
+        .register_with_close(conn_handle.clone(), close.clone())
+        .await
+    {
         tracing::warn!(conn_id = %conn_id, error = %e, "Failed to register connection");
         // Send error response and close
         let _ = ws_sender.close().await;
@@ -255,11 +260,16 @@ pub(crate) async fn run_connection<H, Si, St>(
         }
     });
 
-    // Whichever task ends first ends the connection; stop the others.
-    let remaining = tokio::select! {
-        _ = &mut send_task => [recv_task, heartbeat_task],
-        _ = &mut recv_task => [send_task, heartbeat_task],
-        _ = &mut heartbeat_task => [send_task, recv_task],
+    // Whichever task ends first ends the connection; stop the others. Being
+    // unregistered by the manager (evicted) ends it too.
+    let remaining: Vec<_> = tokio::select! {
+        _ = &mut send_task => vec![recv_task, heartbeat_task],
+        _ = &mut recv_task => vec![send_task, heartbeat_task],
+        _ = &mut heartbeat_task => vec![send_task, recv_task],
+        _ = close.notified() => {
+            tracing::info!(conn_id = %conn_id, "Connection removed by manager; closing socket");
+            vec![send_task, recv_task, heartbeat_task]
+        }
     };
     // Wait for aborted tasks to drop, releasing any connection lock an
     // in-flight on_message held, before running on_disconnect.

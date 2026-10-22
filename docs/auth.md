@@ -476,6 +476,11 @@ let flow = PasswordChangeFlow::new(store)
 - **Password policy enforcement**: New password must meet requirements
 - **Same password prevention**: Cannot set new password same as current
 - **Session invalidation**: Logs out all other devices by default
+- **Guess limiting**: Current-password attempts are limited per user (5 per 15 minutes by
+  default), so a stolen session cannot be used to guess the password. Pass a shared limiter with
+  `.with_rate_limiter(AuthRateLimiter::new(config))`, or `.without_rate_limiter()` only when an
+  equivalent per-account limit is enforced elsewhere. The limiter is in-process; multi-replica
+  deployments need a shared limit as well.
 
 ### Password Change Events
 
@@ -484,6 +489,7 @@ let flow = PasswordChangeFlow::new(store)
 | `auth.password.change_failed` | WARN | Wrong current password |
 | `auth.password.change_failed` | INFO | Weak new password or same password |
 | `auth.password.changed` | INFO | Password changed successfully |
+| `auth.reauth.rate_limited` | WARN | Too many current-password attempts for the user |
 
 ## Password Breach Checking
 
@@ -635,6 +641,11 @@ async fn whoami(ClaimsRef(claims): ClaimsRef<MyAuthProvider>) -> String {
 `ClaimsRef` reuses cached claims when available (e.g., after auth middleware), avoiding
 duplicate token verification within the same request.
 
+Both run `AuthProvider::validate_claims` after verifying the token. By default it calls
+`load_user` and `validate_user`, so `session_version` revocation and banned-user checks apply to
+claims-only handlers just as they do to `AuthUser`. If your `verify_token` already enforces
+revocation and you want to skip the user lookup, override `validate_claims`.
+
 ## MFA (Multi-Factor Authentication)
 
 Requires `auth-mfa` feature.
@@ -741,6 +752,11 @@ let oauth = OAuthFlow::new(InMemoryOAuthStateStore::new(), accounts.clone())?
 Use `with_scopes`, `with_authorize_param("prompt", "select_account")`, or `with_name` to customize
 a provider. `InMemoryOAuthStateStore` only works for a single instance; implement
 `OAuthStateStore` on Redis or your database when running several instances.
+
+`authorize` needs no authentication and stores an entry per call, so put a per-IP rate limit on
+the route that starts sign-in. `InMemoryOAuthStateStore` holds at most 100,000 pending
+authorizations; when full it evicts the oldest rather than refusing new sign-ins. Give a shared
+store an equivalent bound and eviction policy.
 
 ### SocialAccountStore
 
@@ -1444,6 +1460,7 @@ All auth operations emit structured tracing events for security monitoring:
 | `auth.register.success` | INFO | User registered |
 | `auth.register.failed` | INFO | Registration failed |
 | `auth.register.verification_email_failed` | WARN | Failed to send verification email |
+| `auth.register.existing_account_notice_failed` | WARN | Failed to notify an existing account owner |
 
 ### Email Verification Events
 
@@ -1576,6 +1593,7 @@ async fn login_handler(
 |--------|-------|-------------|
 | `auth.login.rate_limited` | WARN | Login blocked due to rate limiting |
 | `auth.endpoint.rate_limited` | WARN | Registration or refresh blocked due to rate limiting |
+| `auth.reauth.rate_limited` | WARN | Password change or account deletion blocked after too many current-password attempts |
 
 ### How It Works
 
@@ -1703,7 +1721,9 @@ if !result.can_retry_now() {
     println!("Wait {} seconds", result.wait_seconds());
 }
 
-// Clear on successful login
+// Clear the account's lockout on successful login. The shared per-IP count is kept, so one
+// account's success cannot refund guesses spent against other accounts; it restarts once the
+// IP lockout expires.
 manager.record_successful_login("user-123", Some("1.2.3.4")).await?;
 
 // Admin unlock
@@ -1711,6 +1731,10 @@ manager.admin_unlock("user-123", "admin-456").await?;
 ```
 
 ### Integration with LoginFlow
+
+Reserve the attempt with `begin_attempt` before verifying the password. It counts the attempt
+up front, so concurrent requests for one account cannot all slip past a stale count
+(`check_can_attempt` followed by `record_failed_attempt` can).
 
 ```rust
 async fn login_handler(
@@ -1720,38 +1744,33 @@ async fn login_handler(
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>> {
     let user_id = get_user_id_by_email(&req.email).await?;
+    let ip = client_ip.as_deref();
 
-    // Check lockout before attempting login
-    if let Some(status) = lockout.check_can_attempt(&user_id, client_ip.as_deref()).await? {
+    if let Some(status) = lockout.begin_attempt(&user_id, ip).await? {
         return Ok(Json(LoginResponse::error(format!(
             "Too many failed attempts. Try again in {} seconds.",
             status.remaining_wait_seconds()
         ))));
     }
 
-    // Attempt login
     match login.login(req).await {
-        Ok(response) => {
-            lockout.record_successful_login(&user_id, client_ip.as_deref()).await?;
+        // The password was correct (an MFA challenge still follows for MfaRequired).
+        Ok(response @ (LoginResponse::Success { .. } | LoginResponse::MfaRequired { .. })) => {
+            // Clears the reserved attempt along with earlier failures.
+            lockout.record_successful_login(&user_id, ip).await?;
             Ok(Json(response))
         }
-        Err(e) if is_auth_error(&e) => {
-            let result = lockout.record_failed_attempt(&user_id, client_ip.as_deref()).await?;
-            if result.just_locked {
-                Ok(Json(LoginResponse::error("Account locked due to too many failed attempts")))
-            } else if !result.can_retry_now() {
-                Ok(Json(LoginResponse::error(format!(
-                    "Please wait {} seconds before retrying",
-                    result.wait_seconds()
-                ))))
-            } else {
-                Ok(Json(LoginResponse::error("Invalid credentials")))
-            }
+        Ok(response) => {
+            lockout.finish_failed_attempt(&user_id, ip).await?;
+            Ok(Json(response))
         }
         Err(e) => Err(e),
     }
 }
 ```
+
+The attempt that reaches `max_attempts` locks the account before its password is checked; if
+that password is correct, `record_successful_login` unlocks it again.
 
 ### Lockout Events
 
@@ -1773,7 +1792,7 @@ async fn login_handler(
 | Tracks by | IP address | User account (+ optional IP) |
 | Purpose | Prevent brute force | Protect specific accounts |
 | State | In-memory | Persistent (database) |
-| Reset | Automatic (time window) | On successful login |
+| Reset | Automatic (time window) | Account: on successful login. IP: when the IP lockout expires |
 | Progressive | No | Yes (configurable delays) |
 | Notifications | No | Yes (email) |
 
@@ -1885,6 +1904,11 @@ if let Some(pending) = flow.get_pending_deletion("user-123").await? {
 }
 ```
 
+When `require_password` is set, password attempts are limited per user (5 per 15 minutes by
+default) and further attempts return `TooManyRequests`. Use `.with_rate_limiter(...)` to share a
+limiter with other flows, or `.without_rate_limiter()` only when an equivalent per-account limit is
+enforced elsewhere.
+
 ### Processing Scheduled Deletions
 
 Run from a scheduled job (e.g., cron, background worker):
@@ -1925,6 +1949,7 @@ Account deletion automatically cleans up:
 | `auth.deletion.completed` | WARN | Account deleted |
 | `auth.deletion.user_not_found` | WARN | Deletion requested for non-existent user |
 | `auth.deletion.password_invalid` | WARN | Deletion rejected: wrong password |
+| `auth.reauth.rate_limited` | WARN | Deletion blocked after too many password attempts |
 | `auth.deletion.process_failed` | ERROR | Failed to process scheduled deletion |
 | `auth.deletion.batch_processed` | INFO | Batch of scheduled deletions processed |
 
@@ -2069,7 +2094,14 @@ let result = manager.validate_session(&session.session_id, Some("delete_account"
 
 // End impersonation
 manager.end_impersonation(&session.session_id).await?;
+
+// When an admin logs out or loses admin access, end everything they started
+manager.end_all_for_admin(&admin_id).await?;
 ```
+
+`validate_session` also re-checks `ImpersonationStore::is_admin` for the session's admin and
+ends the session if it fails, so demoting an admin cuts off their impersonation tokens on the
+next request.
 
 ### Blocked Actions
 
@@ -2149,13 +2181,15 @@ CREATE INDEX idx_imp_audit_target ON impersonation_audit(target_user_id);
 
 ### Security Notes
 
-1. **Only admins can impersonate**: Check `is_admin()` before allowing
+1. **Only admins can impersonate**: `is_admin()` is checked at start and on every
+   `validate_session`
 2. **Cannot impersonate admins by default**: Prevent privilege escalation
 3. **Cannot impersonate yourself**: Self-impersonation is blocked
 4. **One impersonation per user**: Can't have multiple admins on same user
 5. **Full audit trail**: Every action is logged with timestamp and reason
 6. **Time-limited sessions**: Auto-expire after configured duration
-7. **Explicit end required**: Sessions don't persist across admin logout
+7. **Explicit end required**: Call `end_all_for_admin` from your admin logout handler;
+   sessions otherwise last until they expire or are ended
 
 ## Security Best Practices
 
@@ -2184,7 +2218,14 @@ CREATE INDEX idx_imp_audit_target ON impersonation_audit(target_user_id);
 
 The auth flows prevent email enumeration:
 - Login returns same error for "user not found" and "wrong password"
-- Registration returns generic "Registration failed" for existing emails
+- Login returns that same error for a locked account whatever password is sent, so a lockout
+  cannot confirm a guess. Tell users about a lock out of band (for example a lockout email)
+- `RegistrationFlow::register` returns the created user, so it reveals whether an email is
+  already registered (an existing email gets "Registration failed"). Where that matters, call
+  `register_without_enumeration` instead: it returns `Ok(())` for new and existing emails alike,
+  hashes the password in both cases, and calls `UserCreator::notify_existing_account` so the
+  owner can be emailed. Answer with the same "check your email" response and do not log the
+  user in from registration
 - Password reset always returns success (even for non-existent emails)
 
 Internal logs capture the actual reason for debugging.

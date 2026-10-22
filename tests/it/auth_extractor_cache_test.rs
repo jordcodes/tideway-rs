@@ -6,7 +6,9 @@ use axum::http::Request;
 use serde::Deserialize;
 use std::sync::Arc;
 use tideway::Result;
-use tideway::auth::{AdminUser, AuthProvider, AuthUser, ClaimsRef, OptionalAuth, RequireAdmin};
+use tideway::auth::{
+    AdminUser, AuthProvider, AuthUser, Claims, ClaimsRef, OptionalAuth, RequireAdmin,
+};
 
 #[derive(Clone, Default)]
 struct TestProvider;
@@ -184,4 +186,28 @@ async fn optional_auth_does_not_cache_claims_on_validation_error() {
             .unwrap();
     assert!(user.is_none());
     assert!(parts.extensions.get::<Arc<TestClaims>>().is_none());
+}
+
+#[tokio::test]
+async fn claims_extractors_reject_tokens_the_provider_revoked() {
+    for claims_ref in [false, true] {
+        let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let (mut parts, _) = request.into_parts();
+        parts.extensions.insert(RejectingUserProvider);
+        parts
+            .headers
+            .insert("authorization", "Bearer revoked-token".parse().unwrap());
+
+        let rejected = if claims_ref {
+            ClaimsRef::<RejectingUserProvider>::from_request_parts(&mut parts, &())
+                .await
+                .is_err()
+        } else {
+            Claims::<RejectingUserProvider>::from_request_parts(&mut parts, &())
+                .await
+                .is_err()
+        };
+        assert!(rejected, "claims_ref={claims_ref}");
+        assert!(parts.extensions.get::<Arc<TestClaims>>().is_none());
+    }
 }

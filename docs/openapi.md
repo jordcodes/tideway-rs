@@ -93,6 +93,20 @@ OPENAPI_VISIBILITY=public  # Only show public endpoints
 
 Tag your internal endpoints with `tag = "internal"` and public ones with appropriate tags like `"customers"`, `"orders"`, etc.
 
+`create_openapi_router` filters the served document (both the JSON spec and Swagger UI) by
+`OPENAPI_VISIBILITY`:
+
+| Value | Served operations |
+| --- | --- |
+| `all` (default) | Everything |
+| `public` | Operations without the `internal` tag; the `internal` tag definition is removed too |
+| `internal` | Only operations tagged `internal` |
+
+The tag match ignores case, and paths left with no operations are dropped. Visibility only
+controls documentation: it does not protect the endpoints, so internal routes still need their
+own authorization. Use `tideway::openapi::filter_openapi` to apply the same filter to a document
+you export yourself.
+
 ## Splitting OpenAPI Docs by Module
 
 For large applications, you can derive `OpenApi` per module and merge them:

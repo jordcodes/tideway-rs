@@ -7,6 +7,113 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [Unreleased]
+
+### Security
+
+- `LoginFlow` no longer confirms passwords for locked accounts. A correct password used to get
+  "Account temporarily locked" while a wrong one got "Invalid credentials", so lockout could not
+  stop guessing. A locked account now returns "Invalid credentials" for any password, so primary
+  login no longer returns `423` (MFA verification and external login still do). Tell users about
+  locks out of band, for example with a lockout email.
+- `LockoutManager::record_successful_login` no longer clears the per-IP failure count. With
+  `track_by_ip`, logging into one account reset the budget shared by every account tried from
+  that IP, so guesses could be spread across accounts without limit. Now the IP count restarts
+  only when the IP lockout expires.
+- `PasswordChangeFlow::change_password` and `AccountDeletionFlow::request_deletion` limit
+  current-password attempts per user, by default 5 per 15 minutes, and then return
+  `TooManyRequests`. Previously a stolen session could guess the password without limit and, on a
+  hit, set a new one. Use `with_rate_limiter` to configure the limit, or `without_rate_limiter`
+  only when an equivalent per-account limit exists elsewhere.
+- The request span no longer records the full request URI. With the `otel` feature, its `uri`
+  field exported the raw query string to the trace backend, including `LocalStorage` signed-URL
+  `sig` values and `?token=` parameters. The span now carries only `url.path` and the route; the
+  `uri` field is removed from request spans in debug log output as well.
+- `SubscriptionManager::refresh_from_stripe`, `reconcile`, `extend_trial`, and
+  `resume_paused_subscription` take the plan from the subscription's billed price. Before,
+  `LiveStripeClient` reported the `plan_id` metadata written at checkout, which is never updated
+  when the plan changes in the Customer Portal, the Dashboard, or through `update_subscription`.
+  A refresh or reconcile therefore restored the old plan's entitlements after a downgrade.
+  `LiveStripeClient` now reports the base item's price ID, and `SubscriptionManager` maps it to a
+  catalog plan when syncing; metadata is used only when there is no base price.
+- `WebhookHandler::with_subscription_client(client)` makes `customer.subscription.created` and
+  `customer.subscription.updated` events sync the live subscription from Stripe instead of the
+  event payload. Stripe does not deliver events in order, so a late or retried older event could
+  overwrite newer status, plan, or seats, for example reactivating an unpaid subscription. Handlers
+  built without a client keep storing the payload; pass your `LiveStripeClient` to opt in. The new
+  `NoSubscriptionClient` type is the default client parameter.
+- `OPENAPI_VISIBILITY` / `OpenApiConfig::visibility` is applied. It was parsed but never used, so
+  `OPENAPI_VISIBILITY=public` still served operations tagged `internal` to anyone who could reach
+  the spec or Swagger UI. `create_openapi_router` now filters the served document, and the new
+  `tideway::openapi::filter_openapi` applies the same filter to an exported document.
+- **Behaviour change:** `OrganizationConfig::require_verified_email` now defaults to `false` and
+  is enforced. It used to default to `true` without being read, so organizations were never
+  gated on email verification. Set it with `OrganizationManager::with_email_verification_checker`
+  and a new `EmailVerificationChecker`; unverified users then get
+  `OrganizationError::EmailNotVerified`. Apps that set it to `true` explicitly without a checker
+  now get a configuration error from `create` and `create_atomic`, because they previously had
+  no protection.
+- `RegistrationFlow::register_without_enumeration` registers without revealing whether an email
+  already has an account: new and existing emails both return `Ok(())` after hashing, and the
+  new `UserCreator::notify_existing_account` hook (default no-op) is called for existing ones.
+  `register` is unchanged; the docs no longer claim that it prevents enumeration.
+- `SessionStore::supports_revocation` (default `true`) reports whether `delete` revokes a session.
+  `CookieSessionStore` returns `false`: its `delete` cannot invalidate copies of a cookie, which
+  stay valid until they expire. The session docs now say so and describe alternatives.
+- `Claims` and `ClaimsRef` run the new `AuthProvider::validate_claims` after verifying the token.
+  They used to accept any validly signed token, skipping `load_user` and `validate_user`, where
+  providers (including generated ones) enforce `session_version` revocation and banned users.
+  So a revoked access token kept working on claims-only handlers until it expired. The default
+  `validate_claims` loads and validates the user, so these extractors now do a user lookup;
+  override it if `verify_token` already enforces revocation.
+- `ImpersonationManager::validate_session` re-checks that the session's admin still passes
+  `is_admin` and ends the session if not, so a demoted admin can no longer keep using an
+  impersonation token. New `end_all_for_admin` ends an admin's sessions, for example on logout.
+- `OrganizationManager::create_atomic` enforces `max_orgs_per_user` inside its transaction.
+  The count used to be read before the insert with nothing serializing them, so concurrent
+  requests from one user could each pass it (10 of 10 concurrent creates against a limit of 2 in
+  testing). The new `SeaOrmOrgStore::create_org_and_member_within_limit` re-counts after the
+  insert and rolls back if over the limit, taking a per-owner advisory lock on Postgres. The
+  limit in the store-agnostic `create` remains best-effort under concurrency.
+- `SeaOrmOrgStore::update`, `update_membership`, and `update_memberships_atomic` only update
+  existing rows and return not-found otherwise. They were upserts, so a role update racing a
+  removal re-created the removed member with their old role, and a stale organization update
+  re-created a deleted organization. `MembershipStore::update_membership` and
+  `OrganizationStore::update` document this contract for custom stores.
+- `InvitationManager::accept` rechecks seat capacity before adding the member, failing with
+  `SeatLimitReached` and leaving the invitation pending when the organization is full. It relied
+  on the seat reserved at invite time, which direct `add_member` calls or a seat downgrade could
+  consume, so accepted invitations could push an organization past its paid seats.
+  `MembershipManager::with_invitation_store` makes `add_member` count pending invitations, as the
+  `SeatChecker` contract describes.
+- A WebSocket connection removed by `ConnectionManager` is now closed. When a broadcast found a
+  connection's outbound buffer full, it unregistered the connection and freed its
+  `max_connections` slot but left the socket open and served, and unsolicited pongs kept its
+  heartbeat alive, so clients that stopped reading could hold any number of sockets. Unregistering
+  now signals the connection to tear down and run `on_disconnect`.
+- `ClientIpResolver` treats IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) as IPv4 when matching
+  trusted proxies. On a dual-stack listener, IPv4 proxies arrive in mapped form and did not match
+  IPv4 CIDRs, so forwarded headers were ignored and every client behind the proxy shared one
+  rate-limit bucket.
+- `InMemoryOAuthStateStore` evicts the oldest pending authorizations when it reaches its 100,000
+  entry cap instead of refusing new ones. Before, anonymous authorize requests could fill the
+  store and block every user's OAuth sign-in with 429s until entries expired. It also no longer
+  scans the whole map on every insert.
+- `LockoutManager::begin_attempt` and `finish_failed_attempt` reserve a login attempt before the
+  password is verified. With `check_can_attempt` followed by `record_failed_attempt`, every
+  concurrent attempt for an account passed the check, so a parallel burst got one password guess
+  per request rather than `max_attempts`. The documented login handler uses the new methods.
+- `UpgradeRequest::require_origin` rejects WebSocket upgrades from origins outside an allowlist,
+  and `UpgradeRequest::origin` returns the header. CORS does not cover WebSocket handshakes, so
+  cookie-authenticated sockets could be opened by any site; the WebSocket docs now call this out.
+- `UploadPolicy` rejects browser-executable types (HTML, SVG, XML, JavaScript) when it has no
+  allowlist, which includes `UploadPolicy::new` and `attachment()`. S3/R2 serve objects with their
+  uploaded type, so an attachment upload could host script on the bucket's origin. Allow these
+  types explicitly to keep accepting them.
+- `UploadPolicy::finalize` confirms an upload and moves it to a key the presigned URL cannot write.
+  The URL stays valid until it expires, so after `confirm` a client could overwrite the recorded
+  object, for example with one larger than `max_bytes`.
+
 ## [0.9.0] - 2026-10-15
 
 > **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update: applications
@@ -495,6 +602,15 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `docs/upgrading.md`.
 
 ## [tideway-cli 0.9.0] - Unreleased
+
+### Security
+
+- Generated billing webhooks pass the app's `LiveStripeClient` to
+  `WebhookHandler::with_subscription_client`, so out-of-order Stripe subscription events cannot
+  overwrite newer billing state. This needs the Tideway release that adds the method (after
+  0.9.0); release it before this CLI. Existing apps can add
+  `.with_subscription_client(state.stripe_client.clone())` after `.with_event_sink(...)` in
+  `src/billing/routes.rs`.
 
 ### Added
 

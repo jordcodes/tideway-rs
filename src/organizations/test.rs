@@ -182,8 +182,12 @@ impl OrganizationStore for InMemoryOrgStore {
                 by_slug.insert(org.slug.clone(), org.id.clone());
             }
             *existing = org.clone();
+            Ok(())
+        } else {
+            Err(crate::error::TidewayError::not_found(
+                "Organization not found",
+            ))
         }
-        Ok(())
     }
 
     async fn delete(&self, id: &str) -> Result<()> {
@@ -291,12 +295,15 @@ impl MembershipStore for InMemoryOrgStore {
 
     async fn update_membership(&self, membership: &Self::Membership) -> Result<()> {
         let key = (membership.org_id.clone(), membership.user_id.clone());
-        self.inner
-            .memberships
-            .write()
-            .unwrap()
-            .insert(key, membership.clone());
-        Ok(())
+        match self.inner.memberships.write().unwrap().get_mut(&key) {
+            Some(existing) => {
+                *existing = membership.clone();
+                Ok(())
+            }
+            None => Err(crate::error::TidewayError::not_found(
+                "Membership not found",
+            )),
+        }
     }
 
     fn membership_user_id(&self, m: &Self::Membership) -> String {
@@ -583,6 +590,71 @@ mod tests {
         assert_eq!(org.name, "Test Org");
         assert_eq!(org.slug, "test-org");
         assert!(manager.is_member(&org.id, "user_1").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_org_creation_requires_verified_email_when_configured() {
+        struct Verified(&'static [&'static str]);
+
+        #[async_trait::async_trait]
+        impl crate::organizations::EmailVerificationChecker for Verified {
+            async fn is_email_verified(&self, user_id: &str) -> crate::error::Result<bool> {
+                Ok(self.0.contains(&user_id))
+            }
+        }
+
+        async fn create<S, A>(
+            manager: &OrganizationManager<InMemoryOrgStore, InMemoryOrgStore, S, A>,
+            user_id: &str,
+        ) -> crate::organizations::error::Result<TestOrganization>
+        where
+            S: crate::organizations::SeatChecker,
+            A: crate::organizations::OptionalAuditStore,
+        {
+            manager
+                .create(
+                    user_id,
+                    "Org",
+                    Some(&format!("org-{user_id}")),
+                    "billing@example.com",
+                    |p| TestOrganization {
+                        id: p.id,
+                        name: p.name,
+                        slug: p.slug,
+                        owner_id: p.owner_id,
+                        contact_email: p.contact_email,
+                        created_at: p.created_at,
+                        updated_at: p.created_at,
+                    },
+                    |p| TestMembership {
+                        org_id: p.org_id,
+                        user_id: p.user_id,
+                        role: DefaultOrgRole::Owner,
+                        joined_at: p.joined_at,
+                    },
+                )
+                .await
+        }
+
+        let store = InMemoryOrgStore::new();
+        let config = OrganizationConfig::default().require_verified_email(true);
+
+        // Without a checker the requirement fails closed.
+        let unchecked =
+            OrganizationManager::new(store.clone(), store.clone(), UnlimitedSeats, config.clone());
+        assert!(matches!(
+            create(&unchecked, "verified").await,
+            Err(OrganizationError::Storage(_))
+        ));
+
+        let manager =
+            OrganizationManager::new(store.clone(), store.clone(), UnlimitedSeats, config)
+                .with_email_verification_checker(Verified(&["verified"]));
+        assert!(matches!(
+            create(&manager, "unverified").await,
+            Err(OrganizationError::EmailNotVerified)
+        ));
+        assert!(create(&manager, "verified").await.is_ok());
     }
 
     #[tokio::test]
@@ -1745,6 +1817,87 @@ mod tests {
             assert!(matches!(result, Err(OrganizationError::RateLimited { .. })));
             assert_eq!(store.count_pending(&org.id).await.unwrap(), 2);
         }
+    }
+
+    fn pending_invitation(org_id: &str, id: &str) -> TestInvitation {
+        TestInvitation {
+            id: id.to_string(),
+            org_id: org_id.to_string(),
+            email: format!("{id}@example.com"),
+            role: DefaultOrgRole::Member,
+            invited_by: "owner".to_string(),
+            token: format!("token-{id}"),
+            expires_at: u64::MAX,
+            created_at: 0,
+            accepted: false,
+            revoked: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_seat_limit_holds_across_direct_adds_and_invitation_accepts() {
+        let store = InMemoryOrgStore::new();
+        let seats = LimitedSeats(3);
+        let org = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            seats.clone(),
+            OrganizationConfig::default(),
+        )
+        .create("owner", "Org", None, "o@example.com", make_org, |p| {
+            make_membership(p, DefaultOrgRole::Owner)
+        })
+        .await
+        .unwrap();
+        // Two invitations reserve the remaining two seats.
+        store.insert_invitation(pending_invitation(&org.id, "a"));
+        store.insert_invitation(pending_invitation(&org.id, "b"));
+
+        // With the invitation store attached, a direct add cannot take a reserved seat.
+        let reserving = MembershipManager::new(store.clone(), seats.clone())
+            .with_invitation_store(store.clone());
+        assert!(matches!(
+            reserving
+                .add_member(&org.id, "direct", "owner", |p| make_membership(
+                    p,
+                    DefaultOrgRole::Member
+                ))
+                .await,
+            Err(OrganizationError::SeatLimitReached { .. })
+        ));
+
+        // Without it, direct adds fill the org; accepting must then be refused.
+        let members = MembershipManager::new(store.clone(), seats.clone());
+        for user in ["direct-1", "direct-2"] {
+            members
+                .add_member(&org.id, user, "owner", |p| {
+                    make_membership(p, DefaultOrgRole::Member)
+                })
+                .await
+                .unwrap();
+        }
+        let invitations = InvitationManager::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            seats,
+            InvitationConfig::default(),
+        );
+        let accepted = invitations
+            .accept("token-a", "invitee-a", |inv, p| TestMembership {
+                org_id: p.org_id,
+                user_id: p.user_id,
+                role: inv.role,
+                joined_at: p.joined_at,
+            })
+            .await;
+        assert!(matches!(
+            accepted,
+            Err(OrganizationError::SeatLimitReached { .. })
+        ));
+        assert_eq!(store.count_members(&org.id).await.unwrap(), 3);
+        // The claim is released, so the invitation can be accepted once a seat frees up.
+        assert_eq!(store.count_pending(&org.id).await.unwrap(), 2);
     }
 
     #[tokio::test]

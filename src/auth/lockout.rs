@@ -408,19 +408,68 @@ impl<S: LockoutStore> LockoutManager<S> {
     /// Record a failed login attempt.
     ///
     /// Returns the result including new lockout status and whether notifications were sent.
+    ///
+    /// Checking with [`Self::check_can_attempt`] before verifying and recording here afterwards
+    /// lets concurrent attempts for one account all pass the check. Prefer
+    /// [`Self::begin_attempt`] and [`Self::finish_failed_attempt`].
     pub async fn record_failed_attempt(
         &self,
         user_id: &str,
         ip: Option<&str>,
     ) -> Result<FailedAttemptResult> {
         let new_count = self.store.increment_failed_attempts(user_id).await?;
-        let mut just_locked = false;
-        let mut notification_sent = false;
+        self.record_ip_failure(ip).await?;
+        self.apply_account_failure(user_id, new_count).await
+    }
 
-        // Also track by IP if enabled
+    /// Reserve a login attempt before verifying credentials.
+    ///
+    /// Returns `Some(status)` when the attempt must be refused without checking the password:
+    /// the account or IP is locked or delayed, or `max_attempts` attempts are already in
+    /// progress or used up. Otherwise the attempt is counted against the account up front, so
+    /// concurrent requests cannot all pass a stale count, and `None` is returned. Afterwards
+    /// call [`Self::record_successful_login`] on success (which clears the count) or
+    /// [`Self::finish_failed_attempt`] on failure.
+    ///
+    /// The attempt that reaches `max_attempts` locks the account (and sends any lockout
+    /// notification) before its password is checked; a successful login then unlocks it.
+    pub async fn begin_attempt(
+        &self,
+        user_id: &str,
+        ip: Option<&str>,
+    ) -> Result<Option<LockoutStatus>> {
+        if let Some(status) = self.check_can_attempt(user_id, ip).await? {
+            return Ok(Some(status));
+        }
+        let new_count = self.store.increment_failed_attempts(user_id).await?;
+        let result = self.apply_account_failure(user_id, new_count).await?;
+        if new_count > self.policy.max_attempts {
+            return Ok(Some(result.status));
+        }
+        Ok(None)
+    }
+
+    /// Record the per-IP failure for an attempt reserved with [`Self::begin_attempt`].
+    ///
+    /// The account side was already counted by `begin_attempt`.
+    pub async fn finish_failed_attempt(&self, user_id: &str, ip: Option<&str>) -> Result<()> {
+        let _ = user_id;
+        self.record_ip_failure(ip).await
+    }
+
+    /// Count a failure against the shared per-IP budget, locking the IP at `max_attempts`.
+    async fn record_ip_failure(&self, ip: Option<&str>) -> Result<()> {
         if self.policy.track_by_ip
             && let Some(ip) = ip.map(truncate_ip)
         {
+            // An expired IP lock ends that window; start counting afresh rather than
+            // re-locking the IP on its next failure.
+            if let Some(locked_until) = self.store.is_ip_locked(ip).await?
+                && locked_until <= SystemTime::now()
+            {
+                self.store.clear_ip_lockout(ip).await?;
+            }
+
             let ip_count = self.store.increment_failed_attempts_by_ip(ip).await?;
             if ip_count >= self.policy.max_attempts {
                 let until = SystemTime::now() + self.policy.lockout_duration;
@@ -434,6 +483,18 @@ impl<S: LockoutStore> LockoutManager<S> {
                 );
             }
         }
+
+        Ok(())
+    }
+
+    /// Apply lockout, notification, and delay rules for the account's `new_count` failures.
+    async fn apply_account_failure(
+        &self,
+        user_id: &str,
+        new_count: u32,
+    ) -> Result<FailedAttemptResult> {
+        let mut just_locked = false;
+        let mut notification_sent = false;
 
         let now = SystemTime::now();
 
@@ -523,15 +584,14 @@ impl<S: LockoutStore> LockoutManager<S> {
         })
     }
 
-    /// Record a successful login (clears lockout state).
+    /// Record a successful login (clears the account's lockout state).
+    ///
+    /// Per-IP failure counts are left alone: they are shared by every account tried from that
+    /// IP, so one account's success must not restore budget spent guessing other accounts.
+    /// The IP count restarts once an IP lockout expires.
     pub async fn record_successful_login(&self, user_id: &str, ip: Option<&str>) -> Result<()> {
+        let _ = ip;
         self.store.clear_lockout(user_id).await?;
-
-        if self.policy.track_by_ip
-            && let Some(ip) = ip.map(truncate_ip)
-        {
-            self.store.clear_ip_lockout(ip).await?;
-        }
 
         tracing::debug!(
             target: "auth.lockout.cleared",
@@ -769,6 +829,7 @@ pub mod test {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use test::InMemoryLockoutStore;
 
     #[test]
@@ -988,6 +1049,121 @@ mod tests {
             .await
             .unwrap();
         assert!(status.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_begin_attempt_bounds_concurrent_attempts() {
+        let manager = Arc::new(LockoutManager::new(
+            InMemoryLockoutStore::new(),
+            LockoutPolicy::new().max_attempts(5),
+        ));
+        let barrier = Arc::new(tokio::sync::Barrier::new(30));
+
+        let attempts = (0..30).map(|_| {
+            let manager = manager.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                let admitted = manager
+                    .begin_attempt("victim", None)
+                    .await
+                    .unwrap()
+                    .is_none();
+                if admitted {
+                    // Simulated password verification, then a failure.
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    manager.finish_failed_attempt("victim", None).await.unwrap();
+                }
+                admitted
+            })
+        });
+        let admitted = futures::future::join_all(attempts)
+            .await
+            .into_iter()
+            .filter(|admitted| *admitted.as_ref().unwrap())
+            .count();
+
+        assert_eq!(admitted, 5);
+        let status = manager.check_can_attempt("victim", None).await.unwrap();
+        assert!(status.is_some_and(|s| s.is_locked));
+    }
+
+    #[tokio::test]
+    async fn test_begin_attempt_success_clears_reservation() {
+        let manager = LockoutManager::new(InMemoryLockoutStore::new(), LockoutPolicy::new());
+        for _ in 0..3 {
+            assert!(manager.begin_attempt("user", None).await.unwrap().is_none());
+            manager.record_successful_login("user", None).await.unwrap();
+        }
+        // Successful logins do not accumulate toward a lockout.
+        assert!(
+            manager
+                .check_can_attempt("user", None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_successful_login_keeps_shared_ip_budget() {
+        let store = InMemoryLockoutStore::new();
+        let manager = LockoutManager::new(store, LockoutPolicy::strict());
+        let ip = Some("198.51.100.9");
+
+        // Spray below the IP limit, then log into an attacker-owned account from the same IP.
+        for victim in ["victim-1", "victim-2"] {
+            assert!(
+                manager
+                    .check_can_attempt(victim, ip)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            manager.record_failed_attempt(victim, ip).await.unwrap();
+        }
+        manager
+            .record_successful_login("attacker", ip)
+            .await
+            .unwrap();
+
+        // The success must not refund the shared budget: the next guess locks the IP.
+        manager.record_failed_attempt("victim-3", ip).await.unwrap();
+        let status = manager.check_can_attempt("victim-4", ip).await.unwrap();
+        assert!(status.is_some_and(|s| s.is_locked));
+    }
+
+    #[tokio::test]
+    async fn test_ip_count_restarts_after_ip_lockout_expires() {
+        let store = InMemoryLockoutStore::new();
+        let policy = LockoutPolicy::new()
+            .max_attempts(2)
+            .lockout_duration(Duration::from_millis(50))
+            .track_by_ip(true);
+        let manager = LockoutManager::new(store, policy);
+        let ip = Some("1.2.3.4");
+
+        manager.record_failed_attempt("user-1", ip).await.unwrap();
+        manager.record_failed_attempt("user-2", ip).await.unwrap();
+        assert!(
+            manager
+                .check_can_attempt("user-3", ip)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        // One failure after the lock expires starts a new window instead of re-locking.
+        manager.record_failed_attempt("user-3", ip).await.unwrap();
+        assert!(
+            manager
+                .check_can_attempt("user-4", ip)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

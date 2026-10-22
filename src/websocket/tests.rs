@@ -666,6 +666,71 @@ mod websocket_tests {
     }
 
     #[tokio::test]
+    async fn test_evicted_slow_reader_is_closed_not_just_uncounted() {
+        use crate::websocket::extractor::{Heartbeat, run_connection};
+        use futures::SinkExt;
+        use std::sync::atomic::Ordering;
+
+        let manager = Arc::new(ConnectionManager::with_max_connections(1));
+        let handler = Arc::new(DisconnectCounter::default());
+        // A client that never reads: the server's sink blocks once this zero-capacity channel
+        // holds one frame, so the connection's outbound buffer fills up.
+        let (server_tx, _client_rx) = futures::channel::mpsc::channel(0);
+        let (mut client_tx, server_rx) =
+            futures::channel::mpsc::unbounded::<std::result::Result<_, axum::Error>>();
+        let ctx = Arc::new(
+            crate::AppContext::builder()
+                .with_websocket_manager(manager.clone())
+                .build(),
+        );
+        let task = tokio::spawn(run_connection(
+            server_tx.sink_map_err(|_| ()),
+            server_rx,
+            crate::websocket::UpgradeRequest::new(
+                axum::http::HeaderMap::new(),
+                "/ws".parse().unwrap(),
+            ),
+            handler.clone(),
+            manager.clone(),
+            ctx,
+            Heartbeat {
+                interval: std::time::Duration::from_millis(10),
+                timeout: std::time::Duration::from_millis(100),
+            },
+        ));
+        // Unsolicited pongs keep the heartbeat satisfied.
+        let keepalive = tokio::spawn(async move {
+            loop {
+                if client_tx
+                    .send(Ok(axum::extract::ws::Message::Pong(Vec::new().into())))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        });
+
+        while manager.connection_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        // Fill the outbound buffer until the broadcast evicts the connection.
+        for _ in 0..1100 {
+            let _ = manager.broadcast_text("tick").await;
+        }
+        assert_eq!(manager.connection_count(), 0);
+
+        // The evicted socket must actually close and run on_disconnect.
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("an evicted connection must be torn down")
+            .unwrap();
+        assert_eq!(handler.0.load(Ordering::SeqCst), 1);
+        keepalive.abort();
+    }
+
+    #[tokio::test]
     async fn test_on_disconnect_runs_on_heartbeat_timeout() {
         use std::sync::atomic::Ordering;
 

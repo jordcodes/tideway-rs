@@ -174,11 +174,25 @@ against a production-like copy before rollout. The migration can keep a legacy c
   `MaxOrgsReached`); with the SeaORM store, `transfer_ownership_atomic` does this in one
   transaction
 - `MembershipManager`: membership operations and permission checks; owners can only be created
-  through `OrganizationManager::transfer_ownership`, never `add_member` or `update_membership`
-- `InvitationManager`: invitation issuance and acceptance
+  through `OrganizationManager::transfer_ownership`, never `add_member` or `update_membership`.
+  Attach `.with_invitation_store(store)` so `add_member` counts seats reserved by pending
+  invitations; without it, direct adds can take those seats
+- `InvitationManager`: invitation issuance and acceptance. `accept` rechecks seat capacity
+  against current members and fails with `SeatLimitReached` (leaving the invitation pending) if
+  the organization is full, for example after direct adds or a seat downgrade
 - `InvitationRateLimiter`: zero-configuration, process-local invitation rate limiter
 - `InvitationRateLimitProvider`: asynchronous extension point for shared rate-limit backends
 - `SeatChecker`: plug-in interface for seat limit checks
+
+### Concurrency guarantees
+
+- `max_orgs_per_user` is checked before inserting. `OrganizationManager::create` works with any
+  store, so concurrent creates by one user can exceed the limit. `create_atomic` (SeaORM store)
+  re-counts inside its transaction, serialized per owner with an advisory lock on Postgres, so
+  the limit holds under concurrency.
+- Store `update` and `update_membership` implementations must only update existing rows and
+  return not-found otherwise. The SeaORM store does, so an update racing a removal cannot
+  re-create the removed member or organization.
 
 ## Minimal Wiring
 
@@ -192,6 +206,32 @@ let manager = OrganizationManager::new(
     OrganizationConfig::default(),
 );
 ```
+
+### Requiring a verified email
+
+`OrganizationConfig::require_verified_email(true)` blocks users without a verified email from
+creating organizations (`OrganizationError::EmailNotVerified`). The manager has no user store, so
+give it an `EmailVerificationChecker`:
+
+```rust
+use tideway::organizations::EmailVerificationChecker;
+
+struct UsersVerified { db: DatabaseConnection }
+
+#[async_trait::async_trait]
+impl EmailVerificationChecker for UsersVerified {
+    async fn is_email_verified(&self, user_id: &str) -> tideway::Result<bool> {
+        // e.g. look up users.email_verified_at for user_id
+    }
+}
+
+let manager = OrganizationManager::new(org_store, membership_store, UnlimitedSeats,
+    OrganizationConfig::default().require_verified_email(true))
+    .with_email_verification_checker(UsersVerified { db });
+```
+
+The requirement is off by default. With it on and no checker configured, `create` and
+`create_atomic` fail with a configuration error rather than skipping the check.
 
 For JWT org-context extraction and permission guards, use:
 

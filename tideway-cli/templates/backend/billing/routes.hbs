@@ -421,7 +421,9 @@ async fn handle_webhook(
         state.webhook_secret.clone(),
         state.plans.clone(),
     )
-    .with_event_sink(AppBillingEventSink);
+    .with_event_sink(AppBillingEventSink)
+    // Stripe delivers events out of order; sync subscriptions from their live state.
+    .with_subscription_client(state.stripe_client.clone());
 
     let event = webhook_handler
         .verify_signature(&body, signature)

@@ -13,7 +13,7 @@
 /// let config = OrganizationConfig::new()
 ///     .allow_user_creation(true)
 ///     .max_orgs_per_user(Some(5))
-///     .require_verified_email(true);
+///     .require_verified_email(true); // also needs an EmailVerificationChecker
 /// ```
 #[derive(Clone, Debug)]
 pub struct OrganizationConfig {
@@ -25,7 +25,11 @@ pub struct OrganizationConfig {
     /// Maximum organizations a single user can own (None = unlimited).
     pub max_orgs_per_user: Option<u32>,
 
-    /// Require email verification to create an organization.
+    /// Require email verification to create an organization (default: `false`).
+    ///
+    /// Enforced through the checker passed to
+    /// [`OrganizationManager::with_email_verification_checker`](super::OrganizationManager::with_email_verification_checker).
+    /// Without one, creation fails with a configuration error.
     pub require_verified_email: bool,
 }
 
@@ -34,7 +38,7 @@ impl Default for OrganizationConfig {
         Self {
             allow_user_creation: true,
             max_orgs_per_user: Some(5),
-            require_verified_email: true,
+            require_verified_email: false,
         }
     }
 }
@@ -61,6 +65,8 @@ impl OrganizationConfig {
     }
 
     /// Set whether email verification is required.
+    ///
+    /// Requires an [`EmailVerificationChecker`](super::EmailVerificationChecker) on the manager.
     #[must_use]
     pub fn require_verified_email(mut self, require: bool) -> Self {
         self.require_verified_email = require;
@@ -134,7 +140,7 @@ mod tests {
         let config = OrganizationConfig::default();
         assert!(config.allow_user_creation);
         assert_eq!(config.max_orgs_per_user, Some(5));
-        assert!(config.require_verified_email);
+        assert!(!config.require_verified_email);
     }
 
     #[test]
@@ -142,11 +148,11 @@ mod tests {
         let config = OrganizationConfig::new()
             .allow_user_creation(false)
             .max_orgs_per_user(None)
-            .require_verified_email(false);
+            .require_verified_email(true);
 
         assert!(!config.allow_user_creation);
         assert_eq!(config.max_orgs_per_user, None);
-        assert!(!config.require_verified_email);
+        assert!(config.require_verified_email);
     }
 
     #[test]

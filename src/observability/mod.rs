@@ -107,12 +107,14 @@ pub(crate) fn current_trace_id() -> Option<String> {
 ///
 /// The span is DEBUG level, so the default `info` log filter does not print it;
 /// with the `otel` feature active the exporter enables it independently.
+///
+/// Only the path is recorded: query strings can carry credentials (signed-URL
+/// signatures, tokens, OAuth codes) and span fields are exported verbatim.
 pub(crate) fn request_span<B>(request: &Request<B>) -> tracing::Span {
     let span = tracing::debug_span!(
         target: "tideway::request",
         "request",
         method = %request.method(),
-        uri = %request.uri(),
         version = ?request.version(),
         request_id = ?request.headers().get("x-request-id"),
         otel.name = %request.method(),

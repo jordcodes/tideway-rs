@@ -6,9 +6,17 @@ use super::audit::{OrgAuditEntry, OrgAuditEvent};
 use super::error::{OrganizationError, Result};
 use super::manager::MembershipCreateParams;
 use super::seats::{SeatChecker, UnlimitedSeats};
-use super::storage::{MembershipStore, OptionalAuditStore, OrgAuditStore, WithAuditStore};
+use super::storage::{
+    InvitationStore, MembershipStore, OptionalAuditStore, OrgAuditStore, WithAuditStore,
+};
 use super::utils::current_timestamp;
+use futures::future::BoxFuture;
+use std::sync::Arc;
 use tracing::{debug, info, instrument};
+
+/// Counts an organization's pending invitations for seat checks.
+type PendingInvitationCounter =
+    Arc<dyn Fn(String) -> BoxFuture<'static, crate::error::Result<u32>> + Send + Sync>;
 
 /// Membership manager - handles member operations with permission checks.
 ///
@@ -54,6 +62,7 @@ where
     membership_store: M,
     seat_checker: S,
     audit_store: A,
+    pending_invitations: Option<PendingInvitationCounter>,
 }
 
 impl<M> MembershipManager<M, UnlimitedSeats, ()>
@@ -67,6 +76,7 @@ where
             membership_store,
             seat_checker: UnlimitedSeats,
             audit_store: (),
+            pending_invitations: None,
         }
     }
 }
@@ -83,6 +93,7 @@ where
             membership_store,
             seat_checker,
             audit_store: (),
+            pending_invitations: None,
         }
     }
 
@@ -95,6 +106,7 @@ where
             membership_store: self.membership_store,
             seat_checker: self.seat_checker,
             audit_store: WithAuditStore(audit_store),
+            pending_invitations: self.pending_invitations,
         }
     }
 }
@@ -105,6 +117,22 @@ where
     S: SeatChecker,
     A: OptionalAuditStore,
 {
+    /// Count pending invitations from `invitation_store` when checking seats in
+    /// [`Self::add_member`], so a direct add cannot take a seat an invitation has reserved.
+    ///
+    /// Without it, `add_member` counts current members only.
+    #[must_use]
+    pub fn with_invitation_store<I: InvitationStore + Clone + 'static>(
+        mut self,
+        invitation_store: I,
+    ) -> Self {
+        self.pending_invitations = Some(Arc::new(move |org_id: String| {
+            let store = invitation_store.clone();
+            Box::pin(async move { store.count_pending(&org_id).await })
+        }));
+        self
+    }
+
     /// Get a reference to the membership store.
     pub fn membership_store(&self) -> &M {
         &self.membership_store
@@ -148,8 +176,11 @@ where
             return Err(OrganizationError::AlreadyMember);
         }
 
-        // Check seat availability
-        let current_count = self.membership_store.count_members(org_id).await?;
+        // Check seat availability, counting seats reserved by pending invitations
+        let mut current_count = self.membership_store.count_members(org_id).await?;
+        if let Some(count_pending) = &self.pending_invitations {
+            current_count += count_pending(org_id.to_string()).await?;
+        }
         if !self
             .seat_checker
             .has_seat_available(org_id, current_count)

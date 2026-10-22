@@ -11,7 +11,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 /// Handle to a connection for the manager
 ///
@@ -49,6 +49,9 @@ pub struct ConnectionManager {
     users: Arc<DashMap<String, HashSet<String>>>,
     /// Reverse user index, so cleanup does not need the connection lock.
     connection_users: Arc<DashMap<String, String>>,
+    /// Close signals by connection ID. Unregistering a connection (including evicting one whose
+    /// outbound channel is full) fires its signal so the socket is torn down, not just uncounted.
+    closers: Arc<DashMap<String, Arc<Notify>>>,
     /// Maximum number of connections allowed (0 = unlimited)
     max_connections: usize,
     /// Current active connection count (atomic for race-free limit checking)
@@ -77,6 +80,7 @@ impl ConnectionManager {
             connection_rooms: Arc::new(DashMap::new()),
             users: Arc::new(DashMap::new()),
             connection_users: Arc::new(DashMap::new()),
+            closers: Arc::new(DashMap::new()),
             max_connections,
             active_count: Arc::new(AtomicU64::new(0)),
             total_connections: Arc::new(AtomicU64::new(0)),
@@ -96,6 +100,16 @@ impl ConnectionManager {
     /// race conditions when enforcing the connection limit. Multiple concurrent
     /// registration attempts are handled safely without exceeding the limit.
     pub async fn register(&self, conn: ConnectionHandle) -> Result<()> {
+        self.register_with_close(conn, Arc::new(Notify::new()))
+            .await
+    }
+
+    /// Register a connection with the signal that closes it when it is unregistered.
+    pub(crate) async fn register_with_close(
+        &self,
+        conn: ConnectionHandle,
+        close: Arc<Notify>,
+    ) -> Result<()> {
         // Get connection info first (before checking limit)
         let (conn_id, user_id, sender) = {
             let conn_guard = conn.read().await;
@@ -138,6 +152,7 @@ impl ConnectionManager {
         }
 
         // Now insert the connection (we've already reserved the slot)
+        self.closers.insert(conn_id.clone(), close);
         self.senders.insert(conn_id.clone(), sender);
         self.connections.insert(conn_id.clone(), conn);
 
@@ -150,13 +165,18 @@ impl ConnectionManager {
 
     /// Unregister a connection
     ///
-    /// Safely removes a connection and decrements the active connection count.
+    /// Safely removes a connection, decrements the active connection count, and signals the
+    /// connection's socket to close, so a removed connection no longer holds an open socket.
     pub async fn unregister(&self, conn_id: &str) {
         // Remove from connections
         if let Some((_, conn)) = self.connections.remove(conn_id) {
             // Decrement active count (matches the increment in register)
             self.active_count.fetch_sub(1, Ordering::Relaxed);
             self.senders.remove(conn_id);
+            if let Some((_, close)) = self.closers.remove(conn_id) {
+                // notify_one stores a permit, so the socket closes even if it is not waiting yet.
+                close.notify_one();
+            }
             drop(conn);
 
             // Removing the connection above excludes concurrent user updates, and
