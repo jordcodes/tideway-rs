@@ -8,6 +8,7 @@ use crate::auth::password::{PasswordHasher, PasswordPolicy};
 use crate::error::{Result, TidewayError};
 use async_trait::async_trait;
 
+use super::rate_limit::{AuthRateLimitConfig, AuthRateLimiter};
 use super::types::PasswordChangeRequest;
 
 /// Trait for password change storage operations.
@@ -67,6 +68,11 @@ impl PasswordChangeConfig {
 /// Unlike password reset (which uses email tokens), password change requires
 /// the user to verify their current password before setting a new one.
 ///
+/// Current-password attempts are rate limited per user (5 per 15 minutes by default) so a
+/// stolen session cannot be used to guess the password. The limiter is in-process; share one
+/// [`AuthRateLimiter`] across flows with [`Self::with_rate_limiter`], or enforce an equivalent
+/// shared limit in multi-replica deployments.
+///
 /// # Example
 ///
 /// ```rust,ignore
@@ -89,6 +95,7 @@ pub struct PasswordChangeFlow<S: PasswordChangeStore> {
     password_hasher: PasswordHasher,
     password_policy: PasswordPolicy,
     config: PasswordChangeConfig,
+    rate_limiter: Option<AuthRateLimiter>,
 }
 
 impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
@@ -100,7 +107,24 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
             password_hasher: PasswordHasher::default(),
             password_policy: PasswordPolicy::modern(),
             config: PasswordChangeConfig::default(),
+            rate_limiter: Some(AuthRateLimiter::new(AuthRateLimitConfig::default())),
         }
+    }
+
+    /// Use a custom per-user limiter for current-password attempts.
+    #[must_use]
+    pub fn with_rate_limiter(mut self, rate_limiter: AuthRateLimiter) -> Self {
+        self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Disable the per-user current-password attempt limit.
+    ///
+    /// Only do this when an equivalent per-account limit is enforced elsewhere.
+    #[must_use]
+    pub fn without_rate_limiter(mut self) -> Self {
+        self.rate_limiter = None;
+        self
     }
 
     /// Set a custom password policy.
@@ -136,6 +160,7 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
     ///
     /// Returns an error if:
     /// - The current password is incorrect
+    /// - Too many current-password attempts were made for this user
     /// - The new password doesn't meet the policy
     /// - The user doesn't exist
     #[cfg(feature = "auth")]
@@ -145,6 +170,10 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
         req: PasswordChangeRequest,
         current_session_id: Option<&str>,
     ) -> Result<()> {
+        if let Some(limiter) = &self.rate_limiter {
+            limiter.check_reauth(user_id, "password_change")?;
+        }
+
         // Get current password hash
         let current_hash = match self.store.get_password_hash(user_id).await? {
             Some(hash) => hash,
@@ -370,6 +399,48 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("incorrect"));
+    }
+
+    #[tokio::test]
+    async fn test_change_password_limits_current_password_guesses() {
+        let store = TestStore::new();
+        store.add_user("victim", &create_test_hash("OldPassword123!"));
+        store.add_user("other", &create_test_hash("OldPassword123!"));
+
+        let flow = PasswordChangeFlow::new(store);
+        let attempt = |user_id: &'static str, current: &str| {
+            let req = PasswordChangeRequest {
+                current_password: current.to_string(),
+                new_password: "AttackerChosen-77!".to_string(),
+            };
+            flow.change_password(user_id, req, None)
+        };
+
+        for i in 0..AuthRateLimitConfig::default().max_attempts {
+            let err = attempt("victim", &format!("wrong-guess-{i}"))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, TidewayError::Unauthorized(_)));
+        }
+
+        // Once the budget is spent, even the correct password is refused.
+        let err = attempt("victim", "OldPassword123!").await.unwrap_err();
+        assert!(matches!(err, TidewayError::TooManyRequests(_)));
+        let hash = flow
+            .store
+            .get_password_hash("victim")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            PasswordHasher::default()
+                .verify("OldPassword123!", &hash)
+                .unwrap()
+        );
+        assert!(flow.store.get_invalidated().is_empty());
+
+        // The limit is per user.
+        assert!(attempt("other", "OldPassword123!").await.is_ok());
     }
 
     #[tokio::test]

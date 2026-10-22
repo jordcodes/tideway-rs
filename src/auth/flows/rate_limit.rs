@@ -146,6 +146,31 @@ impl AuthRateLimiter {
     pub fn config(&self) -> &AuthRateLimitConfig {
         &self.config
     }
+
+    /// Check a current-password re-authentication attempt for an authenticated user.
+    ///
+    /// Used by flows that verify the current password for an existing session (password
+    /// change, account deletion) so a stolen session cannot guess the password without limit.
+    pub(crate) fn check_reauth(&self, user_id: &str, target: &'static str) -> Result<()> {
+        match self.check(&format!("reauth:{user_id}")) {
+            Ok(()) => Ok(()),
+            Err(retry_after) => {
+                tracing::warn!(
+                    target: "auth.reauth.rate_limited",
+                    user_id = %user_id,
+                    flow = target,
+                    retry_after_secs = retry_after,
+                    max_attempts = self.config.max_attempts,
+                    window_secs = self.config.window_seconds,
+                    "Re-authentication rate limited"
+                );
+                Err(TidewayError::TooManyRequests(format!(
+                    "Too many password attempts. Please try again in {} seconds.",
+                    retry_after
+                )))
+            }
+        }
+    }
 }
 
 fn quota_for_config(config: &AuthRateLimitConfig) -> Quota {

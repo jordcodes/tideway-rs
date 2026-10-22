@@ -297,11 +297,19 @@ pub trait AccountDeletionStore: Send + Sync {
 }
 
 /// Flow for handling account deletion.
+///
+/// When a password is required, attempts are rate limited per user (5 per 15 minutes by
+/// default) so a stolen session cannot be used to guess the password. The limiter is
+/// in-process; share one [`AuthRateLimiter`](crate::auth::flows::AuthRateLimiter) across flows
+/// with [`Self::with_rate_limiter`], or enforce an equivalent shared limit in multi-replica
+/// deployments.
 pub struct AccountDeletionFlow<S: AccountDeletionStore> {
     store: S,
     config: DeletionConfig,
     #[cfg(feature = "auth")]
     password_hasher: crate::auth::password::PasswordHasher,
+    #[cfg(feature = "auth")]
+    rate_limiter: Option<crate::auth::flows::AuthRateLimiter>,
 }
 
 impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
@@ -313,7 +321,29 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
             config,
             #[cfg(feature = "auth")]
             password_hasher: crate::auth::password::PasswordHasher::default(),
+            #[cfg(feature = "auth")]
+            rate_limiter: Some(crate::auth::flows::AuthRateLimiter::new(
+                crate::auth::flows::AuthRateLimitConfig::default(),
+            )),
         }
+    }
+
+    /// Use a custom per-user limiter for password attempts.
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn with_rate_limiter(mut self, rate_limiter: crate::auth::flows::AuthRateLimiter) -> Self {
+        self.rate_limiter = Some(rate_limiter);
+        self
+    }
+
+    /// Disable the per-user password attempt limit.
+    ///
+    /// Only do this when an equivalent per-account limit is enforced elsewhere.
+    #[cfg(feature = "auth")]
+    #[must_use]
+    pub fn without_rate_limiter(mut self) -> Self {
+        self.rate_limiter = None;
+        self
     }
 
     /// Create with default configuration.
@@ -343,6 +373,10 @@ impl<S: AccountDeletionStore> AccountDeletionFlow<S> {
             let password = req.password.as_ref().ok_or_else(|| {
                 TidewayError::BadRequest("Password required for account deletion".into())
             })?;
+
+            if let Some(limiter) = &self.rate_limiter {
+                limiter.check_reauth(&req.user_id, "account_deletion")?;
+            }
 
             let hash = self
                 .store
@@ -1096,6 +1130,39 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
+    }
+
+    #[cfg(feature = "auth")]
+    #[tokio::test]
+    async fn test_password_guesses_are_rate_limited() {
+        let store = InMemoryDeletionStore::new();
+        store.add_user(
+            "user-1",
+            "user@example.com",
+            &create_test_hash("correct-password"),
+        );
+        let flow = AccountDeletionFlow::new(store, DeletionConfig::immediate());
+        let request = |password: &str| DeletionRequest {
+            user_id: "user-1".to_string(),
+            password: Some(password.to_string()),
+            reason: None,
+        };
+
+        for i in 0..crate::auth::flows::AuthRateLimitConfig::default().max_attempts {
+            let err = flow
+                .request_deletion(request(&format!("wrong-{i}")))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, TidewayError::Unauthorized(_)));
+        }
+
+        // Once the budget is spent, even the correct password is refused.
+        let err = flow
+            .request_deletion(request("correct-password"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, TidewayError::TooManyRequests(_)));
+        assert!(!flow.store.is_deleted("user-1"));
     }
 
     #[tokio::test]

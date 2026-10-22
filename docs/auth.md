@@ -476,6 +476,11 @@ let flow = PasswordChangeFlow::new(store)
 - **Password policy enforcement**: New password must meet requirements
 - **Same password prevention**: Cannot set new password same as current
 - **Session invalidation**: Logs out all other devices by default
+- **Guess limiting**: Current-password attempts are limited per user (5 per 15 minutes by
+  default), so a stolen session cannot be used to guess the password. Pass a shared limiter with
+  `.with_rate_limiter(AuthRateLimiter::new(config))`, or `.without_rate_limiter()` only when an
+  equivalent per-account limit is enforced elsewhere. The limiter is in-process; multi-replica
+  deployments need a shared limit as well.
 
 ### Password Change Events
 
@@ -484,6 +489,7 @@ let flow = PasswordChangeFlow::new(store)
 | `auth.password.change_failed` | WARN | Wrong current password |
 | `auth.password.change_failed` | INFO | Weak new password or same password |
 | `auth.password.changed` | INFO | Password changed successfully |
+| `auth.reauth.rate_limited` | WARN | Too many current-password attempts for the user |
 
 ## Password Breach Checking
 
@@ -1576,6 +1582,7 @@ async fn login_handler(
 |--------|-------|-------------|
 | `auth.login.rate_limited` | WARN | Login blocked due to rate limiting |
 | `auth.endpoint.rate_limited` | WARN | Registration or refresh blocked due to rate limiting |
+| `auth.reauth.rate_limited` | WARN | Password change or account deletion blocked after too many current-password attempts |
 
 ### How It Works
 
@@ -1703,7 +1710,9 @@ if !result.can_retry_now() {
     println!("Wait {} seconds", result.wait_seconds());
 }
 
-// Clear on successful login
+// Clear the account's lockout on successful login. The shared per-IP count is kept, so one
+// account's success cannot refund guesses spent against other accounts; it restarts once the
+// IP lockout expires.
 manager.record_successful_login("user-123", Some("1.2.3.4")).await?;
 
 // Admin unlock
@@ -1773,7 +1782,7 @@ async fn login_handler(
 | Tracks by | IP address | User account (+ optional IP) |
 | Purpose | Prevent brute force | Protect specific accounts |
 | State | In-memory | Persistent (database) |
-| Reset | Automatic (time window) | On successful login |
+| Reset | Automatic (time window) | Account: on successful login. IP: when the IP lockout expires |
 | Progressive | No | Yes (configurable delays) |
 | Notifications | No | Yes (email) |
 
@@ -1885,6 +1894,11 @@ if let Some(pending) = flow.get_pending_deletion("user-123").await? {
 }
 ```
 
+When `require_password` is set, password attempts are limited per user (5 per 15 minutes by
+default) and further attempts return `TooManyRequests`. Use `.with_rate_limiter(...)` to share a
+limiter with other flows, or `.without_rate_limiter()` only when an equivalent per-account limit is
+enforced elsewhere.
+
 ### Processing Scheduled Deletions
 
 Run from a scheduled job (e.g., cron, background worker):
@@ -1925,6 +1939,7 @@ Account deletion automatically cleans up:
 | `auth.deletion.completed` | WARN | Account deleted |
 | `auth.deletion.user_not_found` | WARN | Deletion requested for non-existent user |
 | `auth.deletion.password_invalid` | WARN | Deletion rejected: wrong password |
+| `auth.reauth.rate_limited` | WARN | Deletion blocked after too many password attempts |
 | `auth.deletion.process_failed` | ERROR | Failed to process scheduled deletion |
 | `auth.deletion.batch_processed` | INFO | Batch of scheduled deletions processed |
 
@@ -2184,6 +2199,8 @@ CREATE INDEX idx_imp_audit_target ON impersonation_audit(target_user_id);
 
 The auth flows prevent email enumeration:
 - Login returns same error for "user not found" and "wrong password"
+- Login returns that same error for a locked account whatever password is sent, so a lockout
+  cannot confirm a guess. Tell users about a lock out of band (for example a lockout email)
 - Registration returns generic "Registration failed" for existing emails
 - Password reset always returns success (even for non-existent emails)
 

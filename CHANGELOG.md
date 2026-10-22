@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Release owners: copy a short DX gate summary into the release notes and use `docs/dx_metrics_snapshot.md` as the source of record for DX reporting.
 
+## [Unreleased]
+
+### Security
+
+- `LoginFlow` no longer confirms passwords for locked accounts. A correct password used to get
+  "Account temporarily locked" while a wrong one got "Invalid credentials", so lockout could not
+  stop guessing. A locked account now returns "Invalid credentials" for any password, so primary
+  login no longer returns `423` (MFA verification and external login still do). Tell users about
+  locks out of band, for example with a lockout email.
+- `LockoutManager::record_successful_login` no longer clears the per-IP failure count. With
+  `track_by_ip`, logging into one account reset the budget shared by every account tried from
+  that IP, so guesses could be spread across accounts without limit. Now the IP count restarts
+  only when the IP lockout expires.
+- `PasswordChangeFlow::change_password` and `AccountDeletionFlow::request_deletion` limit
+  current-password attempts per user, by default 5 per 15 minutes, and then return
+  `TooManyRequests`. Previously a stolen session could guess the password without limit and, on a
+  hit, set a new one. Use `with_rate_limiter` to configure the limit, or `without_rate_limiter`
+  only when an equivalent per-account limit exists elsewhere.
+
 ## [0.9.0] - 2026-10-15
 
 > **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update: applications
