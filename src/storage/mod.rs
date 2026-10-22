@@ -144,7 +144,8 @@ pub struct UploadPolicy {
     pub prefix: String,
     /// Maximum upload size in bytes
     pub max_bytes: u64,
-    /// Allowed MIME types; empty allows any type
+    /// Allowed MIME types; empty allows any type that browsers do not execute
+    /// (see [`UploadPolicy::validate`])
     pub allowed_content_types: Vec<String>,
     /// Lifetime of the presigned URL
     pub expires_in: Duration,
@@ -152,8 +153,26 @@ pub struct UploadPolicy {
 
 const IMAGE_TYPES: &[&str] = &["image/png", "image/jpeg", "image/webp", "image/gif"];
 
+/// Types a browser renders as active content (script or markup) when served inline. S3/R2
+/// serve objects with their stored type, so these are refused unless explicitly allowed.
+const ACTIVE_CONTENT_TYPES: &[&str] = &[
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "text/xml",
+    "application/xml",
+    "text/xsl",
+    "application/xslt+xml",
+    "text/javascript",
+    "application/javascript",
+    "application/x-javascript",
+    "text/ecmascript",
+    "application/ecmascript",
+];
+
 impl UploadPolicy {
-    /// Create a policy that accepts any content type up to `max_bytes`.
+    /// Create a policy that accepts any content type up to `max_bytes`, except types
+    /// browsers execute (HTML, SVG, XML, JavaScript) unless they are explicitly allowed.
     pub fn new(prefix: impl Into<String>, max_bytes: u64) -> Self {
         Self {
             prefix: prefix.into(),
@@ -176,7 +195,7 @@ impl UploadPolicy {
         Self::new("logos", 5 * 1024 * 1024).allow_content_types(IMAGE_TYPES.iter().copied())
     }
 
-    /// Attachments: any type up to 25 MiB under `attachments/`.
+    /// Attachments: any type browsers do not execute, up to 25 MiB under `attachments/`.
     pub fn attachment() -> Self {
         Self::new("attachments", 25 * 1024 * 1024)
     }
@@ -210,6 +229,11 @@ impl UploadPolicy {
     }
 
     /// Check a declared upload against this policy.
+    ///
+    /// With an empty allowlist, types a browser would execute when serving the object inline
+    /// (HTML, SVG, XML, JavaScript) are rejected: S3/R2 store the declared type and serve it on
+    /// download, so an uploader could otherwise publish script on the bucket's origin. List such
+    /// a type in [`Self::allow_content_types`] to accept it.
     pub fn validate(&self, content_type: &str, content_length: u64) -> Result<()> {
         if content_length == 0 {
             return Err(TidewayError::bad_request("Upload must not be empty"));
@@ -221,12 +245,20 @@ impl UploadPolicy {
             )));
         }
         let content_type = content_type.trim();
-        if !self.allowed_content_types.is_empty()
-            && !self
-                .allowed_content_types
+        let allowed = if self.allowed_content_types.is_empty() {
+            let essence = content_type
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            !ACTIVE_CONTENT_TYPES.contains(&essence.as_str())
+        } else {
+            self.allowed_content_types
                 .iter()
                 .any(|allowed| allowed.eq_ignore_ascii_case(content_type))
-        {
+        };
+        if !allowed {
             return Err(TidewayError::bad_request(format!(
                 "Content type '{content_type}' is not allowed"
             )));
@@ -262,6 +294,10 @@ impl UploadPolicy {
     /// and that its stored size is within limits. Oversized or empty objects are
     /// deleted. Call this from the endpoint where the client reports a finished
     /// upload: S3-compatible backends cannot enforce size in the presigned URL.
+    ///
+    /// The presigned URL stays usable until it expires, so a client can overwrite `key` after
+    /// this check (for example with a larger body). Use [`Self::finalize`] to record an object
+    /// the URL can no longer write.
     pub async fn confirm(&self, storage: &dyn FileStorage, key: &str) -> Result<StoredObject> {
         parse_key(key)?;
         let prefix = self.prefix.trim_matches('/');
@@ -285,6 +321,34 @@ impl UploadPolicy {
                 self.max_bytes
             )));
         }
+        Ok(object)
+    }
+
+    /// Confirm a completed upload, then move it to a new key the presigned URL cannot write.
+    ///
+    /// Runs [`Self::confirm`], copies the object under a fresh key in the same prefix with
+    /// `content_type` (re-checked against the policy), and deletes the upload key. Record the
+    /// returned key: replaying the presigned URL only writes the abandoned upload key. The copy
+    /// reads the whole object, which `max_bytes` bounds.
+    pub async fn finalize(
+        &self,
+        storage: &dyn FileStorage,
+        key: &str,
+        content_type: &str,
+    ) -> Result<StoredObject> {
+        self.confirm(storage, key).await?;
+        let data = storage.get(key).await?;
+        let size = data.len() as u64;
+        // Re-check what was read, in case the object changed after confirm's check.
+        if let Err(error) = self.validate(content_type, size) {
+            storage.delete(key).await?;
+            return Err(error);
+        }
+        let final_key = object_key(&self.prefix, key)?;
+        let object = storage
+            .put(&final_key, data, Some(content_type.trim()))
+            .await?;
+        storage.delete(key).await?;
         Ok(object)
     }
 }

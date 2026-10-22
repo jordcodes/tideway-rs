@@ -96,7 +96,11 @@ impl ClientIpResolver {
     ///
     /// If the peer is not trusted, or a present forwarding header is malformed,
     /// this fails closed and returns the direct peer address.
+    ///
+    /// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`, as reported for IPv4 peers on a dual-stack
+    /// listener) are treated as their IPv4 form, so IPv4 proxy networks still match.
     pub fn resolve(&self, peer: IpAddr, headers: &HeaderMap) -> IpAddr {
+        let peer = peer.to_canonical();
         if !self.is_trusted(peer) {
             return peer;
         }
@@ -105,18 +109,21 @@ impl ClientIpResolver {
             ForwardedChain::Valid(chain) => chain
                 .into_iter()
                 .rev()
+                .map(|address| address.to_canonical())
                 .find(|address| !self.is_trusted(*address))
                 .unwrap_or(peer),
             ForwardedChain::Invalid => peer,
             ForwardedChain::Absent => headers
                 .get("x-real-ip")
                 .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.trim().parse().ok())
+                .and_then(|value| value.trim().parse::<IpAddr>().ok())
+                .map(|address| address.to_canonical())
                 .unwrap_or(peer),
         }
     }
 
     fn is_trusted(&self, address: IpAddr) -> bool {
+        let address = address.to_canonical();
         self.trusted_proxies
             .iter()
             .any(|network| network.contains(&address))
@@ -186,6 +193,33 @@ mod tests {
 
     fn resolver(values: &[&str]) -> ClientIpResolver {
         ClientIpResolver::new(values).expect("valid trusted proxies")
+    }
+
+    #[test]
+    fn ipv4_mapped_peer_matches_ipv4_proxy_network() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "198.51.100.8".parse().unwrap());
+        let resolver = resolver(&["10.0.0.0/8"]);
+
+        // A dual-stack listener reports IPv4 peers in mapped form.
+        assert_eq!(
+            resolver.resolve(ip("::ffff:10.2.0.5"), &headers),
+            ip("198.51.100.8")
+        );
+        // Mapped untrusted peers still cannot spoof, and are reported as IPv4.
+        assert_eq!(
+            resolver.resolve(ip("::ffff:203.0.113.5"), &headers),
+            ip("203.0.113.5")
+        );
+        // Mapped hops in the chain are skipped like their IPv4 form.
+        headers.insert(
+            "x-forwarded-for",
+            "198.51.100.8, ::ffff:10.0.0.9".parse().unwrap(),
+        );
+        assert_eq!(
+            resolver.resolve(ip("10.2.0.5"), &headers),
+            ip("198.51.100.8")
+        );
     }
 
     #[test]

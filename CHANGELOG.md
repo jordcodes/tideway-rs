@@ -91,6 +91,28 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `max_connections` slot but left the socket open and served, and unsolicited pongs kept its
   heartbeat alive, so clients that stopped reading could hold any number of sockets. Unregistering
   now signals the connection to tear down and run `on_disconnect`.
+- `ClientIpResolver` treats IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`) as IPv4 when matching
+  trusted proxies. On a dual-stack listener, IPv4 proxies arrive in mapped form and did not match
+  IPv4 CIDRs, so forwarded headers were ignored and every client behind the proxy shared one
+  rate-limit bucket.
+- `InMemoryOAuthStateStore` evicts the oldest pending authorizations when it reaches its 100,000
+  entry cap instead of refusing new ones. Before, anonymous authorize requests could fill the
+  store and block every user's OAuth sign-in with 429s until entries expired. It also no longer
+  scans the whole map on every insert.
+- `LockoutManager::begin_attempt` and `finish_failed_attempt` reserve a login attempt before the
+  password is verified. With `check_can_attempt` followed by `record_failed_attempt`, every
+  concurrent attempt for an account passed the check, so a parallel burst got one password guess
+  per request rather than `max_attempts`. The documented login handler uses the new methods.
+- `UpgradeRequest::require_origin` rejects WebSocket upgrades from origins outside an allowlist,
+  and `UpgradeRequest::origin` returns the header. CORS does not cover WebSocket handshakes, so
+  cookie-authenticated sockets could be opened by any site; the WebSocket docs now call this out.
+- `UploadPolicy` rejects browser-executable types (HTML, SVG, XML, JavaScript) when it has no
+  allowlist, which includes `UploadPolicy::new` and `attachment()`. S3/R2 serve objects with their
+  uploaded type, so an attachment upload could host script on the bucket's origin. Allow these
+  types explicitly to keep accepting them.
+- `UploadPolicy::finalize` confirms an upload and moves it to a key the presigned URL cannot write.
+  The URL stays valid until it expires, so after `confirm` a client could overwrite the recorded
+  object, for example with one larger than `max_bytes`.
 
 ## [0.9.0] - 2026-10-15
 

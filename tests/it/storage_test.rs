@@ -311,6 +311,55 @@ mod storage_tests {
     }
 
     #[test]
+    fn default_policies_reject_browser_active_content_types() {
+        for policy in [UploadPolicy::attachment(), UploadPolicy::new("files", 1024)] {
+            for active in [
+                "text/html",
+                "text/html; charset=utf-8",
+                "IMAGE/SVG+XML",
+                "application/xhtml+xml",
+                "text/javascript",
+            ] {
+                assert!(policy.validate(active, 10).is_err(), "{active}");
+            }
+            for inert in ["application/pdf", "text/plain", "image/png"] {
+                assert!(policy.validate(inert, 10).is_ok(), "{inert}");
+            }
+        }
+        // An explicit allowlist can still accept them.
+        let html = UploadPolicy::new("pages", 1024).allow_content_types(["text/html"]);
+        assert!(html.validate("text/html", 10).is_ok());
+    }
+
+    #[tokio::test]
+    async fn upload_policy_finalize_moves_object_out_of_presigned_key() {
+        let storage = ObjectStorage::in_memory();
+        let policy = UploadPolicy::avatar().max_bytes(8);
+        let upload_key = object_key("avatars", "me.png").unwrap();
+        storage
+            .put(&upload_key, Bytes::from_static(b"small"), Some("image/png"))
+            .await
+            .unwrap();
+
+        let recorded = policy
+            .finalize(&storage, &upload_key, "image/png")
+            .await
+            .unwrap();
+        assert_ne!(recorded.key, upload_key);
+        assert!(recorded.key.starts_with("avatars/") && recorded.key.ends_with(".png"));
+        assert!(!storage.exists(&upload_key).await.unwrap());
+
+        // Replaying the presigned URL with a larger body only rewrites the abandoned key.
+        storage
+            .put(&upload_key, Bytes::from(vec![0u8; 64]), Some("image/png"))
+            .await
+            .unwrap();
+        let stored = storage.head(&recorded.key).await.unwrap().unwrap();
+        assert_eq!(stored.size, 5);
+        assert_eq!(storage.get(&recorded.key).await.unwrap(), "small");
+    }
+
+    #[test]
     fn storage_is_optional_on_app_context() {
         let ctx = AppContext::new();
         assert!(ctx.storage_opt().is_none());

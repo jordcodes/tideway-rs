@@ -113,6 +113,8 @@ use tideway::TidewayError;
 #[async_trait]
 impl WebSocketHandler for ChatHandler {
     async fn on_upgrade(&self, req: &mut UpgradeRequest, _ctx: &AppContext) -> Result<()> {
+        // Cookies are sent cross-site, so only accept sockets opened by your own pages.
+        req.require_origin(&["https://app.example.com"])?;
         let token = req
             .cookie("session")
             .ok_or_else(|| TidewayError::unauthorized("Missing session"))?;
@@ -131,6 +133,11 @@ use `conn.user_id()` directly. Later hooks can also read the upgrade request thr
 
 Browsers cannot set custom headers on WebSocket requests, so use a cookie or a query parameter
 (`req.uri().query()`) to pass credentials from a browser.
+
+CORS does not apply to WebSocket handshakes. When you authenticate with a cookie, call
+`req.require_origin(&[...])` with your app's origins, or any site the user visits can open a
+socket that carries their cookie (cross-site WebSocket hijacking). A short-lived token in the
+query string avoids the problem, since other sites cannot read it.
 
 ## Sending Messages
 

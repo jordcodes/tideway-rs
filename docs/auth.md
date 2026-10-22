@@ -753,6 +753,11 @@ Use `with_scopes`, `with_authorize_param("prompt", "select_account")`, or `with_
 a provider. `InMemoryOAuthStateStore` only works for a single instance; implement
 `OAuthStateStore` on Redis or your database when running several instances.
 
+`authorize` needs no authentication and stores an entry per call, so put a per-IP rate limit on
+the route that starts sign-in. `InMemoryOAuthStateStore` holds at most 100,000 pending
+authorizations; when full it evicts the oldest rather than refusing new sign-ins. Give a shared
+store an equivalent bound and eviction policy.
+
 ### SocialAccountStore
 
 `SocialAccountStore` extends `UserStore`, so social sign-in shares user lookup, lockout, and MFA
@@ -1727,6 +1732,10 @@ manager.admin_unlock("user-123", "admin-456").await?;
 
 ### Integration with LoginFlow
 
+Reserve the attempt with `begin_attempt` before verifying the password. It counts the attempt
+up front, so concurrent requests for one account cannot all slip past a stale count
+(`check_can_attempt` followed by `record_failed_attempt` can).
+
 ```rust
 async fn login_handler(
     State(lockout): State<LockoutManager<...>>,
@@ -1735,38 +1744,33 @@ async fn login_handler(
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>> {
     let user_id = get_user_id_by_email(&req.email).await?;
+    let ip = client_ip.as_deref();
 
-    // Check lockout before attempting login
-    if let Some(status) = lockout.check_can_attempt(&user_id, client_ip.as_deref()).await? {
+    if let Some(status) = lockout.begin_attempt(&user_id, ip).await? {
         return Ok(Json(LoginResponse::error(format!(
             "Too many failed attempts. Try again in {} seconds.",
             status.remaining_wait_seconds()
         ))));
     }
 
-    // Attempt login
     match login.login(req).await {
-        Ok(response) => {
-            lockout.record_successful_login(&user_id, client_ip.as_deref()).await?;
+        // The password was correct (an MFA challenge still follows for MfaRequired).
+        Ok(response @ (LoginResponse::Success { .. } | LoginResponse::MfaRequired { .. })) => {
+            // Clears the reserved attempt along with earlier failures.
+            lockout.record_successful_login(&user_id, ip).await?;
             Ok(Json(response))
         }
-        Err(e) if is_auth_error(&e) => {
-            let result = lockout.record_failed_attempt(&user_id, client_ip.as_deref()).await?;
-            if result.just_locked {
-                Ok(Json(LoginResponse::error("Account locked due to too many failed attempts")))
-            } else if !result.can_retry_now() {
-                Ok(Json(LoginResponse::error(format!(
-                    "Please wait {} seconds before retrying",
-                    result.wait_seconds()
-                ))))
-            } else {
-                Ok(Json(LoginResponse::error("Invalid credentials")))
-            }
+        Ok(response) => {
+            lockout.finish_failed_attempt(&user_id, ip).await?;
+            Ok(Json(response))
         }
         Err(e) => Err(e),
     }
 }
 ```
+
+The attempt that reaches `max_attempts` locks the account before its password is checked; if
+that password is correct, `record_successful_login` unlocks it again.
 
 ### Lockout Events
 

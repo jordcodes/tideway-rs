@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use async_trait::async_trait;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
@@ -58,9 +58,20 @@ pub trait OAuthStateStore: Send + Sync {
 ///
 /// Suitable for tests and single-instance deployments. State is lost on restart and is
 /// not shared between instances, so callbacks routed to another instance will fail.
+///
+/// Holds at most [`Self::MAX_ENTRIES`] pending authorizations. When full it drops expired
+/// entries and then the oldest pending ones, so a flood of anonymous authorize requests cannot
+/// block new sign-ins; it can only cut short sign-ins started before the flood.
 #[derive(Default)]
 pub struct InMemoryOAuthStateStore {
-    entries: Mutex<HashMap<String, (PendingAuthorization, SystemTime)>>,
+    inner: Mutex<Entries>,
+}
+
+#[derive(Default)]
+struct Entries {
+    by_hash: HashMap<String, (PendingAuthorization, SystemTime)>,
+    /// Insertion order for eviction. May hold hashes already consumed; those are skipped.
+    order: VecDeque<String>,
 }
 
 impl InMemoryOAuthStateStore {
@@ -75,9 +86,10 @@ impl InMemoryOAuthStateStore {
 
     /// Number of stored (possibly expired) entries.
     pub fn len(&self) -> usize {
-        self.entries
+        self.inner
             .lock()
             .expect("oauth state lock poisoned")
+            .by_hash
             .len()
     }
 
@@ -95,21 +107,32 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         pending: PendingAuthorization,
         expires_at: SystemTime,
     ) -> Result<()> {
-        let mut entries = self.entries.lock().expect("oauth state lock poisoned");
-        let now = SystemTime::now();
-        entries.retain(|_, (_, expires)| *expires > now);
-        if entries.len() >= Self::MAX_ENTRIES {
-            return Err(crate::TidewayError::too_many_requests(
-                "Too many pending sign-in attempts",
-            ));
+        let mut inner = self.inner.lock().expect("oauth state lock poisoned");
+        let Entries { by_hash, order } = &mut *inner;
+        if by_hash.len() >= Self::MAX_ENTRIES {
+            let now = SystemTime::now();
+            by_hash.retain(|_, (_, expires)| *expires > now);
+            order.retain(|hash| by_hash.contains_key(hash));
         }
-        entries.insert(state_hash.to_string(), (pending, expires_at));
+        while by_hash.len() >= Self::MAX_ENTRIES {
+            let Some(oldest) = order.pop_front() else {
+                break;
+            };
+            by_hash.remove(&oldest);
+        }
+        // Consumed hashes stay in `order` until skipped; compact before it grows unbounded.
+        if order.len() >= 2 * Self::MAX_ENTRIES {
+            order.retain(|hash| by_hash.contains_key(hash));
+        }
+        by_hash.insert(state_hash.to_string(), (pending, expires_at));
+        order.push_back(state_hash.to_string());
         Ok(())
     }
 
     async fn consume(&self, state_hash: &str) -> Result<Option<PendingAuthorization>> {
-        let mut entries = self.entries.lock().expect("oauth state lock poisoned");
-        Ok(entries
+        let mut inner = self.inner.lock().expect("oauth state lock poisoned");
+        Ok(inner
+            .by_hash
             .remove(state_hash)
             .filter(|(_, expires)| *expires > SystemTime::now())
             .map(|(pending, _)| pending))
@@ -152,6 +175,26 @@ mod tests {
             .await
             .unwrap();
         assert!(store.consume("h").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn full_store_evicts_oldest_instead_of_rejecting_new_sign_ins() {
+        let store = InMemoryOAuthStateStore::new();
+        let expires = SystemTime::now() + Duration::from_secs(600);
+        for i in 0..InMemoryOAuthStateStore::MAX_ENTRIES {
+            store
+                .store(&format!("flood-{i}"), pending(), expires)
+                .await
+                .unwrap();
+        }
+
+        // Another user's sign-in still starts and completes.
+        store.store("victim", pending(), expires).await.unwrap();
+        assert!(store.consume("victim").await.unwrap().is_some());
+        assert_eq!(store.len(), InMemoryOAuthStateStore::MAX_ENTRIES - 1);
+        // The oldest flood entry made room.
+        assert!(store.consume("flood-0").await.unwrap().is_none());
+        assert!(store.consume("flood-1").await.unwrap().is_some());
     }
 
     #[test]
