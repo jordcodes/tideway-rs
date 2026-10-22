@@ -1900,6 +1900,76 @@ mod tests {
         assert_eq!(store.count_pending(&org.id).await.unwrap(), 2);
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn test_concurrent_accepts_cannot_exceed_seat_limit() {
+        /// Like LimitedSeats, but slow enough for concurrent accepts to overlap.
+        #[derive(Clone)]
+        struct SlowSeats(u32);
+
+        #[async_trait]
+        impl SeatChecker for SlowSeats {
+            async fn has_seat_available(
+                &self,
+                _org_id: &str,
+                current_count: u32,
+            ) -> crate::error::Result<bool> {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                Ok(current_count < self.0)
+            }
+
+            async fn get_seat_limit(&self, _org_id: &str) -> crate::error::Result<Option<u32>> {
+                Ok(Some(self.0))
+            }
+        }
+
+        let store = InMemoryOrgStore::new();
+        let org = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        )
+        .create("owner", "Org", None, "o@example.com", make_org, |p| {
+            make_membership(p, DefaultOrgRole::Owner)
+        })
+        .await
+        .unwrap();
+        for i in 0..10 {
+            store.insert_invitation(pending_invitation(&org.id, &format!("inv{i}")));
+        }
+        let invitations = Arc::new(InvitationManager::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            SlowSeats(2),
+            InvitationConfig::default(),
+        ));
+
+        let accepts = (0..10).map(|i| {
+            let invitations = invitations.clone();
+            tokio::spawn(async move {
+                invitations
+                    .accept(&format!("token-inv{i}"), &format!("user{i}"), |inv, p| {
+                        TestMembership {
+                            org_id: p.org_id,
+                            user_id: p.user_id,
+                            role: inv.role,
+                            joined_at: p.joined_at,
+                        }
+                    })
+                    .await
+            })
+        });
+        let accepted = futures::future::join_all(accepts)
+            .await
+            .into_iter()
+            .filter(|result| matches!(result, Ok(Ok(_))))
+            .count();
+
+        assert!(accepted <= 1, "accepted {accepted} into one free seat");
+        assert!(store.count_members(&org.id).await.unwrap() <= 2);
+    }
+
     #[tokio::test]
     async fn test_invite_requires_permission() {
         let store = InMemoryOrgStore::new();

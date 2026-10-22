@@ -474,6 +474,29 @@ where
             let _ = self.invitation_store.release_claim(&invitation_id).await;
             return Err(error.into());
         }
+        // Concurrent accepts can all pass the check above, so recount with this member
+        // included and back out if the others already used the seat.
+        let others = match self.membership_store.count_members(&org_id).await {
+            Ok(count) => count.saturating_sub(1),
+            Err(error) => {
+                let _ = self.membership_store.remove_member(&org_id, user_id).await;
+                let _ = self.invitation_store.release_claim(&invitation_id).await;
+                return Err(error.into());
+            }
+        };
+        if !matches!(
+            self.seat_checker.has_seat_available(&org_id, others).await,
+            Ok(true)
+        ) {
+            let _ = self.membership_store.remove_member(&org_id, user_id).await;
+            let _ = self.invitation_store.release_claim(&invitation_id).await;
+            let limit = self
+                .seat_checker
+                .get_seat_limit(&org_id)
+                .await?
+                .unwrap_or(others);
+            return Err(OrganizationError::seat_limit_reached(others, limit));
+        }
         if let Err(error) = self.invitation_store.mark_accepted(&invitation_id).await {
             let _ = self.membership_store.remove_member(&org_id, user_id).await;
             let _ = self.invitation_store.release_claim(&invitation_id).await;

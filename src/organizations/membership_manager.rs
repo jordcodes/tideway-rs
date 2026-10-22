@@ -215,6 +215,37 @@ where
         // Persist membership
         self.membership_store.add_member(&membership).await?;
 
+        // Concurrent adds can all pass the check above, so recount with this member included
+        // and back out if the others already used the seat.
+        let recheck = async {
+            let mut others = self
+                .membership_store
+                .count_members(org_id)
+                .await?
+                .saturating_sub(1);
+            if let Some(count_pending) = &self.pending_invitations {
+                others += count_pending(org_id.to_string()).await?;
+            }
+            let available = self.seat_checker.has_seat_available(org_id, others).await?;
+            crate::error::Result::Ok((others, available))
+        };
+        match recheck.await {
+            Ok((_, true)) => {}
+            Ok((others, false)) => {
+                let _ = self.membership_store.remove_member(org_id, user_id).await;
+                let limit = self
+                    .seat_checker
+                    .get_seat_limit(org_id)
+                    .await?
+                    .unwrap_or(others);
+                return Err(OrganizationError::seat_limit_reached(others, limit));
+            }
+            Err(error) => {
+                let _ = self.membership_store.remove_member(org_id, user_id).await;
+                return Err(error.into());
+            }
+        }
+
         info!(org_id, user_id, actor_id, "Member added");
 
         // Record audit event
