@@ -80,7 +80,9 @@ async fn requests_are_exported_as_otlp_server_spans_with_errors() {
     // The caller's trace context must be continued.
     let trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
     let response = reqwest::Client::new()
-        .get(format!("http://{app_addr}/users/42"))
+        .get(format!(
+            "http://{app_addr}/users/42?expires=1&sig=SIG-SECRET-1&token=TOKEN-SECRET-2&code=CODE-SECRET-3"
+        ))
         .header("traceparent", format!("00-{trace_id}-00f067aa0ba902b7-01"))
         .send()
         .await
@@ -106,6 +108,14 @@ async fn requests_are_exported_as_otlp_server_spans_with_errors() {
         contains(&body, &trace_id_bytes),
         "span must continue the incoming traceparent"
     );
+    assert!(contains(&body, b"/users/42"), "url.path missing");
+    for secret in [&b"SIG-SECRET-1"[..], b"TOKEN-SECRET-2", b"CODE-SECRET-3"] {
+        assert!(
+            !contains(&body, secret),
+            "query string must not be exported: {}",
+            String::from_utf8_lossy(secret)
+        );
+    }
     assert!(
         contains(&body, b"replica lag exceeded"),
         "the server-side error must be attached to the span"

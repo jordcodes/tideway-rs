@@ -25,6 +25,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   `TooManyRequests`. Previously a stolen session could guess the password without limit and, on a
   hit, set a new one. Use `with_rate_limiter` to configure the limit, or `without_rate_limiter`
   only when an equivalent per-account limit exists elsewhere.
+- The request span no longer records the full request URI. With the `otel` feature, its `uri`
+  field exported the raw query string to the trace backend, including `LocalStorage` signed-URL
+  `sig` values and `?token=` parameters. The span now carries only `url.path` and the route; the
+  `uri` field is removed from request spans in debug log output as well.
 
 ## [0.9.0] - 2026-10-15
 
