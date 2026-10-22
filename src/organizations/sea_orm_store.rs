@@ -69,8 +69,8 @@
 
 use async_trait::async_trait;
 use sea_orm::{
-    ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set, TransactionTrait,
-    entity::prelude::*, sea_query::OnConflict,
+    ColumnTrait, DatabaseBackend, DatabaseConnection, EntityTrait, QueryFilter, Set, Statement,
+    TransactionTrait, entity::prelude::*,
 };
 use std::str::FromStr;
 
@@ -312,6 +312,21 @@ fn model_to_organization(model: organization::Model) -> SeaOrmOrganization {
     }
 }
 
+/// Update an existing membership's role, failing with not-found if the row is gone.
+async fn update_membership_role<C: ConnectionTrait>(conn: &C, m: &SeaOrmMembership) -> Result<()> {
+    let result = membership::Entity::update_many()
+        .col_expr(membership::Column::Role, Expr::value(m.role.as_str()))
+        .filter(membership::Column::OrgId.eq(m.org_id.clone()))
+        .filter(membership::Column::UserId.eq(m.user_id.clone()))
+        .exec(conn)
+        .await
+        .map_err(|e| TidewayError::Database(e.to_string()))?;
+    if result.rows_affected == 0 {
+        return Err(TidewayError::not_found("Membership not found"));
+    }
+    Ok(())
+}
+
 /// Convert membership model to exported type.
 fn model_to_membership(model: membership::Model) -> SeaOrmMembership {
     SeaOrmMembership {
@@ -428,6 +443,24 @@ impl SeaOrmOrgStore {
         org: &SeaOrmOrganization,
         membership: &SeaOrmMembership,
     ) -> Result<()> {
+        self.create_org_and_member_within_limit(org, membership, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// Like [`Self::create_org_and_member_atomic`], but only commits if the owner then owns at
+    /// most `max_owned` organizations.
+    ///
+    /// Returns `Ok(false)`, with nothing written, when the limit would be exceeded. The owner's
+    /// count is taken inside the transaction after the insert, and on Postgres concurrent creates
+    /// for one owner are serialized with a transaction-scoped advisory lock, so concurrent
+    /// requests cannot all pass a stale count. SQLite serializes writers on its own.
+    pub async fn create_org_and_member_within_limit(
+        &self,
+        org: &SeaOrmOrganization,
+        membership: &SeaOrmMembership,
+        max_owned: Option<u32>,
+    ) -> Result<bool> {
         tracing::debug!(
             org_id = %org.id,
             user_id = %membership.user_id,
@@ -439,6 +472,16 @@ impl SeaOrmOrgStore {
             .begin()
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
+
+        if max_owned.is_some() && txn.get_database_backend() == DatabaseBackend::Postgres {
+            txn.execute(Statement::from_sql_and_values(
+                DatabaseBackend::Postgres,
+                "SELECT pg_advisory_xact_lock(hashtext($1))",
+                [format!("tideway:org-owner:{}", org.owner_id).into()],
+            ))
+            .await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        }
 
         // Create organization
         let org_model = organization::ActiveModel {
@@ -469,6 +512,18 @@ impl SeaOrmOrgStore {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
+        if let Some(max) = max_owned {
+            let owned = organization::Entity::find()
+                .filter(organization::Column::OwnerId.eq(org.owner_id.clone()))
+                .count(&txn)
+                .await
+                .map_err(|e| TidewayError::Database(e.to_string()))?;
+            if owned > u64::from(max) {
+                // Dropping the transaction rolls back both inserts.
+                return Ok(false);
+            }
+        }
+
         // Commit transaction
         txn.commit()
             .await
@@ -480,7 +535,7 @@ impl SeaOrmOrgStore {
             "organization and owner created atomically"
         );
 
-        Ok(())
+        Ok(true)
     }
 
     /// Transfer ownership in one database transaction.
@@ -635,32 +690,29 @@ impl OrganizationStore for SeaOrmOrgStore {
     async fn update(&self, org: &Self::Organization) -> Result<()> {
         tracing::debug!(org_id = %org.id, "updating organization");
 
-        let model = organization::ActiveModel {
-            id: Set(org.id.clone()),
-            name: Set(org.name.clone()),
-            slug: Set(org.slug.clone()),
-            owner_id: Set(org.owner_id.clone()),
-            contact_email: Set(org.contact_email.clone()),
-            created_at: Set(u64_to_i64(org.created_at)),
-            updated_at: Set(u64_to_i64(org.updated_at)),
-        };
-
-        // Use upsert to handle both insert and update
-        organization::Entity::insert(model)
-            .on_conflict(
-                OnConflict::column(organization::Column::Id)
-                    .update_columns([
-                        organization::Column::Name,
-                        organization::Column::Slug,
-                        organization::Column::OwnerId,
-                        organization::Column::ContactEmail,
-                        organization::Column::UpdatedAt,
-                    ])
-                    .to_owned(),
+        // Update only: a stale write must not re-create a deleted organization.
+        let result = organization::Entity::update_many()
+            .col_expr(organization::Column::Name, Expr::value(org.name.clone()))
+            .col_expr(organization::Column::Slug, Expr::value(org.slug.clone()))
+            .col_expr(
+                organization::Column::OwnerId,
+                Expr::value(org.owner_id.clone()),
             )
+            .col_expr(
+                organization::Column::ContactEmail,
+                Expr::value(org.contact_email.clone()),
+            )
+            .col_expr(
+                organization::Column::UpdatedAt,
+                Expr::value(u64_to_i64(org.updated_at)),
+            )
+            .filter(organization::Column::Id.eq(org.id.clone()))
             .exec(&self.db)
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
+        if result.rows_affected == 0 {
+            return Err(TidewayError::not_found("Organization not found"));
+        }
 
         Ok(())
     }
@@ -816,25 +868,8 @@ impl MembershipStore for SeaOrmOrgStore {
             "updating membership"
         );
 
-        let model = membership::ActiveModel {
-            org_id: Set(m.org_id.clone()),
-            user_id: Set(m.user_id.clone()),
-            role: Set(m.role.as_str().to_string()),
-            joined_at: Set(u64_to_i64(m.joined_at)),
-        };
-
-        // Use upsert
-        membership::Entity::insert(model)
-            .on_conflict(
-                OnConflict::columns([membership::Column::OrgId, membership::Column::UserId])
-                    .update_columns([membership::Column::Role])
-                    .to_owned(),
-            )
-            .exec(&self.db)
-            .await
-            .map_err(|e| TidewayError::Database(e.to_string()))?;
-
-        Ok(())
+        // Update only: a write racing a removal must not re-create the membership.
+        update_membership_role(&self.db, m).await
     }
 
     fn membership_user_id(&self, m: &Self::Membership) -> String {
@@ -906,23 +941,9 @@ impl MembershipStore for SeaOrmOrgStore {
             .await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
 
+        // A missing membership aborts the transaction instead of being inserted.
         for m in memberships {
-            let model = membership::ActiveModel {
-                org_id: Set(m.org_id.clone()),
-                user_id: Set(m.user_id.clone()),
-                role: Set(m.role.as_str().to_string()),
-                joined_at: Set(u64_to_i64(m.joined_at)),
-            };
-
-            membership::Entity::insert(model)
-                .on_conflict(
-                    OnConflict::columns([membership::Column::OrgId, membership::Column::UserId])
-                        .update_columns([membership::Column::Role])
-                        .to_owned(),
-                )
-                .exec(&txn)
-                .await
-                .map_err(|e| TidewayError::Database(e.to_string()))?;
+            update_membership_role(&txn, m).await?;
         }
 
         txn.commit()

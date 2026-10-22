@@ -36,6 +36,7 @@ mod metrics_integration_test;
 mod middleware_stack_test;
 #[cfg(feature = "auth-oauth")]
 mod oauth_test;
+mod organization_seaorm_integrity_test;
 mod organization_transfer_seaorm_test;
 #[cfg(feature = "otel")]
 mod otel_export_test;

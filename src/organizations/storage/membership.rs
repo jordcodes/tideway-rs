@@ -80,6 +80,10 @@ pub trait MembershipStore: Send + Sync {
     async fn list_members(&self, org_id: &str) -> Result<Vec<Self::Membership>>;
 
     /// Update an existing membership.
+    ///
+    /// Must not create a missing membership: return a not-found error instead. Managers read,
+    /// check, and then write without a lock, so an insert-or-update here would re-create a member
+    /// removed in between, with their old role.
     async fn update_membership(&self, membership: &Self::Membership) -> Result<()>;
 
     // === Required accessor methods ===

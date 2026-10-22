@@ -265,6 +265,10 @@ where
     /// Create a new organization with the user as owner.
     ///
     /// Returns the store's Organization type.
+    ///
+    /// `max_orgs_per_user` is checked before the insert, so concurrent creates by one user can
+    /// exceed it with stores that offer no atomic primitive. With the SeaORM store, use
+    /// [`Self::create_atomic`], which enforces the limit inside its transaction.
     #[instrument(skip(self, org_factory, membership_factory), fields(org.name = %name))]
     pub async fn create<F, G>(
         &self,
@@ -673,9 +677,15 @@ where
             joined_at: now,
         };
 
-        self.org_store
-            .create_org_and_member_atomic(&org, &membership)
-            .await?;
+        // The pre-check above fails fast; this enforces the limit against concurrent creates.
+        if !self
+            .org_store
+            .create_org_and_member_within_limit(&org, &membership, self.config.max_orgs_per_user)
+            .await?
+        {
+            let limit = self.config.max_orgs_per_user.unwrap_or_default();
+            return Err(OrganizationError::max_orgs_reached(limit));
+        }
         self.audit_store
             .record(
                 OrgAuditEntry::new(OrgAuditEvent::OrgCreated, &org.id, user_id)

@@ -88,6 +88,9 @@ pub trait OrganizationStore: Send + Sync {
     async fn find_by_slug(&self, slug: &str) -> Result<Option<Self::Organization>>;
 
     /// Update an organization.
+    ///
+    /// Must not create a missing organization: return a not-found error instead, so a stale
+    /// write cannot re-create a deleted organization.
     async fn update(&self, org: &Self::Organization) -> Result<()>;
 
     /// Delete an organization.

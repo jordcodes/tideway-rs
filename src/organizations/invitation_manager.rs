@@ -439,6 +439,36 @@ where
             ));
         }
 
+        // Recheck capacity: members may have been added directly, or the seat limit lowered,
+        // since the invitation reserved its seat.
+        let member_count = match self.membership_store.count_members(&org_id).await {
+            Ok(count) => count,
+            Err(error) => {
+                let _ = self.invitation_store.release_claim(&invitation_id).await;
+                return Err(error.into());
+            }
+        };
+        match self
+            .seat_checker
+            .has_seat_available(&org_id, member_count)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                let _ = self.invitation_store.release_claim(&invitation_id).await;
+                let limit = self
+                    .seat_checker
+                    .get_seat_limit(&org_id)
+                    .await?
+                    .unwrap_or(member_count);
+                return Err(OrganizationError::seat_limit_reached(member_count, limit));
+            }
+            Err(error) => {
+                let _ = self.invitation_store.release_claim(&invitation_id).await;
+                return Err(error.into());
+            }
+        }
+
         // Add member and mark invitation as accepted
         if let Err(error) = self.membership_store.add_member(&membership).await {
             let _ = self.invitation_store.release_claim(&invitation_id).await;

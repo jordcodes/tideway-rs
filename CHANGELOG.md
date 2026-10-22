@@ -69,6 +69,23 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - `ImpersonationManager::validate_session` re-checks that the session's admin still passes
   `is_admin` and ends the session if not, so a demoted admin can no longer keep using an
   impersonation token. New `end_all_for_admin` ends an admin's sessions, for example on logout.
+- `OrganizationManager::create_atomic` enforces `max_orgs_per_user` inside its transaction.
+  The count used to be read before the insert with nothing serializing them, so concurrent
+  requests from one user could each pass it (10 of 10 concurrent creates against a limit of 2 in
+  testing). The new `SeaOrmOrgStore::create_org_and_member_within_limit` re-counts after the
+  insert and rolls back if over the limit, taking a per-owner advisory lock on Postgres. The
+  limit in the store-agnostic `create` remains best-effort under concurrency.
+- `SeaOrmOrgStore::update`, `update_membership`, and `update_memberships_atomic` only update
+  existing rows and return not-found otherwise. They were upserts, so a role update racing a
+  removal re-created the removed member with their old role, and a stale organization update
+  re-created a deleted organization. `MembershipStore::update_membership` and
+  `OrganizationStore::update` document this contract for custom stores.
+- `InvitationManager::accept` rechecks seat capacity before adding the member, failing with
+  `SeatLimitReached` and leaving the invitation pending when the organization is full. It relied
+  on the seat reserved at invite time, which direct `add_member` calls or a seat downgrade could
+  consume, so accepted invitations could push an organization past its paid seats.
+  `MembershipManager::with_invitation_store` makes `add_member` count pending invitations, as the
+  `SeatChecker` contract describes.
 
 ## [0.9.0] - 2026-10-15
 
