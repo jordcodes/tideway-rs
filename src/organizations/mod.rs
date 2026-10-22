@@ -64,7 +64,9 @@ pub use error::OrganizationError;
 
 // Manager exports
 pub use invitation_manager::{InvitationCreateParams, InvitationManager};
-pub use manager::{MembershipCreateParams, OrgCreateParams, OrganizationManager};
+pub use manager::{
+    EmailVerificationChecker, MembershipCreateParams, OrgCreateParams, OrganizationManager,
+};
 pub use membership_manager::MembershipManager;
 
 // Seat checker exports

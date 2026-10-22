@@ -72,6 +72,10 @@ pub trait SessionStore: Send + Sync {
     async fn save(&self, session_id: &str, data: SessionData) -> Result<()>;
 
     /// Delete a session
+    ///
+    /// After this returns, [`Self::load`] returns `Ok(None)` for `session_id` on stores where
+    /// [`Self::supports_revocation`] is `true`. Stateless stores cannot revoke a session that a
+    /// client still holds; see [`Self::supports_revocation`].
     async fn delete(&self, session_id: &str) -> Result<()>;
 
     /// Clean up expired sessions
@@ -81,4 +85,13 @@ pub trait SessionStore: Send + Sync {
 
     /// Check if the session store is healthy
     fn is_healthy(&self) -> bool;
+
+    /// Whether [`Self::delete`] revokes the session server-side.
+    ///
+    /// `false` for stateless stores such as `CookieSessionStore`, where the session lives in the
+    /// client's cookie: deleting only lets the HTTP layer clear that cookie, and a copy of it
+    /// stays valid until it expires.
+    fn supports_revocation(&self) -> bool {
+        true
+    }
 }

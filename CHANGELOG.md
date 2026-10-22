@@ -42,6 +42,24 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   overwrite newer status, plan, or seats, for example reactivating an unpaid subscription. Handlers
   built without a client keep storing the payload; pass your `LiveStripeClient` to opt in. The new
   `NoSubscriptionClient` type is the default client parameter.
+- `OPENAPI_VISIBILITY` / `OpenApiConfig::visibility` is applied. It was parsed but never used, so
+  `OPENAPI_VISIBILITY=public` still served operations tagged `internal` to anyone who could reach
+  the spec or Swagger UI. `create_openapi_router` now filters the served document, and the new
+  `tideway::openapi::filter_openapi` applies the same filter to an exported document.
+- **Behaviour change:** `OrganizationConfig::require_verified_email` now defaults to `false` and
+  is enforced. It used to default to `true` without being read, so organizations were never
+  gated on email verification. Set it with `OrganizationManager::with_email_verification_checker`
+  and a new `EmailVerificationChecker`; unverified users then get
+  `OrganizationError::EmailNotVerified`. Apps that set it to `true` explicitly without a checker
+  now get a configuration error from `create` and `create_atomic`, because they previously had
+  no protection.
+- `RegistrationFlow::register_without_enumeration` registers without revealing whether an email
+  already has an account: new and existing emails both return `Ok(())` after hashing, and the
+  new `UserCreator::notify_existing_account` hook (default no-op) is called for existing ones.
+  `register` is unchanged; the docs no longer claim that it prevents enumeration.
+- `SessionStore::supports_revocation` (default `true`) reports whether `delete` revokes a session.
+  `CookieSessionStore` returns `false`: its `delete` cannot invalidate copies of a cookie, which
+  stay valid until they expire. The session docs now say so and describe alternatives.
 
 ## [0.9.0] - 2026-10-15
 

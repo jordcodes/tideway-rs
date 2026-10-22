@@ -12,9 +12,15 @@ use axum::{Json, Router, routing::get};
 #[cfg(feature = "openapi")]
 use utoipa_swagger_ui::SwaggerUi;
 
+/// Tag that marks an operation as internal for [`OpenApiVisibility`] filtering.
+pub const INTERNAL_TAG: &str = "internal";
+
 /// Create a router with Swagger UI and OpenAPI spec endpoints
+///
+/// The served document is filtered by `config.visibility` first.
 #[cfg(feature = "openapi")]
 pub fn create_openapi_router(openapi: utoipa::openapi::OpenApi, config: &OpenApiConfig) -> Router {
+    let openapi = filter_openapi(openapi, &config.visibility);
     let mut router = Router::new();
 
     // Swagger UI already serves the configured spec URL via `.url(...)`, so only
@@ -42,6 +48,68 @@ pub fn create_openapi_router(openapi: utoipa::openapi::OpenApi, config: &OpenApi
     }
 
     router
+}
+
+/// Remove operations that `visibility` excludes.
+///
+/// [`OpenApiVisibility::PublicOnly`] drops operations tagged [`INTERNAL_TAG`] (case-insensitive),
+/// [`OpenApiVisibility::InternalOnly`] keeps only those, and [`OpenApiVisibility::All`] returns the
+/// document unchanged. Paths left without operations are removed.
+#[cfg(feature = "openapi")]
+#[must_use]
+pub fn filter_openapi(
+    mut openapi: utoipa::openapi::OpenApi,
+    visibility: &OpenApiVisibility,
+) -> utoipa::openapi::OpenApi {
+    let keep_internal = match visibility {
+        OpenApiVisibility::All => return openapi,
+        OpenApiVisibility::PublicOnly => false,
+        OpenApiVisibility::InternalOnly => true,
+    };
+    let is_internal = |op: &utoipa::openapi::path::Operation| {
+        op.tags
+            .iter()
+            .flatten()
+            .any(|tag| tag.eq_ignore_ascii_case(INTERNAL_TAG))
+    };
+
+    openapi.paths.paths.retain(|_, item| {
+        for op in [
+            &mut item.get,
+            &mut item.put,
+            &mut item.post,
+            &mut item.delete,
+            &mut item.options,
+            &mut item.head,
+            &mut item.patch,
+            &mut item.trace,
+        ] {
+            if op
+                .as_ref()
+                .is_some_and(|op| is_internal(op) != keep_internal)
+            {
+                *op = None;
+            }
+        }
+        [
+            &item.get,
+            &item.put,
+            &item.post,
+            &item.delete,
+            &item.options,
+            &item.head,
+            &item.patch,
+            &item.trace,
+        ]
+        .iter()
+        .any(|op| op.is_some())
+    });
+
+    if !keep_internal && let Some(tags) = &mut openapi.tags {
+        tags.retain(|tag| !tag.name.eq_ignore_ascii_case(INTERNAL_TAG));
+    }
+
+    openapi
 }
 
 /// Merge multiple OpenAPI specs into one.
@@ -139,6 +207,81 @@ mod tests {
 
         let router = create_openapi_router(ADoc::openapi(), &config);
         let _ = router;
+    }
+
+    fn visibility_fixture() -> utoipa::openapi::OpenApi {
+        use utoipa::openapi::path::{HttpMethod, OperationBuilder, PathItem};
+        use utoipa::openapi::{OpenApiBuilder, PathsBuilder, tag::TagBuilder};
+
+        let op = |tag: &str| OperationBuilder::new().tag(tag).build();
+        let mut mixed = PathItem::new(HttpMethod::Get, op("customers"));
+        mixed.delete = Some(op("Internal"));
+        OpenApiBuilder::new()
+            .paths(PathsBuilder::new().path("/customers", mixed).path(
+                "/admin/jobs",
+                PathItem::new(HttpMethod::Post, op("internal")),
+            ))
+            .tags(Some([
+                TagBuilder::new().name("customers").build(),
+                TagBuilder::new().name("internal").build(),
+            ]))
+            .build()
+    }
+
+    #[test]
+    fn test_filter_openapi_public_only_drops_internal_operations() {
+        let openapi = filter_openapi(visibility_fixture(), &OpenApiVisibility::PublicOnly);
+        let json = serde_json::to_value(&openapi).unwrap();
+
+        assert!(json["paths"].get("/admin/jobs").is_none());
+        assert!(json["paths"]["/customers"].get("get").is_some());
+        assert!(json["paths"]["/customers"].get("delete").is_none());
+        assert!(!json.to_string().to_lowercase().contains("internal"));
+    }
+
+    #[test]
+    fn test_filter_openapi_internal_only_and_all() {
+        let internal = filter_openapi(visibility_fixture(), &OpenApiVisibility::InternalOnly);
+        let json = serde_json::to_value(&internal).unwrap();
+        assert!(json["paths"]["/admin/jobs"].get("post").is_some());
+        assert!(json["paths"]["/customers"].get("get").is_none());
+        assert!(json["paths"]["/customers"].get("delete").is_some());
+
+        let all = filter_openapi(visibility_fixture(), &OpenApiVisibility::All);
+        assert_eq!(
+            serde_json::to_value(&all).unwrap(),
+            serde_json::to_value(visibility_fixture()).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_served_spec_respects_visibility() {
+        use tower::ServiceExt;
+
+        for swagger_ui in [false, true] {
+            let config = OpenApiConfig {
+                enabled: true,
+                swagger_ui,
+                serve_spec: true,
+                visibility: OpenApiVisibility::PublicOnly,
+                ..Default::default()
+            };
+            let response = create_openapi_router(visibility_fixture(), &config)
+                .oneshot(
+                    axum::http::Request::get(&config.spec_path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(body.contains("/customers"), "swagger_ui={swagger_ui}");
+            assert!(!body.contains("/admin/jobs"), "swagger_ui={swagger_ui}");
+        }
     }
 
     #[test]

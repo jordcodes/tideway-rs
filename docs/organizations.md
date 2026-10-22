@@ -193,6 +193,32 @@ let manager = OrganizationManager::new(
 );
 ```
 
+### Requiring a verified email
+
+`OrganizationConfig::require_verified_email(true)` blocks users without a verified email from
+creating organizations (`OrganizationError::EmailNotVerified`). The manager has no user store, so
+give it an `EmailVerificationChecker`:
+
+```rust
+use tideway::organizations::EmailVerificationChecker;
+
+struct UsersVerified { db: DatabaseConnection }
+
+#[async_trait::async_trait]
+impl EmailVerificationChecker for UsersVerified {
+    async fn is_email_verified(&self, user_id: &str) -> tideway::Result<bool> {
+        // e.g. look up users.email_verified_at for user_id
+    }
+}
+
+let manager = OrganizationManager::new(org_store, membership_store, UnlimitedSeats,
+    OrganizationConfig::default().require_verified_email(true))
+    .with_email_verification_checker(UsersVerified { db });
+```
+
+The requirement is off by default. With it on and no checker configured, `create` and
+`create_atomic` fail with a configuration error rather than skipping the check.
+
 For JWT org-context extraction and permission guards, use:
 
 - `organizations::auth::OrgStoreLayer`

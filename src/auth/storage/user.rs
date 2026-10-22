@@ -148,6 +148,17 @@ pub trait UserCreator: Send + Sync {
 
     /// Send a verification email to the user.
     async fn send_verification_email(&self, user: &Self::User) -> Result<()>;
+
+    /// Tell the owner of an existing account that someone tried to register with their email.
+    ///
+    /// Called by [`RegistrationFlow::register_without_enumeration`] instead of revealing the
+    /// account to the caller. The default does nothing.
+    ///
+    /// [`RegistrationFlow::register_without_enumeration`]: crate::auth::flows::RegistrationFlow::register_without_enumeration
+    async fn notify_existing_account(&self, email: &str) -> Result<()> {
+        let _ = email;
+        Ok(())
+    }
 }
 
 /// Trait for password reset token storage.

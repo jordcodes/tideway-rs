@@ -19,6 +19,15 @@ use std::time::{Duration, SystemTime};
 /// Stores session data in encrypted HTTP cookies. Suitable for stateless
 /// applications where session data is small.
 ///
+/// # Revocation
+///
+/// Sessions cannot be revoked server-side. [`SessionStore::delete`] does nothing beyond letting
+/// the HTTP layer clear the cookie in the browser that sent it, and any copy of the cookie keeps
+/// loading until its `expires_at`. [`SessionStore::supports_revocation`] returns `false`. If logout
+/// or "sign out everywhere" must cut off stolen cookies, keep TTLs short and store a per-user
+/// generation in the session that you compare with a server-side value on each request, or use
+/// a server-side store.
+///
 /// # Security
 ///
 /// Session data is encrypted using XChaCha20-Poly1305 authenticated encryption
@@ -223,8 +232,8 @@ impl SessionStore for CookieSessionStore {
     }
 
     async fn delete(&self, _session_id: &str) -> Result<()> {
-        // Deleting a cookie means setting it with max_age=0
-        // This is handled at the HTTP layer, so we just return Ok
+        // Deleting a cookie means setting it with max_age=0 at the HTTP layer. There is no
+        // server-side state, so copies of the cookie stay valid; see `supports_revocation`.
         Ok(())
     }
 
@@ -235,6 +244,10 @@ impl SessionStore for CookieSessionStore {
 
     fn is_healthy(&self) -> bool {
         true
+    }
+
+    fn supports_revocation(&self) -> bool {
+        false
     }
 }
 
@@ -276,6 +289,24 @@ mod tests {
         let decrypted_data = decrypted.unwrap();
         assert_eq!(decrypted_data.get("user_id"), Some(&"12345".to_string()));
         assert_eq!(decrypted_data.get("role"), Some(&"admin".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_cookie_store_reports_no_revocation() {
+        let store = CookieSessionStore::new(&test_config()).unwrap();
+        let cookie = store
+            .encrypt(&SessionData::new(Duration::from_secs(3600)))
+            .unwrap();
+
+        store.delete(&cookie).await.unwrap();
+
+        // A copied cookie still loads after delete, which is what supports_revocation reports.
+        assert!(store.load(&cookie).await.unwrap().is_some());
+        assert!(!store.supports_revocation());
+        assert!(
+            crate::session::InMemorySessionStore::new(Duration::from_secs(60))
+                .supports_revocation()
+        );
     }
 
     #[test]

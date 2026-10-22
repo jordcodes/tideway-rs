@@ -1450,6 +1450,7 @@ All auth operations emit structured tracing events for security monitoring:
 | `auth.register.success` | INFO | User registered |
 | `auth.register.failed` | INFO | Registration failed |
 | `auth.register.verification_email_failed` | WARN | Failed to send verification email |
+| `auth.register.existing_account_notice_failed` | WARN | Failed to notify an existing account owner |
 
 ### Email Verification Events
 
@@ -2201,7 +2202,12 @@ The auth flows prevent email enumeration:
 - Login returns same error for "user not found" and "wrong password"
 - Login returns that same error for a locked account whatever password is sent, so a lockout
   cannot confirm a guess. Tell users about a lock out of band (for example a lockout email)
-- Registration returns generic "Registration failed" for existing emails
+- `RegistrationFlow::register` returns the created user, so it reveals whether an email is
+  already registered (an existing email gets "Registration failed"). Where that matters, call
+  `register_without_enumeration` instead: it returns `Ok(())` for new and existing emails alike,
+  hashes the password in both cases, and calls `UserCreator::notify_existing_account` so the
+  owner can be emailed. Answer with the same "check your email" response and do not log the
+  user in from registration
 - Password reset always returns success (even for non-existent emails)
 
 Internal logs capture the actual reason for debugging.
