@@ -97,6 +97,7 @@ async fn boom() -> tideway::Result<&'static str> {
     Err(TidewayError::internal("connection pool exhausted"))
 }
 
+#[allow(clippy::result_large_err)]
 async fn boom_with_context() -> std::result::Result<&'static str, ErrorWithContext> {
     Err(TidewayError::internal("db-prod-01 failed")
         .with_context(ErrorContext::new().with_detail("Failed to connect to the primary database")))
