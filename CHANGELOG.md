@@ -115,6 +115,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 - `UploadPolicy::finalize` confirms an upload and moves it to a key the presigned URL cannot write.
   The URL stays valid until it expires, so after `confirm` a client could overwrite the recorded
   object, for example with one larger than `max_bytes`.
+- Refresh tokens carry the user's session version (`RefreshTokenClaims::session_version`), and
+  `TokenRefreshFlow::refresh` rejects and revokes a family whose version no longer matches
+  `UserLoader::session_version`. A login whose password check was in flight when a password
+  reset, lock, or MFA change bumped the version used to insert a fresh family afterwards and keep
+  refreshing indefinitely. Tokens issued before this change carry no version and keep their
+  original expiry. Code that builds `RefreshTokenClaims` literally must set the new field.
 
 ## [0.9.0] - 2026-10-15
 
@@ -613,6 +619,30 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   0.9.0); release it before this CLI. Existing apps can add
   `.with_subscription_client(state.stripe_client.clone())` after `.with_event_sink(...)` in
   `src/billing/routes.rs`.
+- The second security audit (CLI scope) found the issues below; generated code is application
+  code, so existing apps need the matching edits by hand. Template fixes for refresh sessions rely
+  on the Tideway release with refresh-token session versions, so release that first.
+  - `tideway resource --profile event` generated public, unscoped CRUD in SaaS apps. Event
+    resources are now organization-scoped with a policy, or admin-guarded without organizations.
+    In apps with auth, `owned`, `admin` and `event` refuse to generate DB-backed routes when their
+    guard cannot apply, and the `Authorization` curl hint is only printed when a guard exists.
+  - Generated SaaS stores keep an administrator lock through failed logins and password resets.
+    The lockout and the admin lock share `locked_until`; five wrong passwords shortened an admin
+    lock to 15 minutes, and a self-service reset removed it. Lockout writers now only extend a
+    lock, and logins and resets clear only locks inside the automatic-lockout window.
+  - Impersonation tokens can no longer create or manage organization API keys or send
+    invitations, which outlived the session (`RequestActor::require_not_impersonating`). Billing
+    owner routes enforce the session's blocked actions (`RequestActor::require_action_allowed`
+    with `modify_billing`). Locking or demoting an admin ends their impersonation sessions.
+  - Starter apps sign out every session when MFA is enabled or disabled, and a password reset
+    also invalidates pending MFA challenges.
+  - `tideway generate client` keeps OpenAPI text inside comments (line terminators and `*/` are
+    neutralized) and no longer turns an undeclared path placeholder into a JavaScript expression.
+  - The CLI's file writes refuse to follow a symlink at the destination, so a repository-planted
+    `.env` symlink cannot redirect `tideway doctor --fix`. `.env` is created owner-only.
+  - `tideway migrate` lets shell variables win over `.env`, so `sea-orm-cli` uses the
+    `DATABASE_URL` that was validated. `fresh` and `refresh` are validated too.
+  - `tideway resource` rejects names that are not snake_case identifiers, such as `../x`.
 
 ### Added
 

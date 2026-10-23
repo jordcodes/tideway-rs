@@ -76,6 +76,9 @@ impl DbUserStore {
     {{#if has_auth_mfa_feature}}
     /// Persist verified TOTP enrollment and a fresh set of plaintext backup codes.
     ///
+    /// Enrollment signs out every existing session (they never passed MFA); the user
+    /// logs in again with their second factor.
+    ///
     /// Call this only after verifying a TOTP code against `totp_secret`. The
     /// secret is encrypted and backup codes are Argon2id-hashed before the
     /// transaction writes any MFA state.
@@ -110,6 +113,11 @@ impl DbUserStore {
                 Expr::value(Option::<i64>::None),
             )
             .col_expr(user::Column::FailedMfaAttempts, Expr::value(0))
+            // Sessions that never passed MFA must not survive enrollment.
+            .col_expr(
+                user::Column::SessionVersion,
+                Expr::col(user::Column::SessionVersion).add(1),
+            )
             .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
             .filter(user::Column::Id.eq(user_id))
             .filter(user::Column::MfaEnabled.eq(false))
@@ -121,6 +129,11 @@ impl DbUserStore {
         }
         mfa_backup_code::Entity::delete_many()
             .filter(mfa_backup_code::Column::UserId.eq(user_id))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        refresh_token_family::Entity::delete_many()
+            .filter(refresh_token_family::Column::UserId.eq(user_id))
             .exec(&transaction)
             .await
             .map_err(|error| TidewayError::Database(error.to_string()))?;
@@ -141,7 +154,8 @@ impl DbUserStore {
             .map_err(|error| TidewayError::Database(error.to_string()))
     }
 
-    /// Disable MFA and remove all recovery material atomically.
+    /// Disable MFA and remove all recovery material atomically. Like enrollment, this
+    /// signs out every existing session.
     pub async fn disable_mfa(&self, user_id: Uuid) -> Result<()> {
         let transaction = self
             .db
@@ -159,6 +173,10 @@ impl DbUserStore {
                 Expr::value(Option::<i64>::None),
             )
             .col_expr(user::Column::FailedMfaAttempts, Expr::value(0))
+            .col_expr(
+                user::Column::SessionVersion,
+                Expr::col(user::Column::SessionVersion).add(1),
+            )
             .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
             .filter(user::Column::Id.eq(user_id))
             .filter(user::Column::MfaEnabled.eq(true))
@@ -170,6 +188,11 @@ impl DbUserStore {
         }
         mfa_backup_code::Entity::delete_many()
             .filter(mfa_backup_code::Column::UserId.eq(user_id))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
+        refresh_token_family::Entity::delete_many()
+            .filter(refresh_token_family::Column::UserId.eq(user_id))
             .exec(&transaction)
             .await
             .map_err(|error| TidewayError::Database(error.to_string()))?;
@@ -708,10 +731,11 @@ impl PasswordResetStore for DbUserStore {
             return Err(TidewayError::not_found("User not found"));
         }
 
+        // Pending MFA challenges come from logins with the old password.
         auth_token::Entity::update_many()
             .col_expr(auth_token::Column::UsedAt, Expr::value(Some(now)))
             .filter(auth_token::Column::UserId.eq(token.user_id))
-            .filter(auth_token::Column::TokenType.eq("password_reset"))
+            .filter(auth_token::Column::TokenType.is_in(["password_reset", "mfa_challenge"]))
             .filter(auth_token::Column::UsedAt.is_null())
             .exec(&transaction)
             .await

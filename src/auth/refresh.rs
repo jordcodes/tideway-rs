@@ -205,6 +205,21 @@ where
             }
         };
 
+        // A family created by a login that raced a revocation (password reset, lock, MFA
+        // change) carries the old session version; it must not outlive that revocation.
+        if let Some(issued_version) = claims.session_version
+            && issued_version != self.user_loader.session_version(&user)
+        {
+            tracing::warn!(
+                target: "auth.token.invalid",
+                user_id = %user_id,
+                family = %family,
+                "Refresh token predates a session revocation"
+            );
+            self.store.revoke_family(family).await?;
+            return Err(TidewayError::Unauthorized("Token has been revoked".into()));
+        }
+
         // Atomically advance generation.
         // This prevents concurrent refresh requests from both succeeding.
         let new_generation = claims
@@ -339,6 +354,8 @@ mod tests {
     use super::*;
     use crate::auth::jwt_issuer::JwtIssuerConfig;
     use crate::auth::storage::token::test::InMemoryRefreshTokenStore;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     struct TestUserLoader;
 
@@ -391,6 +408,66 @@ mod tests {
         assert!(!refreshed.access_token.is_empty());
         assert!(!refreshed.refresh_token.is_empty());
         assert_ne!(refreshed.refresh_token, initial.refresh_token);
+    }
+
+    /// Reports a session version that tests can bump, like a password reset would.
+    struct VersionedUserLoader(Arc<AtomicU64>);
+
+    #[async_trait]
+    impl UserLoader for VersionedUserLoader {
+        type User = u64;
+
+        async fn load_user(&self, _user_id: &str) -> Result<Option<Self::User>> {
+            Ok(Some(self.0.load(Ordering::SeqCst)))
+        }
+
+        fn user_email(&self, _user: &Self::User) -> Option<String> {
+            None
+        }
+
+        fn user_name(&self, _user: &Self::User) -> Option<String> {
+            None
+        }
+
+        fn session_version(&self, user: &Self::User) -> u64 {
+            *user
+        }
+    }
+
+    #[tokio::test]
+    async fn test_refresh_rejects_family_issued_before_session_revocation() {
+        let secret = b"test-secret-key-32-bytes-long!!";
+        let issuer = JwtIssuer::new(JwtIssuerConfig::with_secret(
+            String::from_utf8_lossy(secret).to_string(),
+            "test-app",
+        ))
+        .unwrap();
+        let version = Arc::new(AtomicU64::new(3));
+        let store = InMemoryRefreshTokenStore::new();
+        let flow = TokenRefreshFlow::new(
+            issuer.clone(),
+            store,
+            VersionedUserLoader(version.clone()),
+            secret,
+        );
+
+        // Issued from a login snapshot at version 3, as if the login was in flight...
+        let initial = issuer
+            .issue(TokenSubject::new("user-123").with_session_version(3), false)
+            .unwrap();
+        let refreshed = flow.refresh(&initial.refresh_token).await.unwrap();
+
+        // ...when a password reset or lock bumped the version.
+        version.store(4, Ordering::SeqCst);
+        let error = flow.refresh(&refreshed.refresh_token).await.unwrap_err();
+        assert!(error.to_string().contains("revoked"), "{error}");
+        assert!(flow.store.is_family_revoked(&initial.family).await.unwrap());
+
+        // Tokens issued after the change keep working.
+        let current = issuer
+            .issue(TokenSubject::new("user-123").with_session_version(4), false)
+            .unwrap();
+        flow.refresh(&current.refresh_token).await.unwrap();
     }
 
     #[tokio::test]

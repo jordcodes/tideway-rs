@@ -223,6 +223,12 @@ pub struct RefreshTokenClaims {
     pub family: String,
     /// Generation in this family (increments on each refresh)
     pub generation: u32,
+    /// User session version at authentication. A refresh is rejected once the user's
+    /// session version has moved on (password reset, lock, MFA change), so a login that
+    /// completes after a revocation cannot keep minting tokens. `None` for tokens issued
+    /// before this claim existed; those keep their original expiry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_version: Option<u64>,
 }
 
 /// Issued token pair.
@@ -396,6 +402,7 @@ impl JwtIssuer {
             token_type: TokenType::Refresh,
             family: family.clone(),
             generation: 0,
+            session_version: Some(subject.session_version),
         };
 
         let header = self.build_header();
@@ -509,6 +516,7 @@ impl JwtIssuer {
             token_type: TokenType::Refresh,
             family: old_claims.family.clone(),
             generation: old_claims.generation + 1,
+            session_version: old_claims.session_version,
         };
 
         let header = self.build_header();
