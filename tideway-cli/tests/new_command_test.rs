@@ -1085,6 +1085,11 @@ fn test_new_command_with_preset_saas() {
         ".default(\"{}\")",
     );
     assert_file_not_contains(&project_dir.join("docker-compose.yml"), "version:");
+    // The dev database uses fixed credentials, so it must not listen on every interface.
+    assert_file_contains(
+        &project_dir.join("docker-compose.yml"),
+        "\"127.0.0.1:5432:5432\"",
+    );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
         "Replace the local-only STRIPE_SECRET_KEY before running outside development",
