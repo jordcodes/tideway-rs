@@ -799,11 +799,12 @@ impl DbRefreshTokenStore {
     async fn cleanup_stale_families(&self) -> Result<()> {
         static LAST_CLEANUP: AtomicI64 = AtomicI64::new(0);
         let now = Utc::now().timestamp();
-        if LAST_CLEANUP
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
-                (now.saturating_sub(last) >= 3600).then_some(now)
-            })
-            .is_err()
+        // A failed exchange means a concurrent call claimed this cleanup run.
+        let last = LAST_CLEANUP.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 3600
+            || LAST_CLEANUP
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
         {
             return Ok(());
         }
@@ -926,11 +927,12 @@ impl DbMfaTokenStore {
     async fn cleanup_expired(&self) -> Result<()> {
         static LAST_CLEANUP: AtomicI64 = AtomicI64::new(0);
         let now = Utc::now().timestamp();
-        if LAST_CLEANUP
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
-                (now.saturating_sub(last) >= 3600).then_some(now)
-            })
-            .is_err()
+        // A failed exchange means a concurrent call claimed this cleanup run.
+        let last = LAST_CLEANUP.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < 3600
+            || LAST_CLEANUP
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
         {
             return Ok(());
         }
