@@ -643,6 +643,9 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   - `tideway migrate` lets shell variables win over `.env`, so `sea-orm-cli` uses the
     `DATABASE_URL` that was validated. `fresh` and `refresh` are validated too.
   - `tideway resource` rejects names that are not snake_case identifiers, such as `../x`.
+  - Hardening: the generated `docker-compose.yml` publishes Postgres on `127.0.0.1` only (it uses
+    fixed `postgres/postgres` credentials), and the Vue `useAuth().logout()` ends an active
+    impersonation session and revokes the admin's parked refresh token.
 
 ### Added
 
