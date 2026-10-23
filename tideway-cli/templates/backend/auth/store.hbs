@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use sea_orm::{
-    sea_query::Expr, ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection,
+    sea_query::Expr, ActiveModelTrait, ColumnTrait, Condition, ConnectionTrait, DatabaseConnection,
     DatabaseTransaction, EntityTrait, QueryFilter, Set, TransactionTrait,
 };
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
@@ -50,6 +50,14 @@ impl DbUserStore<DatabaseTransaction> {
 }
 
 impl<C> DbUserStore<C> {
+    /// Automatic lockouts never end later than this. A later `locked_until` is an
+    /// administrator lock (`PATCH /admin/users/{id}` with `locked: true`), which failed
+    /// logins, successful logins and password resets must leave in place.
+    fn lockout_horizon(&self) -> chrono::DateTime<Utc> {
+        // The extra hour absorbs clock skew between app instances.
+        Utc::now() + Duration::minutes(self.lockout_duration_minutes) + Duration::hours(1)
+    }
+
     pub fn with_email_service(mut self, email_service: Arc<EmailService>) -> Self {
         self.email_service = Some(email_service);
         self
@@ -150,9 +158,15 @@ where
             .failed_attempts;
         if new_count >= self.max_failed_attempts {
             let locked_until = Utc::now() + Duration::minutes(self.lockout_duration_minutes);
+            // Only ever extend a lock, so failed attempts cannot shorten an admin lock.
             user::Entity::update_many()
                 .col_expr(user::Column::LockedUntil, Expr::value(Some(locked_until)))
                 .filter(user::Column::Id.eq(user.id))
+                .filter(
+                    Condition::any()
+                        .add(user::Column::LockedUntil.is_null())
+                        .add(user::Column::LockedUntil.lt(locked_until)),
+                )
                 .exec(self.db.as_ref()).await
                 .map_err(|e| TidewayError::Database(e.to_string()))?;
         }
@@ -173,9 +187,15 @@ where
             .failed_mfa_attempts;
         if new_count >= self.max_failed_attempts {
             let locked_until = Utc::now() + Duration::minutes(self.lockout_duration_minutes);
+            // Only ever extend a lock, so failed attempts cannot shorten an admin lock.
             user::Entity::update_many()
                 .col_expr(user::Column::LockedUntil, Expr::value(Some(locked_until)))
                 .filter(user::Column::Id.eq(user.id))
+                .filter(
+                    Condition::any()
+                        .add(user::Column::LockedUntil.is_null())
+                        .add(user::Column::LockedUntil.lt(locked_until)),
+                )
                 .exec(self.db.as_ref()).await
                 .map_err(|e| TidewayError::Database(e.to_string()))?;
         }
@@ -183,12 +203,23 @@ where
     }
 
     async fn clear_failed_attempts(&self, user: &Self::User) -> Result<()> {
-        let mut active: user::ActiveModel = user.clone().into();
-        active.failed_attempts = Set(0);
-        active.failed_mfa_attempts = Set(0);
-        active.locked_until = Set(None);
-        active.updated_at = Set(Utc::now().into());
-        active.update(self.db.as_ref()).await
+        // Targeted updates: `user` is a snapshot from before password verification, and
+        // writing it back would undo an admin lock or other changes made since.
+        user::Entity::update_many()
+            .col_expr(user::Column::FailedAttempts, Expr::value(0))
+            .col_expr(user::Column::FailedMfaAttempts, Expr::value(0))
+            .col_expr(user::Column::UpdatedAt, Expr::value(Utc::now()))
+            .filter(user::Column::Id.eq(user.id))
+            .exec(self.db.as_ref()).await
+            .map_err(|e| TidewayError::Database(e.to_string()))?;
+        user::Entity::update_many()
+            .col_expr(
+                user::Column::LockedUntil,
+                Expr::value(Option::<chrono::DateTime<Utc>>::None),
+            )
+            .filter(user::Column::Id.eq(user.id))
+            .filter(user::Column::LockedUntil.lte(self.lockout_horizon()))
+            .exec(self.db.as_ref()).await
             .map_err(|e| TidewayError::Database(e.to_string()))?;
         Ok(())
     }
@@ -429,10 +460,6 @@ impl PasswordResetStore for DbUserStore {
                 user::Column::SessionVersion,
                 Expr::col(user::Column::SessionVersion).add(1),
             )
-            .col_expr(
-                user::Column::LockedUntil,
-                Expr::value(Option::<chrono::DateTime<Utc>>::None),
-            )
             .col_expr(user::Column::UpdatedAt, Expr::value(now))
             .filter(user::Column::Id.eq(token.user_id))
             .exec(&transaction)
@@ -441,6 +468,17 @@ impl PasswordResetStore for DbUserStore {
         if updated.rows_affected != 1 {
             return Err(TidewayError::not_found("User not found"));
         }
+        // A reset lifts a brute-force lockout, never an administrator lock.
+        user::Entity::update_many()
+            .col_expr(
+                user::Column::LockedUntil,
+                Expr::value(Option::<chrono::DateTime<Utc>>::None),
+            )
+            .filter(user::Column::Id.eq(token.user_id))
+            .filter(user::Column::LockedUntil.lte(self.lockout_horizon()))
+            .exec(&transaction)
+            .await
+            .map_err(|error| TidewayError::Database(error.to_string()))?;
 
         verification_token::Entity::update_many()
             .col_expr(verification_token::Column::UsedAt, Expr::value(Some(now)))
