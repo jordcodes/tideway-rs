@@ -41,6 +41,18 @@ export function useAuth() {
     user.value = null
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
+    localStorage.removeItem('impersonation_info')
+  }
+
+  // Set by the admin UI while impersonating; it parks the admin's own tokens.
+  function storedImpersonation(): { original_refresh_token?: string } | null {
+    const stored = localStorage.getItem('impersonation_info')
+    if (!stored) return null
+    try {
+      return JSON.parse(stored)
+    } catch {
+      return null
+    }
   }
 
   async function login(request: LoginRequest): Promise<LoginResponse> {
@@ -85,6 +97,17 @@ export function useAuth() {
     try {
       if (refreshToken.value) {
         await api.post('/auth/logout', { refresh_token: refreshToken.value })
+      }
+      // Logging out mid-impersonation must end the session and revoke the admin's
+      // parked refresh token too, or the next person on this browser inherits them.
+      const impersonation = storedImpersonation()
+      if (impersonation) {
+        await api.post('/admin/impersonation/end', {}).catch(() => undefined)
+        if (impersonation.original_refresh_token) {
+          await api.post('/auth/logout', {
+            refresh_token: impersonation.original_refresh_token,
+          })
+        }
       }
     } catch (e) {
       // Ignore logout errors - clear tokens anyway

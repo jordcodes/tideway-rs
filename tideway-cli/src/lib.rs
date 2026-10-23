@@ -167,13 +167,49 @@ pub fn ensure_dir(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Writes `contents` to `path`, refusing to follow a symlink at `path`.
+///
+/// Generated projects and cloned repositories are untrusted input: a checked-in `.env`
+/// symlink must not let the CLI write outside the project.
 pub fn write_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_file_with_mode(path, contents, None)
+}
+
+/// Like [`write_file`], but newly created files are only readable by the owner (Unix).
+/// Use for files that hold secrets, such as `.env`.
+pub fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {
+    write_file_with_mode(path, contents, Some(0o600))
+}
+
+fn write_file_with_mode(path: &Path, contents: &str, mode: Option<u32>) -> std::io::Result<()> {
     if is_plan_mode() {
         PlanStep::write_file(path.display().to_string()).emit();
-        Ok(())
-    } else {
-        fs::write(path, contents)
+        return Ok(());
     }
+    if fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to write through symlink {}", path.display()),
+        ));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Closes the gap between the check above and the open.
+        options.custom_flags(libc::O_NOFOLLOW);
+        if let Some(mode) = mode {
+            options.mode(mode);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
+
+    use std::io::Write;
+    let mut file = options.open(path)?;
+    file.write_all(contents.as_bytes())
 }
 
 pub fn remove_file(path: &Path) -> std::io::Result<()> {

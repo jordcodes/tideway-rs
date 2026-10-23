@@ -11,7 +11,7 @@ use tideway::auth::{AccessTokenClaims, ImpersonationClaims, JwtVerifier};
 use tideway::{Result, TidewayError};
 use uuid::Uuid;
 
-use super::impersonation::ensure_session_active;
+use super::impersonation::{ensure_action_allowed, ensure_session_active};
 use crate::entities::user;
 {{#if has_organizations}}
 use crate::entities::organization_member;
@@ -58,6 +58,27 @@ impl RequestActor {
             Ok(())
         } else {
             Err(TidewayError::Forbidden("Admin access required".into()))
+        }
+    }
+
+    /// Reject impersonation tokens for actions that create durable access, such as
+    /// API keys or invitations, which would outlive the impersonation session.
+    pub fn require_not_impersonating(&self) -> Result<()> {
+        if self.impersonation.is_some() {
+            return Err(TidewayError::Forbidden(
+                "This action is not available while impersonating".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Enforce the impersonation session's blocked actions for `action`
+    /// (`modify_billing`, `change_password`, `delete_account`, ...). A no-op for
+    /// normal tokens. Call it from routes that perform those actions.
+    pub async fn require_action_allowed(&self, db: &DatabaseConnection, action: &str) -> Result<()> {
+        match &self.impersonation {
+            Some(claims) => ensure_action_allowed(db, claims, action).await,
+            None => Ok(()),
         }
     }
 

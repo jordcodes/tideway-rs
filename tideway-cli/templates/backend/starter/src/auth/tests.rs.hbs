@@ -159,6 +159,19 @@ async fn seed_reset_state(db: &DatabaseConnection) -> (uuid::Uuid, String, Strin
         .await
         .expect("insert reset token");
     }
+    // A login that passed the old password and is waiting on its MFA code.
+    auth_token::ActiveModel {
+        id: Set(uuid::Uuid::new_v4()),
+        user_id: Set(user_id),
+        token_hash: Set("pending-mfa-challenge".to_owned()),
+        token_type: Set("mfa_challenge".to_owned()),
+        expires_at: Set((now + chrono::Duration::minutes(5)).into()),
+        used_at: Set(None),
+        created_at: Set(now.into()),
+    }
+    .insert(db)
+    .await
+    .expect("insert MFA challenge");
     refresh_token_family::ActiveModel {
         family: Set("reset-family".to_owned()),
         user_id: Set(user_id),
@@ -207,6 +220,7 @@ async fn password_reset_transaction_rolls_back_and_then_revokes_all_security_sta
     assert!(completed.locked_until.is_none());
     assert!(auth_token::Entity::find().filter(auth_token::Column::TokenHash.eq(other)).one(&db).await.unwrap().unwrap().used_at.is_some());
     assert!(refresh_token_family::Entity::find_by_id("reset-family").one(&db).await.unwrap().is_none());
+    assert!(auth_token::Entity::find().filter(auth_token::Column::TokenHash.eq("pending-mfa-challenge")).one(&db).await.unwrap().unwrap().used_at.is_some());
 }
 
 #[tokio::test]
@@ -739,6 +753,20 @@ async fn mfa_enrollment_challenge_and_backup_codes_are_one_time() {
         .as_str()
         .expect("backup code")
         .to_owned();
+
+    // Enrollment signs out sessions that never passed MFA.
+    let (status, _, _) =
+        authenticated_request(&app, Method::GET, "/auth/me", access, Value::Null).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let pre_mfa_refresh = login["refresh_token"].as_str().expect("refresh token");
+    let (status, _) = request(
+        &app,
+        Method::POST,
+        "/auth/refresh",
+        json!({"refresh_token": pre_mfa_refresh}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let (status, challenge) = request(
         &app,

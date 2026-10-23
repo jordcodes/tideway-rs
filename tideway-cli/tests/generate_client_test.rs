@@ -320,6 +320,72 @@ fn test_generate_client_regenerates_without_force_but_protects_hand_written_file
 }
 
 #[test]
+fn test_generate_client_keeps_spec_text_inside_comments_and_strings() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let spec_path = temp_dir.path().join("openapi.json");
+    let spec = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Demo\nglobalThis.pwnedTitle = 1;\n//",
+            "version": "1\u{2028}globalThis.pwnedVersion = 1;"
+        },
+        "paths": {
+            "/a*/globalThis.pwnedPath = 1;/*": {
+                "get": { "operationId": "getA", "responses": { "200": { "description": "ok" } } }
+            },
+            "/b/{id}/{globalThis.pwnedPlaceholder=1}": {
+                "get": {
+                    "operationId": "getB",
+                    "parameters": [
+                        { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "responses": { "200": { "description": "ok" } }
+                }
+            }
+        }
+    });
+    fs::write(&spec_path, spec.to_string()).expect("write spec");
+
+    let client_path = temp_dir.path().join("client.ts");
+    let output = run_tideway(&[
+        "generate",
+        "client",
+        "--spec",
+        path_str(&spec_path),
+        "--output",
+        path_str(&client_path),
+    ]);
+    assert_success(&output, "generate client");
+    let client = fs::read_to_string(&client_path).expect("read client");
+
+    let header = client.lines().next().expect("header line");
+    assert!(
+        header.contains("pwnedTitle") && header.contains("pwnedVersion"),
+        "{header}"
+    );
+    assert!(!client.contains('\u{2028}'));
+    for line in client.lines().skip(1) {
+        let code = line.trim_start();
+        assert!(
+            !code.starts_with("globalThis."),
+            "spec text escaped into code: {line}"
+        );
+        if line.contains("pwnedPath") && (code.starts_with("/**") || code.starts_with('*')) {
+            assert!(
+                !line.contains("*/globalThis"),
+                "path closed a comment: {line}"
+            );
+        }
+        if line.contains("pwnedPlaceholder") && line.contains("${") {
+            assert!(
+                !line.contains("String(globalThis"),
+                "undeclared placeholder became an expression: {line}"
+            );
+        }
+    }
+}
+
+#[test]
 fn test_generate_client_missing_spec_explains_how_to_export_it() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let missing = temp_dir.path().join("missing.json");

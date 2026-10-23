@@ -148,6 +148,8 @@ async fn authorize(state: &ApiKeyState, headers: &axum::http::HeaderMap, org_id:
     )
     .await?;
     actor.require_org_role(MANAGER_ROLES)?;
+    // Keys outlive an impersonation session and would be attributed to the target user.
+    actor.require_not_impersonating()?;
     Ok(actor)
 }
 

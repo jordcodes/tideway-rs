@@ -658,6 +658,48 @@ fn test_migrate_accepts_sqlite_database_url() {
     );
 }
 
+#[test]
+fn test_migrate_passes_validated_shell_database_url_to_sea_orm_cli() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_database_project(&project_dir);
+    fs::write(
+        project_dir.join(".env"),
+        "DATABASE_URL=sqlite:./from_env.db\n",
+    )
+    .expect("write .env");
+
+    let fake_bin_dir = temp_dir.path().join("fake-bin");
+    fs::create_dir_all(&fake_bin_dir).expect("create fake bin dir");
+    let invocation_log = temp_dir.path().join("sea-orm-cli.log");
+    write_fake_sea_orm_cli(&fake_bin_dir, &invocation_log);
+
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let output = Command::new(env!("CARGO_BIN_EXE_tideway"))
+        .args([
+            "migrate",
+            "status",
+            "--path",
+            project_dir.to_str().expect("project path utf8"),
+        ])
+        .env(
+            "PATH",
+            format!("{}:{}", fake_bin_dir.display(), current_path),
+        )
+        .env("DATABASE_URL", "sqlite:./from_shell.db")
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("run tideway");
+    assert_success(&output, "tideway migrate status");
+
+    let invocation = fs::read_to_string(&invocation_log).expect("read invocation log");
+    assert!(
+        invocation.contains("ENV:DATABASE_URL=sqlite:./from_shell.db"),
+        "the shell DATABASE_URL that was validated must reach sea-orm-cli, got:\n{}",
+        invocation
+    );
+}
+
 fn run_tideway(args: &[&str]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_tideway"));
     for arg in args {
@@ -764,6 +806,7 @@ log=\"{}\"\n\
 echo \"ARG:$1\" > \"$log\"\n\
 echo \"ARG:$2\" >> \"$log\"\n\
 echo \"ENV:CARGO_TARGET_DIR=${{CARGO_TARGET_DIR:-}}\" >> \"$log\"\n\
+echo \"ENV:DATABASE_URL=${{DATABASE_URL:-}}\" >> \"$log\"\n\
 exit 0\n",
         invocation_log.display()
     );

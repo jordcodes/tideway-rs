@@ -1085,6 +1085,11 @@ fn test_new_command_with_preset_saas() {
         ".default(\"{}\")",
     );
     assert_file_not_contains(&project_dir.join("docker-compose.yml"), "version:");
+    // The dev database uses fixed credentials, so it must not listen on every interface.
+    assert_file_contains(
+        &project_dir.join("docker-compose.yml"),
+        "\"127.0.0.1:5432:5432\"",
+    );
     assert_file_contains(
         &project_dir.join("src/main.rs"),
         "Replace the local-only STRIPE_SECRET_KEY before running outside development",
@@ -1410,6 +1415,13 @@ fn test_saas_admin_compiles_and_tests_with_and_without_billing_and_mfa() {
             output.contains("impersonation_token_works_until_ended ... ok"),
             "{output}"
         );
+        for test in [
+            "impersonation_enforces_configured_blocked_actions",
+            "impersonation_tokens_cannot_mint_durable_access",
+            "locking_an_admin_ends_their_impersonation_sessions",
+        ] {
+            assert!(output.contains(&format!("{test} ... ok")), "{output}");
+        }
         if has_auth_mfa_feature {
             assert!(
                 output.contains("mfa_requires_an_enrolled_secret ... ok"),

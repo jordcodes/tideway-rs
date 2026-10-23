@@ -938,7 +938,15 @@ fn path_placeholders(path: &str) -> Vec<String> {
 
 fn path_expression(path: &str, params: &[(String, Param)]) -> String {
     if params.is_empty() {
-        return format!("'{}'", path.replace('\\', "\\\\").replace('\'', "\\'"));
+        return format!(
+            "'{}'",
+            path.replace('\\', "\\\\")
+                .replace('\'', "\\'")
+                .replace('\r', "\\r")
+                .replace('\n', "\\n")
+                .replace('\u{2028}', "\\u2028")
+                .replace('\u{2029}', "\\u2029")
+        );
     }
     let lookup: HashMap<&str, &str> = params
         .iter()
@@ -952,8 +960,13 @@ fn path_expression(path: &str, params: &[(String, Param)]) -> String {
         };
         out.push_str(&escape_template(&rest[..start]));
         let name = &rest[start + 1..start + end];
-        let ident = lookup.get(name).copied().unwrap_or(name);
-        let _ = write!(out, "${{encodeURIComponent(String({ident}))}}");
+        match lookup.get(name) {
+            Some(ident) => {
+                let _ = write!(out, "${{encodeURIComponent(String({ident}))}}");
+            }
+            // An undeclared placeholder is spec text, never an expression.
+            None => out.push_str(&escape_template(&rest[start..start + end + 1])),
+        }
         rest = &rest[start + end + 1..];
     }
     out.push_str(&escape_template(rest));
@@ -1088,8 +1101,11 @@ fn property_key(name: &str) -> String {
     }
 }
 
+/// Makes spec text safe inside both `//` line comments and `/* */` block comments:
+/// JavaScript line terminators end a line comment, and `*/` ends a block comment.
 fn sanitize_comment(text: &str) -> String {
-    text.replace("*/", "*\\/")
+    text.replace(['\r', '\n', '\u{2028}', '\u{2029}'], " ")
+        .replace("*/", "*\\/")
 }
 
 fn doc_lines(schema: &Value) -> Vec<String> {
@@ -1135,6 +1151,8 @@ fn write_doc(out: &mut String, indent: &str, lines: &[String], deprecated: bool)
     if lines.is_empty() {
         return;
     }
+    // Every caller's text may come from the spec, so sanitize here rather than trusting callers.
+    let lines: Vec<String> = lines.iter().map(|line| sanitize_comment(line)).collect();
     if lines.len() == 1 {
         let _ = writeln!(out, "{indent}/** {} */", lines[0].trim());
         return;

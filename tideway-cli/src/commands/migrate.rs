@@ -162,11 +162,10 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
         print_warning("migration/ directory not found; sea-orm-cli may fail");
     }
 
-    if args.action == "status"
-        || args.action == "up"
-        || args.action == "down"
-        || args.action == "reset"
-    {
+    if matches!(
+        args.action.as_str(),
+        "status" | "up" | "down" | "reset" | "fresh" | "refresh"
+    ) {
         ensure_database_url(project_dir)?;
     }
 
@@ -184,10 +183,15 @@ fn run_sea_orm_cli(project_dir: &Path, args: &MigrateArgs) -> Result<()> {
         command.args(&args.args);
     }
 
+    // Shell variables win over `.env`, matching how DATABASE_URL was validated above.
     if !args.no_env
         && let Some(env_map) = read_env_map(&project_dir.join(".env"))
     {
-        command.envs(env_map);
+        command.envs(
+            env_map
+                .into_iter()
+                .filter(|(key, _)| std::env::var_os(key).is_none()),
+        );
     }
 
     print_info(&format!("Running sea-orm-cli migrate {}...", args.action));
@@ -244,7 +248,11 @@ fn init_sea_orm_migration(project_dir: &Path) -> Result<()> {
     command.arg("migrate").arg("init").current_dir(project_dir);
 
     if let Some(env_map) = read_env_map(&project_dir.join(".env")) {
-        command.envs(env_map);
+        command.envs(
+            env_map
+                .into_iter()
+                .filter(|(key, _)| std::env::var_os(key).is_none()),
+        );
     }
 
     print_info("Initializing SeaORM migration crate...");

@@ -19,6 +19,7 @@ use crate::commands::messaging::{
 use crate::database::validate_database_url as shared_validate_database_url;
 use crate::{
     CommandRuntime, TIDEWAY_VERSION, print_info, print_success, print_warning, write_file,
+    write_private_file,
 };
 
 const UPGRADE_GUIDE_URL: &str =
@@ -1293,14 +1294,14 @@ fn apply_env_fixes(
         }
     }
 
-    if !env_file.exists() && env_example_file.exists() {
+    if fs::symlink_metadata(env_file).is_err() && env_example_file.exists() {
         let source = fs::read_to_string(env_example_file).with_context(|| {
             format!(
                 "Failed to read {} while creating .env",
                 env_example_file.display()
             )
         })?;
-        write_file(env_file, &source)
+        write_private_file(env_file, &source)
             .with_context(|| format!("Failed to write {}", env_file.display()))?;
         report.push_fix("Created .env from .env.example".to_string());
     }

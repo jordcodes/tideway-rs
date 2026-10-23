@@ -64,6 +64,27 @@ pub async fn ensure_session_active(
     Ok(session)
 }
 
+/// Reject `action` (e.g. `modify_billing`) when the impersonation session's
+/// `blocked_actions` include it. Blocked attempts are recorded in the audit log.
+pub async fn ensure_action_allowed(
+    db: &DatabaseConnection,
+    claims: &ImpersonationClaims,
+    action: &str,
+) -> Result<()> {
+    // The blocked actions are stored on the session, so defaults are fine here.
+    let manager = impersonation_manager(db.clone(), ImpersonationConfig::default());
+    manager
+        .validate_session(&claims.imp_session, Some(action))
+        .await
+        .map(|_| ())
+        .map_err(|error| match error {
+            TidewayError::NotFound(_) => {
+                TidewayError::Unauthorized("Impersonation session has ended".into())
+            }
+            other => other,
+        })
+}
+
 /// SeaORM implementation of [`ImpersonationStore`].
 #[derive(Clone)]
 pub struct DbImpersonationStore {

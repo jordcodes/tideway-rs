@@ -259,9 +259,10 @@ struct ResourceGenerationContext {
     shared_saas_actor: bool,
     /// `owned` profile: scoped to the caller's organization and user.
     saas_owned_scope: bool,
-    /// `api`/`tenant` profiles: scoped to the caller's organization.
+    /// `api`/`tenant`/`event` profiles: scoped to the caller's organization.
     saas_org_scope: bool,
     saas_admin_guard: bool,
+    has_saas_auth: bool,
     library_modules: bool,
 }
 
@@ -364,6 +365,17 @@ const ORG_TENANT_FIELDS: [ResourceFieldSpec<'static>; 6] = [
     TENANT_FIELDS[2],
     TENANT_FIELDS[3],
     TENANT_FIELDS[4],
+];
+
+// SaaS scaffolds scope `event` resources to the caller's organization too.
+const ORG_EVENT_FIELDS: [ResourceFieldSpec<'static>; 7] = [
+    ORGANIZATION_ID_FIELD,
+    EVENT_FIELDS[0],
+    EVENT_FIELDS[1],
+    EVENT_FIELDS[2],
+    EVENT_FIELDS[3],
+    EVENT_FIELDS[4],
+    EVENT_FIELDS[5],
 ];
 
 const OWNED_FIELDS: [ResourceFieldSpec<'static>; 6] = [
@@ -606,6 +618,11 @@ fn resource_schema<'a>(
             display_field: "email",
             display_fallback: "admin@example.com",
             fields: &ADMIN_FIELDS,
+        },
+        ResourceProfile::Event if context.saas_org_scope => ResourceSchema {
+            display_field: "event_type",
+            display_fallback: "user.created",
+            fields: &ORG_EVENT_FIELDS,
         },
         ResourceProfile::Event => ResourceSchema {
             display_field: "event_type",
@@ -1163,13 +1180,19 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
             && has_saas_auth
             && has_saas_organizations,
         saas_org_scope: full_stack
-            && matches!(args.profile, ResourceProfile::Api | ResourceProfile::Tenant)
+            && matches!(
+                args.profile,
+                ResourceProfile::Api | ResourceProfile::Tenant | ResourceProfile::Event
+            )
             && has_saas_auth
             && has_saas_organizations,
+        // Event resources fall back to the admin guard when there are no organizations to scope to.
         saas_admin_guard: full_stack
-            && matches!(args.profile, ResourceProfile::Admin)
+            && (matches!(args.profile, ResourceProfile::Admin)
+                || (matches!(args.profile, ResourceProfile::Event) && !has_saas_organizations))
             && has_saas_auth
             && has_saas_admin,
+        has_saas_auth,
         library_modules,
     }
 }
@@ -1198,9 +1221,11 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
     }
 
     let resource_name = normalize_name(&args.name);
+    validate_resource_name(&resource_name)?;
     let resource_pascal = to_pascal_case(&resource_name);
     let resource_plural = pluralize(&resource_name);
     let generation_context = detect_generation_context(&project_dir, &args);
+    validate_access_guard(&args, &resource_name, generation_context)?;
     let inline_fields = parse_inline_fields(&args.fields)?;
     let custom_fields = inline_schema_fields(args.profile, generation_context, &inline_fields)?;
 
@@ -1440,11 +1465,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         } else {
             format!("http://localhost:8000/api/{resource_plural}")
         };
-        if matches!(
-            args.profile,
-            ResourceProfile::Owned | ResourceProfile::Admin
-        ) || generation_context.saas_org_scope
-        {
+        if generation_context.saas_scoped() || generation_context.saas_admin_guard {
             print_info(&format!(
                 "Try it with an access token: `curl -H \"Authorization: Bearer $ACCESS_TOKEN\" \"{list_url}\"`"
             ));
@@ -1481,6 +1502,42 @@ fn apply_profile_defaults(args: &mut ResourceArgs) {
         args.paginate = true;
         args.search = true;
     }
+}
+
+/// `owned`, `admin` and `event` resources promise caller-bound access. In an app with auth,
+/// refuse to generate them as public DB-backed CRUD when the guard cannot be applied.
+fn validate_access_guard(
+    args: &ResourceArgs,
+    resource_name: &str,
+    context: ResourceGenerationContext,
+) -> Result<()> {
+    if !context.has_saas_auth
+        || !args.db
+        || context.saas_scoped()
+        || context.saas_admin_guard
+        || !matches!(
+            args.profile,
+            ResourceProfile::Owned | ResourceProfile::Admin | ResourceProfile::Event
+        )
+    {
+        return Ok(());
+    }
+
+    let profile = profile_label(args.profile);
+    let requirement = match args.profile {
+        ResourceProfile::Owned => "auth with organizations (`src/entities/organization_member.rs`)",
+        ResourceProfile::Admin => "auth with the admin module (`src/admin/mod.rs`)",
+        _ => "auth with organizations or the admin module",
+    };
+    Err(anyhow::anyhow!(error_contract(
+        &format!(
+            "`--profile {profile}` would generate unauthenticated routes for `{resource_name}` here."
+        ),
+        &format!(
+            "Run `tideway resource {resource_name} --profile {profile}` without shape flags (or with --db --repo --service) in an app that has {requirement}."
+        ),
+        "For deliberately public data, use `--profile api` and add your own access checks before deploying.",
+    )))
 }
 
 fn validate_resource_args(
@@ -4743,6 +4800,22 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
 
 fn normalize_name(name: &str) -> String {
     name.trim().to_lowercase().replace('-', "_")
+}
+
+/// Resource names become file names and Rust identifiers, so reject anything that could
+/// traverse paths (`../x`, `/abs/x`) or break the generated module declarations.
+fn validate_resource_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let valid_ident = chars.next().is_some_and(|ch| ch.is_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+    if valid_ident && !RUST_KEYWORDS.contains(&name) {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(error_contract(
+        &format!("Invalid resource name `{name}`."),
+        "Use a snake_case identifier, e.g. `tideway resource invoice_item`.",
+        "Resource names may contain only letters, digits, `_` and `-`, must start with a letter, and must not be a Rust keyword.",
+    )))
 }
 
 fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {

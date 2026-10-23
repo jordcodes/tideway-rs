@@ -13,12 +13,12 @@ use sea_orm::{
 };
 use serde_json::{json, Value};
 use tideway::{
-    auth::{JwtAuth, JwtAuthConfig},
+    auth::{JwtAuth, JwtAuthConfig, PasswordResetStore, UserStore},
     App,
 };
 use tower::ServiceExt;
 
-use super::AuthModule;
+use super::{AuthModule, DbUserStore};
 use crate::admin::AdminModule;
 use crate::entities::user;
 {{#if has_organizations}}
@@ -454,4 +454,74 @@ async fn user_id_for(db: &DatabaseConnection, email: &str) -> String {
         .expect("user exists")
         .id
         .to_string()
+}
+
+async fn user_model_for(db: &DatabaseConnection, email: &str) -> user::Model {
+    user::Entity::find()
+        .filter(user::Column::Email.eq(email))
+        .one(db)
+        .await
+        .expect("load user")
+        .expect("user exists")
+}
+
+async fn fail_logins_and_reset(db: &Arc<DatabaseConnection>, email: &str) {
+    let store = DbUserStore::new(db.clone());
+    for _ in 0..6 {
+        let user = user_model_for(db, email).await;
+        UserStore::record_failed_attempt(&store, &user)
+            .await
+            .expect("record failed attempt");
+    }
+    let user = user_model_for(db, email).await;
+    let token_hash = format!("test-reset-{}", user.id);
+    store
+        .store_reset_token(
+            &user.id.to_string(),
+            &token_hash,
+            std::time::SystemTime::now() + std::time::Duration::from_secs(600),
+        )
+        .await
+        .expect("store reset token");
+    store
+        .complete_password_reset(&token_hash, "not-a-real-hash")
+        .await
+        .expect("complete reset")
+        .expect("reset token claimed");
+}
+
+#[tokio::test]
+async fn admin_lock_survives_failed_logins_and_password_reset() {
+    let (app, db) = test_app_with_db().await;
+    register_and_login(&app, "admin@example.com").await;
+    promote_to_admin(&db, "admin@example.com").await;
+    let admin = login(&app, "admin@example.com").await;
+    register_and_login(&app, "target@example.com").await;
+    let target_id = user_id_for(&db, "target@example.com").await;
+
+    let (status, body) =
+        admin_update_user(&app, &admin.access_token, &target_id, json!({"locked": true})).await;
+    assert_eq!(status, StatusCode::OK, "lock response: {body}");
+    let admin_lock = user_model_for(&db, "target@example.com").await.locked_until;
+    assert!(admin_lock.is_some());
+
+    fail_logins_and_reset(&db, "target@example.com").await;
+    assert_eq!(
+        user_model_for(&db, "target@example.com").await.locked_until,
+        admin_lock,
+        "failed logins and a password reset must not shorten or clear an admin lock"
+    );
+
+    // A brute-force lockout is still lifted by a password reset.
+    register_and_login(&app, "other@example.com").await;
+    let store = DbUserStore::new(db.clone());
+    for _ in 0..5 {
+        let user = user_model_for(&db, "other@example.com").await;
+        UserStore::record_failed_attempt(&store, &user)
+            .await
+            .expect("record failed attempt");
+    }
+    assert!(user_model_for(&db, "other@example.com").await.locked_until.is_some());
+    fail_logins_and_reset(&db, "other@example.com").await;
+    assert_eq!(user_model_for(&db, "other@example.com").await.locked_until, None);
 }

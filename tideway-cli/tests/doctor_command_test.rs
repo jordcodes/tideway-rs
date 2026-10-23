@@ -1436,6 +1436,56 @@ tideway = { version = "0.7", features = ["database"] }
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_doctor_fix_does_not_write_through_env_symlink() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("cloned_repo");
+    let outside = temp_dir.path().join("outside/.zprofile");
+    std::fs::create_dir_all(project_dir.join("src/database")).expect("create src/database");
+    std::fs::create_dir_all(outside.parent().unwrap()).expect("create outside dir");
+    std::fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(
+        project_dir.join(".env.example"),
+        "DATABASE_URL=postgres://localhost/my_app\n",
+    )
+    .expect("write env example");
+    // A repository can check in a dangling `.env` symlink pointing anywhere.
+    std::os::unix::fs::symlink(&outside, project_dir.join(".env")).expect("plant symlink");
+
+    let _ = analyze_project(&project_dir, true);
+    assert!(
+        !outside.exists(),
+        "doctor --fix must not create files through a .env symlink"
+    );
+
+    std::fs::remove_file(project_dir.join(".env")).expect("remove symlink");
+    analyze_project(&project_dir, true).expect("analyze project");
+    let mode = std::fs::metadata(project_dir.join(".env"))
+        .expect("created .env")
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o077,
+        0,
+        "created .env must be owner-only, got {mode:o}"
+    );
+}
+
 #[test]
 fn test_doctor_no_openapi_warning_for_api_preset_scaffold() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");

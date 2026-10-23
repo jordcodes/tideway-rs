@@ -591,6 +591,12 @@ async fn update_user(
     txn.commit().await
         .map_err(|e| TidewayError::Database(e.to_string()))?;
 
+    // A locked or demoted admin's impersonation tokens belong to other users, so the
+    // session_version bump above does not reach them; end those sessions explicitly.
+    if revoke_sessions {
+        state.impersonation.end_all_for_admin(&target_uuid.to_string()).await?;
+    }
+
     Ok(MessageResponse::success("User updated"))
 }
 
