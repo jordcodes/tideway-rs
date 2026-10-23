@@ -401,6 +401,7 @@ async fn authorize_billing_owner(
         return Err(tideway::TidewayError::Forbidden("Billing resource access denied".into()));
     }
     {{/if}}
+    actor.require_action_allowed(state.db.as_ref(), "modify_billing").await?;
     Ok(actor)
 }
 

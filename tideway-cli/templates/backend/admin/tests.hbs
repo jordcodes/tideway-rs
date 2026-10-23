@@ -21,8 +21,8 @@ use sea_orm::{
 use serde_json::{json, Value};
 use tideway::{
     auth::{
-        AccessTokenClaims, ImpersonationConfig, ImpersonationEvent, ImpersonationStore, JwtAuth,
-        JwtAuthConfig, JwtIssuer, JwtVerifier, TokenSubject,
+        AccessTokenClaims, BlockedAction, ImpersonationConfig, ImpersonationEvent,
+        ImpersonationStore, JwtAuth, JwtAuthConfig, JwtIssuer, JwtVerifier, TokenSubject,
     },
     App,
 };
@@ -97,6 +97,8 @@ async fn test_app_with(impersonation: ImpersonationConfig) -> TestApp {
     // Any route authenticated through `RequestActor`, to observe impersonation tokens.
     let whoami: Router = Router::new()
         .route("/whoami", get_route(whoami))
+        .route("/whoami/billing", get_route(whoami_billing))
+        .route("/whoami/durable", get_route(whoami_durable))
         .with_state((db.clone(), verifier));
     let router = App::new()
         .register_module(admin_module)
@@ -131,6 +133,26 @@ async fn whoami(
         "user_id": actor.user.id.to_string(),
         "impersonated_by": actor.impersonation.map(|claims| claims.imp_admin),
     })))
+}
+
+/// Stands in for a billing route: checks the `modify_billing` blocked action.
+async fn whoami_billing(
+    State((db, verifier)): State<(Arc<DatabaseConnection>, JwtVerifier<AccessTokenClaims>)>,
+    headers: HeaderMap,
+) -> tideway::Result<Json<Value>> {
+    let actor = RequestActor::from_headers_with_verifier(&headers, &db, &verifier).await?;
+    actor.require_action_allowed(&db, "modify_billing").await?;
+    Ok(Json(json!({ "user_id": actor.user.id.to_string() })))
+}
+
+/// Stands in for API-key and invitation routes, which mint durable access.
+async fn whoami_durable(
+    State((db, verifier)): State<(Arc<DatabaseConnection>, JwtVerifier<AccessTokenClaims>)>,
+    headers: HeaderMap,
+) -> tideway::Result<Json<Value>> {
+    let actor = RequestActor::from_headers_with_verifier(&headers, &db, &verifier).await?;
+    actor.require_not_impersonating()?;
+    Ok(Json(json!({ "user_id": actor.user.id.to_string() })))
 }
 
 async fn insert_user(db: &DatabaseConnection, email: &str, is_platform_admin: bool) -> user::Model {
@@ -575,4 +597,81 @@ async fn impersonation_token_expires_after_max_duration() {
     assert!(audit_events(&app, &target_id)
         .await
         .contains(&ImpersonationEvent::Expired));
+}
+
+async fn start_token(app: &TestApp, admin_token: &str, target_id: &str) -> String {
+    let (status, started) = start(
+        app,
+        admin_token,
+        target_id,
+        json!({"target_user_id": target_id, "reason": "SUP-1234"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "response: {started}");
+    started["access_token"].as_str().expect("access token").to_owned()
+}
+
+#[tokio::test]
+async fn impersonation_enforces_configured_blocked_actions() {
+    let config = ImpersonationConfig::default().blocked_actions(vec![BlockedAction::ModifyBilling]);
+    let app = test_app_with(config).await;
+    let admin_token = app.token.clone();
+    let target = insert_user(&app.db, "user@example.com", false).await;
+    let target_id = target.id.to_string();
+    let token = start_token(&app, &admin_token, &target_id).await;
+
+    let (status, _) = request(&app, Method::GET, "/whoami/billing", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(audit_events(&app, &target_id)
+        .await
+        .contains(&ImpersonationEvent::BlockedAttempt));
+
+    // The target's own token is not affected.
+    let own_token = issue_token(&app.issuer, &target);
+    let (status, _) = request(&app, Method::GET, "/whoami/billing", Value::Null, &own_token).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn impersonation_tokens_cannot_mint_durable_access() {
+    let app = test_app().await;
+    let admin_token = app.token.clone();
+    let target = insert_user(&app.db, "user@example.com", false).await;
+    let token = start_token(&app, &admin_token, &target.id.to_string()).await;
+
+    let (status, _) = request(&app, Method::GET, "/whoami/durable", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let own_token = issue_token(&app.issuer, &target);
+    let (status, _) = request(&app, Method::GET, "/whoami/durable", Value::Null, &own_token).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn locking_an_admin_ends_their_impersonation_sessions() {
+    let app = test_app().await;
+    let support = insert_user(&app.db, "support@example.com", true).await;
+    let support_token = issue_token(&app.issuer, &support);
+    let target_id = insert_user(&app.db, "user@example.com", false)
+        .await
+        .id
+        .to_string();
+    let token = start_token(&app, &support_token, &target_id).await;
+    let (status, _) = request(&app, Method::GET, "/whoami", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, response) = request(
+        &app,
+        Method::PATCH,
+        &format!("/admin/users/{}", support.id),
+        json!({"locked": true}),
+        &app.token,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "response: {response}");
+
+    let (status, _) = request(&app, Method::GET, "/whoami", Value::Null, &token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(audit_events(&app, &target_id)
+        .await
+        .contains(&ImpersonationEvent::Ended));
 }

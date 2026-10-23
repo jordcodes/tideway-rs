@@ -230,6 +230,8 @@ async fn send_invitation(
     )
     .await?;
     actor.require_org_role(&["owner", "admin"])?;
+    // Invitations grant durable membership, so impersonation tokens cannot send them.
+    actor.require_not_impersonating()?;
 
     enforce_invitation_rate_limit(&state, &org_id, &actor.user.id.to_string()).await?;
 
@@ -429,6 +431,8 @@ async fn resend_invitation(
     )
     .await?;
     actor.require_org_role(&["owner", "admin"])?;
+    // Invitations grant durable membership, so impersonation tokens cannot send them.
+    actor.require_not_impersonating()?;
     enforce_invitation_rate_limit(&state, &org_id, &actor.user.id.to_string()).await?;
 
     let timestamp = now();

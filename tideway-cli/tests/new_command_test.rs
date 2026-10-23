@@ -1410,6 +1410,13 @@ fn test_saas_admin_compiles_and_tests_with_and_without_billing_and_mfa() {
             output.contains("impersonation_token_works_until_ended ... ok"),
             "{output}"
         );
+        for test in [
+            "impersonation_enforces_configured_blocked_actions",
+            "impersonation_tokens_cannot_mint_durable_access",
+            "locking_an_admin_ends_their_impersonation_sessions",
+        ] {
+            assert!(output.contains(&format!("{test} ... ok")), "{output}");
+        }
         if has_auth_mfa_feature {
             assert!(
                 output.contains("mfa_requires_an_enrolled_secret ... ok"),
