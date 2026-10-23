@@ -6,6 +6,67 @@ use std::sync::Mutex;
 use tideway_cli::cli::{NewArgs, NewPreset, ResourceArgs};
 
 #[test]
+fn test_resource_command_rejects_names_that_are_not_identifiers() {
+    for name in [
+        "../../outside",
+        "/tmp/abs",
+        "a/b",
+        "1post",
+        "type",
+        "post.rs",
+        "",
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path().join("my_app");
+        create_resource_project_fixture(&project_dir, "tideway = \"0.7\"\n");
+        let before = list_tree(temp_dir.path());
+
+        let error = tideway_cli::commands::resource::run(ResourceArgs {
+            name: name.to_string(),
+            fields: Vec::new(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: true,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile: tideway_cli::cli::ResourceProfile::Api,
+        })
+        .expect_err("invalid resource names should fail");
+
+        assert!(
+            error.to_string().contains("Invalid resource name"),
+            "{name:?}: {error}"
+        );
+        assert_eq!(list_tree(temp_dir.path()), before, "{name:?} wrote files");
+    }
+}
+
+fn list_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut entries = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).expect("read dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let contents = fs::read(&path).expect("read file");
+                entries.push((path, contents));
+            }
+        }
+    }
+    entries.sort();
+    entries
+}
+
+#[test]
 fn test_resource_command_generates_module_and_wires() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");

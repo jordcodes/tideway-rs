@@ -1198,6 +1198,7 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
     }
 
     let resource_name = normalize_name(&args.name);
+    validate_resource_name(&resource_name)?;
     let resource_pascal = to_pascal_case(&resource_name);
     let resource_plural = pluralize(&resource_name);
     let generation_context = detect_generation_context(&project_dir, &args);
@@ -4743,6 +4744,22 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
 
 fn normalize_name(name: &str) -> String {
     name.trim().to_lowercase().replace('-', "_")
+}
+
+/// Resource names become file names and Rust identifiers, so reject anything that could
+/// traverse paths (`../x`, `/abs/x`) or break the generated module declarations.
+fn validate_resource_name(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let valid_ident = chars.next().is_some_and(|ch| ch.is_ascii_lowercase())
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
+    if valid_ident && !RUST_KEYWORDS.contains(&name) {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(error_contract(
+        &format!("Invalid resource name `{name}`."),
+        "Use a snake_case identifier, e.g. `tideway resource invoice_item`.",
+        "Resource names may contain only letters, digits, `_` and `-`, must start with a letter, and must not be a Rust keyword.",
+    )))
 }
 
 fn add_uuid_dependency(cargo_path: &Path) -> Result<()> {

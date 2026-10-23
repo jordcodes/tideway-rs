@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use crate::{error_contract, print_success, print_warning, write_file};
+use crate::{error_contract, print_success, print_warning, write_file, write_private_file};
 
 const JWT_SECRET_PLACEHOLDERS: [&str; 2] = [
     "your-super-secret-jwt-key-change-in-production",
@@ -51,7 +51,7 @@ pub fn ensure_env(project_dir: &Path, fix_env: bool) -> Result<()> {
 
     let contents = fs::read_to_string(&env_example_path)
         .with_context(|| format!("Failed to read {}", env_example_path.display()))?;
-    write_file(
+    write_private_file(
         &env_path,
         &replace_local_secret_placeholders_in_contents(&contents),
     )
