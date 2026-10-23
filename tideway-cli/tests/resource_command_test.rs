@@ -1583,6 +1583,101 @@ tideway = "0.7"
 }
 
 #[test]
+fn test_resource_guarded_profiles_refuse_public_crud_in_auth_apps() {
+    use tideway_cli::cli::ResourceProfile::{Admin, Event, Owned};
+    // (profile, organizations, admin module, profile-default full shape)
+    for (profile, orgs, admin, full_shape) in [
+        (Owned, false, true, true),
+        (Owned, true, true, false),
+        (Admin, true, false, true),
+        (Admin, true, true, false),
+        (Event, false, false, true),
+        (Event, true, true, false),
+    ] {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let project_dir = temp_dir.path().join("my_app");
+        create_resource_project_fixture(
+            &project_dir,
+            r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+        );
+        create_saas_resource_markers(&project_dir, orgs, admin, true);
+
+        // `full_shape` uses the profile defaults; otherwise pass --wire --db --repo without --service.
+        let error = tideway_cli::commands::resource::run(ResourceArgs {
+            name: "record".to_string(),
+            fields: Vec::new(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: !full_shape,
+            with_tests: false,
+            db: !full_shape,
+            repo: !full_shape,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+        })
+        .expect_err("unguarded profile should be refused");
+
+        assert!(
+            error
+                .to_string()
+                .contains("would generate unauthenticated routes"),
+            "{profile:?} orgs={orgs} admin={admin}: {error}"
+        );
+        assert!(!project_dir.join("src/routes/record.rs").exists());
+    }
+}
+
+#[test]
+fn test_resource_profile_event_uses_admin_guard_without_organizations() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, false, true, true);
+
+    tideway_cli::commands::resource::run(ResourceArgs {
+        name: "audit_event".to_string(),
+        fields: Vec::new(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: false,
+        with_tests: false,
+        db: false,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: false,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Event,
+    })
+    .expect("run resource command");
+
+    assert_file_contains(
+        &project_dir.join("src/routes/audit_event.rs"),
+        "RequestActor::from_headers(&headers, &db).await?;",
+    );
+    assert_file_contains(
+        &project_dir.join("src/services/audit_event.rs"),
+        "pub async fn list_for_admin(&self, actor: &RequestActor",
+    );
+}
+
+#[test]
 fn test_resource_profile_owned_generates_saas_scoped_handlers_when_saas_scaffold_detected() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
@@ -2453,6 +2548,11 @@ fn test_resource_api_and_tenant_profiles_compile_against_saas_preset_workspace_s
             "board",
             vec!["title:string", "archived:bool"],
             tideway_cli::cli::ResourceProfile::Tenant,
+        ),
+        (
+            "audit_event",
+            vec![],
+            tideway_cli::cli::ResourceProfile::Event,
         ),
     ] {
         let resource_args = ResourceArgs {
