@@ -298,6 +298,8 @@ fn is_log_level_enabled(level: LogLevel) -> bool {
     }
 }
 
+// The error is the early response itself; boxing it would only add an allocation.
+#[allow(clippy::result_large_err)]
 async fn extract_request_body_preview(
     request: Request,
     max_bytes: usize,

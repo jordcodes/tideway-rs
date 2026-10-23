@@ -249,6 +249,8 @@ impl TestHost {
     }
 
     /// Execute a scenario and return a structured failure instead of panicking.
+    // Boxing `ScenarioFailure` would change this public signature; it is test-only.
+    #[allow(clippy::result_large_err)]
     pub async fn try_scenario<F>(&self, configure: F) -> Result<ScenarioOutcome, ScenarioFailure>
     where
         F: FnOnce(&mut HostScenario),
