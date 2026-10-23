@@ -16,4 +16,19 @@ ignore = [
     # extract caller-supplied archives. Remove this exception when upstream
     # testcontainers replaces or fixes tokio-tar.
     "RUSTSEC-2025-0111",
+    # Reviewed 2026-10-23. `zip` 3 is a build-dependency of utoipa-swagger-ui 9,
+    # whose build script unpacks the Swagger UI archive vendored inside
+    # utoipa-swagger-ui-vendored with its own loop, not `ZipArchive::extract`.
+    # The archive is not caller-supplied. The fix needs zip 9, which only
+    # utoipa-swagger-ui 10 (utoipa 6) uses; remove these with that upgrade.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    # `h2` 0.3 comes only from async-stripe 0.41's hyper 0.14 client, whose
+    # only peer is the Stripe API over TLS. No 0.3.x fix exists; remove this
+    # with the async-stripe 1.0 upgrade noted above.
+    "RUSTSEC-2026-0258",
+    # `rkyv` is locked only as an optional rust_decimal dependency that no
+    # Tideway feature enables (`cargo tree -i rkyv --all-features` is empty).
+    "RUSTSEC-2026-0235",
 ]
