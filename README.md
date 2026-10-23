@@ -988,6 +988,8 @@ See [`benches/README.md`](benches/README.md) for detailed performance metrics.
 
 Contributions are welcome! This is currently in early development.
 
+To report a security vulnerability, see [SECURITY.md](SECURITY.md). Please don't open a public issue.
+
 ## License
 
 MIT
