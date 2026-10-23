@@ -3,13 +3,13 @@
 ## Release
 
 - Version: 0.9.0 (`tideway`). `tideway-cli` 0.9.0 is not part of this release.
-- Date: 2026-10-15
+- Date: 2026-10-23
 - Release owner: Jord
 
 ## Summary
 
-Tideway 0.9.0 collects about 100 changes since 0.8.0: security fixes across auth, impersonation,
-organizations, and billing; new framework features (authorization policies, OpenTelemetry and
+Tideway 0.9.0 collects about 130 changes since 0.8.0: security fixes across auth, impersonation,
+organizations, billing, OpenAPI, sessions, and WebSockets; new framework features (authorization policies, OpenTelemetry and
 Sentry, file storage, recurring jobs, lifecycle emails); and faster PostgreSQL tests. It is **not**
 a drop-in update from 0.8: some APIs changed, so `cargo update` keeps `^0.8` apps on 0.8.x. Change
 the dependency to `tideway = "0.9.0"` and follow
@@ -29,7 +29,7 @@ These stop compiling:
 - New fields break struct literals and exhaustive patterns: `CreateRefundRequest::idempotency_key`,
   `Refund::replayed`, `JobsConfig::shutdown_timeout_seconds`, `MetricsConfig::bearer_token`,
   `BillingEvent::OneTimeCheckoutCompleted::payment_intent_id`, and `invoice` on
-  `BillingEvent::InvoicePaid` / `InvoicePaymentFailed`.
+  `BillingEvent::InvoicePaid` / `InvoicePaymentFailed`, and `RefreshTokenClaims::session_version`.
 - `CreditTransactionKind` is `#[non_exhaustive]`.
 - `SessionManager` and `RedisCache` are no longer `UnwindSafe` / `RefUnwindSafe`.
 
@@ -45,6 +45,13 @@ These compile but change behavior a deployment may rely on:
 - `RedisCache` keys gain a `cache:` prefix (expect a cold cache), merged routers now get the full
   middleware stack (including rate limiting), and the rate limiter now sustains `max_requests` per
   window.
+- `LoginFlow` returns "Invalid credentials" instead of `423` for locked accounts.
+- `PasswordChangeFlow` and `AccountDeletionFlow` allow 5 current-password attempts per user per 15
+  minutes, then return `TooManyRequests`.
+- `Claims` and `ClaimsRef` load and validate the user, so revoked tokens are rejected.
+- `OrganizationConfig::require_verified_email` defaults to `false`; `true` needs an
+  `EmailVerificationChecker`.
+- `OPENAPI_VISIBILITY=public` hides operations tagged `internal` from the served spec.
 
 Deprecated: `MembershipManager::transfer_ownership` (use `OrganizationManager::transfer_ownership`)
 and `EmailVerificationFlow::resend` (use `resend_for_user`).
@@ -56,9 +63,12 @@ and `EmailVerificationFlow::resend` (use `resend_for_user`).
   test. Databases left behind by crashed or killed runs are swept on the next run.
   `TIDEWAY_TEST_KEEP_DBS=1` still keeps databases. See `docs/testing.md`.
 - **Security.** Impersonation tokens are session-bound and respect opt-outs. Revoking a session
-  revokes its refresh tokens. Verification resend only mails the stored address. Admins can no
-  longer create owners. Refund lookups are scoped to the billable entity. Credits are reversed on
-  refund or dispute. JWKS keys refresh on a schedule. See the Security section of `CHANGELOG.md`.
+  revokes its refresh tokens, and refresh tokens are bound to the session version. Account lockout
+  and re-authentication resist password guessing. Verification resend only mails the stored
+  address. Admins can no longer create owners. Organization and seat limits hold under
+  concurrency. Stripe syncs use the billed price and live subscription state. Refund lookups are
+  scoped to the billable entity. Credits are reversed on refund or dispute. JWKS keys refresh on a
+  schedule. See the Security section of `CHANGELOG.md`.
 - **New features.** `tideway::policy` resource authorization; OpenTelemetry export and Sentry error
   reporting; `FileStorage` (local, S3, R2); a cron `JobScheduler`; default lifecycle emails; Stripe
   webhook secret rotation.
@@ -77,7 +87,7 @@ and `EmailVerificationFlow::resend` (use `resend_for_user`).
 
 Also passing: `cargo test -p tideway` with default and all features, PostgreSQL `TestDb` tests
 (`cargo test --test it test_db -- --include-ignored`), `tideway-macros`, feature-gate checks, and
-the public API surface check. One tideway-cli test fails (see Known issues).
+the public API surface check, the full `tideway-cli` suite, and `cargo audit`.
 
 ### Metrics Snapshot
 
@@ -89,13 +99,6 @@ the public API surface check. One tideway-cli test fails (see Known issues).
 - Number of onboarding docs that show non-canonical flows: 0
 - Number of user-reported "which command should I use" issues: not queried
 - DX gate summary copied into changelog entry: no
-
-## Known issues
-
-- `tideway-cli`'s `test_backend_admin_impersonation_uses_session_bound_tokens` fails on `main`:
-  it asserts the generated admin routes never mention `refresh_token`, but the admin lock/demote
-  change now revokes `refresh_token_family` rows there. This affects the CLI test only, not the
-  `tideway` crate.
 
 ## Migration Notes
 
@@ -110,5 +113,5 @@ the public API surface check. One tideway-cli test fails (see Known issues).
 
 ## Links
 
-- Changelog entry: `CHANGELOG.md` `[0.9.0] - 2026-10-15`
+- Changelog entry: `CHANGELOG.md` `[0.9.0] - 2026-10-23`
 - Previous release: `tideway-v0.8.0`

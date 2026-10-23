@@ -108,6 +108,7 @@ through the application's normal migration and deployment workflow.
 | `CreateRefundRequest` has a new `idempotency_key` field | Set `idempotency_key: None`, use `..Default::default()`, or use the `for_charge` / `for_payment_intent` builders; see [replayed refunds](#08x-to-090-replayed-refunds) |
 | `MetricsConfig` has a new `bearer_token` field | Set it in struct literals or use `..Default::default()`; see [metrics scrape authentication](#metrics-scrape-authentication) |
 | `SessionManager` and `RedisCache` are no longer `UnwindSafe` / `RefUnwindSafe` | Wrap them in `std::panic::AssertUnwindSafe` where code passes them to `catch_unwind` |
+| `RefreshTokenClaims` has a new `session_version` field | Set it from the user's session version in struct literals (`None` keeps the old, unbound behavior) |
 
 These behavior changes compile unchanged but can break a deployment:
 
@@ -121,6 +122,18 @@ These behavior changes compile unchanged but can break a deployment:
   [Stripe API errors](#08x-to-090-stripe-api-errors).
 - `credits-seaorm` apps must run a migration before deploying; see
   [credit top-up refunds](#08x-to-090-credit-top-up-refunds-and-disputes).
+- `LoginFlow` answers "Invalid credentials" for a locked account instead of `423`. Tell users
+  about locks out of band, for example with a lockout email.
+- `PasswordChangeFlow` and `AccountDeletionFlow` allow 5 current-password attempts per user per
+  15 minutes, then return `TooManyRequests`. Configure this with `with_rate_limiter`.
+- `Claims` and `ClaimsRef` call `AuthProvider::validate_claims`, which by default loads and
+  validates the user. Revoked or banned users' tokens are rejected, and each request does a user
+  lookup; override `validate_claims` if `verify_token` already enforces revocation.
+- `OrganizationConfig::require_verified_email` defaults to `false`. Setting it to `true` without
+  `with_email_verification_checker` makes organization creation fail with a configuration error.
+- `OPENAPI_VISIBILITY=public` now removes operations tagged `internal` from the served spec.
+- `SeaOrmOrgStore` update methods return not-found for missing rows instead of inserting them, and
+  `InvitationManager::accept` can fail with `SeatLimitReached` when the organization is full.
 
 The remaining 0.9.0 sections below describe these and other behavior changes in detail.
 
