@@ -9,6 +9,23 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+## [tideway-cli 0.9.1] - 2026-10-24
+
+### Fixed
+
+- `tideway add credits` (and the other `add` commands) keep the trailing newline in
+  `.env.example`, and no longer rewrite it when no keys are added.
+- `tideway add` registers migrations in `migration/src/lib.rs` at the list's indentation, keeps
+  the closing `]` in place, adds a missing trailing comma to the previous entry, and puts new
+  `mod` lines after the existing ones.
+- The generated credit revocation and billing customer repair migrations run on SQLite when
+  `sea-orm-migration` is built without `sqlx-sqlite`. They used `SchemaManager::has_column`,
+  which panics for a backend whose `sea-orm-migration` driver feature is off. Apps that already
+  generated these migrations can keep them and enable `sqlx-sqlite` on `sea-orm-migration`, or
+  copy the `has_column` helper from the new templates.
+- `tideway doctor` only requires `STRIPE_PRICE_ID` when the app's code reads it, and
+  `doctor --fix` no longer adds it to `.env.example` otherwise. Tideway itself does not read it.
+
 ## [0.9.0] - 2026-10-23
 
 > **Breaking changes for apps on `^0.8`.** Tideway 0.9.0 is not a drop-in update: applications

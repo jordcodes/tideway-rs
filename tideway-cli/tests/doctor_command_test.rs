@@ -1156,6 +1156,52 @@ fn test_doctor_warns_when_saas_billing_env_missing() {
 }
 
 #[test]
+fn test_doctor_skips_stripe_price_id_when_the_app_does_not_read_it() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path();
+    fs::create_dir_all(project_dir.join("src/billing")).expect("create src/billing");
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"
+[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["billing"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        project_dir.join("src/config.rs"),
+        r#"pub fn base_price_id() -> String { std::env::var("STRIPE_BASE_PRICE_ID").unwrap() }"#,
+    )
+    .expect("write config");
+    fs::write(
+        project_dir.join(".env.example"),
+        "STRIPE_SECRET_KEY=sk_test_x\nSTRIPE_WEBHOOK_SECRET=whsec_x\nSTRIPE_BASE_PRICE_ID=price_x\n",
+    )
+    .expect("write env example");
+
+    let report = analyze_project(project_dir, true).expect("analyze project");
+
+    assert!(
+        !report
+            .warnings()
+            .iter()
+            .any(|warning| warning.contains("STRIPE_PRICE_ID")),
+        "unexpected STRIPE_PRICE_ID warning: {:?}",
+        report.warnings()
+    );
+    let env_example = fs::read_to_string(project_dir.join(".env.example")).expect("read env");
+    assert!(
+        !env_example.contains("STRIPE_PRICE_ID="),
+        "doctor --fix added STRIPE_PRICE_ID:\n{env_example}"
+    );
+}
+
+#[test]
 fn test_doctor_invalid_database_url_format() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path();

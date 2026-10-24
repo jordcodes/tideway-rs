@@ -298,6 +298,11 @@ pub fn analyze_project_with_upgrade(
     let needs_auth = tideway_features.contains("auth") || detected.contains("auth");
     let needs_mfa = tideway_features.contains("auth-mfa");
     let needs_billing = tideway_features.contains("billing") || detected.contains("billing");
+    // STRIPE_PRICE_ID is read by the scaffolded config, not by Tideway, so apps that renamed or
+    // replaced it should not be told to set it.
+    let needs_stripe_price_id = needs_billing
+        && (any_rs_file_contains(&src_dir, "STRIPE_PRICE_ID")
+            || !any_rs_file_matches(&src_dir, |_| true));
 
     if fix {
         apply_env_fixes(
@@ -309,6 +314,7 @@ pub fn analyze_project_with_upgrade(
             needs_auth,
             needs_mfa,
             needs_billing,
+            needs_stripe_price_id,
             &mut report,
         )?;
         env_vars = read_env_map(&env_file).unwrap_or_default();
@@ -364,11 +370,11 @@ pub fn analyze_project_with_upgrade(
     }
 
     if needs_billing {
-        for key in [
-            "STRIPE_SECRET_KEY",
-            "STRIPE_WEBHOOK_SECRET",
-            "STRIPE_PRICE_ID",
-        ] {
+        let price_id = needs_stripe_price_id.then_some("STRIPE_PRICE_ID");
+        for key in ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"]
+            .into_iter()
+            .chain(price_id)
+        {
             check_env_var(
                 key,
                 &env_file,
@@ -1163,6 +1169,7 @@ fn env_example_template(
     needs_auth: bool,
     needs_mfa: bool,
     needs_billing: bool,
+    needs_stripe_price_id: bool,
 ) -> Option<Vec<String>> {
     let mut lines = Vec::new();
     if needs_database || needs_auth || needs_billing {
@@ -1203,7 +1210,9 @@ fn env_example_template(
         lines.push("# Billing".to_string());
         lines.push("STRIPE_SECRET_KEY=sk_test_tideway_local_only_000000".to_string());
         lines.push("STRIPE_WEBHOOK_SECRET=whsec_replace_me".to_string());
-        lines.push("STRIPE_PRICE_ID=price_replace_me".to_string());
+        if needs_stripe_price_id {
+            lines.push("STRIPE_PRICE_ID=price_replace_me".to_string());
+        }
         lines.push(String::new());
     }
 
@@ -1241,6 +1250,7 @@ fn apply_env_fixes(
     needs_auth: bool,
     needs_mfa: bool,
     needs_billing: bool,
+    needs_stripe_price_id: bool,
     report: &mut DoctorReport,
 ) -> Result<()> {
     let Some(lines) = env_example_template(
@@ -1250,6 +1260,7 @@ fn apply_env_fixes(
         needs_auth,
         needs_mfa,
         needs_billing,
+        needs_stripe_price_id,
     ) else {
         return Ok(());
     };
