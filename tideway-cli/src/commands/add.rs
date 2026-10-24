@@ -785,20 +785,24 @@ fn find_credits_migration(migrations_dir: &Path) -> Result<Option<String>> {
 
 fn update_env_example(project_dir: &Path, feature: AddFeature, project_name: &str) -> Result<()> {
     let env_path = project_dir.join(".env.example");
-    let mut lines = if env_path.exists() {
-        fs::read_to_string(&env_path)
-            .with_context(|| format!("Failed to read {}", env_path.display()))?
-            .lines()
-            .map(|line| line.to_string())
-            .collect::<Vec<_>>()
+    let original = if env_path.exists() {
+        Some(
+            fs::read_to_string(&env_path)
+                .with_context(|| format!("Failed to read {}", env_path.display()))?,
+        )
     } else {
-        vec![
+        None
+    };
+    let mut lines = match &original {
+        Some(contents) => contents.lines().map(|line| line.to_string()).collect(),
+        None => vec![
             "# Server".to_string(),
             "TIDEWAY_HOST=0.0.0.0".to_string(),
             "TIDEWAY_PORT=8000".to_string(),
             String::new(),
-        ]
+        ],
     };
+    let original_line_count = original.as_ref().map(|_| lines.len());
 
     let mut existing = BTreeSet::new();
     for line in &lines {
@@ -865,7 +869,14 @@ fn update_env_example(project_dir: &Path, feature: AddFeature, project_name: &st
         _ => {}
     }
 
-    write_file(&env_path, &lines.join("\n"))
+    if original_line_count == Some(lines.len()) {
+        return Ok(());
+    }
+    let mut contents = lines.join("\n");
+    if !contents.ends_with('\n') {
+        contents.push('\n');
+    }
+    write_file(&env_path, &contents)
         .with_context(|| format!("Failed to write {}", env_path.display()))?;
     Ok(())
 }
@@ -1248,8 +1259,17 @@ pub(crate) fn ensure_migration_registered(path: &Path, migration: &str) -> Resul
 
     let mod_line = format!("mod {migration};");
     if !contents.contains(&mod_line) {
-        if let Some(insert_at) = contents.find("pub struct Migrator") {
+        let last_mod_line_end = contents
+            .match_indices('\n')
+            .map(|(index, _)| index + 1)
+            .zip(contents.lines())
+            .filter(|(_, line)| line.starts_with("mod ") && line.trim_end().ends_with(';'))
+            .map(|(end, _)| end)
+            .last();
+        if let Some(insert_at) = last_mod_line_end {
             contents.insert_str(insert_at, &format!("{mod_line}\n"));
+        } else if let Some(insert_at) = contents.find("pub struct Migrator") {
+            contents.insert_str(insert_at, &format!("{mod_line}\n\n"));
         } else {
             contents.push_str(&format!("\n{mod_line}\n"));
         }
@@ -1264,11 +1284,34 @@ pub(crate) fn ensure_migration_registered(path: &Path, migration: &str) -> Resul
                 "Add the migration module and `Box::new(...::Migration)` entry manually, then rerun if needed.",
             ))
         })?;
-        contents.insert_str(insert_at, &format!("            {migration_entry},\n"));
+        insert_migration_entry(&mut contents, insert_at, &migration_entry);
     }
 
     write_file(path, &contents).with_context(|| format!("Failed to write {}", path.display()))?;
     Ok(())
+}
+
+/// Inserts `entry` as the last element of the `vec![...]` whose `]` is at `close`, indented one
+/// level deeper than the line holding `]`.
+fn insert_migration_entry(contents: &mut String, close: usize, entry: &str) {
+    let line_start = contents[..close].rfind('\n').map_or(0, |index| index + 1);
+    let line = &contents[line_start..close];
+    let line_indent = &line[..line.len() - line.trim_start().len()];
+    let entry_indent = format!("{line_indent}    ");
+    // The previous entry may omit its trailing comma.
+    let comma_at = contents[..close]
+        .trim_end()
+        .ends_with(')')
+        .then(|| contents[..close].trim_end().len());
+
+    if line.trim().is_empty() {
+        contents.insert_str(line_start, &format!("{entry_indent}{entry},\n"));
+    } else {
+        contents.insert_str(close, &format!("\n{entry_indent}{entry},\n{line_indent}"));
+    }
+    if let Some(comma_at) = comma_at {
+        contents.insert(comma_at, ',');
+    }
 }
 
 fn find_migrations_vec_close(contents: &str) -> Option<usize> {

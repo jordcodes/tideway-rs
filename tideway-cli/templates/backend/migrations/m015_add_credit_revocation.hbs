@@ -18,10 +18,7 @@ impl MigrationTrait for Migration {
             CreditBuckets::RevokedAmount,
             CreditBuckets::PendingRevocation,
         ] {
-            if !manager
-                .has_column("credit_buckets", &column.to_string())
-                .await?
-            {
+            if !has_column(manager, "credit_buckets", &column.to_string()).await? {
                 manager
                     .alter_table(
                         Table::alter()
@@ -52,6 +49,37 @@ impl MigrationTrait for Migration {
         // entries may already exist.
         Ok(())
     }
+}
+
+/// Checks for a column with plain SQL. `SchemaManager::has_column` panics unless
+/// `sea-orm-migration` enables the `sqlx-*` feature for the connected backend.
+async fn has_column(manager: &SchemaManager<'_>, table: &str, column: &str) -> Result<bool, DbErr> {
+    let backend = manager.get_database_backend();
+    let sql = match backend {
+        DatabaseBackend::Sqlite => {
+            "SELECT COUNT(*) AS count FROM pragma_table_info(?) WHERE name = ?"
+        }
+        DatabaseBackend::Postgres => {
+            "SELECT COUNT(*) AS count FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2"
+        }
+        DatabaseBackend::MySql => {
+            "SELECT COUNT(*) AS count FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?"
+        }
+    };
+    let count = manager
+        .get_connection()
+        .query_one(Statement::from_sql_and_values(
+            backend,
+            sql,
+            [table.into(), column.into()],
+        ))
+        .await?
+        .map(|row| row.try_get::<i64>("", "count"))
+        .transpose()?
+        .unwrap_or(0);
+    Ok(count > 0)
 }
 
 async fn allow_revoke_transactions(manager: &SchemaManager<'_>) -> Result<(), DbErr> {

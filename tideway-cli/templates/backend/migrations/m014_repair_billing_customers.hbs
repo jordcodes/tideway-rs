@@ -6,6 +6,7 @@
 //! is portable to SQLite and PostgreSQL; normal store writes replace both legacy values.
 
 use sea_orm_migration::prelude::*;
+use sea_orm_migration::sea_orm::{ConnectionTrait, DatabaseBackend, Statement};
 
 #[derive(DeriveMigrationName)]
 pub struct Migration;
@@ -13,10 +14,7 @@ pub struct Migration;
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
-        if !manager
-            .has_column("billing_customers", "billable_type")
-            .await?
-        {
+        if !has_column(manager, "billing_customers", "billable_type").await? {
             manager
                 .alter_table(
                     Table::alter()
@@ -32,7 +30,7 @@ impl MigrationTrait for Migration {
                 .await?;
         }
 
-        if !manager.has_column("billing_customers", "updated_at").await? {
+        if !has_column(manager, "billing_customers", "updated_at").await? {
             manager
                 .alter_table(
                     Table::alter()
@@ -56,6 +54,37 @@ impl MigrationTrait for Migration {
         // removing them would make both the current and historical application code unsafe.
         Ok(())
     }
+}
+
+/// Checks for a column with plain SQL. `SchemaManager::has_column` panics unless
+/// `sea-orm-migration` enables the `sqlx-*` feature for the connected backend.
+async fn has_column(manager: &SchemaManager<'_>, table: &str, column: &str) -> Result<bool, DbErr> {
+    let backend = manager.get_database_backend();
+    let sql = match backend {
+        DatabaseBackend::Sqlite => {
+            "SELECT COUNT(*) AS count FROM pragma_table_info(?) WHERE name = ?"
+        }
+        DatabaseBackend::Postgres => {
+            "SELECT COUNT(*) AS count FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2"
+        }
+        DatabaseBackend::MySql => {
+            "SELECT COUNT(*) AS count FROM information_schema.columns \
+             WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?"
+        }
+    };
+    let count = manager
+        .get_connection()
+        .query_one(Statement::from_sql_and_values(
+            backend,
+            sql,
+            [table.into(), column.into()],
+        ))
+        .await?
+        .map(|row| row.try_get::<i64>("", "count"))
+        .transpose()?
+        .unwrap_or(0);
+    Ok(count > 0)
 }
 
 #[derive(DeriveIden)]

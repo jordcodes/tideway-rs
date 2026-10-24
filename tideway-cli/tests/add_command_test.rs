@@ -116,6 +116,106 @@ fn test_add_credits_is_additive_and_registers_ledger_migration() {
 }
 
 #[test]
+fn test_add_credits_keeps_env_example_and_migration_lib_formatting() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, false);
+    // The last entry has no trailing comma.
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        STANDARD_MIGRATION_LIB.replace(
+            "Box::new(m007_add_admin_flag::Migration),",
+            "Box::new(m007_add_admin_flag::Migration)",
+        ),
+    )
+    .expect("write migration lib");
+    let env_example = "# Server\nTIDEWAY_PORT=8000\nDATABASE_URL=sqlite::memory:\n";
+    fs::write(project_dir.join(".env.example"), env_example).expect("write env example");
+
+    tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    })
+    .expect("add credits");
+
+    assert_eq!(
+        fs::read_to_string(project_dir.join(".env.example")).expect("read env example"),
+        env_example
+    );
+    let migration_lib =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    assert!(
+        migration_lib.contains(
+            "mod m007_add_admin_flag;
+mod m013_create_credit_ledger;
+mod m014_add_credit_revocation;
+
+pub struct Migrator;"
+        ),
+        "unexpected migration lib:\n{migration_lib}"
+    );
+    assert!(
+        migration_lib.contains(
+            "        vec![
+            Box::new(m001_create_users::Migration),
+            Box::new(m007_add_admin_flag::Migration),
+            Box::new(m013_create_credit_ledger::Migration),
+            Box::new(m014_add_credit_revocation::Migration),
+        ]
+"
+        ),
+        "unexpected migration lib:\n{migration_lib}"
+    );
+}
+
+#[test]
+fn test_add_credits_expands_an_inline_migration_list() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    fs::create_dir_all(project_dir.join("src")).expect("create src");
+    fs::create_dir_all(project_dir.join("migration/src")).expect("create migrations");
+    write_basic_cargo(&project_dir);
+    write_migration_cargo(&project_dir, false);
+    fs::write(
+        project_dir.join("migration/src/lib.rs"),
+        "pub use sea_orm_migration::prelude::*;\n\npub struct Migrator;\n\n#[async_trait::async_trait]\nimpl MigratorTrait for Migrator {\n    fn migrations() -> Vec<Box<dyn MigrationTrait>> {\n        vec![]\n    }\n}\n",
+    )
+    .expect("write migration lib");
+
+    tideway_cli::commands::add::run(AddArgs {
+        feature: AddFeature::Credits,
+        path: project_dir.to_string_lossy().to_string(),
+        force: false,
+        wire: false,
+        db: false,
+    })
+    .expect("add credits");
+
+    let migration_lib =
+        fs::read_to_string(project_dir.join("migration/src/lib.rs")).expect("read migration lib");
+    assert!(
+        migration_lib.contains(
+            "        vec![
+            Box::new(m013_create_credit_ledger::Migration),
+            Box::new(m014_add_credit_revocation::Migration),
+        ]
+"
+        ),
+        "unexpected migration lib:\n{migration_lib}"
+    );
+    assert!(
+        migration_lib.contains("mod m014_add_credit_revocation;\n\npub struct Migrator;"),
+        "unexpected migration lib:\n{migration_lib}"
+    );
+}
+
+#[test]
 fn test_add_credits_upgrades_an_existing_ledger_with_revocation_only() {
     let temp_dir = tempfile::tempdir().expect("create temp dir");
     let project_dir = temp_dir.path().join("my_app");
