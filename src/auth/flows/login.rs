@@ -26,6 +26,12 @@ use super::types::{LoginRequest, LoginResponse, MfaVerifyRequest};
 #[cfg(feature = "auth-mfa")]
 use crate::auth::mfa::{BackupCodeGenerator, TotpConfig, TotpManager};
 
+/// Longest password accepted at login, in bytes.
+///
+/// Well above any registration policy, but small enough that password hashing cost
+/// cannot be inflated by megabyte-sized inputs.
+const MAX_LOGIN_PASSWORD_BYTES: usize = 1024;
+
 /// Configuration for the login flow.
 #[derive(Clone)]
 pub struct LoginFlowConfig {
@@ -290,12 +296,24 @@ where
         let rate_limit_key = client_ip.unwrap_or_else(|| format!("email:{email}"));
         self.rate_limiter.check_rate_limit(Some(&rate_limit_key))?;
 
+        // Rejected before lookup, so the response is identical for known and unknown accounts.
+        if req.password.len() > MAX_LOGIN_PASSWORD_BYTES {
+            tracing::warn!(
+                target: "auth.login.failed",
+                email = %email,
+                reason = "password_too_long",
+                "Login failed: password exceeds maximum length"
+            );
+            return Ok(LoginResponse::error("Invalid credentials"));
+        }
+
         // Find user
         let user = match self.user_store.find_by_email(&email).await? {
             Some(u) => u,
             None => {
-                // Timing-safe: hash anyway to prevent enumeration
-                let _ = self.password_hasher.hash_async("dummy").await;
+                // Timing-safe: hash the submitted password so the work matches a real
+                // verification and does not reveal whether the account exists.
+                let _ = self.password_hasher.hash_async(&req.password).await;
                 tracing::warn!(
                     target: "auth.login.failed",
                     email = %email,
@@ -949,6 +967,37 @@ mod tests {
                 .unwrap()
                 .contains("Invalid credentials")
         );
+    }
+
+    #[tokio::test]
+    async fn test_login_rejects_oversized_password_without_recording_attempt() {
+        let user_store = TestUserStore::new();
+        user_store.add_user(create_test_user("test@example.com", "password123", true));
+        let mfa_store = InMemoryMfaTokenStore::new();
+        let flow = LoginFlow::new(
+            user_store,
+            mfa_store,
+            TestTokenIssuer,
+            LoginFlowConfig::new("TestApp"),
+        );
+
+        let response = flow
+            .login(LoginRequest {
+                email: "test@example.com".to_string(),
+                password: "a".repeat(MAX_LOGIN_PASSWORD_BYTES + 1),
+                remember_me: false,
+                mfa_code: None,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            get_error_message(&response)
+                .unwrap()
+                .contains("Invalid credentials")
+        );
+        let users = flow.user_store.users.read().unwrap();
+        assert_eq!(users["test@example.com"].failed_attempts, 0);
     }
 
     async fn assert_wrong_password_hides_account_status(locked: bool, verified: bool) {
