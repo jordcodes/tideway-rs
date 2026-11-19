@@ -4788,11 +4788,15 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
     }
 
     if let Some(pos) = contents.find(".register_module(") {
-        let line_end = contents[pos..]
-            .find('\n')
-            .map(|idx| pos + idx)
-            .unwrap_or(contents.len());
-        contents.insert_str(line_end + 1, &format!("        {}\n", register_line));
+        let insertion = format!("        {}\n", register_line);
+        match contents[pos..].find('\n') {
+            Some(idx) => contents.insert_str(pos + idx + 1, &insertion),
+            None => {
+                // The register call is on the last line with no trailing newline.
+                contents.push('\n');
+                contents.push_str(&insertion);
+            }
+        }
     } else {
         print_warning("Could not find register_module call in main.rs");
     }
@@ -4927,4 +4931,33 @@ fn fallback_project_name(project_dir: &Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("my_app")
         .replace('-', "_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_register_fallback_appends_when_last_line_has_no_newline() {
+        let mut contents = "    .register_module(routes::ApiModule)".to_string();
+
+        wire_register_fallback(&mut contents, ".register_module(routes::todo::TodoModule)");
+
+        assert_eq!(
+            contents,
+            "    .register_module(routes::ApiModule)\n        .register_module(routes::todo::TodoModule)\n"
+        );
+    }
+
+    #[test]
+    fn wire_register_fallback_inserts_after_register_line() {
+        let mut contents = "    .register_module(routes::ApiModule)\n    .run()".to_string();
+
+        wire_register_fallback(&mut contents, ".register_module(routes::todo::TodoModule)");
+
+        assert_eq!(
+            contents,
+            "    .register_module(routes::ApiModule)\n        .register_module(routes::todo::TodoModule)\n    .run()"
+        );
+    }
 }
