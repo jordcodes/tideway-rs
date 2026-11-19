@@ -323,6 +323,52 @@ tideway = "0.7"
     fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("write src/main.rs");
 }
 
+#[test]
+fn test_resource_warns_when_falling_back_to_inline_auth_helpers() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_minimal_resource_project(&project_dir);
+    fs::write(
+        project_dir.join("Cargo.toml"),
+        r#"[package]
+name = "my_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tideway = { version = "0.7", features = ["database", "auth", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    )
+    .expect("write Cargo.toml");
+    // SaaS auth markers without the shared src/auth/actor.rs contract.
+    fs::create_dir_all(project_dir.join("src/auth")).expect("create auth dir");
+    fs::create_dir_all(project_dir.join("src/entities")).expect("create entities dir");
+    fs::create_dir_all(project_dir.join("src/admin")).expect("create admin dir");
+    fs::write(project_dir.join("src/auth/mod.rs"), "//! auth\n").expect("write auth mod");
+    fs::write(project_dir.join("src/entities/user.rs"), "//! user\n").expect("write user");
+    fs::write(project_dir.join("src/admin/mod.rs"), "//! admin\n").expect("write admin mod");
+
+    let output = run_tideway(&[
+        "resource",
+        "admin_note",
+        "--profile",
+        "admin",
+        "--path",
+        project_dir.to_str().expect("utf8 path"),
+    ]);
+    assert_success(&output, "tideway resource");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("src/auth/actor.rs not found")
+            && stdout.contains("tideway doctor --upgrade"),
+        "expected inline auth fallback warning, got:\n{}",
+        stdout
+    );
+}
+
 fn create_minimal_resource_project(project_dir: &Path) {
     fs::create_dir_all(project_dir.join("src/routes")).expect("create routes");
     fs::write(

@@ -257,6 +257,8 @@ struct ResourceSchema<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 struct ResourceGenerationContext {
     shared_saas_actor: bool,
+    /// `src/entities/user.rs` has a `session_version` column the inline auth fallback can check.
+    user_session_version: bool,
     /// `owned` profile: scoped to the caller's organization and user.
     saas_owned_scope: bool,
     /// `api`/`tenant`/`event` profiles: scoped to the caller's organization.
@@ -270,6 +272,12 @@ impl ResourceGenerationContext {
     /// Whether generated handlers resolve the caller's organization membership.
     fn saas_scoped(self) -> bool {
         self.saas_owned_scope || self.saas_org_scope
+    }
+
+    /// Whether generated handlers authenticate through inline helpers because the app
+    /// has no shared `src/auth/actor.rs`.
+    fn uses_inline_auth_helpers(self) -> bool {
+        (self.saas_scoped() || self.saas_admin_guard) && !self.shared_saas_actor
     }
 }
 
@@ -1168,6 +1176,8 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
     let has_saas_organizations = src_dir.join("entities/organization_member.rs").exists();
     let has_saas_admin = src_dir.join("admin/mod.rs").exists();
     let has_shared_saas_actor = src_dir.join("auth/actor.rs").exists();
+    let has_user_session_version = fs::read_to_string(src_dir.join("entities/user.rs"))
+        .is_ok_and(|contents| contents.contains("session_version"));
     let library_modules = fs::read_to_string(src_dir.join("lib.rs")).is_ok_and(|contents| {
         contents.contains("pub mod auth;") && contents.contains("pub mod billing;")
     });
@@ -1175,6 +1185,7 @@ fn detect_generation_context(project_dir: &Path, args: &ResourceArgs) -> Resourc
 
     ResourceGenerationContext {
         shared_saas_actor: has_shared_saas_actor,
+        user_session_version: has_user_session_version,
         saas_owned_scope: full_stack
             && matches!(args.profile, ResourceProfile::Owned)
             && has_saas_auth
@@ -1427,6 +1438,11 @@ pub fn run_with_runtime(args: ResourceArgs, runtime: CommandRuntime) -> Result<(
         ));
     } else if generation_context.saas_admin_guard {
         print_info("Detected a SaaS scaffold; generated admin-guarded handlers for this resource.");
+    }
+    if generation_context.uses_inline_auth_helpers() {
+        print_warning(
+            "src/auth/actor.rs not found, so this resource uses inline auth helpers that reject impersonation tokens. Run `tideway doctor --upgrade` and add src/auth/actor.rs to use the shared RequestActor.",
+        );
     }
 
     if args.with_tests && !args.db {
@@ -1727,11 +1743,43 @@ fn dependency_sections(doc: &toml_edit::DocumentMut) -> Vec<&toml_edit::Item> {
     sections
 }
 
-fn render_saas_owned_route_support_code() -> &'static str {
-    r#"
-fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
-    static VERIFIER: std::sync::OnceLock<std::result::Result<JwtVerifier<AccessTokenClaims>, String>> =
-        std::sync::OnceLock::new();
+/// Rejects impersonation tokens in the inline auth fallback. Without
+/// `src/auth/actor.rs` there is no impersonation session lookup, so a token carrying
+/// impersonation claims cannot be checked against a live session.
+const INLINE_IMPERSONATION_CHECK: &str = r#"    if token_data.claims.custom.is_some() {
+        return Err(TidewayError::Forbidden(
+            "Impersonation tokens are not accepted by this route".into(),
+        ));
+    }
+"#;
+
+/// Revokes access tokens issued before the user's last session reset. Emitted only
+/// when the user entity has a `session_version` column.
+const INLINE_SESSION_VERSION_CHECK: &str = r#"    if token_data.claims.session_version != user.session_version.max(0) as u64 {
+        return Err(TidewayError::Unauthorized("Access token has been revoked".into()));
+    }
+"#;
+
+fn render_inline_auth_support_code(template: &str, user_session_version: bool) -> String {
+    let session_version_check = if user_session_version {
+        INLINE_SESSION_VERSION_CHECK
+    } else {
+        ""
+    };
+    template
+        .replace("__IMPERSONATION_CHECK__\n", INLINE_IMPERSONATION_CHECK)
+        .replace("__SESSION_VERSION_CHECK__\n", session_version_check)
+}
+
+fn render_saas_owned_route_support_code(user_session_version: bool) -> String {
+    render_inline_auth_support_code(SAAS_OWNED_ROUTE_SUPPORT_CODE, user_session_version)
+}
+
+const SAAS_OWNED_ROUTE_SUPPORT_CODE: &str = r#"
+fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims<ImpersonationClaims>>> {
+    static VERIFIER: std::sync::OnceLock<
+        std::result::Result<JwtVerifier<AccessTokenClaims<ImpersonationClaims>>, String>,
+    > = std::sync::OnceLock::new();
     VERIFIER
         .get_or_init(|| {
             let secret = std::env::var("JWT_SECRET")
@@ -1740,7 +1788,9 @@ fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
                 .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
             let audience = std::env::var("JWT_AUDIENCE")
                 .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
-            JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+            JwtVerifier::<AccessTokenClaims<ImpersonationClaims>>::from_secret_checked(
+                secret.as_bytes(),
+            )
                 .map(|verifier| {
                     verifier
                         .with_issuer(issuer)
@@ -1763,15 +1813,19 @@ async fn authenticated_user(headers: &HeaderMap, db: &DatabaseConnection) -> Res
         .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
 
     let token_data = jwt_verifier()?.verify_access_token(token).await?;
+__IMPERSONATION_CHECK__
 
     let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
         .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
 
-    user::Entity::find_by_id(user_id)
+    let user = user::Entity::find_by_id(user_id)
         .one(db)
         .await
         .map_err(|error| TidewayError::Database(error.to_string()))?
-        .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))
+        .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))?;
+__SESSION_VERSION_CHECK__
+
+    Ok(user)
 }
 
 async fn resolve_org_actor(headers: &HeaderMap, db: &DatabaseConnection) -> Result<OrgActor> {
@@ -1833,14 +1887,17 @@ async fn resolve_current_membership(
         )),
     }
 }
-"#
+"#;
+
+fn render_saas_admin_route_support_code(user_session_version: bool) -> String {
+    render_inline_auth_support_code(SAAS_ADMIN_ROUTE_SUPPORT_CODE, user_session_version)
 }
 
-fn render_saas_admin_route_support_code() -> &'static str {
-    r#"
-fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
-    static VERIFIER: std::sync::OnceLock<std::result::Result<JwtVerifier<AccessTokenClaims>, String>> =
-        std::sync::OnceLock::new();
+const SAAS_ADMIN_ROUTE_SUPPORT_CODE: &str = r#"
+fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims<ImpersonationClaims>>> {
+    static VERIFIER: std::sync::OnceLock<
+        std::result::Result<JwtVerifier<AccessTokenClaims<ImpersonationClaims>>, String>,
+    > = std::sync::OnceLock::new();
     VERIFIER
         .get_or_init(|| {
             let secret = std::env::var("JWT_SECRET")
@@ -1849,7 +1906,9 @@ fn jwt_verifier() -> Result<&'static JwtVerifier<AccessTokenClaims>> {
                 .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
             let audience = std::env::var("JWT_AUDIENCE")
                 .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
-            JwtVerifier::<AccessTokenClaims>::from_secret_checked(secret.as_bytes())
+            JwtVerifier::<AccessTokenClaims<ImpersonationClaims>>::from_secret_checked(
+                secret.as_bytes(),
+            )
                 .map(|verifier| {
                     verifier
                         .with_issuer(issuer)
@@ -1872,6 +1931,7 @@ async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> R
         .ok_or_else(|| TidewayError::Unauthorized("Invalid authorization header".into()))?;
 
     let token_data = jwt_verifier()?.verify_access_token(token).await?;
+__IMPERSONATION_CHECK__
 
     let user_id = Uuid::parse_str(&token_data.claims.standard.sub)
         .map_err(|_| TidewayError::Unauthorized("Invalid user ID in token".into()))?;
@@ -1881,6 +1941,7 @@ async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> R
         .await
         .map_err(|error| TidewayError::Database(error.to_string()))?
         .ok_or_else(|| TidewayError::Unauthorized("User not found".into()))?;
+__SESSION_VERSION_CHECK__
 
     if !user.is_platform_admin {
         return Err(TidewayError::Forbidden("Admin access required".into()));
@@ -1888,8 +1949,7 @@ async fn require_admin_access(headers: &HeaderMap, db: &DatabaseConnection) -> R
 
     Ok(())
 }
-"#
-}
+"#;
 
 #[allow(clippy::too_many_arguments)]
 fn render_resource_module(
@@ -1914,8 +1974,7 @@ fn render_resource_module(
     let route_update_fields = route_request_fields(schema, context, true);
     let uses_shared_saas_owned_actor = context.shared_saas_actor && context.saas_scoped();
     let uses_shared_saas_admin_actor = context.shared_saas_actor && context.saas_admin_guard;
-    let uses_inline_auth_helpers =
-        (context.saas_scoped() || context.saas_admin_guard) && !context.shared_saas_actor;
+    let uses_inline_auth_helpers = context.uses_inline_auth_helpers();
     let uses_auth_headers = context.saas_scoped() || context.saas_admin_guard;
     let id_type_str = if matches!(id_type, ResourceIdType::Uuid) {
         "uuid::Uuid"
@@ -2214,9 +2273,9 @@ pub struct PaginationParams {{
         format!("    let mut query = {resource_name}::Entity::find();")
     };
     let auth_support_code = if uses_inline_auth_helpers && context.saas_scoped() {
-        render_saas_owned_route_support_code().to_string()
+        render_saas_owned_route_support_code(context.user_session_version)
     } else if uses_inline_auth_helpers && context.saas_admin_guard {
-        render_saas_admin_route_support_code().to_string()
+        render_saas_admin_route_support_code(context.user_session_version)
     } else {
         String::new()
     };
@@ -2226,9 +2285,9 @@ pub struct PaginationParams {{
         "use tideway::{AppContext, MessageResponse, Result, RouteModule};\n"
     };
     let auth_imports = if uses_inline_auth_helpers && context.saas_scoped() {
-        "use tideway::auth::{AccessTokenClaims, JwtVerifier};\nuse tideway::policy::OrgActor;\n"
+        "use tideway::auth::{AccessTokenClaims, ImpersonationClaims, JwtVerifier};\nuse tideway::policy::OrgActor;\n"
     } else if uses_inline_auth_helpers {
-        "use tideway::auth::{AccessTokenClaims, JwtVerifier};\n"
+        "use tideway::auth::{AccessTokenClaims, ImpersonationClaims, JwtVerifier};\n"
     } else {
         ""
     };
