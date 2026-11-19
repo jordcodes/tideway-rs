@@ -29,7 +29,7 @@ rust-version = "1.88"
 
 [dependencies]
 # Macros (optional)
-tideway-macros = { version = "0.1.0", optional = true }
+tideway-macros = { version = "0.1.0", path = "tideway-macros", optional = true }
 
 # Core HTTP
 axum = { version = "0.8.6", features = ["multipart"] }

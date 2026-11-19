@@ -18,7 +18,7 @@ use uuid::Uuid;
 const DEFAULT_MAX_HISTORY_SIZE: usize = 10_000;
 const MAX_RETRY_BACKOFF_SECONDS: u64 = 24 * 60 * 60;
 
-fn retry_backoff_seconds(base_seconds: u64, retry_count: u32) -> u64 {
+pub(super) fn retry_backoff_seconds(base_seconds: u64, retry_count: u32) -> u64 {
     let multiplier = 1_u64.checked_shl(retry_count).unwrap_or(u64::MAX);
     base_seconds
         .saturating_mul(multiplier)

@@ -1,4 +1,4 @@
-use crate::utils::get_env_with_prefix;
+use crate::utils::{get_env_with_prefix, parse_env_bool};
 use serde::{Deserialize, Serialize};
 
 /// Metrics configuration for Tideway applications
@@ -55,7 +55,7 @@ impl MetricsConfig {
     /// Apply environment overrides, preserving settings for absent variables.
     pub(crate) fn with_env(mut self) -> Self {
         if let Some(enabled) = get_env_with_prefix("METRICS_ENABLED") {
-            self.enabled = enabled.parse().unwrap_or(true);
+            self.enabled = parse_env_bool("METRICS_ENABLED", &enabled, self.enabled);
         }
 
         if let Some(path) = get_env_with_prefix("METRICS_PATH") {

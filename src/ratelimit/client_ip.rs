@@ -94,8 +94,10 @@ impl ClientIpResolver {
 
     /// Resolve the originating client IP for a request.
     ///
-    /// If the peer is not trusted, or a present forwarding header is malformed,
-    /// this fails closed and returns the direct peer address.
+    /// `X-Forwarded-For` is walked right to left, skipping trusted proxy hops, and the first
+    /// untrusted address is the client. Entries left of that address are client-supplied and
+    /// ignored, even when malformed. If the peer is not trusted, or a hop between the peer and
+    /// the client is malformed, this fails closed and returns the direct peer address.
     ///
     /// IPv4-mapped IPv6 addresses (`::ffff:a.b.c.d`, as reported for IPv4 peers on a dual-stack
     /// listener) are treated as their IPv4 form, so IPv4 proxy networks still match.
@@ -105,21 +107,42 @@ impl ClientIpResolver {
             return peer;
         }
 
-        match forwarded_chain(headers) {
-            ForwardedChain::Valid(chain) => chain
-                .into_iter()
-                .rev()
-                .map(|address| address.to_canonical())
-                .find(|address| !self.is_trusted(*address))
-                .unwrap_or(peer),
-            ForwardedChain::Invalid => peer,
-            ForwardedChain::Absent => headers
-                .get("x-real-ip")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.trim().parse::<IpAddr>().ok())
-                .map(|address| address.to_canonical())
-                .unwrap_or(peer),
+        let values = headers.get_all("x-forwarded-for");
+        if values.iter().next().is_some() {
+            return self.resolve_forwarded_for(peer, values);
         }
+
+        headers
+            .get("x-real-ip")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<IpAddr>().ok())
+            .map(|address| address.to_canonical())
+            .unwrap_or(peer)
+    }
+
+    fn resolve_forwarded_for(
+        &self,
+        peer: IpAddr,
+        values: axum::http::header::GetAll<'_, axum::http::HeaderValue>,
+    ) -> IpAddr {
+        // Later header lines and later entries were appended by proxies closer to us.
+        for value in values.iter().rev() {
+            let Ok(value) = value.to_str() else {
+                return peer;
+            };
+
+            for entry in value.rsplit(',') {
+                let Ok(address) = entry.trim().parse::<IpAddr>() else {
+                    return peer;
+                };
+                let address = address.to_canonical();
+                if !self.is_trusted(address) {
+                    return address;
+                }
+            }
+        }
+
+        peer
     }
 
     fn is_trusted(&self, address: IpAddr) -> bool {
@@ -147,39 +170,6 @@ fn parse_network(value: &str) -> Result<IpNet, TrustedProxyParseError> {
         .parse::<IpAddr>()
         .map(IpNet::from)
         .map_err(|_| TrustedProxyParseError::new(value))
-}
-
-enum ForwardedChain {
-    Absent,
-    Invalid,
-    Valid(Vec<IpAddr>),
-}
-
-fn forwarded_chain(headers: &HeaderMap) -> ForwardedChain {
-    let values = headers.get_all("x-forwarded-for");
-    if values.iter().next().is_none() {
-        return ForwardedChain::Absent;
-    }
-
-    let mut chain = Vec::new();
-    for value in values {
-        let Ok(value) = value.to_str() else {
-            return ForwardedChain::Invalid;
-        };
-
-        for address in value.split(',') {
-            let Ok(address) = address.trim().parse() else {
-                return ForwardedChain::Invalid;
-            };
-            chain.push(address);
-        }
-    }
-
-    if chain.is_empty() {
-        ForwardedChain::Invalid
-    } else {
-        ForwardedChain::Valid(chain)
-    }
 }
 
 #[cfg(test)]
@@ -284,6 +274,20 @@ mod tests {
         assert_eq!(
             resolver(&["10.0.0.0/8"]).resolve(ip("10.2.0.5"), &headers),
             ip("10.2.0.5")
+        );
+    }
+
+    #[test]
+    fn malformed_client_supplied_entry_does_not_hide_client() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "not-an-ip, 198.51.100.8, 10.1.0.4".parse().unwrap(),
+        );
+
+        assert_eq!(
+            resolver(&["10.0.0.0/8"]).resolve(ip("10.2.0.5"), &headers),
+            ip("198.51.100.8")
         );
     }
 

@@ -294,18 +294,20 @@ impl PlanLimits {
         let mut limits = Self::default();
         let mut custom = HashMap::new();
 
+        // Negative or out-of-range values are skipped rather than wrapped, which would turn
+        // `-1` into an effectively unlimited `u32::MAX` and `2^32` into `0`.
         for (key, value) in obj {
-            let num = value.as_i64().or_else(|| value.as_u64().map(|n| n as i64));
-            if let Some(n) = num {
-                match key.as_str() {
-                    "projects" | "max_projects" => limits.max_projects = Some(n as u32),
-                    "storage_mb" | "max_storage_mb" => limits.max_storage_mb = Some(n as u64),
-                    "api_calls" | "max_api_calls" | "max_api_calls_monthly" => {
-                        limits.max_api_calls_monthly = Some(n as u32)
-                    }
-                    _ => {
-                        custom.insert(key.clone(), n as u64);
-                    }
+            let Some(n) = value.as_u64() else {
+                continue;
+            };
+            match key.as_str() {
+                "projects" | "max_projects" => limits.max_projects = u32::try_from(n).ok(),
+                "storage_mb" | "max_storage_mb" => limits.max_storage_mb = Some(n),
+                "api_calls" | "max_api_calls" | "max_api_calls_monthly" => {
+                    limits.max_api_calls_monthly = u32::try_from(n).ok()
+                }
+                _ => {
+                    custom.insert(key.clone(), n);
                 }
             }
         }
@@ -876,6 +878,21 @@ impl Plans {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_plan_limits_from_json_skips_out_of_range_values() {
+        let limits = PlanLimits::from_json(&serde_json::json!({
+            "projects": -1,
+            "api_calls": 4_294_967_296_u64,
+            "storage_mb": 512,
+            "seats": -5,
+        }));
+
+        assert_eq!(limits.max_projects, None);
+        assert_eq!(limits.max_api_calls_monthly, None);
+        assert_eq!(limits.max_storage_mb, Some(512));
+        assert!(limits.custom.is_empty());
+    }
 
     #[test]
     fn test_build_plans() {
