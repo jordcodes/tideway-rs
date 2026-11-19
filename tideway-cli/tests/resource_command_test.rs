@@ -2415,6 +2415,129 @@ uuid = { version = "1", features = ["v4", "serde"] }
         &project_dir.join("src/routes/subscription.rs"),
         "jwt_verifier.verify(token).await?;",
     );
+    // Without an actor module there is no session lookup, so impersonation tokens are rejected.
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "JwtVerifier<AccessTokenClaims<ImpersonationClaims>>",
+    );
+    assert_file_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "if token_data.claims.custom.is_some() {",
+    );
+    // The fixture's user entity has no session_version column, so no comparison is emitted.
+    assert_file_not_contains(
+        &project_dir.join("src/routes/subscription.rs"),
+        "session_version",
+    );
+}
+
+#[test]
+fn test_resource_inline_helpers_check_session_version_when_user_has_the_column() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"
+tideway = { version = "0.7", features = ["database", "auth", "organizations", "admin"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+"#,
+    );
+    create_saas_resource_markers(&project_dir, true, true, false);
+    fs::write(
+        project_dir.join("src/entities/user.rs"),
+        "//! user\n\npub struct Model {\n    pub session_version: i32,\n}\n",
+    )
+    .expect("write user entity with session_version");
+
+    for (name, profile) in [
+        ("subscription", tideway_cli::cli::ResourceProfile::Owned),
+        ("admin_note", tideway_cli::cli::ResourceProfile::Admin),
+    ] {
+        tideway_cli::commands::resource::run(ResourceArgs {
+            name: name.to_string(),
+            fields: Vec::new(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: false,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+        })
+        .expect("run resource command");
+
+        let route = project_dir.join(format!("src/routes/{name}.rs"));
+        assert_file_contains(
+            &route,
+            "if token_data.claims.session_version != user.session_version.max(0) as u64 {",
+        );
+        assert_file_contains(&route, "Access token has been revoked");
+        assert_file_contains(&route, "if token_data.claims.custom.is_some() {");
+    }
+}
+
+#[test]
+fn test_resource_inline_helpers_compile_against_saas_scaffold_without_actor() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    tideway_cli::commands::new::run(NewArgs {
+        name: Some("my_app".to_string()),
+        preset: Some(NewPreset::Saas),
+        features: Vec::new(),
+        with_config: false,
+        with_docker: false,
+        with_ci: false,
+        no_prompt: true,
+        summary: false,
+        with_env: false,
+        without_invitations: false,
+        path: Some(project_dir.to_string_lossy().to_string()),
+        force: false,
+    })
+    .expect("run tideway new");
+
+    // Hide the shared actor while generating so the resource takes the inline fallback,
+    // then restore it so the rest of the scaffold still compiles.
+    let actor_path = project_dir.join("src/auth/actor.rs");
+    let hidden_actor_path = project_dir.join("actor.rs.hidden");
+    fs::rename(&actor_path, &hidden_actor_path).expect("hide actor module");
+    for (name, profile) in [
+        ("subscription", tideway_cli::cli::ResourceProfile::Owned),
+        ("admin_note", tideway_cli::cli::ResourceProfile::Admin),
+    ] {
+        tideway_cli::commands::resource::run(ResourceArgs {
+            name: name.to_string(),
+            fields: Vec::new(),
+            path: project_dir.to_string_lossy().to_string(),
+            wire: false,
+            with_tests: false,
+            db: false,
+            repo: false,
+            repo_tests: false,
+            service: false,
+            id_type: tideway_cli::cli::ResourceIdType::Int,
+            add_uuid: false,
+            paginate: false,
+            search: false,
+            db_backend: tideway_cli::cli::DbBackend::Auto,
+            profile,
+        })
+        .expect("run tideway resource");
+        let route = project_dir.join(format!("src/routes/{name}.rs"));
+        assert_file_not_contains(&route, "RequestActor");
+        assert_file_contains(&route, "user.session_version.max(0) as u64");
+    }
+    fs::rename(&hidden_actor_path, &actor_path).expect("restore actor module");
+
+    patch_scaffold_to_workspace(&project_dir);
+    run_cargo_in_project(&project_dir, &["check"]);
 }
 
 #[test]
