@@ -429,9 +429,20 @@ where
             .ok_or_else(|| OrganizationError::not_found(org_id))?;
 
         let current_slug = self.org_store.org_slug(&current);
+        let current_owner_id = self.org_store.owner_id(&current);
 
         // Apply update
         let updated = updater(current);
+
+        // The store writes by ID, so a changed ID would update another organization, and a
+        // changed owner would skip transfer_ownership's membership changes.
+        if self.org_store.org_id(&updated) != org_id
+            || self.org_store.owner_id(&updated) != current_owner_id
+        {
+            return Err(OrganizationError::insufficient_permission(
+                "cannot change organization id or owner via update, use transfer_ownership instead",
+            ));
+        }
 
         // Check if slug changed and is available
         let new_slug = self.org_store.org_slug(&updated);

@@ -166,10 +166,7 @@ pub fn validate_duration(duration: &str) -> Result<(), ValidationError> {
         err.message = Some(std::borrow::Cow::Borrowed("cannot be empty"));
         return Err(err);
     };
-    let number: String = duration
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
+    let number = &duration[..duration.len() - suffix.len_utf8()];
 
     if number.is_empty() {
         let mut err = ValidationError::new("duration");
@@ -180,7 +177,7 @@ pub fn validate_duration(duration: &str) -> Result<(), ValidationError> {
     match suffix {
         's' | 'm' | 'h' | 'd' => {
             // Validate that the number part is valid
-            if number.parse::<u64>().is_err() {
+            if !number.bytes().all(|b| b.is_ascii_digit()) || number.parse::<u64>().is_err() {
                 let mut err = ValidationError::new("duration");
                 err.message = Some(std::borrow::Cow::Borrowed("invalid number"));
                 return Err(err);
@@ -247,5 +244,11 @@ mod tests {
         assert!(validate_duration("30").is_err()); // no suffix
         assert!(validate_duration("s").is_err()); // no number
         assert!(validate_duration("30x").is_err()); // invalid suffix
+        assert!(validate_duration("3x0s").is_err());
+        assert!(validate_duration("30 s").is_err());
+        assert!(validate_duration("30; DROP TABLE users; -- s").is_err());
+        assert!(validate_duration("+30s").is_err());
+        assert!(validate_duration("30é").is_err());
+        assert!(validate_duration("é").is_err());
     }
 }

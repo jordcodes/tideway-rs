@@ -718,6 +718,90 @@ mod websocket_tests {
         (task, client_rx, client_tx)
     }
 
+    #[derive(Default)]
+    struct RecordIdHandler(std::sync::Mutex<Option<String>>);
+
+    #[async_trait::async_trait]
+    impl crate::websocket::WebSocketHandler for RecordIdHandler {
+        async fn on_connect(
+            &self,
+            conn: &mut Connection,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            *self.0.lock().unwrap() = Some(conn.id().to_string());
+            Ok(())
+        }
+
+        async fn on_message(
+            &self,
+            _conn: &mut Connection,
+            _msg: Message,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn on_disconnect(&self, _conn: &mut Connection, _ctx: &crate::AppContext) {}
+    }
+
+    #[tokio::test]
+    async fn test_pong_is_sent_while_connection_lock_is_held() {
+        use crate::websocket::extractor::{Heartbeat, run_connection};
+        use futures::{SinkExt, StreamExt};
+        use tokio::time::{Duration, timeout};
+
+        let manager = Arc::new(ConnectionManager::new());
+        let handler = Arc::new(RecordIdHandler::default());
+        let (server_tx, mut client_rx) = futures::channel::mpsc::unbounded();
+        let (mut client_tx, server_rx) = futures::channel::mpsc::unbounded();
+        let ctx = Arc::new(
+            crate::AppContext::builder()
+                .with_websocket_manager(manager.clone())
+                .build(),
+        );
+        tokio::spawn(run_connection(
+            server_tx.sink_map_err(|_| ()),
+            server_rx,
+            crate::websocket::UpgradeRequest::new(
+                axum::http::HeaderMap::new(),
+                "/ws".parse().unwrap(),
+            ),
+            handler.clone(),
+            manager.clone(),
+            ctx,
+            Heartbeat {
+                interval: Duration::from_secs(60),
+                timeout: Duration::from_secs(120),
+            },
+        ));
+
+        let conn_id = loop {
+            if let Some(id) = handler.0.lock().unwrap().clone() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        };
+        let conn = manager.get(&conn_id).expect("connection registered");
+        let _guard = conn.write().await;
+
+        client_tx
+            .send(Ok(axum::extract::ws::Message::Ping(b"hi".to_vec().into())))
+            .await
+            .unwrap();
+        // Skip the server's own heartbeat pings.
+        let pong = timeout(Duration::from_secs(2), async {
+            while let Some(message) = client_rx.next().await {
+                if let axum::extract::ws::Message::Pong(data) = message {
+                    return Some(data);
+                }
+            }
+            None
+        })
+        .await
+        .expect("pong must not wait for the connection lock");
+        assert_eq!(pong.as_deref(), Some(&b"hi"[..]));
+    }
+
     #[tokio::test]
     async fn test_evicted_slow_reader_is_closed_not_just_uncounted() {
         use crate::websocket::extractor::{Heartbeat, run_connection};

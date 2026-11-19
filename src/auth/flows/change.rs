@@ -216,12 +216,9 @@ impl<S: PasswordChangeStore> PasswordChangeFlow<S> {
             return Err(e);
         }
 
-        // Prevent setting same password
-        if self
-            .password_hasher
-            .verify_async(&req.new_password, &current_hash)
-            .await?
-        {
+        // Prevent setting same password. The current password was just verified against the
+        // stored hash, so comparing the two inputs avoids a second Argon2 run.
+        if req.new_password == req.current_password {
             tracing::info!(
                 target: "auth.password.change_failed",
                 user_id = %user_id,
