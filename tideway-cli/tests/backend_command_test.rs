@@ -414,6 +414,21 @@ fn test_backend_billing_routes_are_mounted_with_explicit_access_boundaries() {
     assert!(billing_routes.contains("deactivate_plans_with_price(state, price_id).await?"));
     assert!(billing_routes.contains(".with_event_sink(AppBillingEventSink)"));
     assert!(billing_routes.contains(".with_subscription_client(state.stripe_client.clone())"));
+    let update_plan_handler = billing_routes
+        .split("async fn admin_update_plan(")
+        .nth(1)
+        .and_then(|rest| rest.split("\nasync fn ").next())
+        .expect("admin_update_plan handler");
+    let validate_at = update_plan_handler
+        .find("validate_plan(&plan)?;")
+        .expect("admin_update_plan should validate the updated plan");
+    let update_at = update_plan_handler
+        .find("billing_store.update_plan(&plan)")
+        .expect("admin_update_plan should persist the plan");
+    assert!(
+        validate_at < update_at,
+        "admin_update_plan must validate before persisting"
+    );
     assert!(billing_events.contains("impl BillingEventSink for AppBillingEventSink"));
     assert!(billing_events.contains("event.event_id()"));
     assert!(billing_events.contains("BillingEvent::DuplicateSubscription"));

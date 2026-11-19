@@ -983,6 +983,9 @@ async fn admin_update_plan(
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    // Validate the updated plan the same way create/import do
+    validate_plan(&plan)?;
+
     state.billing_store.update_plan(&plan).await?;
 
     tracing::info!(plan_id = %plan.id, changes = ?changes, "Updated billing plan");
