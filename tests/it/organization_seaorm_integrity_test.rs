@@ -23,6 +23,17 @@ const SCHEMA: &str = r#"CREATE TABLE organizations (
        joined_at BIGINT NOT NULL,
        PRIMARY KEY (org_id, user_id),
        FOREIGN KEY (org_id) REFERENCES organizations(id) ON DELETE CASCADE
+   );
+   CREATE TABLE organization_invitations (
+       id VARCHAR(36) PRIMARY KEY,
+       org_id VARCHAR(36) NOT NULL,
+       email VARCHAR(255) NOT NULL,
+       role VARCHAR(20) NOT NULL,
+       invited_by VARCHAR(36) NOT NULL,
+       token VARCHAR(64) UNIQUE NOT NULL,
+       status VARCHAR(20) NOT NULL,
+       expires_at BIGINT NOT NULL,
+       created_at BIGINT NOT NULL
    );"#;
 
 async fn connect(url: &str) -> DatabaseConnection {
@@ -129,4 +140,40 @@ async fn concurrent_create_atomic_respects_max_orgs_per_user() {
 
     drop(manager);
     let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn delete_expired_removes_expired_invitations_stuck_in_processing() {
+    let db = connect("sqlite::memory:").await;
+    db.execute_unprepared(
+        "INSERT INTO organization_invitations
+             (id, org_id, email, role, invited_by, token, status, expires_at, created_at)
+         VALUES
+             ('stuck', 'org', 'a@x.test', 'member', 'owner', 't1', 'processing', 1, 0),
+             ('expired', 'org', 'b@x.test', 'member', 'owner', 't2', 'pending', 1, 0),
+             ('accepted', 'org', 'c@x.test', 'member', 'owner', 't3', 'accepted', 1, 0),
+             ('live', 'org', 'd@x.test', 'member', 'owner', 't4', 'processing', 99999999999, 0)",
+    )
+    .await
+    .unwrap();
+    let store = SeaOrmOrgStore::new(db.clone());
+
+    assert_eq!(
+        tideway::organizations::InvitationStore::delete_expired(&store)
+            .await
+            .unwrap(),
+        2
+    );
+    let remaining = db
+        .query_all(sea_orm::Statement::from_string(
+            db.get_database_backend(),
+            "SELECT id FROM organization_invitations ORDER BY id",
+        ))
+        .await
+        .unwrap();
+    let ids: Vec<String> = remaining
+        .iter()
+        .map(|row| row.try_get("", "id").unwrap())
+        .collect();
+    assert_eq!(ids, ["accepted", "live"]);
 }
