@@ -16,6 +16,8 @@ use crate::{print_info, print_success, print_warning};
 const DEBOUNCE: Duration = Duration::from_millis(200);
 const BUILD_POLL: Duration = Duration::from_millis(50);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// Directories that never trigger a rebuild and are not watched at all.
+const IGNORED_DIRS: &[&str] = &["target", ".git", "node_modules"];
 
 pub(super) struct WatchConfig {
     pub project_dir: PathBuf,
@@ -38,9 +40,11 @@ pub(super) fn run(mut config: WatchConfig) -> Result<()> {
         notify::Config::default(),
     )
     .context("Failed to initialize the file watcher")?;
-    watcher
-        .watch(&config.project_dir, RecursiveMode::Recursive)
-        .with_context(|| format!("Failed to watch {}", config.project_dir.display()))?;
+    for (path, mode) in watch_roots(&config.project_dir)? {
+        watcher
+            .watch(&path, mode)
+            .with_context(|| format!("Failed to watch {}", path.display()))?;
+    }
 
     let stopping = Arc::new(AtomicBool::new(false));
     let signal_flag = Arc::clone(&stopping);
@@ -105,6 +109,35 @@ pub(super) fn run(mut config: WatchConfig) -> Result<()> {
     stop_child(&mut app, false);
     print_info("Development server stopped");
     Ok(())
+}
+
+/// Watch the project root non-recursively (so `Cargo.toml`, `.env` and `build.rs` still trigger)
+/// and each top-level directory recursively, skipping `IGNORED_DIRS`. A recursive watch on the
+/// root would make inotify add a watch for every directory under `target/` and `node_modules/`,
+/// which can exhaust `max_user_watches` on Linux.
+///
+/// Top-level directories created after startup are not watched; restart `tideway dev` to pick
+/// them up.
+fn watch_roots(project_dir: &Path) -> Result<Vec<(PathBuf, RecursiveMode)>> {
+    let entries = std::fs::read_dir(project_dir)
+        .with_context(|| format!("Failed to read {}", project_dir.display()))?;
+    let mut dirs = Vec::new();
+    for entry in entries {
+        let entry = entry.with_context(|| format!("Failed to read {}", project_dir.display()))?;
+        let path = entry.path();
+        let ignored = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| IGNORED_DIRS.contains(&name));
+        if !ignored && path.is_dir() {
+            dirs.push(path);
+        }
+    }
+    dirs.sort();
+
+    let mut roots = vec![(project_dir.to_path_buf(), RecursiveMode::NonRecursive)];
+    roots.extend(dirs.into_iter().map(|dir| (dir, RecursiveMode::Recursive)));
+    Ok(roots)
 }
 
 enum BuildOutcome {
@@ -337,8 +370,9 @@ fn add_event_paths(root: &Path, event: notify::Result<Event>, paths: &mut BTreeS
 
 fn is_relevant(root: &Path, path: &Path) -> bool {
     let relative = path.strip_prefix(root).unwrap_or(path);
-    if relative.components().any(|component| {
-        matches!(component, Component::Normal(name) if name == "target" || name == ".git")
+    if relative.components().any(|component| match component {
+        Component::Normal(name) => IGNORED_DIRS.iter().any(|ignored| name == *ignored),
+        _ => false,
     }) {
         return false;
     }
@@ -478,6 +512,30 @@ mod tests {
         assert!(!is_relevant(root, Path::new("/project/Cargo.lock")));
         assert!(!is_relevant(root, Path::new("/project/target/debug/app")));
         assert!(!is_relevant(root, Path::new("/project/README.md")));
+        assert!(!is_relevant(
+            root,
+            Path::new("/project/node_modules/pkg/build.rs")
+        ));
+    }
+
+    #[test]
+    fn watches_root_shallowly_and_skips_ignored_directories() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path();
+        for dir in ["src", "migrations", "target", ".git", "node_modules"] {
+            crate::ensure_dir(&root.join(dir)).expect("create dir");
+        }
+        crate::write_file(&root.join("Cargo.toml"), "[package]\nname = \"app\"\n")
+            .expect("write manifest");
+
+        assert_eq!(
+            watch_roots(root).expect("watch roots"),
+            [
+                (root.to_path_buf(), RecursiveMode::NonRecursive),
+                (root.join("migrations"), RecursiveMode::Recursive),
+                (root.join("src"), RecursiveMode::Recursive),
+            ]
+        );
     }
 
     #[test]

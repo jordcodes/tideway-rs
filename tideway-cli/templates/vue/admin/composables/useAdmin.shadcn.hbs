@@ -11,6 +11,26 @@ import type {
 
 const impersonationInfo = ref<ImpersonationSession | null>(null)
 
+// The admin's own tokens are parked in sessionStorage while impersonating so they
+// survive a reload in this tab but not the browser session, and never sit in
+// localStorage next to the impersonation token. Display info stays in localStorage.
+const ORIGINAL_TOKENS_KEY = 'impersonation_original_tokens'
+
+interface OriginalTokens {
+  access_token?: string
+  refresh_token?: string
+}
+
+function readOriginalTokens(): OriginalTokens | null {
+  const stored = sessionStorage.getItem(ORIGINAL_TOKENS_KEY)
+  if (!stored) return null
+  try {
+    return JSON.parse(stored)
+  } catch {
+    return null
+  }
+}
+
 // Check localStorage for existing impersonation on init
 if (typeof window !== 'undefined') {
   const stored = localStorage.getItem('impersonation_info')
@@ -165,16 +185,15 @@ export function useAdmin() {
         { target_user_id: userId, reason }
       )
 
-      // Store original tokens
-      const originalAccessToken = localStorage.getItem('access_token')
-      const originalRefreshToken = localStorage.getItem('refresh_token')
-
-      // Save impersonation info
-      const info: ImpersonationSession = {
-        ...response,
-        original_access_token: originalAccessToken || undefined,
-        original_refresh_token: originalRefreshToken || undefined,
+      // Park the admin's original tokens for this tab only
+      const originalTokens: OriginalTokens = {
+        access_token: localStorage.getItem('access_token') || undefined,
+        refresh_token: localStorage.getItem('refresh_token') || undefined,
       }
+      sessionStorage.setItem(ORIGINAL_TOKENS_KEY, JSON.stringify(originalTokens))
+
+      // Save impersonation display info
+      const info: ImpersonationSession = { ...response }
       impersonationInfo.value = info
       localStorage.setItem('impersonation_info', JSON.stringify(info))
 
@@ -208,20 +227,22 @@ export function useAdmin() {
       error.value = e instanceof Error ? e.message : 'Failed to end impersonation'
     }
 
-    // Restore original tokens
-    const info = impersonationInfo.value
-    if (info?.original_access_token) {
-      localStorage.setItem('access_token', info.original_access_token)
+    // Restore original tokens. They are gone in a new browser session, which
+    // leaves the admin signed out rather than holding the impersonation token.
+    const originalTokens = readOriginalTokens()
+    if (originalTokens?.access_token) {
+      localStorage.setItem('access_token', originalTokens.access_token)
     } else {
       localStorage.removeItem('access_token')
     }
-    if (info?.original_refresh_token) {
-      localStorage.setItem('refresh_token', info.original_refresh_token)
+    if (originalTokens?.refresh_token) {
+      localStorage.setItem('refresh_token', originalTokens.refresh_token)
     }
 
     // Clear impersonation info
     impersonationInfo.value = null
     localStorage.removeItem('impersonation_info')
+    sessionStorage.removeItem(ORIGINAL_TOKENS_KEY)
     isLoading.value = false
 
     return ended
