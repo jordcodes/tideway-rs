@@ -493,6 +493,8 @@ where
     /// Promotes `new_owner_id`, demotes the current owner (`actor_id`), and sets the
     /// organization's owner to `new_owner_id` so `max_orgs_per_user` counts the new owner.
     /// Returns [`OrganizationError::MaxOrgsReached`] if the new owner is already at that limit.
+    /// The limit is checked before the update, so two transfers to the same user that run at
+    /// the same time can both pass and leave that user one organization over the limit.
     /// `set_owner` receives the organization and the new owner's user ID and must return the
     /// organization with its owner updated.
     ///
@@ -698,7 +700,9 @@ where
     /// Transfer ownership in one SeaORM transaction.
     ///
     /// Same checks as [`OrganizationManager::transfer_ownership`], but the organization's
-    /// owner and both memberships are updated together or not at all. The current owner
+    /// owner and both memberships are updated together or not at all. The
+    /// `max_orgs_per_user` check still runs before the transaction, so concurrent transfers
+    /// to the same user can exceed it by one. The current owner
     /// (`actor_id`) is given `former_owner_role`, which must not be `Owner`.
     pub async fn transfer_ownership_atomic(
         &self,
