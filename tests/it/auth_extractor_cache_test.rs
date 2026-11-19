@@ -5,6 +5,7 @@ use axum::extract::FromRequestParts;
 use axum::http::Request;
 use serde::Deserialize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tideway::Result;
 use tideway::auth::{
     AdminUser, AuthProvider, AuthUser, Claims, ClaimsRef, OptionalAuth, RequireAdmin,
@@ -81,6 +82,52 @@ impl AuthProvider for RejectingUserProvider {
     async fn validate_user(&self, _user: &Self::User) -> Result<()> {
         Err(tideway::TidewayError::unauthorized("Invalid user"))
     }
+}
+
+#[derive(Clone, Default)]
+struct CountingAdminProvider {
+    loads: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl AuthProvider for CountingAdminProvider {
+    type Claims = TestClaims;
+    type User = TestUser;
+
+    async fn verify_token(&self, _token: &str) -> Result<TestClaims> {
+        Ok(TestClaims)
+    }
+
+    async fn load_user(&self, _claims: &TestClaims) -> Result<TestUser> {
+        self.loads.fetch_add(1, Ordering::SeqCst);
+        Ok(TestUser { admin: true })
+    }
+}
+
+#[tokio::test]
+async fn require_admin_caches_loaded_user_for_later_extractors() {
+    let request = Request::builder().uri("/").body(Body::empty()).unwrap();
+    let (mut parts, _) = request.into_parts();
+    let provider = CountingAdminProvider::default();
+
+    parts.extensions.insert(provider.clone());
+    parts
+        .headers
+        .insert("authorization", "Bearer test-token".parse().unwrap());
+
+    let RequireAdmin(admin) =
+        RequireAdmin::<CountingAdminProvider>::from_request_parts(&mut parts, &())
+            .await
+            .unwrap();
+    let AuthUser(user) = AuthUser::<CountingAdminProvider>::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
+
+    assert!(admin.admin);
+    assert!(user.admin);
+    assert!(parts.extensions.get::<TestUser>().is_some());
+    assert!(parts.extensions.get::<Arc<TestClaims>>().is_some());
+    assert_eq!(provider.loads.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -368,6 +368,7 @@ mod tests {
 
     #[test]
     fn test_from_env_invalid_bool_falls_back_to_defaults() {
+        let _env = crate::utils::env::lock_env();
         unsafe {
             std::env::set_var("TIDEWAY_SECURITY_ENABLED", "not-bool");
             std::env::set_var("TIDEWAY_SECURITY_NOSNIFF", "maybe");
@@ -385,6 +386,7 @@ mod tests {
 
     #[test]
     fn test_from_env_disables_hsts_in_non_prod_without_override() {
+        let _env = crate::utils::env::lock_env();
         unsafe {
             std::env::set_var("TIDEWAY_ENV", "development");
         }
@@ -400,6 +402,7 @@ mod tests {
 
     #[test]
     fn test_from_env_keeps_hsts_override_in_non_prod() {
+        let _env = crate::utils::env::lock_env();
         unsafe {
             std::env::set_var("TIDEWAY_ENV", "development");
             std::env::set_var("TIDEWAY_SECURITY_HSTS_MAX_AGE", "86400");

@@ -226,7 +226,8 @@ impl UsageTracker {
     /// Usage is accumulated until flushed.
     pub fn track(&self, subscription_item_id: &str, quantity: u64) {
         if let Ok(mut usage) = self.usage.write() {
-            *usage.entry(subscription_item_id.to_string()).or_default() += quantity;
+            let total = usage.entry(subscription_item_id.to_string()).or_default();
+            *total = total.saturating_add(quantity);
         }
     }
 
@@ -459,6 +460,16 @@ mod tests {
         // After flush, tracker should be empty
         assert!(!tracker.has_usage());
         assert!(tracker.current().is_empty());
+    }
+
+    #[test]
+    fn test_usage_tracker_saturates_instead_of_overflowing() {
+        let tracker = UsageTracker::new();
+
+        tracker.track("si_api", u64::MAX - 1);
+        tracker.track("si_api", 5);
+
+        assert_eq!(tracker.current().get("si_api"), Some(&u64::MAX));
     }
 
     #[test]

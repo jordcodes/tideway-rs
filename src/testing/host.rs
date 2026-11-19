@@ -1,7 +1,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::Arc;
 
 use axum::{
     Router,
@@ -22,8 +22,6 @@ type AfterEachHook = Arc<dyn for<'a> Fn(&'a ScenarioOutcome) -> BoxFuture<'a, ()
 type ScenarioAssertion = Box<dyn Fn(&ScenarioOutcome) -> Result<(), String> + Send + Sync>;
 type AppTransform = Box<dyn FnOnce(App) -> App + Send>;
 type ConfigTransform = Box<dyn FnOnce(Config) -> Config + Send>;
-
-static TEST_HOST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 enum ConfigSource {
     Built(Config),
@@ -459,7 +457,7 @@ impl TestHostBootstrap {
     }
 
     pub fn try_build(self) -> crate::Result<TestHost> {
-        let _lock = TEST_HOST_ENV_LOCK.lock().unwrap();
+        let _lock = crate::utils::env::lock_env();
         let _env = ScopedEnvOverrides::apply(&self.env_overrides);
 
         let builder = match self.config_source {

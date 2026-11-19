@@ -333,6 +333,7 @@ mod tests {
 
     #[test]
     fn test_from_env_invalid_bool_falls_back_to_default() {
+        let _env = crate::utils::env::lock_env();
         unsafe {
             std::env::set_var("TIDEWAY_REQUEST_LOGGING_ENABLED", "yes");
             std::env::set_var("TIDEWAY_REQUEST_LOGGING_INCLUDE_HEADERS", "nope");
@@ -350,6 +351,7 @@ mod tests {
 
     #[test]
     fn test_from_env_body_preview_size_clamps_to_maximum() {
+        let _env = crate::utils::env::lock_env();
         let huge = MAX_BODY_PREVIEW_SIZE.saturating_add(1).to_string();
         unsafe {
             std::env::set_var("TIDEWAY_REQUEST_LOGGING_BODY_PREVIEW_SIZE", &huge);

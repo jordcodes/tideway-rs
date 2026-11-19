@@ -1,3 +1,19 @@
+use std::sync::{Mutex, MutexGuard};
+
+/// Process-wide lock serializing code that mutates environment variables.
+///
+/// `std::env::set_var`/`remove_var` race with concurrent reads and writes on other threads.
+/// Unit tests that set or remove env vars, and `TestHost` env overrides, hold this lock for the
+/// duration of the mutation (and any reads that depend on it) so they cannot interleave.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire [`ENV_LOCK`], recovering from poisoning left by a panicking holder.
+pub(crate) fn lock_env() -> MutexGuard<'static, ()> {
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Get environment variable with TIDEWAY_ prefix, falling back to unprefixed version
 ///
 /// This helper function checks for `TIDEWAY_{key}` first, then falls back to `{key}`
@@ -69,6 +85,7 @@ mod tests {
 
     #[test]
     fn test_get_env_with_prefix() {
+        let _env = lock_env();
         // Test with TIDEWAY_ prefix
         unsafe {
             std::env::set_var("TIDEWAY_TEST_VAR", "prefixed_value");
