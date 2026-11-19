@@ -428,7 +428,7 @@ fn is_sensitive_body_field(field: &str, sensitive_fields: &[String]) -> bool {
 
 const REDACTED_QUERY_VALUE: &str = "[REDACTED]";
 
-fn sanitize_query(query: Option<&str>) -> Option<String> {
+pub(crate) fn sanitize_query(query: Option<&str>) -> Option<String> {
     query.map(|q| {
         q.split('&')
             .map(|pair| {

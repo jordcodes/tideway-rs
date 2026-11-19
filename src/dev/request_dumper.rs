@@ -2,7 +2,13 @@
 //!
 //! Logs complete request and response details in JSON format for debugging.
 
-use axum::{body::Body, extract::Request, http::HeaderMap, response::Response};
+use crate::request_logging::sanitize_query;
+use axum::{
+    body::Body,
+    extract::Request,
+    http::{HeaderMap, Uri},
+    response::Response,
+};
 use serde_json::json;
 use std::sync::Arc;
 use tower::Service;
@@ -76,7 +82,7 @@ where
 
         let mut inner = self.inner.clone();
         let method = req.method().clone();
-        let uri = req.uri().clone();
+        let uri = format_uri(req.uri());
         let headers = req.headers().clone();
 
         Box::pin(async move {
@@ -92,7 +98,7 @@ where
                 "type": "request",
                 "request_id": request_id,
                 "method": method.as_str(),
-                "uri": uri.to_string(),
+                "uri": uri,
                 "headers": format_headers(&headers),
             });
 
@@ -121,6 +127,14 @@ where
 
             Ok(response)
         })
+    }
+}
+
+/// Format the request path plus its query string with sensitive values (tokens, keys) redacted.
+fn format_uri(uri: &Uri) -> String {
+    match sanitize_query(uri.query()) {
+        Some(query) => format!("{}?{}", uri.path(), query),
+        None => uri.path().to_string(),
     }
 }
 
@@ -175,6 +189,29 @@ mod tests {
         assert!(!serialized.contains("secret-token"));
         assert!(!serialized.contains("secret-session"));
         assert!(!serialized.contains("secret-api-key"));
+    }
+
+    #[test]
+    fn request_dumper_redacts_sensitive_query_values() {
+        let uri: Uri = "/ws?token=secret-token&room=lobby&api_key=secret-key"
+            .parse()
+            .unwrap();
+
+        let formatted = format_uri(&uri);
+
+        assert_eq!(
+            formatted,
+            "/ws?token=[REDACTED]&room=lobby&api_key=[REDACTED]"
+        );
+        assert!(!formatted.contains("secret-token"));
+        assert!(!formatted.contains("secret-key"));
+    }
+
+    #[test]
+    fn request_dumper_logs_path_without_query() {
+        let uri: Uri = "http://example.com/users/1".parse().unwrap();
+
+        assert_eq!(format_uri(&uri), "/users/1");
     }
 
     #[test]
