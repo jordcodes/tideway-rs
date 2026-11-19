@@ -536,6 +536,56 @@ fn test_generate_admin_parks_original_tokens_in_session_storage() {
     }
 }
 
+#[test]
+fn test_generated_api_helpers_share_one_refresh_and_skip_auth_endpoints() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let react_dir = temp_dir.path().join("react");
+    let vue_dir = temp_dir.path().join("vue");
+
+    let output = run_tideway(&[
+        "generate",
+        "auth",
+        "--framework",
+        "react",
+        "--output",
+        path_str(&react_dir),
+    ]);
+    assert_success(&output, "tideway generate auth --framework react");
+    let output = run_tideway(&["generate", "auth", "--output", path_str(&vue_dir)]);
+    assert_success(&output, "tideway generate auth (vue)");
+
+    let react_api = fs::read_to_string(react_dir.join("lib/api.ts")).unwrap();
+    let vue_api = fs::read_to_string(vue_dir.join("composables/useApi.ts")).unwrap();
+
+    for (name, api) in [("react", &react_api), ("vue", &vue_api)] {
+        // A 401 from /auth/* (e.g. a wrong password) must not trigger a refresh.
+        assert!(
+            api.contains("response.status === 401 && !endpoint.startsWith('/auth/')"),
+            "{name}: expected /auth/ guard on refresh:\n{api}"
+        );
+        // Concurrent 401s must share one refresh, or token reuse detection revokes the family.
+        assert!(
+            api.contains("let refreshInFlight: Promise<boolean> | null = null"),
+            "{name}: expected shared in-flight refresh:\n{api}"
+        );
+        assert!(
+            api.contains("refreshInFlight = null"),
+            "{name}: expected in-flight refresh to be cleared:\n{api}"
+        );
+    }
+
+    let single_flight = vue_api
+        .find("let refreshInFlight")
+        .expect("vue single-flight declaration");
+    let composable = vue_api
+        .find("export function useApi()")
+        .expect("vue useApi composable");
+    assert!(
+        single_flight < composable,
+        "vue: single-flight refresh must be module-scoped, outside useApi()"
+    );
+}
+
 /// Type-check the sample frontend against the generated client and execute it.
 fn typecheck_and_run_sample_frontend(root: &Path, client_path: &Path) {
     let Some(tsc) = find_tsc() else {

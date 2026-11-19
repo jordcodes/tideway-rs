@@ -245,7 +245,11 @@ impl UploadPolicy {
             )));
         }
         let content_type = content_type.trim();
-        let allowed = if self.allowed_content_types.is_empty() {
+        // A list such as "text/plain, text/html" would pass the blocklist below, but browsers
+        // resolve it to its last type, so only a single media type is accepted.
+        let allowed = if !is_single_media_type(content_type) {
+            false
+        } else if self.allowed_content_types.is_empty() {
             let essence = content_type
                 .split(';')
                 .next()
@@ -329,7 +333,8 @@ impl UploadPolicy {
     /// Runs [`Self::confirm`], copies the object under a fresh key in the same prefix with
     /// `content_type` (re-checked against the policy), and deletes the upload key. Record the
     /// returned key: replaying the presigned URL only writes the abandoned upload key. The copy
-    /// reads the whole object, which `max_bytes` bounds.
+    /// reads the whole object with [`FileStorage::get_bounded`], so an object replaced with a
+    /// larger body after the size check is rejected once `max_bytes` is passed.
     pub async fn finalize(
         &self,
         storage: &dyn FileStorage,
@@ -337,7 +342,14 @@ impl UploadPolicy {
         content_type: &str,
     ) -> Result<StoredObject> {
         self.confirm(storage, key).await?;
-        let data = storage.get(key).await?;
+        let data = match storage.get_bounded(key, self.max_bytes).await {
+            Ok(data) => data,
+            Err(error @ TidewayError::BadRequest(_)) => {
+                storage.delete(key).await?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let size = data.len() as u64;
         // Re-check what was read, in case the object changed after confirm's check.
         if let Err(error) = self.validate(content_type, size) {
@@ -351,6 +363,24 @@ impl UploadPolicy {
         storage.delete(key).await?;
         Ok(object)
     }
+}
+
+/// Whether `content_type` is one `type/subtype` media type, optionally followed by `;`
+/// parameters, with no list separators or control characters.
+fn is_single_media_type(content_type: &str) -> bool {
+    let is_token = |value: &str| {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+    };
+    if content_type.contains(',') || content_type.chars().any(char::is_control) {
+        return false;
+    }
+    let essence = content_type.split(';').next().unwrap_or_default().trim();
+    essence
+        .split_once('/')
+        .is_some_and(|(kind, subtype)| is_token(kind) && is_token(subtype))
 }
 
 #[cfg(test)]
@@ -393,5 +423,26 @@ mod tests {
                 .validate("application/zip", 1024)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn upload_policy_rejects_malformed_content_types() {
+        let policy = UploadPolicy::attachment();
+        assert!(policy.validate("text/plain; charset=utf-8", 10).is_ok());
+        for content_type in [
+            "text/plain, text/html",
+            "a/b,c/d",
+            "",
+            "text/html\0",
+            "text/plain\r\nX-Evil: 1",
+            "textplain",
+            "text/",
+            "text/pl ain",
+        ] {
+            assert!(
+                policy.validate(content_type, 10).is_err(),
+                "{content_type:?} should be rejected"
+            );
+        }
     }
 }

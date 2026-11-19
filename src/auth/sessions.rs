@@ -538,7 +538,13 @@ impl<S: SessionStore> SessionManager<S> {
             let current_count = self.store.session_count(user_id).await?;
 
             if current_count >= limit_config.max_sessions {
-                match limit_config.overflow_behavior {
+                // Evicting cannot make room under a limit of zero, so it always rejects.
+                let behavior = if limit_config.max_sessions == 0 {
+                    SessionOverflowBehavior::RejectNew
+                } else {
+                    limit_config.overflow_behavior
+                };
+                match behavior {
                     SessionOverflowBehavior::RejectNew => {
                         tracing::warn!(
                             target: "auth.session.limit_exceeded",
@@ -1412,6 +1418,26 @@ mod tests {
         // Verify only 2 sessions exist
         let sessions = manager.list_sessions("user-1", None).await.unwrap();
         assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_session_limit_zero_rejects_with_revoke_oldest() {
+        let store = InMemorySessionStore::new();
+        let manager = SessionManager::new(store).with_session_limit(SessionLimitConfig::new(0));
+
+        let result = manager
+            .create_session("session-1", "user-1", SessionMetadata::new())
+            .await
+            .unwrap();
+
+        assert!(!result.created);
+        assert!(
+            manager
+                .list_sessions("user-1", None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

@@ -145,6 +145,31 @@ impl DeviceFingerprint {
 
         ip_matches && ua_matches
     }
+
+    /// Check a request fingerprint against the one stored when the device was trusted.
+    ///
+    /// Unlike [`matches`](Self::matches), every stored component must be present in the
+    /// request, so a client cannot skip a check by omitting a header. Request values are
+    /// truncated the same way as stored values before comparing.
+    fn matches_stored(stored: &DeviceFingerprint, request: &DeviceFingerprint) -> bool {
+        fn component_matches(stored: Option<&str>, request: Option<&str>, max_len: usize) -> bool {
+            match (stored, request) {
+                (Some(stored), Some(request)) => stored == truncate_string(request, max_len),
+                (Some(_), None) => false,
+                (None, _) => true,
+            }
+        }
+
+        component_matches(
+            stored.ip_address.as_deref(),
+            request.ip_address.as_deref(),
+            MAX_IP_LENGTH,
+        ) && component_matches(
+            stored.user_agent.as_deref(),
+            request.user_agent.as_deref(),
+            MAX_USER_AGENT_LENGTH,
+        )
+    }
 }
 
 /// Information about a trusted device.
@@ -334,7 +359,7 @@ impl<S: TrustedDeviceStore> TrustedDeviceManager<S> {
                 ip_address: device.ip_address.clone(),
                 user_agent: device.user_agent.clone(),
             };
-            if !stored_fp.matches(fp) {
+            if !DeviceFingerprint::matches_stored(&stored_fp, fp) {
                 tracing::warn!(
                     target: "auth.trusted_device.fingerprint_mismatch",
                     user_id = %user_id,
@@ -393,7 +418,7 @@ impl<S: TrustedDeviceStore> TrustedDeviceManager<S> {
                 ip_address: device.ip_address.clone(),
                 user_agent: device.user_agent.clone(),
             };
-            if !stored_fp.matches(fp) {
+            if !DeviceFingerprint::matches_stored(&stored_fp, fp) {
                 return Ok(None);
             }
         }
@@ -714,6 +739,53 @@ mod tests {
             .await
             .unwrap();
         assert!(!is_trusted);
+    }
+
+    #[tokio::test]
+    async fn test_fingerprint_validation_rejects_omitted_components() {
+        let store = InMemoryTrustedDeviceStore::new();
+        let config = TrustedDeviceConfig::default().validate_fingerprint(true);
+        let manager = TrustedDeviceManager::new(store, config);
+        let fingerprint = DeviceFingerprint::new()
+            .with_ip("192.168.1.1")
+            .with_user_agent("Mozilla/5.0 Chrome/120");
+        let token = manager.trust_device("user-1", fingerprint).await.unwrap();
+
+        let without_user_agent = DeviceFingerprint::new().with_ip("192.168.1.1");
+        assert!(
+            !manager
+                .is_trusted("user-1", &token, Some(without_user_agent.clone()))
+                .await
+                .unwrap()
+        );
+        assert!(
+            manager
+                .verify_trust("user-1", &token, Some(without_user_agent))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_fingerprint_validation_accepts_long_user_agent() {
+        let store = InMemoryTrustedDeviceStore::new();
+        let config = TrustedDeviceConfig::default().validate_fingerprint(true);
+        let manager = TrustedDeviceManager::new(store, config);
+        let fingerprint = DeviceFingerprint::new()
+            .with_ip("192.168.1.1")
+            .with_user_agent("A".repeat(MAX_USER_AGENT_LENGTH + 100));
+        let token = manager
+            .trust_device("user-1", fingerprint.clone())
+            .await
+            .unwrap();
+
+        assert!(
+            manager
+                .is_trusted("user-1", &token, Some(fingerprint))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]

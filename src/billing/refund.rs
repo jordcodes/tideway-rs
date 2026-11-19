@@ -11,7 +11,17 @@
 //!   **Use this for customer-facing operations.**
 
 use super::storage::BillingStore;
-use crate::error::Result;
+use crate::error::{Result, TidewayError};
+
+/// Reject a non-positive partial refund amount instead of sending it to Stripe.
+fn validate_refund_amount(request: &CreateRefundRequest) -> Result<()> {
+    match request.amount {
+        Some(amount) if amount <= 0 => Err(TidewayError::bad_request(format!(
+            "Refund amount must be positive, got {amount}"
+        ))),
+        _ => Ok(()),
+    }
+}
 
 /// A Stripe refund.
 #[derive(Debug, Clone)]
@@ -160,15 +170,11 @@ impl CreateRefundRequest {
 
     /// Set the refund amount (partial refund).
     ///
-    /// # Panics
-    ///
-    /// Panics in debug mode if amount is not positive.
-    /// In release mode, negative amounts are clamped to 1.
+    /// The amount must be positive. [`RefundManager::refund`] and
+    /// [`SecureRefundManager::refund`] reject other values before contacting Stripe.
     #[must_use]
     pub fn with_amount(mut self, amount: i64) -> Self {
-        debug_assert!(amount > 0, "Refund amount must be positive, got {}", amount);
-        // In release, ensure we never send invalid amounts to Stripe
-        self.amount = Some(amount.max(1));
+        self.amount = Some(amount);
         self
     }
 
@@ -277,6 +283,7 @@ impl<C: StripeRefundClient> RefundManager<C> {
     /// let refund = manager.refund(request).await?;
     /// ```
     pub async fn refund(&self, request: CreateRefundRequest) -> Result<Refund> {
+        validate_refund_amount(&request)?;
         self.client.create_refund(request).await
     }
 
@@ -466,6 +473,7 @@ impl<S: BillingStore, C: StripeRefundClient> SecureRefundManager<S, C> {
     /// let refund = manager.refund("org_123", request).await?;
     /// ```
     pub async fn refund(&self, billable_id: &str, request: CreateRefundRequest) -> Result<Refund> {
+        validate_refund_amount(&request)?;
         if request.charge_id.is_none() && request.payment_intent_id.is_none() {
             return Err(super::error::BillingError::RefundFailed {
                 reason: "Refund request needs a charge or payment intent".to_string(),
@@ -841,6 +849,34 @@ mod tests {
 
         let refund = manager.refund_charge("ch_123", Some(500)).await.unwrap();
         assert_eq!(refund.amount, 500);
+    }
+
+    #[tokio::test]
+    async fn test_refund_rejects_non_positive_amount() {
+        let manager = RefundManager::new(MockStripeRefundClient::new());
+
+        for amount in [0, -500] {
+            assert!(manager.refund_charge("ch_123", Some(amount)).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_secure_refund_rejects_non_positive_amount() {
+        let store = InMemoryBillingStore::new();
+        store
+            .save_subscription("org_123", &create_test_subscription())
+            .await
+            .unwrap();
+        let client = MockStripeRefundClient::new();
+        client.add_charge("ch_test", "cus_123");
+        let manager = SecureRefundManager::new(store, client);
+
+        assert!(
+            manager
+                .refund_charge("org_123", "ch_test", Some(0))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

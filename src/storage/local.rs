@@ -196,6 +196,10 @@ impl FileStorage for LocalStorage {
         self.inner.get(key).await
     }
 
+    async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Bytes> {
+        self.inner.get_bounded(key, max_bytes).await
+    }
+
     async fn head(&self, key: &str) -> Result<Option<StoredObject>> {
         self.inner.head(key).await
     }

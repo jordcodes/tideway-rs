@@ -170,9 +170,13 @@ impl RedisJobQueue {
         let mut handle_guard = self.scheduler_handle.lock().await;
         if let Some(handle) = handle_guard.take() {
             // Give the task a reasonable time to finish, then abort if needed
+            let abort_handle = handle.abort_handle();
             match tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await {
                 Ok(_) => tracing::debug!("Redis job queue scheduler stopped cleanly"),
-                Err(_) => tracing::warn!("Redis job queue scheduler did not stop within timeout"),
+                Err(_) => {
+                    tracing::warn!("Redis job queue scheduler did not stop within timeout");
+                    abort_handle.abort();
+                }
             }
         }
     }
@@ -467,8 +471,10 @@ impl JobQueue for RedisJobQueue {
 
                 if job_data.should_retry() {
                     // Schedule retry with exponential backoff
-                    let backoff_seconds =
-                        self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
+                    let backoff_seconds = super::in_memory::retry_backoff_seconds(
+                        self.retry_backoff_seconds,
+                        job_data.retry_count,
+                    );
                     let retry_at = Utc::now() + Duration::seconds(backoff_seconds as i64);
 
                     job_data.increment_retry();

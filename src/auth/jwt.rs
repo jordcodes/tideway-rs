@@ -173,12 +173,25 @@ impl JwkSet {
 /// Decoding keys prebuilt from a JWK Set, indexed by key ID, so verification does
 /// not rebuild an RSA key on every request.
 ///
-/// Fails when the set has keys but none of them has valid RSA components, so a
-/// broken JWKS is rejected instead of silently replacing usable keys.
+/// Keys without a `kid` cannot be selected by a token and are skipped, as are keys
+/// published for a use other than signatures (RFC 7517 §4.2). Fails when the set has
+/// keys but none of them is usable, so a broken JWKS is rejected instead of silently
+/// replacing usable keys.
 fn build_decoding_keys(set: &JwkSet) -> Result<HashMap<String, DecodingKey>> {
     let mut decoding_keys = HashMap::new();
-    let mut valid_keys = 0;
     for jwk in &set.keys {
+        if jwk
+            .key_use
+            .as_deref()
+            .is_some_and(|key_use| key_use != "sig")
+        {
+            tracing::debug!(kid = ?jwk.kid, key_use = ?jwk.key_use, "Skipping non-signature JWK");
+            continue;
+        }
+        let Some(kid) = &jwk.kid else {
+            tracing::debug!("Skipping JWK without a key ID");
+            continue;
+        };
         let key = match DecodingKey::from_rsa_components(&jwk.n, &jwk.e) {
             Ok(key) => key,
             Err(error) => {
@@ -186,13 +199,12 @@ fn build_decoding_keys(set: &JwkSet) -> Result<HashMap<String, DecodingKey>> {
                 continue;
             }
         };
-        valid_keys += 1;
-        if let Some(kid) = &jwk.kid {
-            decoding_keys.entry(kid.clone()).or_insert(key);
-        }
+        decoding_keys.entry(kid.clone()).or_insert(key);
     }
-    if !set.keys.is_empty() && valid_keys == 0 {
-        return Err(TidewayError::internal("JWKS contains no valid RSA keys"));
+    if !set.keys.is_empty() && decoding_keys.is_empty() {
+        return Err(TidewayError::internal(
+            "JWKS contains no usable RSA signing keys",
+        ));
     }
     Ok(decoding_keys)
 }
@@ -890,6 +902,34 @@ mod tests {
                 "e": URL_SAFE_NO_PAD.encode(private.e().to_bytes_be()),
             }),
         }
+    }
+
+    fn jwk_from_json(value: serde_json::Value) -> Jwk {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn test_build_decoding_keys_rejects_set_without_usable_keys() {
+        let key = test_rsa_key("k1");
+
+        let mut keyless = key.jwk.clone();
+        keyless.as_object_mut().unwrap().remove("kid");
+        let set = JwkSet {
+            keys: vec![jwk_from_json(keyless)],
+        };
+        assert!(build_decoding_keys(&set).is_err());
+
+        let mut encryption = key.jwk.clone();
+        encryption["use"] = serde_json::json!("enc");
+        let set = JwkSet {
+            keys: vec![jwk_from_json(encryption)],
+        };
+        assert!(build_decoding_keys(&set).is_err());
+
+        let set = JwkSet {
+            keys: vec![jwk_from_json(key.jwk.clone())],
+        };
+        assert!(build_decoding_keys(&set).unwrap().contains_key("k1"));
     }
 
     fn sign_rs256(key: &TestRsaKey) -> String {

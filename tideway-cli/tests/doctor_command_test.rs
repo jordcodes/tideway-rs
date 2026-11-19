@@ -2008,8 +2008,8 @@ async fn list_todos() {}
         report
             .warnings()
             .iter()
-            .any(|line| line.contains("OpenAPI docs missing routes")),
-        "expected openapi coverage warning, got {:?}",
+            .any(|line| line.contains("OpenAPI docs missing routes for: todos (run ")),
+        "expected openapi coverage warning naming the route, got {:?}",
         report.warnings()
     );
 }

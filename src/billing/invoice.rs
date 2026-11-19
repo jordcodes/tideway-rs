@@ -71,11 +71,15 @@ use crate::error::Result;
 ///
 /// Only reveals the prefix to avoid leaking full IDs which could aid enumeration.
 fn sanitize_invoice_id(invoice_id: &str) -> String {
-    if invoice_id.len() > 10 {
-        format!("{}...", &invoice_id[..10])
-    } else {
-        invoice_id.to_string()
+    if invoice_id.len() <= 10 {
+        return invoice_id.to_string();
     }
+
+    let mut end = 10;
+    while !invoice_id.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &invoice_id[..end])
 }
 
 // =============================================================================
@@ -732,6 +736,32 @@ struct CacheEntry<T> {
     last_accessed: std::time::Instant,
 }
 
+/// Remove up to `to_remove` of the least recently stored entries from a sample of `map`.
+///
+/// Samples up to 5x the number to remove instead of sorting every entry. Returns the number
+/// of entries removed.
+fn evict_oldest_sampled<K, T>(
+    map: &mut std::collections::HashMap<K, CacheEntry<T>>,
+    to_remove: usize,
+) -> usize
+where
+    K: Clone + Eq + std::hash::Hash,
+{
+    let sample_size = to_remove.saturating_mul(5).min(map.len());
+    let mut sample: Vec<_> = map
+        .iter()
+        .take(sample_size)
+        .map(|(key, entry)| (key.clone(), entry.last_accessed))
+        .collect();
+    sample.sort_by_key(|(_, last_accessed)| *last_accessed);
+
+    sample
+        .into_iter()
+        .take(to_remove)
+        .filter(|(key, _)| map.remove(key).is_some())
+        .count()
+}
+
 impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
     /// Create a new cached invoice manager.
     ///
@@ -813,36 +843,13 @@ impl<S: BillingStore, C: StripeInvoiceClient> CachedInvoiceManager<S, C> {
         cache.lists.retain(|_, v| v.expires_at > now);
         cache.upcoming.retain(|_, v| v.expires_at > now);
 
-        // If still over limit, use sampling-based eviction
+        // If still over limit, evict from both maps using sampling
         let total = cache.lists.len() + cache.upcoming.len();
         if total > self.max_entries {
             let to_remove = total - self.max_entries;
-            let mut removed = 0;
-
-            // Sample up to 5x the number we need to remove, pick oldest from sample
-            let sample_size = (to_remove * 5).min(cache.lists.len());
-
-            if sample_size > 0 && !cache.lists.is_empty() {
-                // Collect a sample of keys with their access times
-                let sample: Vec<_> = cache
-                    .lists
-                    .iter()
-                    .take(sample_size)
-                    .map(|(k, v)| (k.clone(), v.last_accessed))
-                    .collect();
-
-                // Sort sample by access time and remove oldest
-                let mut sample = sample;
-                sample.sort_by_key(|(_, t)| *t);
-
-                for (key, _) in sample.into_iter().take(to_remove) {
-                    if cache.lists.remove(&key).is_some() {
-                        removed += 1;
-                    }
-                    if removed >= to_remove {
-                        break;
-                    }
-                }
+            let mut removed = evict_oldest_sampled(&mut cache.lists, to_remove);
+            if removed < to_remove {
+                removed += evict_oldest_sampled(&mut cache.upcoming, to_remove - removed);
             }
 
             if removed > 0 {
@@ -1220,6 +1227,13 @@ mod tests {
     use crate::billing::storage::test::InMemoryBillingStore;
 
     #[test]
+    fn test_sanitize_invoice_id_respects_char_boundaries() {
+        // Byte 10 falls inside the two-byte 'é'.
+        assert_eq!(sanitize_invoice_id("in_abcdef\u{e9}xyz"), "in_abcdef...");
+        assert_eq!(sanitize_invoice_id("in_123"), "in_123");
+    }
+
+    #[test]
     fn test_invoice_config_builder() {
         let config = InvoiceConfig::new()
             .with_default_limit(25)
@@ -1457,6 +1471,30 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn test_cached_manager_evicts_upcoming_entries_over_limit() {
+        let store = InMemoryBillingStore::new();
+        let billable_ids = ["org_1", "org_2", "org_3", "org_4"];
+        for (index, billable_id) in billable_ids.iter().enumerate() {
+            store
+                .set_stripe_customer_id(billable_id, "org", &format!("cus_{index}"))
+                .await
+                .unwrap();
+        }
+        let cached = CachedInvoiceManager::with_max_entries(
+            InvoiceManager::new(store, MockStripeInvoiceClient::new()),
+            std::time::Duration::from_secs(60),
+            2,
+        );
+        for billable_id in billable_ids {
+            cached.get_upcoming_invoice(billable_id).await.unwrap();
+        }
+
+        cached.enforce_max_entries().await;
+
+        assert_eq!(cached.cache_size(), 2);
     }
 
     #[tokio::test]

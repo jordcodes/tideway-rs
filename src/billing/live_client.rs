@@ -1321,9 +1321,17 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let sub_id = parse_subscription_id(subscription_id)?;
 
         // First, verify the subscription is not already paused
-        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
-            .await
-            .map_err(|e| map_stripe_error(e, "get_subscription_for_pause"))?;
+        let current = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "get_subscription_for_pause",
+            || {
+                let client = self.client.clone();
+                let sub_id = sub_id.clone();
+                async move { stripe::Subscription::retrieve(&client, &sub_id, &[]).await }
+            },
+        )
+        .await?;
 
         if current.pause_collection.is_some() {
             return Err(BillingError::SubscriptionAlreadyPaused {
@@ -1364,9 +1372,17 @@ impl StripeSubscriptionClient for LiveStripeClient {
         let sub_id = parse_subscription_id(subscription_id)?;
 
         // First, verify the subscription is actually paused
-        let current = stripe::Subscription::retrieve(&self.client, &sub_id, &[])
-            .await
-            .map_err(|e| map_stripe_error(e, "get_subscription_for_resume"))?;
+        let current = with_retry_cb(
+            &self.config,
+            &self.circuit_breaker,
+            "get_subscription_for_resume",
+            || {
+                let client = self.client.clone();
+                let sub_id = sub_id.clone();
+                async move { stripe::Subscription::retrieve(&client, &sub_id, &[]).await }
+            },
+        )
+        .await?;
 
         if current.pause_collection.is_none() {
             return Err(BillingError::SubscriptionNotPaused {
@@ -3042,6 +3058,31 @@ mod tests {
         let config = LiveStripeClientConfig::new().disable_circuit_breaker();
 
         assert!(!config.circuit_breaker.enabled);
+    }
+
+    #[tokio::test]
+    async fn test_pause_and_resume_lookups_respect_circuit_breaker() {
+        let config = LiveStripeClientConfig::default().circuit_breaker(CircuitBreakerConfig {
+            failure_threshold: 1,
+            open_duration_seconds: 60,
+            enabled: true,
+        });
+        let client = LiveStripeClient::new("sk_test_12345678901234567890", config).unwrap();
+        client.circuit_breaker.record_failure();
+
+        let is_circuit_open = |error: &crate::error::TidewayError| {
+            matches!(
+                error.billing_error(),
+                Some(BillingError::StripeApiError { operation, .. }) if operation == "circuit_breaker"
+            )
+        };
+        let error = client.pause_subscription("sub_123").await.unwrap_err();
+        assert!(is_circuit_open(&error), "{error:?}");
+        let error = client
+            .resume_paused_subscription("sub_123")
+            .await
+            .unwrap_err();
+        assert!(is_circuit_open(&error), "{error:?}");
     }
 
     #[test]

@@ -598,6 +598,59 @@ mod websocket_tests {
         assert_eq!(manager.connection_count(), 1);
     }
 
+    #[test]
+    fn test_connection_manager_default_message_limits() {
+        let manager = ConnectionManager::new();
+        assert_eq!(
+            manager.max_message_size(),
+            crate::websocket::DEFAULT_MAX_MESSAGE_SIZE
+        );
+        assert_eq!(
+            manager.max_frame_size(),
+            crate::websocket::DEFAULT_MAX_FRAME_SIZE
+        );
+
+        let manager = ConnectionManager::new().with_message_limits(4096, 1024);
+        assert_eq!(manager.max_message_size(), 4096);
+        assert_eq!(manager.max_frame_size(), 1024);
+    }
+
+    #[tokio::test]
+    async fn test_ws_closes_connection_on_oversized_message() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let manager = Arc::new(ConnectionManager::new().with_message_limits(16, 16));
+        let ctx = crate::AppContext::builder()
+            .with_websocket_manager(manager.clone())
+            .build();
+        let app = crate::websocket::ws("/ws", CookieAuthHandler, manager.clone()).with_state(ctx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let (head, mut stream) = ws_handshake(addr, "Cookie: session=good\r\n").await;
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        let mut frame_head = [0u8; 2];
+        stream.read_exact(&mut frame_head).await.unwrap();
+        let mut greeting = vec![0u8; (frame_head[1] & 0x7f) as usize];
+        stream.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(manager.connection_count(), 1);
+
+        // A masked 64-byte text frame, over the 16-byte limit. An all-zero mask leaves the
+        // payload unchanged.
+        let mut frame = vec![0x81, 0x80 | 64, 0, 0, 0, 0];
+        frame.extend_from_slice(&[b'x'; 64]);
+        stream.write_all(&frame).await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while manager.connection_count() > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("oversized message must close the connection");
+    }
+
     #[derive(Default)]
     struct DisconnectCounter(std::sync::atomic::AtomicUsize);
 
@@ -663,6 +716,90 @@ mod websocket_tests {
             heartbeat,
         ));
         (task, client_rx, client_tx)
+    }
+
+    #[derive(Default)]
+    struct RecordIdHandler(std::sync::Mutex<Option<String>>);
+
+    #[async_trait::async_trait]
+    impl crate::websocket::WebSocketHandler for RecordIdHandler {
+        async fn on_connect(
+            &self,
+            conn: &mut Connection,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            *self.0.lock().unwrap() = Some(conn.id().to_string());
+            Ok(())
+        }
+
+        async fn on_message(
+            &self,
+            _conn: &mut Connection,
+            _msg: Message,
+            _ctx: &crate::AppContext,
+        ) -> crate::Result<()> {
+            Ok(())
+        }
+
+        async fn on_disconnect(&self, _conn: &mut Connection, _ctx: &crate::AppContext) {}
+    }
+
+    #[tokio::test]
+    async fn test_pong_is_sent_while_connection_lock_is_held() {
+        use crate::websocket::extractor::{Heartbeat, run_connection};
+        use futures::{SinkExt, StreamExt};
+        use tokio::time::{Duration, timeout};
+
+        let manager = Arc::new(ConnectionManager::new());
+        let handler = Arc::new(RecordIdHandler::default());
+        let (server_tx, mut client_rx) = futures::channel::mpsc::unbounded();
+        let (mut client_tx, server_rx) = futures::channel::mpsc::unbounded();
+        let ctx = Arc::new(
+            crate::AppContext::builder()
+                .with_websocket_manager(manager.clone())
+                .build(),
+        );
+        tokio::spawn(run_connection(
+            server_tx.sink_map_err(|_| ()),
+            server_rx,
+            crate::websocket::UpgradeRequest::new(
+                axum::http::HeaderMap::new(),
+                "/ws".parse().unwrap(),
+            ),
+            handler.clone(),
+            manager.clone(),
+            ctx,
+            Heartbeat {
+                interval: Duration::from_secs(60),
+                timeout: Duration::from_secs(120),
+            },
+        ));
+
+        let conn_id = loop {
+            if let Some(id) = handler.0.lock().unwrap().clone() {
+                break id;
+            }
+            tokio::task::yield_now().await;
+        };
+        let conn = manager.get(&conn_id).expect("connection registered");
+        let _guard = conn.write().await;
+
+        client_tx
+            .send(Ok(axum::extract::ws::Message::Ping(b"hi".to_vec().into())))
+            .await
+            .unwrap();
+        // Skip the server's own heartbeat pings.
+        let pong = timeout(Duration::from_secs(2), async {
+            while let Some(message) = client_rx.next().await {
+                if let axum::extract::ws::Message::Pong(data) = message {
+                    return Some(data);
+                }
+            }
+            None
+        })
+        .await
+        .expect("pong must not wait for the connection lock");
+        assert_eq!(pong.as_deref(), Some(&b"hi"[..]));
     }
 
     #[tokio::test]

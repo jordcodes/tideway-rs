@@ -125,18 +125,9 @@ impl QueryParams {
     #[allow(dead_code)] // Public API method
     pub fn get<T: for<'de> Deserialize<'de>>(query_string: &str, key: &str) -> Option<T> {
         // Simple parsing - for more complex cases, use Query<T> extractor
-        let pairs: Vec<&str> = query_string.split('&').collect();
-        for pair in pairs {
-            let parts: Vec<&str> = pair.splitn(2, '=').collect();
-            if parts.len() == 2
-                && parts[0] == key
-                && let Ok(decoded) = urlencoding::decode(parts[1])
-                && let Ok(value) = serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
-            {
-                return Some(value);
-            }
-        }
-        None
+        query_string
+            .split('&')
+            .find_map(|pair| Self::parse_pair(pair, key))
     }
 
     /// Get an optional query parameter value
@@ -151,19 +142,21 @@ impl QueryParams {
     /// Get multiple values for a query parameter (e.g., ?tags=foo&tags=bar)
     #[allow(dead_code)] // Public API method
     pub fn get_many<T: for<'de> Deserialize<'de>>(query_string: &str, key: &str) -> Vec<T> {
-        let mut values = Vec::new();
-        let pairs: Vec<&str> = query_string.split('&').collect();
-        for pair in pairs {
-            let parts: Vec<&str> = pair.splitn(2, '=').collect();
-            if parts.len() == 2
-                && parts[0] == key
-                && let Ok(decoded) = urlencoding::decode(parts[1])
-                && let Ok(value) = serde_urlencoded::from_str::<T>(&format!("{}={}", key, decoded))
-            {
-                values.push(value);
-            }
+        query_string
+            .split('&')
+            .filter_map(|pair| Self::parse_pair(pair, key))
+            .collect()
+    }
+
+    /// Decode one `key=value` pair, returning the value if the decoded key matches.
+    ///
+    /// The pair is decoded exactly once, so encoded `&`, `=` and `%` stay part of the value.
+    fn parse_pair<T: for<'de> Deserialize<'de>>(pair: &str, key: &str) -> Option<T> {
+        let mut parsed = serde_urlencoded::from_str::<Vec<(String, T)>>(pair).ok()?;
+        match parsed.pop() {
+            Some((name, value)) if parsed.is_empty() && name == key => Some(value),
+            _ => None,
         }
-        values
     }
 }
 
@@ -276,5 +269,45 @@ mod tests {
             ..Default::default()
         };
         assert!(invalid_order.validate().is_err());
+    }
+
+    #[test]
+    fn test_query_params_get_scalars() {
+        assert_eq!(
+            QueryParams::get::<String>("q=hello&n=5", "q"),
+            Some("hello".to_string())
+        );
+        assert_eq!(QueryParams::get::<u32>("q=hello&n=5", "n"), Some(5));
+        assert_eq!(QueryParams::get::<u32>("n=five", "n"), None);
+        assert_eq!(QueryParams::get::<String>("q=hello", "missing"), None);
+    }
+
+    #[test]
+    fn test_query_params_decode_once() {
+        assert_eq!(
+            QueryParams::get::<String>("q=a%26admin%3Dtrue", "q"),
+            Some("a&admin=true".to_string())
+        );
+        assert_eq!(
+            QueryParams::get::<String>("q=a%2526b", "q"),
+            Some("a%26b".to_string())
+        );
+        assert_eq!(
+            QueryParams::get::<String>("q=a%2Bb", "q"),
+            Some("a+b".to_string())
+        );
+        assert_eq!(
+            QueryParams::get::<String>("my%20key=v", "my key"),
+            Some("v".to_string())
+        );
+    }
+
+    #[test]
+    fn test_query_params_get_many() {
+        assert_eq!(
+            QueryParams::get_many::<String>("t=a&x=1&t=b", "t"),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        assert_eq!(QueryParams::get_many::<u32>("n=1&n=2", "n"), vec![1, 2]);
     }
 }

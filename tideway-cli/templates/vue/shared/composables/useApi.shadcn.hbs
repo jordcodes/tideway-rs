@@ -21,6 +21,51 @@ class ApiError extends Error {
   }
 }
 
+// Shared in-flight refresh so concurrent 401s reuse one refresh call. The server
+// rotates refresh tokens and treats reuse of a rotated token as theft, revoking
+// the whole session, so parallel refreshes with the same token would log the user out.
+// Kept at module scope so every useApi() caller shares it.
+let refreshInFlight: Promise<boolean> | null = null
+
+function tryRefreshToken(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = refreshAccessToken().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
+async function refreshAccessToken(): Promise<boolean> {
+  const refreshToken = localStorage.getItem('refresh_token')
+  if (!refreshToken) {
+    return false
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    })
+
+    if (!response.ok) {
+      return false
+    }
+
+    const data = await response.json()
+    if (data.access_token && data.refresh_token) {
+      localStorage.setItem('access_token', data.access_token)
+      localStorage.setItem('refresh_token', data.refresh_token)
+      return true
+    }
+
+    return false
+  } catch {
+    return false
+  }
+}
+
 export function useApi() {
   function getAuthHeaders(): Record<string, string> {
     const token = localStorage.getItem('access_token')
@@ -46,8 +91,8 @@ export function useApi() {
 
     const response = await fetch(url, config)
 
-    // Handle 401 - try to refresh token
-    if (response.status === 401) {
+    // Handle 401 - try to refresh token (auth endpoints report bad credentials as 401)
+    if (response.status === 401 && !endpoint.startsWith('/auth/')) {
       const refreshed = await tryRefreshToken()
       if (refreshed) {
         // Retry the original request with new token
@@ -86,36 +131,6 @@ export function useApi() {
     }
 
     return JSON.parse(text)
-  }
-
-  async function tryRefreshToken(): Promise<boolean> {
-    const refreshToken = localStorage.getItem('refresh_token')
-    if (!refreshToken) {
-      return false
-    }
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-      })
-
-      if (!response.ok) {
-        return false
-      }
-
-      const data = await response.json()
-      if (data.access_token && data.refresh_token) {
-        localStorage.setItem('access_token', data.access_token)
-        localStorage.setItem('refresh_token', data.refresh_token)
-        return true
-      }
-
-      return false
-    } catch {
-      return false
-    }
   }
 
   return {

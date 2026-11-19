@@ -18,7 +18,7 @@ use uuid::Uuid;
 const DEFAULT_MAX_HISTORY_SIZE: usize = 10_000;
 const MAX_RETRY_BACKOFF_SECONDS: u64 = 24 * 60 * 60;
 
-fn retry_backoff_seconds(base_seconds: u64, retry_count: u32) -> u64 {
+pub(super) fn retry_backoff_seconds(base_seconds: u64, retry_count: u32) -> u64 {
     let multiplier = 1_u64.checked_shl(retry_count).unwrap_or(u64::MAX);
     base_seconds
         .saturating_mul(multiplier)
@@ -114,14 +114,18 @@ impl InMemoryJobQueue {
     pub async fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
         self.job_available.notify_waiters();
-        self.scheduler_wakeup.notify_waiters();
+        // `notify_one` stores a permit, so the scheduler still wakes if it has checked the
+        // shutdown flag but not yet started waiting. `notify_waiters` would be lost.
+        self.scheduler_wakeup.notify_one();
 
         let mut handle_guard = self.scheduler_handle.lock().await;
         if let Some(handle) = handle_guard.take() {
+            let abort_handle = handle.abort_handle();
             match tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await {
                 Ok(_) => tracing::debug!("In-memory job queue scheduler stopped cleanly"),
                 Err(_) => {
-                    tracing::warn!("In-memory job queue scheduler did not stop within timeout")
+                    tracing::warn!("In-memory job queue scheduler did not stop within timeout");
+                    abort_handle.abort();
                 }
             }
         }
@@ -351,6 +355,16 @@ mod tests {
             retry_backoff_seconds(u64::MAX, u32::MAX),
             MAX_RETRY_BACKOFF_SECONDS
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shutdown_always_stops_the_scheduler() {
+        for _ in 0..300 {
+            let queue = InMemoryJobQueue::new(3, 1);
+            tokio::time::timeout(std::time::Duration::from_secs(1), queue.shutdown())
+                .await
+                .expect("shutdown should not wait for the timeout");
+        }
     }
 
     #[tokio::test]

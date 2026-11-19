@@ -384,6 +384,15 @@ where
         // Apply update
         let updated = updater(&current);
 
+        // The membership must stay attached to the same organization and user.
+        if self.membership_store.membership_org_id(&updated) != org_id
+            || self.membership_store.membership_user_id(&updated) != user_id
+        {
+            return Err(OrganizationError::insufficient_permission(
+                "cannot change membership organization or user via update",
+            ));
+        }
+
         // Prevent promoting to owner via update (must use transfer_ownership)
         let new_role = self.membership_store.membership_role(&updated);
         if self.membership_store.is_owner(&new_role) {

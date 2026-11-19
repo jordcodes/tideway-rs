@@ -50,10 +50,14 @@ const MAX_IP_LENGTH: usize = 45; // IPv6 max length
 /// Truncate IP address to prevent DoS attacks.
 fn truncate_ip(ip: &str) -> &str {
     if ip.len() <= MAX_IP_LENGTH {
-        ip
-    } else {
-        &ip[..MAX_IP_LENGTH]
+        return ip;
     }
+
+    let mut end = MAX_IP_LENGTH;
+    while !ip.is_char_boundary(end) {
+        end -= 1;
+    }
+    &ip[..end]
 }
 
 /// Lockout policy configuration.
@@ -831,6 +835,14 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use test::InMemoryLockoutStore;
+
+    #[test]
+    fn test_truncate_ip_respects_char_boundaries() {
+        // Byte 45 falls inside the two-byte 'é'.
+        let ip = format!("{}\u{e9}{}", "1".repeat(44), "2".repeat(10));
+        assert_eq!(truncate_ip(&ip), "1".repeat(44));
+        assert_eq!(truncate_ip("192.168.1.1"), "192.168.1.1");
+    }
 
     #[test]
     fn test_policy_defaults() {

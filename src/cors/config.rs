@@ -1,4 +1,4 @@
-use crate::utils::get_env_with_prefix;
+use crate::utils::{get_env_with_prefix, parse_env_bool};
 use serde::{Deserialize, Serialize};
 
 /// CORS configuration for Tideway applications
@@ -131,7 +131,7 @@ impl CorsConfig {
         let mut config = self;
 
         if let Some(enabled) = get_env_with_prefix("CORS_ENABLED") {
-            config.enabled = enabled.parse().unwrap_or(true);
+            config.enabled = parse_env_bool("CORS_ENABLED", &enabled, config.enabled);
         }
 
         if let Some(origins) = get_env_with_prefix("CORS_ALLOWED_ORIGINS") {

@@ -110,9 +110,19 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         let mut inner = self.inner.lock().expect("oauth state lock poisoned");
         let Entries { by_hash, order } = &mut *inner;
         if by_hash.len() >= Self::MAX_ENTRIES {
+            // Drop consumed and expired entries from the front. Scanning the whole store here
+            // would cost O(MAX_ENTRIES) per request while a flood keeps it full.
             let now = SystemTime::now();
-            by_hash.retain(|_, (_, expires)| *expires > now);
-            order.retain(|hash| by_hash.contains_key(hash));
+            while let Some(oldest) = order.front() {
+                match by_hash.get(oldest) {
+                    None => {}
+                    Some((_, expires)) if *expires <= now => {
+                        by_hash.remove(oldest);
+                    }
+                    Some(_) => break,
+                }
+                order.pop_front();
+            }
         }
         while by_hash.len() >= Self::MAX_ENTRIES {
             let Some(oldest) = order.pop_front() else {
@@ -195,6 +205,25 @@ mod tests {
         // The oldest flood entry made room.
         assert!(store.consume("flood-0").await.unwrap().is_none());
         assert!(store.consume("flood-1").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn full_store_drops_expired_entries_before_live_ones() {
+        let store = InMemoryOAuthStateStore::new();
+        let expired = SystemTime::now() - Duration::from_secs(1);
+        let live = SystemTime::now() + Duration::from_secs(600);
+        for i in 0..InMemoryOAuthStateStore::MAX_ENTRIES {
+            let expires = if i < 2 { expired } else { live };
+            store
+                .store(&format!("flood-{i}"), pending(), expires)
+                .await
+                .unwrap();
+        }
+
+        store.store("new", pending(), live).await.unwrap();
+        assert_eq!(store.len(), InMemoryOAuthStateStore::MAX_ENTRIES - 1);
+        assert!(store.consume("flood-2").await.unwrap().is_some());
+        assert!(store.consume("new").await.unwrap().is_some());
     }
 
     #[test]

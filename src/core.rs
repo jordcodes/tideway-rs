@@ -183,8 +183,15 @@ impl App {
     }
 
     /// Set the application context
+    ///
+    /// The metrics collector created from config is kept unless `context` supplies its own,
+    /// so `/metrics` keeps working after the context is replaced.
     pub fn with_context(mut self, context: AppContext) -> Self {
         self.context = context;
+        #[cfg(feature = "metrics")]
+        if self.context.metrics.is_none() {
+            self.context.metrics = self.metrics_collector.clone();
+        }
         self
     }
 
@@ -1113,6 +1120,14 @@ mod middleware_stack_tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         uuid::Uuid::parse_str(response.headers()["x-request-id"].to_str().unwrap()).unwrap();
+    }
+
+    #[cfg(feature = "metrics")]
+    #[test]
+    fn with_context_keeps_metrics_collector() {
+        let app = app().with_context(AppContext::new());
+
+        assert!(app.context.metrics_opt().is_some());
     }
 
     #[cfg(feature = "metrics")]

@@ -166,7 +166,8 @@ impl HmacSha256Verifier {
 
 /// Decode a hex string to bytes
 fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    // Non-ASCII input could put a byte pair across a UTF-8 boundary and panic when sliced.
+    if !s.is_ascii() || !s.len().is_multiple_of(2) {
         return None;
     }
 
@@ -251,6 +252,7 @@ mod tests {
         assert_eq!(hex_decode("0"), None); // odd length
         assert_eq!(hex_decode("0g"), None); // invalid char
         assert_eq!(hex_decode("xyz"), None); // invalid chars, odd length
+        assert_eq!(hex_decode("0\u{e9}0"), None); // multi-byte char straddles a byte pair
     }
 
     // ============ constant_time_compare tests ============

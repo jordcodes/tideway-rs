@@ -76,9 +76,12 @@ where
                     if let Err(e) = handler.on_upgrade(&mut request, &ctx).await {
                         return e.into_response();
                     }
-                    upgrade.on_upgrade(move |socket| {
-                        handle_socket(socket, request, handler, manager, ctx)
-                    })
+                    upgrade
+                        .max_message_size(manager.max_message_size())
+                        .max_frame_size(manager.max_frame_size())
+                        .on_upgrade(move |socket| {
+                            handle_socket(socket, request, handler, manager, ctx)
+                        })
                 }
             },
         ),
@@ -216,6 +219,7 @@ pub(crate) async fn run_connection<H, Si, St>(
         let ctx = ctx.clone();
         let manager = manager.clone();
         let conn_id = conn_id.clone();
+        let tx = tx.clone();
 
         async move {
             while let Some(result) = ws_receiver.next().await {
@@ -225,11 +229,9 @@ pub(crate) async fn run_connection<H, Si, St>(
 
                         // Handle ping frames automatically
                         if let Message::Ping(data) = msg {
-                            // Auto-respond to ping with pong
-                            {
-                                let conn = conn_handle.read().await;
-                                let _ = conn.send(Message::Pong(data)).await;
-                            }
+                            // Auto-respond to ping with pong, without the connection lock,
+                            // which handlers may hold. A full queue drops the pong.
+                            let _ = tx.try_send(Message::Pong(data));
                             continue;
                         }
 
