@@ -489,6 +489,53 @@ fn test_generate_vue_shared_types_still_rendered() {
     assert!(types.contains("export interface LoginRequest"));
 }
 
+#[test]
+fn test_generate_admin_parks_original_tokens_in_session_storage() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let output_dir = temp_dir.path().join("components");
+    for module in ["admin", "auth"] {
+        let output = run_tideway(&["generate", module, "--output", path_str(&output_dir)]);
+        assert_success(&output, &format!("tideway generate {module} (vue)"));
+    }
+
+    let use_admin = fs::read_to_string(output_dir.join("admin/composables/useAdmin.ts")).unwrap();
+    assert!(use_admin.contains("const ORIGINAL_TOKENS_KEY = 'impersonation_original_tokens'"));
+    assert!(use_admin.contains("sessionStorage.setItem(ORIGINAL_TOKENS_KEY"));
+    assert!(use_admin.contains("sessionStorage.getItem(ORIGINAL_TOKENS_KEY)"));
+    assert!(use_admin.contains("sessionStorage.removeItem(ORIGINAL_TOKENS_KEY)"));
+    assert!(!use_admin.contains("localStorage.setItem(ORIGINAL_TOKENS_KEY"));
+    assert!(!use_admin.contains("original_refresh_token"));
+    assert!(!use_admin.contains("original_access_token"));
+
+    let use_auth = fs::read_to_string(output_dir.join("auth/composables/useAuth.ts")).unwrap();
+    assert!(use_auth.contains("sessionStorage.getItem('impersonation_original_tokens')"));
+    assert!(use_auth.contains("sessionStorage.removeItem('impersonation_original_tokens')"));
+    assert!(!use_auth.contains("localStorage.getItem('impersonation_original_tokens')"));
+    assert!(!use_auth.contains("original_refresh_token"));
+
+    let types = fs::read_to_string(output_dir.join("types/index.ts")).unwrap();
+    assert!(!types.contains("original_refresh_token"));
+
+    // React/Next have no admin (impersonation) templates, so nothing there can park
+    // the admin's tokens in localStorage.
+    for framework in ["react", "next"] {
+        let framework_dir = temp_dir.path().join(framework);
+        let output = run_tideway(&[
+            "generate",
+            "admin",
+            "--framework",
+            framework,
+            "--output",
+            path_str(&framework_dir),
+        ]);
+        assert!(
+            !output.status.success(),
+            "{framework}: admin should be rejected"
+        );
+        assert!(!framework_dir.exists());
+    }
+}
+
 /// Type-check the sample frontend against the generated client and execute it.
 fn typecheck_and_run_sample_frontend(root: &Path, client_path: &Path) {
     let Some(tsc) = find_tsc() else {
