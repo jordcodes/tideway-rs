@@ -510,7 +510,10 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             .await
         {
             Ok(data) => data,
-            Err(_) => return Ok(ReconcileResult::NotFoundInStripe),
+            // Only a confirmed 404 means the subscription is gone. Timeouts, rate limits and
+            // Stripe outages are returned so callers don't treat a live subscription as deleted.
+            Err(error) if is_not_found(&error) => return Ok(ReconcileResult::NotFoundInStripe),
+            Err(error) => return Err(error),
         };
 
         // Compare key fields
@@ -615,6 +618,15 @@ pub enum SubscriptionSyncOutcome {
         /// Stripe subscription ID of the deleted subscription.
         stripe_subscription_id: String,
     },
+}
+
+/// Whether `error` is a not-found error, including a Stripe 404 wrapped as a billing error.
+fn is_not_found(error: &crate::error::TidewayError) -> bool {
+    match error {
+        crate::error::TidewayError::NotFound(_) => true,
+        crate::error::TidewayError::Billing { public, .. } => is_not_found(public),
+        _ => false,
+    }
 }
 
 /// Result of a reconciliation check.
@@ -1732,6 +1744,81 @@ mod tests {
         manager.sync_from_stripe(stripe_data).await.unwrap();
 
         // Reconcile - should find local but not in Stripe
+        let result = manager.reconcile("org_123", false).await.unwrap();
+        assert_eq!(result, ReconcileResult::NotFoundInStripe);
+    }
+
+    /// A Stripe client whose `get_subscription` always fails with `error`.
+    struct FailingGetClient {
+        error: fn() -> crate::error::TidewayError,
+    }
+
+    impl StripeSubscriptionClient for FailingGetClient {
+        async fn cancel_subscription(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        async fn cancel_subscription_at_period_end(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        async fn resume_subscription(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        async fn get_subscription(&self, _: &str) -> Result<StripeSubscriptionData> {
+            Err((self.error)())
+        }
+        async fn update_subscription(
+            &self,
+            _: &str,
+            _: UpdateSubscriptionRequest,
+        ) -> Result<StripeSubscriptionData> {
+            unimplemented!()
+        }
+        async fn extend_trial(&self, _: &str, _: u64) -> Result<StripeSubscriptionData> {
+            unimplemented!()
+        }
+        async fn pause_subscription(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        async fn resume_paused_subscription(&self, _: &str) -> Result<StripeSubscriptionData> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_returns_transient_stripe_errors() {
+        let store = InMemoryBillingStore::new();
+        let client = FailingGetClient {
+            error: || crate::error::TidewayError::Internal("Stripe timed out".to_string()),
+        };
+        let manager = SubscriptionManager::new(store, client, create_test_plans());
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        assert!(manager.reconcile("org_123", false).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_treats_stripe_404_as_not_found() {
+        let store = InMemoryBillingStore::new();
+        let client = FailingGetClient {
+            error: || {
+                crate::billing::BillingError::StripeApiError {
+                    operation: "get_subscription".to_string(),
+                    message: "No such subscription".to_string(),
+                    code: Some("resource_missing".to_string()),
+                    http_status: Some(404),
+                }
+                .into()
+            },
+        };
+        let manager = SubscriptionManager::new(store, client, create_test_plans());
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
         let result = manager.reconcile("org_123", false).await.unwrap();
         assert_eq!(result, ReconcileResult::NotFoundInStripe);
     }
