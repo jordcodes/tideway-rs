@@ -484,8 +484,14 @@ impl StoredPlan {
             "eur" => "€",
             _ => &self.currency,
         };
-        let dollars = self.price_cents as f64 / 100.0;
-        format!("{}{:.2}", symbol, dollars)
+        let sign = if self.price_cents < 0 { "-" } else { "" };
+        let amount = self.price_cents.unsigned_abs();
+        if crate::utils::currency::is_zero_decimal_currency(&self.currency) {
+            // Zero-decimal prices (e.g. JPY) are already in whole units.
+            format!("{sign}{symbol}{amount}")
+        } else {
+            format!("{sign}{symbol}{}.{:02}", amount / 100, amount % 100)
+        }
     }
 }
 
@@ -1406,7 +1412,7 @@ mod tests {
 
     #[test]
     fn test_stored_plan_helpers() {
-        let plan = StoredPlan {
+        let mut plan = StoredPlan {
             id: "test".to_string(),
             name: "Test".to_string(),
             description: None,
@@ -1442,6 +1448,12 @@ mod tests {
 
         // Test formatted_price
         assert_eq!(plan.formatted_price(), "$19.99");
+        plan.price_cents = 1000;
+        plan.currency = "jpy".to_string();
+        assert_eq!(plan.formatted_price(), "jpy1000");
+        plan.price_cents = 5;
+        plan.currency = "eur".to_string();
+        assert_eq!(plan.formatted_price(), "€0.05");
     }
 
     #[test]

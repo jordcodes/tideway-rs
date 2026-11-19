@@ -262,6 +262,10 @@ where
         if !is_valid_email(email) {
             return Err(OrganizationError::invalid_email(email));
         }
+        // Normalize as the generated templates and registration do, so the same address in a
+        // different case or with surrounding spaces is found by the duplicate check.
+        let email = email.trim().to_ascii_lowercase();
+        let email = email.as_str();
 
         // Check organization exists
         self.org_store
@@ -365,6 +369,10 @@ where
     }
 
     /// Accept an invitation by token.
+    ///
+    /// The token is the only proof checked here; this does not compare `user_id`'s email with
+    /// the invited address. Before calling it, check that the signed-in account's normalized
+    /// email matches the invitation, or a forwarded or leaked link joins whoever opens it.
     ///
     /// User provides factory for creating membership from invitation.
     #[instrument(skip(self, token, membership_factory))]

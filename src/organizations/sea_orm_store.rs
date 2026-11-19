@@ -1111,8 +1111,10 @@ impl InvitationStore for SeaOrmOrgStore {
 
         let now = u64_to_i64(current_timestamp());
 
+        // A "processing" row left by a crash during acceptance can no longer be accepted or
+        // revoked, so it is removed once expired like a pending one.
         let result = invitation::Entity::delete_many()
-            .filter(invitation::Column::Status.eq("pending"))
+            .filter(invitation::Column::Status.is_in(["pending", "processing"]))
             .filter(invitation::Column::ExpiresAt.lte(now))
             .exec(&self.db)
             .await

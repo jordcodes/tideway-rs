@@ -42,6 +42,12 @@ pub enum TidewayError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Payload too large: {0}")]
+    PayloadTooLarge(String),
+
+    #[error("Unsupported media type: {0}")]
+    UnsupportedMediaType(String),
+
     #[error(transparent)]
     Anyhow(#[from] anyhow::Error),
 
@@ -255,6 +261,14 @@ impl TidewayError {
         Self::Conflict(msg.into())
     }
 
+    pub fn payload_too_large(msg: impl Into<String>) -> Self {
+        Self::PayloadTooLarge(msg.into())
+    }
+
+    pub fn unsupported_media_type(msg: impl Into<String>) -> Self {
+        Self::UnsupportedMediaType(msg.into())
+    }
+
     /// Add context to this error, returning an ErrorWithContext
     ///
     /// This allows you to attach context to an error while still being able
@@ -389,6 +403,8 @@ impl TidewayError {
             Self::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden(_) => StatusCode::FORBIDDEN,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::UnsupportedMediaType(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Self::Internal(_) | Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             #[cfg(feature = "database")]
             Self::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -417,6 +433,8 @@ impl TidewayError {
             Self::Unauthorized(msg) => format!("Unauthorized: {}", msg),
             Self::Forbidden(msg) => format!("Forbidden: {}", msg),
             Self::Conflict(msg) => format!("Conflict: {}", msg),
+            Self::PayloadTooLarge(msg) => format!("Payload too large: {}", msg),
+            Self::UnsupportedMediaType(msg) => format!("Unsupported media type: {}", msg),
             Self::TooManyRequests(msg) => format!("Too many requests: {}", msg),
             Self::RequestTimeout => "Request timeout".to_string(),
 

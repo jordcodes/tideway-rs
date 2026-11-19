@@ -73,6 +73,9 @@ const MAX_NAME_LENGTH: usize = 255;
 /// Maximum length of a single scope.
 const MAX_SCOPE_LENGTH: usize = 128;
 
+/// Maximum number of scopes on one key.
+const MAX_SCOPES: usize = 64;
+
 /// Header accepted for API keys in addition to `Authorization: Bearer`.
 pub const API_KEY_HEADER: &str = "x-api-key";
 
@@ -383,6 +386,11 @@ impl<S: ApiKeyStore> ApiKeyManager<S> {
         if name.is_empty() || name.len() > MAX_NAME_LENGTH {
             return Err(TidewayError::bad_request(format!(
                 "API key name must be between 1 and {MAX_NAME_LENGTH} characters"
+            )));
+        }
+        if request.scopes.len() > MAX_SCOPES {
+            return Err(TidewayError::bad_request(format!(
+                "An API key can have at most {MAX_SCOPES} scopes"
             )));
         }
         let mut scopes = Vec::with_capacity(request.scopes.len());
@@ -914,6 +922,24 @@ mod tests {
         let key = manager.authenticate(&created.plaintext).await.unwrap();
         assert_eq!(key.organization_id, "org-1");
         assert!(key.has_scope("projects:read"));
+    }
+
+    #[tokio::test]
+    async fn scopes_are_capped_and_deduplicated() {
+        let manager = manager();
+        let too_many = (0..=MAX_SCOPES).map(|i| format!("scope:{i}"));
+        assert!(
+            manager
+                .create(NewApiKey::new("org-1", "CI").scopes(too_many))
+                .await
+                .is_err()
+        );
+
+        let created = manager
+            .create(NewApiKey::new("org-1", "CI").scopes(["b:read", "a:read", "b:read"]))
+            .await
+            .unwrap();
+        assert_eq!(created.api_key.scopes, ["b:read", "a:read"]);
     }
 
     #[tokio::test]
