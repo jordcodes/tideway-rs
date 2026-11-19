@@ -186,18 +186,18 @@ impl InvitationRateLimiter {
             self.actor_limiter.retain_recent();
         }
 
-        // Check org limit first
-        if let Err(not_until) = self.org_limiter.check_key(&org_id.to_string()) {
-            let wait =
-                not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
-            return Err(("organization".to_string(), wait.as_secs().max(1)));
-        }
-
-        // Then check actor limit
+        // Check the actor first, so a throttled actor's requests stop before they use up the
+        // organization's shared allowance.
         if let Err(not_until) = self.actor_limiter.check_key(&actor_id.to_string()) {
             let wait =
                 not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
             return Err(("actor".to_string(), wait.as_secs().max(1)));
+        }
+
+        if let Err(not_until) = self.org_limiter.check_key(&org_id.to_string()) {
+            let wait =
+                not_until.wait_time_from(governor::clock::Clock::now(&DefaultClock::default()));
+            return Err(("organization".to_string(), wait.as_secs().max(1)));
         }
 
         Ok(())
@@ -325,6 +325,25 @@ mod tests {
         assert!(result.is_err(), "4th request should be blocked");
         if let Err((limit_type, _)) = result {
             assert_eq!(limit_type, "organization");
+        }
+    }
+
+    #[test]
+    fn test_throttled_actor_does_not_use_up_org_allowance() {
+        let config = InvitationRateLimitConfig::new(5, 2, 60);
+        let limiter = InvitationRateLimiter::new(config);
+
+        for _ in 0..2 {
+            limiter.check("org_1", "actor_1").unwrap();
+        }
+        for _ in 0..10 {
+            let (limit_type, _) = limiter.check("org_1", "actor_1").unwrap_err();
+            assert_eq!(limit_type, "actor");
+        }
+
+        // The org still has 3 of its 5 invitations left for other actors.
+        for i in 0..3 {
+            limiter.check("org_1", &format!("other_{i}")).unwrap();
         }
     }
 
