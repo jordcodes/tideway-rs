@@ -167,8 +167,17 @@ impl<C: UserCreator> RegistrationFlow<C> {
     }
 }
 
+/// Longest address SMTP allows (RFC 5321), and the longest local part.
+const MAX_EMAIL_LENGTH: usize = 254;
+const MAX_EMAIL_LOCAL_LENGTH: usize = 64;
+
 /// Basic email validation.
 fn is_valid_email(email: &str) -> bool {
+    if email.len() > MAX_EMAIL_LENGTH || email.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return false;
+    }
+
     // Basic validation - has @ and domain
     let parts: Vec<&str> = email.split('@').collect();
     if parts.len() != 2 {
@@ -179,6 +188,7 @@ fn is_valid_email(email: &str) -> bool {
     let domain = parts[1];
 
     !local.is_empty()
+        && local.len() <= MAX_EMAIL_LOCAL_LENGTH
         && !domain.is_empty()
         && domain.contains('.')
         && !domain.starts_with('.')
@@ -284,5 +294,11 @@ mod tests {
         assert!(!is_valid_email("user@.com"));
         assert!(!is_valid_email("user@example."));
         assert!(!is_valid_email("user@@example.com"));
+        assert!(!is_valid_email("us\r\ner@example.com"));
+        assert!(!is_valid_email("us er@example.com"));
+        assert!(!is_valid_email("user@exa\0mple.com"));
+        assert!(!is_valid_email(&format!("{}@example.com", "a".repeat(65))));
+        assert!(!is_valid_email(&format!("user@{}.com", "a".repeat(250))));
+        assert!(is_valid_email(&format!("{}@example.com", "a".repeat(64))));
     }
 }
