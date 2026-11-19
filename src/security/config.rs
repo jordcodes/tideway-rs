@@ -103,6 +103,30 @@ impl SecurityConfig {
         SecurityConfigBuilder::new()
     }
 
+    /// Check that configured header values can be sent.
+    ///
+    /// A policy that is not a valid header value, such as a multi-line value from a `.env`
+    /// file, would otherwise be dropped and the app would run without it.
+    pub fn validate(&self) -> crate::Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let policies = [
+            ("Content-Security-Policy", &self.content_security_policy),
+            ("Permissions-Policy", &self.permissions_policy),
+        ];
+        for (name, value) in policies {
+            if let Some(value) = value
+                && axum::http::HeaderValue::from_str(value).is_err()
+            {
+                return Err(crate::TidewayError::bad_request(format!(
+                    "{name} is not a valid header value"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Load security configuration from environment variables
     pub fn from_env() -> Self {
         Self::default().with_env()
@@ -297,6 +321,27 @@ mod tests {
         assert_eq!(config.hsts_max_age, 31536000);
         assert!(config.nosniff);
         assert_eq!(config.x_frame_options, Some(XFrameOptions::Deny));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_header_values() {
+        assert!(SecurityConfig::default().validate().is_ok());
+
+        let multiline_csp = SecurityConfig::builder()
+            .content_security_policy(Some("default-src 'self';\nscript-src 'self'".into()))
+            .build();
+        assert!(multiline_csp.validate().is_err());
+
+        let bad_permissions = SecurityConfig::builder()
+            .permissions_policy(Some("camera=()\r\n".into()))
+            .build();
+        assert!(bad_permissions.validate().is_err());
+
+        let disabled = SecurityConfig::builder()
+            .enabled(false)
+            .content_security_policy(Some("a\nb".into()))
+            .build();
+        assert!(disabled.validate().is_ok());
     }
 
     #[test]
