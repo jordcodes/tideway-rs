@@ -635,14 +635,11 @@ impl<S: BillingStore + Clone, E: BillingEventSink, C: StripeSubscriptionClient>
             if seat_prices.contains(price_id) {
                 seat_item_id = item_id;
                 extra_seats = quantity;
-            } else {
-                // This is the base plan
+            } else if let Some(plan) = self.plans.find_by_stripe_price(price_id) {
+                // This is the base plan. Items with other prices are add-ons, and must not
+                // replace the base item that later plan changes update.
                 base_item_id = item_id;
-
-                // Find plan by price ID
-                if let Some(plan) = self.plans.find_by_stripe_price(price_id) {
-                    plan_id = plan.id.clone();
-                }
+                plan_id = plan.id.clone();
             }
         }
 
@@ -1854,5 +1851,39 @@ mod tests {
         let sub = sub.unwrap();
         assert_eq!(sub.plan_id, "starter");
         assert_eq!(sub.extra_seats, 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_on_item_does_not_replace_base_item() {
+        let store = InMemoryBillingStore::new();
+        let handler = WebhookHandler::new(store.clone(), "whsec_test", create_test_plans());
+
+        let event = WebhookEvent {
+            id: "evt_sub_add_on".to_string(),
+            event_type: "customer.subscription.updated".to_string(),
+            data: WebhookEventData {
+                object: serde_json::json!({
+                    "id": "sub_123",
+                    "customer": "cus_123",
+                    "status": "active",
+                    "current_period_start": 1700000000u64,
+                    "current_period_end": 1702592000u64,
+                    "items": {
+                        "data": [
+                            {"id": "si_base", "price": {"id": "price_starter"}, "quantity": 1},
+                            {"id": "si_add_on", "price": {"id": "price_add_on"}, "quantity": 1}
+                        ]
+                    },
+                    "metadata": {"billable_id": "org_123", "billable_type": "org"}
+                }),
+            },
+            created: 1234567890,
+        };
+
+        handler.handle_event(event).await.unwrap();
+
+        let sub = store.get_subscription("org_123").await.unwrap().unwrap();
+        assert_eq!(sub.plan_id, "starter");
+        assert_eq!(sub.base_item_id.as_deref(), Some("si_base"));
     }
 }
