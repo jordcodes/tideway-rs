@@ -170,9 +170,13 @@ impl RedisJobQueue {
         let mut handle_guard = self.scheduler_handle.lock().await;
         if let Some(handle) = handle_guard.take() {
             // Give the task a reasonable time to finish, then abort if needed
+            let abort_handle = handle.abort_handle();
             match tokio::time::timeout(tokio::time::Duration::from_secs(5), handle).await {
                 Ok(_) => tracing::debug!("Redis job queue scheduler stopped cleanly"),
-                Err(_) => tracing::warn!("Redis job queue scheduler did not stop within timeout"),
+                Err(_) => {
+                    tracing::warn!("Redis job queue scheduler did not stop within timeout");
+                    abort_handle.abort();
+                }
             }
         }
     }
