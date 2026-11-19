@@ -153,7 +153,7 @@ pub enum CircuitState {
 pub struct CircuitBreaker {
     /// Number of consecutive failures.
     failure_count: AtomicU32,
-    /// Timestamp when circuit opened (0 if closed).
+    /// When the circuit opened, from [`monotonic_millis`] (0 if closed).
     opened_at: AtomicU64,
     /// Configuration.
     config: CircuitBreakerConfig,
@@ -205,6 +205,17 @@ impl CircuitBreakerConfig {
     }
 }
 
+/// Milliseconds on a monotonic clock, starting at 1 so that 0 can mean "closed".
+///
+/// Wall-clock time could jump and shorten or extend the open period.
+fn monotonic_millis() -> u64 {
+    static START: std::sync::LazyLock<std::time::Instant> =
+        std::sync::LazyLock::new(std::time::Instant::now);
+    u64::try_from(START.elapsed().as_millis())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
+}
+
 impl CircuitBreaker {
     /// Create a new circuit breaker with the given configuration.
     #[must_use]
@@ -223,18 +234,16 @@ impl CircuitBreaker {
             return CircuitState::Closed;
         }
 
-        let opened_at = self.opened_at.load(Ordering::Acquire);
+        self.state_at(self.opened_at.load(Ordering::Acquire))
+    }
+
+    fn state_at(&self, opened_at: u64) -> CircuitState {
         if opened_at == 0 {
             return CircuitState::Closed;
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-
-        let elapsed = now.saturating_sub(opened_at);
-        if elapsed >= self.config.open_duration_seconds {
+        let elapsed = monotonic_millis().saturating_sub(opened_at);
+        if elapsed >= self.config.open_duration_seconds.saturating_mul(1000) {
             CircuitState::HalfOpen
         } else {
             CircuitState::Open
@@ -244,15 +253,37 @@ impl CircuitBreaker {
     /// Check if a request should be allowed.
     ///
     /// Returns `Ok(())` if the request can proceed, or an error if the circuit is open.
+    /// When the open period ends, one caller is let through to test Stripe and the circuit
+    /// stays open for the others until that request succeeds or the period passes again.
     pub fn check(&self) -> std::result::Result<(), BillingError> {
-        match self.state() {
-            CircuitState::Closed | CircuitState::HalfOpen => Ok(()),
-            CircuitState::Open => Err(BillingError::StripeApiError {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        let opened_at = self.opened_at.load(Ordering::Acquire);
+        let allowed = match self.state_at(opened_at) {
+            CircuitState::Closed => true,
+            // Restarting the open period claims the trial request; concurrent callers lose
+            // the exchange and see the circuit as open.
+            CircuitState::HalfOpen => self
+                .opened_at
+                .compare_exchange(
+                    opened_at,
+                    monotonic_millis(),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok(),
+            CircuitState::Open => false,
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(BillingError::StripeApiError {
                 operation: "circuit_breaker".to_string(),
                 message: "Circuit breaker is open, failing fast".to_string(),
                 code: Some("CIRCUIT_OPEN".to_string()),
                 http_status: Some(503),
-            }),
+            })
         }
     }
 
@@ -273,11 +304,7 @@ impl CircuitBreaker {
 
         let failures = self.failure_count.fetch_add(1, Ordering::AcqRel) + 1;
         if failures >= self.config.failure_threshold {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            self.opened_at.store(now, Ordering::Release);
+            self.opened_at.store(monotonic_millis(), Ordering::Release);
 
             tracing::warn!(
                 target: "tideway::billing::stripe",
@@ -2882,6 +2909,25 @@ mod tests {
         cb.record_success();
         assert_eq!(cb.failure_count(), 0);
         assert_eq!(cb.state(), CircuitState::Closed);
+    }
+
+    #[test]
+    fn test_circuit_breaker_half_open_allows_one_trial_request() {
+        let cb = CircuitBreaker::new(CircuitBreakerConfig {
+            failure_threshold: 1,
+            open_duration_seconds: 1,
+            enabled: true,
+        });
+        cb.record_failure();
+        assert!(cb.check().is_err());
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert_eq!(cb.state(), CircuitState::HalfOpen);
+        assert!(cb.check().is_ok(), "the first caller tests Stripe");
+        assert!(cb.check().is_err(), "others wait for the trial request");
+
+        cb.record_success();
+        assert!(cb.check().is_ok());
     }
 
     fn stripe_status_error(http_status: u16) -> stripe::StripeError {
