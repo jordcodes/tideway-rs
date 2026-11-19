@@ -9,6 +9,9 @@
 # transitive proc-macro/build dependencies and are kept visible by cargo-audit.
 # `rsa` is locked through SQLx's optional MySQL support. Tideway enables only
 # PostgreSQL and SQLite, so the vulnerable RSA code is not in the built graph.
+# `rsa` is also a dev-dependency, used only to generate RS256 key pairs in tests
+# (src/auth/jwt.rs, src/auth/jwt_auth.rs, tests/it/oauth_test.rs). The advisory
+# is a timing side channel in RSA decryption, which no test or library code runs.
 ignore = [
     "RUSTSEC-2023-0071",
     # `tokio-tar` is used only by the opt-in test-containers feature. The
