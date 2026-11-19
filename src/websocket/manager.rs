@@ -7,6 +7,7 @@ use super::connection::Connection;
 use super::message::Message;
 use crate::error::{Result, TidewayError};
 use dashmap::DashMap;
+use dashmap::mapref::entry::Entry;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -116,7 +117,8 @@ impl ConnectionManager {
     ///
     /// # Returns
     /// * `Ok(())` - Connection registered successfully
-    /// * `Err(TidewayError)` - Connection limit reached or other error
+    /// * `Err(TidewayError)` - Connection limit reached, connection ID already registered,
+    ///   or other error
     ///
     /// # Thread Safety
     ///
@@ -175,10 +177,23 @@ impl ConnectionManager {
             self.active_count.fetch_add(1, Ordering::Relaxed);
         }
 
-        // Now insert the connection (we've already reserved the slot)
-        self.closers.insert(conn_id.clone(), close);
-        self.senders.insert(conn_id.clone(), sender);
-        self.connections.insert(conn_id.clone(), conn);
+        // Now insert the connection (we've already reserved the slot). The vacant entry holds
+        // its shard lock, so a concurrent register with the same ID cannot slip in between.
+        match self.connections.entry(conn_id.clone()) {
+            Entry::Occupied(_) => {
+                // Release the reserved slot; the existing connection keeps its close signal.
+                self.active_count.fetch_sub(1, Ordering::Relaxed);
+                return Err(TidewayError::conflict(format!(
+                    "Connection ID '{}' is already registered",
+                    conn_id
+                )));
+            }
+            Entry::Vacant(entry) => {
+                self.closers.insert(conn_id.clone(), close);
+                self.senders.insert(conn_id.clone(), sender);
+                entry.insert(conn);
+            }
+        }
 
         // Update user mapping if user is authenticated
         self.sync_user(&conn_id, user_id.as_deref());
@@ -665,5 +680,40 @@ mod tests {
         drop(room_guard);
         worker.join().unwrap();
         result.expect("disconnect must not access unrelated rooms");
+    }
+
+    #[tokio::test]
+    async fn register_rejects_duplicate_connection_id() {
+        let manager = ConnectionManager::with_max_connections(2);
+        let (first, _first_rx) = Connection::channel("dup", 1);
+        let (second, _second_rx) = Connection::channel("dup", 1);
+        let first_close = Arc::new(Notify::new());
+
+        manager
+            .register_with_close(
+                Arc::new(tokio::sync::RwLock::new(first)),
+                first_close.clone(),
+            )
+            .await
+            .unwrap();
+        let result = manager
+            .register_with_close(
+                Arc::new(tokio::sync::RwLock::new(second)),
+                Arc::new(Notify::new()),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(manager.connection_count(), 1);
+        let stored_close = manager.closers.get("dup").unwrap().clone();
+        assert!(Arc::ptr_eq(&stored_close, &first_close));
+
+        // The rejected attempt released its slot, so the limit still admits one more.
+        let (other, _other_rx) = Connection::channel("other", 1);
+        manager
+            .register(Arc::new(tokio::sync::RwLock::new(other)))
+            .await
+            .unwrap();
+        assert_eq!(manager.connection_count(), 2);
     }
 }
