@@ -1,5 +1,9 @@
 use crate::error::{Result, TidewayError};
-use axum::{Json, extract::Request};
+use axum::{
+    Json,
+    extract::{Request, rejection::JsonRejection},
+    http::StatusCode,
+};
 use serde::Deserialize;
 use std::future::Future;
 use validator::Validate;
@@ -40,7 +44,7 @@ where
     async fn from_request(req: Request, state: &S) -> std::result::Result<Self, Self::Rejection> {
         let json: Json<T> = Json::from_request(req, state)
             .await
-            .map_err(|e| TidewayError::bad_request(format!("Invalid JSON: {}", e)))?;
+            .map_err(json_rejection_error)?;
 
         json.0.validate().map_err(|errors| {
             let error_messages: Vec<String> = errors
@@ -62,6 +66,23 @@ where
         })?;
 
         Ok(ValidatedJson(json.0))
+    }
+}
+
+/// Convert a JSON extractor rejection, keeping 413 and 415 and leaving serde detail out of
+/// the client-facing message.
+fn json_rejection_error(rejection: JsonRejection) -> TidewayError {
+    match rejection.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            TidewayError::payload_too_large("Request body exceeds the size limit")
+        }
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => {
+            TidewayError::unsupported_media_type("Expected `Content-Type: application/json`")
+        }
+        _ => {
+            tracing::debug!(error = %rejection.body_text(), "Rejected invalid JSON body");
+            TidewayError::bad_request("Invalid JSON: invalid or unexpected JSON")
+        }
     }
 }
 
@@ -297,5 +318,50 @@ mod tests {
 
         let result = invalid_request.validate();
         assert!(result.is_err());
+    }
+
+    async fn post_json(
+        body: &str,
+        content_type: Option<&str>,
+    ) -> axum::http::Response<axum::body::Body> {
+        use axum::{Router, extract::DefaultBodyLimit, routing::post};
+        use tower::ServiceExt;
+
+        async fn handler(super::ValidatedJson(_req): super::ValidatedJson<TestRequest>) {}
+
+        let app = Router::new()
+            .route("/", post(handler))
+            .layer(DefaultBodyLimit::max(64));
+        let mut request = axum::http::Request::post("/");
+        if let Some(content_type) = content_type {
+            request = request.header("content-type", content_type);
+        }
+        app.oneshot(
+            request
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn json_rejections_keep_their_status_and_hide_serde_detail() {
+        use axum::http::StatusCode;
+
+        let oversized = format!(r#"{{"email":"{}@example.com","age":20}}"#, "a".repeat(100));
+        let response = post_json(&oversized, Some("application/json")).await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let response = post_json(r#"{"email":"a@example.com","age":20}"#, None).await;
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+        let response = post_json(r#"{"email":"a@example.com"}"#, Some("application/json")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&body);
+        assert!(!body.contains("age"), "{body}");
     }
 }
