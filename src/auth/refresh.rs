@@ -324,6 +324,12 @@ where
                 .map_err(|e| TidewayError::Unauthorized(format!("Invalid refresh token: {}", e)))?
                 .claims;
 
+        // An access token whose custom claims carry `family` and `generation` would otherwise
+        // decode here and revoke that family.
+        if claims.token_type != TokenType::Refresh {
+            return Err(TidewayError::Unauthorized("Invalid token type".into()));
+        }
+
         self.store.revoke_family(&claims.family).await?;
 
         tracing::info!(
@@ -526,6 +532,34 @@ mod tests {
         let result = flow.refresh(&refreshed.refresh_token).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("revoked"));
+    }
+
+    #[tokio::test]
+    async fn test_revoke_rejects_access_token() {
+        let secret = b"test-secret-key-32-bytes-long!!";
+        let issuer = JwtIssuer::new(JwtIssuerConfig::with_secret(
+            String::from_utf8_lossy(secret).to_string(),
+            "test-app",
+        ))
+        .unwrap();
+        let flow = TokenRefreshFlow::new(
+            issuer.clone(),
+            InMemoryRefreshTokenStore::new(),
+            TestUserLoader,
+            secret,
+        );
+        let initial = issuer.issue(TokenSubject::new("user-123"), false).unwrap();
+        let refreshed = flow.refresh(&initial.refresh_token).await.unwrap();
+
+        // Custom claims that happen to match the refresh-token family fields.
+        let subject = TokenSubject::new("user-123").with_custom(serde_json::json!({
+            "family": refreshed.family,
+            "generation": 1,
+        }));
+        let (access_token, _) = issuer.issue_access_token(subject).unwrap();
+
+        assert!(flow.revoke(&access_token).await.is_err());
+        assert!(flow.refresh(&refreshed.refresh_token).await.is_ok());
     }
 
     #[test]
