@@ -810,11 +810,11 @@ mod tests {
     }
 
     // ============ Environment variable tests ============
-    // Note: These tests run sequentially with #[serial] would be ideal,
-    // but for now we test the env helper directly to avoid race conditions
+    // Tests that set or remove env vars hold `lock_env()` so they cannot race each other.
 
     #[test]
     fn test_get_env_with_prefix_tideway_first() {
+        let _env = crate::utils::env::lock_env();
         unsafe {
             std::env::set_var("TIDEWAY_TEST_ENV_1", "prefixed");
             std::env::set_var("TEST_ENV_1", "unprefixed");
@@ -831,6 +831,7 @@ mod tests {
 
     #[test]
     fn test_get_env_with_prefix_fallback() {
+        let _env = crate::utils::env::lock_env();
         unsafe {
             std::env::set_var("TEST_ENV_2", "fallback_value");
         }
@@ -851,6 +852,7 @@ mod tests {
 
     #[test]
     fn test_config_builder_from_env_integration() {
+        let _env = crate::utils::env::lock_env();
         // Use unique env var names to avoid conflicts with parallel tests
         unsafe {
             std::env::set_var("TIDEWAY_HOST", "10.0.0.1");
