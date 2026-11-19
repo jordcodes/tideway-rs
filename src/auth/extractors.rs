@@ -428,6 +428,7 @@ where
                     let claims = Arc::new(claims);
                     let user = provider.load_user(&claims).await?;
                     provider.validate_user(&user).await?;
+                    parts.extensions.insert(user.clone());
                     parts.extensions.insert(Arc::clone(&claims));
 
                     if !user.is_admin() {
@@ -450,6 +451,8 @@ where
             // Validate user (optional business logic)
             provider.validate_user(&user).await?;
 
+            // Cache user + claims for downstream extractors in the same request.
+            parts.extensions.insert(user.clone());
             // Cache verified claims after successful user validation
             parts.extensions.insert(Arc::clone(&claims));
 
