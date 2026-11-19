@@ -62,7 +62,10 @@ mod tests;
 
 pub use connection::Connection;
 pub use extractor::ws;
-pub use manager::{ConnectionHandle, ConnectionManager, ConnectionMetrics};
+pub use manager::{
+    ConnectionHandle, ConnectionManager, ConnectionMetrics, DEFAULT_MAX_FRAME_SIZE,
+    DEFAULT_MAX_MESSAGE_SIZE,
+};
 pub use message::{CloseFrame, Message};
 pub use room::Room;
 pub use traits::WebSocketHandler;

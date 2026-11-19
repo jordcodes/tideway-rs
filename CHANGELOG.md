@@ -9,6 +9,23 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+### Changed
+
+- `ws` routes now accept incoming WebSocket messages up to 1 MiB and frames up to 256 KiB,
+  down from tungstenite's 64 MiB and 16 MiB. Larger input closes the connection. Apps that need
+  larger messages can raise the limits with `ConnectionManager::with_message_limits`.
+
+### Fixed
+
+- `UploadPolicy::finalize` reads the upload with the new `FileStorage::get_bounded`, so an
+  object replaced with a larger body after `confirm` is rejected once `max_bytes` is passed
+  instead of being read into memory. Custom `FileStorage` backends should override
+  `get_bounded`; the default reads the whole object before checking its size.
+- `CachedPlanStore` no longer caches lookups of unknown plan IDs, which let arbitrary IDs grow
+  the cache without bound.
+- `CachedInvoiceManager` evicts upcoming-invoice entries as well as invoice lists when it is
+  over its entry limit.
+
 ## [tideway-cli 0.9.1] - 2026-10-24
 
 ### Fixed

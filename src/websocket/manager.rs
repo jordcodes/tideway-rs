@@ -13,6 +13,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Notify, mpsc};
 
+/// Default largest incoming message, in bytes, accepted by [`super::ws`] routes.
+pub const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+
+/// Default largest incoming frame, in bytes, accepted by [`super::ws`] routes.
+pub const DEFAULT_MAX_FRAME_SIZE: usize = 256 * 1024;
+
 /// Handle to a connection for the manager
 ///
 /// This wraps the connection with Arc for sharing across threads.
@@ -54,6 +60,10 @@ pub struct ConnectionManager {
     closers: Arc<DashMap<String, Arc<Notify>>>,
     /// Maximum number of connections allowed (0 = unlimited)
     max_connections: usize,
+    /// Largest incoming message accepted, in bytes
+    max_message_size: usize,
+    /// Largest incoming frame accepted, in bytes
+    max_frame_size: usize,
     /// Current active connection count (atomic for race-free limit checking)
     active_count: Arc<AtomicU64>,
     /// Total connections ever created (for metrics)
@@ -82,10 +92,24 @@ impl ConnectionManager {
             connection_users: Arc::new(DashMap::new()),
             closers: Arc::new(DashMap::new()),
             max_connections,
+            max_message_size: DEFAULT_MAX_MESSAGE_SIZE,
+            max_frame_size: DEFAULT_MAX_FRAME_SIZE,
             active_count: Arc::new(AtomicU64::new(0)),
             total_connections: Arc::new(AtomicU64::new(0)),
             total_broadcasts: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Set the largest incoming message and frame, in bytes, that [`super::ws`] routes accept.
+    ///
+    /// Defaults to [`DEFAULT_MAX_MESSAGE_SIZE`] and [`DEFAULT_MAX_FRAME_SIZE`]. Larger input
+    /// closes the connection. A message can span several frames, so `max_frame_size` should not
+    /// exceed `max_message_size`.
+    #[must_use]
+    pub fn with_message_limits(mut self, max_message_size: usize, max_frame_size: usize) -> Self {
+        self.max_message_size = max_message_size;
+        self.max_frame_size = max_frame_size;
+        self
     }
 
     /// Register a new connection
@@ -500,6 +524,16 @@ impl ConnectionManager {
     /// Get the maximum number of connections allowed (0 = unlimited)
     pub fn max_connections(&self) -> usize {
         self.max_connections
+    }
+
+    /// Get the largest incoming message accepted, in bytes
+    pub fn max_message_size(&self) -> usize {
+        self.max_message_size
+    }
+
+    /// Get the largest incoming frame accepted, in bytes
+    pub fn max_frame_size(&self) -> usize {
+        self.max_frame_size
     }
 
     /// Get the total number of connections ever created
