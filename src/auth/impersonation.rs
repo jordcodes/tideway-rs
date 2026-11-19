@@ -727,6 +727,27 @@ impl<S: ImpersonationStore> ImpersonationManager<S> {
             ));
         }
 
+        // Likewise end the session once the target opts out or becomes an ineligible admin.
+        let target_is_ineligible = !self
+            .store
+            .can_be_impersonated(&session.target_user_id)
+            .await?
+            || (!self.config.allow_admin_impersonation
+                && self.store.is_admin(&session.target_user_id).await?);
+        if target_is_ineligible {
+            tracing::warn!(
+                target: "auth.impersonation.target_ineligible",
+                session_id = %session_id,
+                admin_id = %session.admin_id,
+                target_user_id = %session.target_user_id,
+                "Impersonation session ended: target can no longer be impersonated"
+            );
+            self.end_impersonation(session_id).await?;
+            return Err(TidewayError::Unauthorized(
+                "Impersonation session ended".into(),
+            ));
+        }
+
         // Check if action is blocked
         if let Some(action) = action
             && session.is_action_blocked(action)
@@ -1467,6 +1488,27 @@ mod tests {
         let result = manager.validate_session(&session.session_id, None).await;
         assert!(matches!(result, Err(TidewayError::Unauthorized(_))));
         // The session is ended, not just rejected once.
+        assert!(
+            manager
+                .get_active_session("user-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_session_ends_session_when_target_opts_out() {
+        let manager = ImpersonationManager::new(setup_store(), ImpersonationConfig::default());
+        let session = manager
+            .start_impersonation(start_request("admin-1", "user-1"))
+            .await
+            .unwrap();
+
+        manager.store().opt_out_user("user-1");
+
+        let result = manager.validate_session(&session.session_id, None).await;
+        assert!(matches!(result, Err(TidewayError::Unauthorized(_))));
         assert!(
             manager
                 .get_active_session("user-1")
