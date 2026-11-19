@@ -72,14 +72,49 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
         }
 
         // Update local state (webhook will also update, but this is immediate feedback)
-        let mut updated = sub.clone();
-        if immediate {
-            updated.status = SubscriptionStatus::Canceled;
-        } else {
-            updated.cancel_at_period_end = true;
-        }
-        self.store.save_subscription(billable_id, &updated).await?;
+        self.update_local(billable_id, |sub| {
+            if immediate {
+                sub.status = SubscriptionStatus::Canceled;
+            } else {
+                sub.cancel_at_period_end = true;
+            }
+        })
+        .await?;
 
+        Ok(())
+    }
+
+    /// Apply `change` to the stored subscription after a Stripe call has succeeded.
+    ///
+    /// The subscription is re-read and saved with a version check, so a webhook or seat
+    /// change saved during the Stripe call is kept rather than overwritten by a stale copy.
+    /// If the version keeps changing, the update is left to the next webhook.
+    async fn update_local(
+        &self,
+        billable_id: &str,
+        change: impl Fn(&mut StoredSubscription),
+    ) -> Result<()> {
+        const MAX_ATTEMPTS: usize = 5;
+
+        for _ in 0..MAX_ATTEMPTS {
+            let Some(current) = self.store.get_subscription(billable_id).await? else {
+                return Ok(());
+            };
+            let mut updated = current.clone();
+            change(&mut updated);
+            if self
+                .store
+                .compare_and_save_subscription(billable_id, &updated, current.updated_at)
+                .await?
+            {
+                return Ok(());
+            }
+        }
+
+        tracing::warn!(
+            billable_id = %billable_id,
+            "Subscription kept changing during a local update; leaving it to the next webhook"
+        );
         Ok(())
     }
 
@@ -104,9 +139,8 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             .await?;
 
         // Update local state
-        let mut updated = sub;
-        updated.cancel_at_period_end = false;
-        self.store.save_subscription(billable_id, &updated).await?;
+        self.update_local(billable_id, |sub| sub.cancel_at_period_end = false)
+            .await?;
 
         Ok(())
     }
@@ -224,9 +258,8 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SubscriptionManager<S, C> {
             .await?;
 
         // Update local state
-        let mut updated = sub;
-        updated.status = SubscriptionStatus::Paused;
-        self.store.save_subscription(billable_id, &updated).await?;
+        self.update_local(billable_id, |sub| sub.status = SubscriptionStatus::Paused)
+            .await?;
 
         Ok(())
     }
@@ -1455,6 +1488,70 @@ mod tests {
         let sub = manager.get_subscription("org_123").await.unwrap().unwrap();
         assert!(sub.cancel_at_period_end);
         assert!(sub.is_active()); // Still active until period end
+    }
+
+    /// A Stripe client whose cancel call saves a concurrent seat change to the local store,
+    /// as a webhook or `SeatManager` could while the request is in flight.
+    struct ConcurrentSeatChangeClient {
+        store: InMemoryBillingStore,
+    }
+
+    impl StripeSubscriptionClient for ConcurrentSeatChangeClient {
+        async fn cancel_subscription(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        async fn cancel_subscription_at_period_end(&self, _: &str) -> Result<()> {
+            let mut sub = self.store.get_subscription("org_123").await?.unwrap();
+            let version = sub.updated_at;
+            sub.extra_seats = 9;
+            assert!(
+                self.store
+                    .compare_and_save_subscription("org_123", &sub, version)
+                    .await?
+            );
+            Ok(())
+        }
+        async fn resume_subscription(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        async fn get_subscription(&self, _: &str) -> Result<StripeSubscriptionData> {
+            unimplemented!()
+        }
+        async fn update_subscription(
+            &self,
+            _: &str,
+            _: UpdateSubscriptionRequest,
+        ) -> Result<StripeSubscriptionData> {
+            unimplemented!()
+        }
+        async fn extend_trial(&self, _: &str, _: u64) -> Result<StripeSubscriptionData> {
+            unimplemented!()
+        }
+        async fn pause_subscription(&self, _: &str) -> Result<()> {
+            unimplemented!()
+        }
+        async fn resume_paused_subscription(&self, _: &str) -> Result<StripeSubscriptionData> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cancel_keeps_changes_saved_during_the_stripe_call() {
+        let store = InMemoryBillingStore::new();
+        let client = ConcurrentSeatChangeClient {
+            store: store.clone(),
+        };
+        let manager = SubscriptionManager::new(store, client, create_test_plans());
+        manager
+            .sync_from_stripe(create_test_subscription_data("org_123"))
+            .await
+            .unwrap();
+
+        manager.cancel_subscription("org_123", false).await.unwrap();
+
+        let sub = manager.get_subscription("org_123").await.unwrap().unwrap();
+        assert!(sub.cancel_at_period_end);
+        assert_eq!(sub.extra_seats, 9);
     }
 
     #[tokio::test]
