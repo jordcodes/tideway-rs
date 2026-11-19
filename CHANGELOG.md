@@ -9,6 +9,12 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+### Changed
+
+- `ws` routes now accept incoming WebSocket messages up to 1 MiB and frames up to 256 KiB,
+  down from tungstenite's 64 MiB and 16 MiB. Larger input closes the connection. Apps that need
+  larger messages can raise the limits with `ConnectionManager::with_message_limits`.
+
 ### Fixed
 
 - `UploadPolicy::finalize` reads the upload with the new `FileStorage::get_bounded`, so an

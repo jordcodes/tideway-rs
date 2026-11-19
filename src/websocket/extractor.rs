@@ -76,9 +76,12 @@ where
                     if let Err(e) = handler.on_upgrade(&mut request, &ctx).await {
                         return e.into_response();
                     }
-                    upgrade.on_upgrade(move |socket| {
-                        handle_socket(socket, request, handler, manager, ctx)
-                    })
+                    upgrade
+                        .max_message_size(manager.max_message_size())
+                        .max_frame_size(manager.max_frame_size())
+                        .on_upgrade(move |socket| {
+                            handle_socket(socket, request, handler, manager, ctx)
+                        })
                 }
             },
         ),

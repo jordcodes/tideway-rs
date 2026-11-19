@@ -184,6 +184,18 @@ buffer full (a client that has stopped reading) removes that connection and clos
 running `on_disconnect`, so slow readers cannot hold connections beyond `max_connections`.
 Calling `manager.unregister(id)` closes the socket the same way.
 
+### Message Size Limits
+
+`ws` routes accept incoming messages up to 1 MiB and frames up to 256 KiB by default
+(`DEFAULT_MAX_MESSAGE_SIZE` and `DEFAULT_MAX_FRAME_SIZE`). Larger input closes the connection.
+Raise or lower the limits on the manager passed to `ws`:
+
+```rust
+let manager = Arc::new(
+    ConnectionManager::with_max_connections(10_000).with_message_limits(4 * 1024 * 1024, 1024 * 1024),
+);
+```
+
 ## Rooms and Channels
 
 Rooms allow you to group connections and broadcast to specific groups.

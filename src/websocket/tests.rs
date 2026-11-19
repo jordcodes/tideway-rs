@@ -598,6 +598,59 @@ mod websocket_tests {
         assert_eq!(manager.connection_count(), 1);
     }
 
+    #[test]
+    fn test_connection_manager_default_message_limits() {
+        let manager = ConnectionManager::new();
+        assert_eq!(
+            manager.max_message_size(),
+            crate::websocket::DEFAULT_MAX_MESSAGE_SIZE
+        );
+        assert_eq!(
+            manager.max_frame_size(),
+            crate::websocket::DEFAULT_MAX_FRAME_SIZE
+        );
+
+        let manager = ConnectionManager::new().with_message_limits(4096, 1024);
+        assert_eq!(manager.max_message_size(), 4096);
+        assert_eq!(manager.max_frame_size(), 1024);
+    }
+
+    #[tokio::test]
+    async fn test_ws_closes_connection_on_oversized_message() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let manager = Arc::new(ConnectionManager::new().with_message_limits(16, 16));
+        let ctx = crate::AppContext::builder()
+            .with_websocket_manager(manager.clone())
+            .build();
+        let app = crate::websocket::ws("/ws", CookieAuthHandler, manager.clone()).with_state(ctx);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let (head, mut stream) = ws_handshake(addr, "Cookie: session=good\r\n").await;
+        assert!(head.starts_with("HTTP/1.1 101"), "{head}");
+        let mut frame_head = [0u8; 2];
+        stream.read_exact(&mut frame_head).await.unwrap();
+        let mut greeting = vec![0u8; (frame_head[1] & 0x7f) as usize];
+        stream.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(manager.connection_count(), 1);
+
+        // A masked 64-byte text frame, over the 16-byte limit. An all-zero mask leaves the
+        // payload unchanged.
+        let mut frame = vec![0x81, 0x80 | 64, 0, 0, 0, 0];
+        frame.extend_from_slice(&[b'x'; 64]);
+        stream.write_all(&frame).await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while manager.connection_count() > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("oversized message must close the connection");
+    }
+
     #[derive(Default)]
     struct DisconnectCounter(std::sync::atomic::AtomicUsize);
 
