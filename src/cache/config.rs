@@ -16,7 +16,7 @@ pub enum CacheBackend {
 }
 
 /// Cache configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct CacheConfig {
     /// Cache backend type
     #[serde(default)]
@@ -33,6 +33,18 @@ pub struct CacheConfig {
     /// Maximum number of entries for in-memory cache
     #[serde(default = "default_max_entries")]
     pub max_entries: usize,
+}
+
+/// Redacts `redis_url`, which can carry a password.
+impl std::fmt::Debug for CacheConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CacheConfig")
+            .field("backend", &self.backend)
+            .field("redis_url", &self.redis_url.as_ref().map(|_| "[REDACTED]"))
+            .field("default_ttl_seconds", &self.default_ttl_seconds)
+            .field("max_entries", &self.max_entries)
+            .finish()
+    }
 }
 
 impl Default for CacheConfig {
@@ -97,4 +109,21 @@ fn default_ttl_seconds() -> u64 {
 
 fn default_max_entries() -> usize {
     10000
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug_redacts_redis_url() {
+        let config = CacheConfig {
+            redis_url: Some("redis://:s3cret@cache.internal:6379".to_string()),
+            ..Default::default()
+        };
+
+        let debug_output = format!("{config:?}");
+        assert!(!debug_output.contains("s3cret"));
+        assert!(debug_output.contains("[REDACTED]"));
+    }
 }
