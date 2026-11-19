@@ -1425,8 +1425,8 @@ fn check_openapi_doc_coverage(src_dir: &Path, report: &mut DoctorReport) {
     if !missing.is_empty() {
         report.push_warning(format!(
             "OpenAPI docs missing routes for: {} (run {} to add; this is part of the primary flow)",
-            TIDEWAY_RESOURCE_WIRE_COMMAND,
-            missing.join(", ")
+            missing.join(", "),
+            TIDEWAY_RESOURCE_WIRE_COMMAND
         ));
     }
 }

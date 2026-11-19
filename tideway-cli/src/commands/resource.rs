@@ -1154,7 +1154,7 @@ fn render_repository_list_body(
             String::new()
         };
         format!(
-            "        let mut query = {resource_name}::Entity::find();\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
+            "        let mut query = {resource_name}::Entity::find().order_by_asc({resource_name}::Column::Id);\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{search_query}        Ok(query.all(&self.db).await?)",
         )
     } else {
         format!("        Ok({resource_name}::Entity::find().all(&self.db).await?)")
@@ -2117,9 +2117,11 @@ mod tests {{
     } else if with_db && !with_repo {
         match (paginate, search) {
             (true, true) => {
-                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};\n"
+                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set};\n"
             }
-            (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};\n",
+            (true, false) => {
+                "use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, QuerySelect, Set};\n"
+            }
             (false, true) => {
                 "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};\n"
             }
@@ -2200,7 +2202,7 @@ pub struct PaginationParams {{
             String::new()
         };
         format!(
-            "    query = query.limit(params.limit.unwrap_or(20).clamp(1, 100));\n    if let Some(offset) = params.offset {{ query = query.offset(offset); }}\n{search_query}",
+            "    query = query.order_by_asc({resource_name}::Column::Id);\n    query = query.limit(params.limit.unwrap_or(20).clamp(1, 100));\n    if let Some(offset) = params.offset {{ query = query.offset(offset); }}\n{search_query}",
             search_query = search_query
         )
     } else {
@@ -3544,16 +3546,18 @@ fn render_repository(
     let update_assignments = render_param_update_assignments(schema, "active", "        ");
     let sea_orm_imports = if context.saas_scoped() {
         if paginate {
-            "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};"
+            "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set};"
         } else {
             "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
         }
     } else {
         match (paginate, search) {
             (true, true) => {
-                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QuerySelect, Set};"
+                "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, QueryOrder, QuerySelect, Set};"
             }
-            (true, false) => "use sea_orm::{ActiveModelTrait, EntityTrait, QuerySelect, Set};",
+            (true, false) => {
+                "use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, QuerySelect, Set};"
+            }
             (false, true) => {
                 "use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};"
             }
@@ -3598,7 +3602,7 @@ fn render_repository(
         };
         let scoped_list_body = if paginate {
             format!(
-                "        let mut query = {resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string())){owner_filter};\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{scoped_search_query}        Ok(query.all(&self.db).await?)",
+                "        let mut query = {resource_name}::Entity::find()\n            .filter({resource_name}::Column::OrganizationId.eq(organization_id.to_string())){owner_filter}\n            .order_by_asc({resource_name}::Column::Id);\n        query = query.limit(limit.unwrap_or(20).clamp(1, 100));\n        if let Some(offset) = offset {{ query = query.offset(offset); }}\n{scoped_search_query}        Ok(query.all(&self.db).await?)",
             )
         } else {
             format!(
@@ -4788,11 +4792,15 @@ fn wire_register_fallback(contents: &mut String, register_line: &str) {
     }
 
     if let Some(pos) = contents.find(".register_module(") {
-        let line_end = contents[pos..]
-            .find('\n')
-            .map(|idx| pos + idx)
-            .unwrap_or(contents.len());
-        contents.insert_str(line_end + 1, &format!("        {}\n", register_line));
+        let insertion = format!("        {}\n", register_line);
+        match contents[pos..].find('\n') {
+            Some(idx) => contents.insert_str(pos + idx + 1, &insertion),
+            None => {
+                // The register call is on the last line with no trailing newline.
+                contents.push('\n');
+                contents.push_str(&insertion);
+            }
+        }
     } else {
         print_warning("Could not find register_module call in main.rs");
     }
@@ -4927,4 +4935,33 @@ fn fallback_project_name(project_dir: &Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("my_app")
         .replace('-', "_")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wire_register_fallback_appends_when_last_line_has_no_newline() {
+        let mut contents = "    .register_module(routes::ApiModule)".to_string();
+
+        wire_register_fallback(&mut contents, ".register_module(routes::todo::TodoModule)");
+
+        assert_eq!(
+            contents,
+            "    .register_module(routes::ApiModule)\n        .register_module(routes::todo::TodoModule)\n"
+        );
+    }
+
+    #[test]
+    fn wire_register_fallback_inserts_after_register_line() {
+        let mut contents = "    .register_module(routes::ApiModule)\n    .run()".to_string();
+
+        wire_register_fallback(&mut contents, ".register_module(routes::todo::TodoModule)");
+
+        assert_eq!(
+            contents,
+            "    .register_module(routes::ApiModule)\n        .register_module(routes::todo::TodoModule)\n    .run()"
+        );
+    }
 }

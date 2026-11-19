@@ -802,18 +802,24 @@ fn update_app_vue() -> Result<()> {
         return Ok(());
     }
 
-    let mut updated = content;
+    let updated = add_toaster_to_app_vue(&content);
 
-    // Add Toaster import (shadcn-vue exports Sonner component as Toaster)
-    if updated.contains("<script setup") {
-        updated = updated.replace(
-            "<script setup lang=\"ts\">",
-            "<script setup lang=\"ts\">\nimport 'vue-sonner/style.css'\nimport { Toaster } from '@/components/ui/sonner'"
-        );
-    } else if updated.contains("<script setup>") {
-        updated = updated.replace(
-            "<script setup>",
-            "<script setup>\nimport 'vue-sonner/style.css'\nimport { Toaster } from '@/components/ui/sonner'"
+    write_file(app_path, &updated)?;
+    print_success("Updated App.vue with Sonner");
+
+    Ok(())
+}
+
+/// Add the Sonner `Toaster` import and component to an App.vue source.
+fn add_toaster_to_app_vue(content: &str) -> String {
+    let mut updated = content.to_string();
+
+    // Add Toaster import (shadcn-vue exports Sonner component as Toaster) right after
+    // the `<script ... setup ...>` opening tag, whatever its attribute order.
+    if let Some(tag_end) = find_script_setup_tag_end(&updated) {
+        updated.insert_str(
+            tag_end,
+            "\nimport 'vue-sonner/style.css'\nimport { Toaster } from '@/components/ui/sonner'",
         );
     }
 
@@ -822,10 +828,27 @@ fn update_app_vue() -> Result<()> {
         updated = updated.replace("</template>", "  <Toaster />\n</template>");
     }
 
-    write_file(app_path, &updated)?;
-    print_success("Updated App.vue with Sonner");
+    updated
+}
 
-    Ok(())
+/// Byte offset just past the `>` of the first `<script>` tag with a `setup` attribute.
+fn find_script_setup_tag_end(content: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(offset) = content[search_from..].find("<script") {
+        let tag_start = search_from + offset;
+        let tag_end = tag_start + content[tag_start..].find('>')? + 1;
+        let tag = &content[tag_start..tag_end];
+        if tag
+            .trim_start_matches("<script")
+            .trim_end_matches('>')
+            .split_whitespace()
+            .any(|attr| attr == "setup")
+        {
+            return Some(tag_end);
+        }
+        search_from = tag_end;
+    }
+    None
 }
 
 fn generate_shared(engine: &TemplateEngine, output_path: &Path, args: &GenerateArgs) -> Result<()> {
@@ -882,4 +905,49 @@ fn detect_installed_shadcn_components() -> Vec<String> {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TOASTER_IMPORT: &str =
+        "\nimport 'vue-sonner/style.css'\nimport { Toaster } from '@/components/ui/sonner'";
+
+    #[test]
+    fn add_toaster_to_app_vue_imports_toaster_for_every_script_setup_form() {
+        for tag in [
+            "<script setup lang=\"ts\">",
+            "<script setup>",
+            "<script lang=\"ts\" setup>",
+        ] {
+            let content = format!(
+                "{tag}\nconst ready = true\n</script>\n\n<template>\n  <RouterView />\n</template>\n"
+            );
+
+            let updated = add_toaster_to_app_vue(&content);
+
+            assert!(
+                updated.starts_with(&format!("{tag}{TOASTER_IMPORT}\n")),
+                "{tag}: expected Toaster import after the opening tag, got:\n{updated}"
+            );
+            assert!(updated.contains("  <Toaster />\n</template>"), "{updated}");
+        }
+    }
+
+    #[test]
+    fn add_toaster_to_app_vue_skips_non_setup_script_tags() {
+        let content = "<script>\nexport default {}\n</script>\n<script setup>\n</script>\n<template>\n</template>\n";
+
+        let updated = add_toaster_to_app_vue(content);
+
+        assert!(
+            updated.contains(&format!("<script setup>{TOASTER_IMPORT}\n")),
+            "{updated}"
+        );
+        assert!(
+            updated.starts_with("<script>\nexport default {}"),
+            "{updated}"
+        );
+    }
 }

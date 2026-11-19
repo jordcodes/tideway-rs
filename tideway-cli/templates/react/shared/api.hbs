@@ -77,7 +77,21 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
-async function tryRefreshToken(): Promise<boolean> {
+// Shared in-flight refresh so concurrent 401s reuse one refresh call. The server
+// rotates refresh tokens and treats reuse of a rotated token as theft, revoking
+// the whole session, so parallel refreshes with the same token would log the user out.
+let refreshInFlight: Promise<boolean> | null = null
+
+function tryRefreshToken(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = refreshAccessToken().finally(() => {
+      refreshInFlight = null
+    })
+  }
+  return refreshInFlight
+}
+
+async function refreshAccessToken(): Promise<boolean> {
   const refreshToken = tokenStore.getRefreshToken()
   if (!refreshToken) {
     return false
