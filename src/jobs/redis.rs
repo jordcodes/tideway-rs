@@ -467,8 +467,10 @@ impl JobQueue for RedisJobQueue {
 
                 if job_data.should_retry() {
                     // Schedule retry with exponential backoff
-                    let backoff_seconds =
-                        self.retry_backoff_seconds * (2_u64.pow(job_data.retry_count));
+                    let backoff_seconds = super::in_memory::retry_backoff_seconds(
+                        self.retry_backoff_seconds,
+                        job_data.retry_count,
+                    );
                     let retry_at = Utc::now() + Duration::seconds(backoff_seconds as i64);
 
                     job_data.increment_retry();

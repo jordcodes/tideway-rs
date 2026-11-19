@@ -71,11 +71,15 @@ use crate::error::Result;
 ///
 /// Only reveals the prefix to avoid leaking full IDs which could aid enumeration.
 fn sanitize_invoice_id(invoice_id: &str) -> String {
-    if invoice_id.len() > 10 {
-        format!("{}...", &invoice_id[..10])
-    } else {
-        invoice_id.to_string()
+    if invoice_id.len() <= 10 {
+        return invoice_id.to_string();
     }
+
+    let mut end = 10;
+    while !invoice_id.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &invoice_id[..end])
 }
 
 // =============================================================================
@@ -1218,6 +1222,13 @@ mod tests {
     use super::test::MockStripeInvoiceClient;
     use super::*;
     use crate::billing::storage::test::InMemoryBillingStore;
+
+    #[test]
+    fn test_sanitize_invoice_id_respects_char_boundaries() {
+        // Byte 10 falls inside the two-byte 'é'.
+        assert_eq!(sanitize_invoice_id("in_abcdef\u{e9}xyz"), "in_abcdef...");
+        assert_eq!(sanitize_invoice_id("in_123"), "in_123");
+    }
 
     #[test]
     fn test_invoice_config_builder() {

@@ -155,8 +155,8 @@ impl<S: BillingStore + Clone, E: BillingEventSink, C: StripeSubscriptionClient>
             .map(|d| d.as_secs())
             .unwrap_or(0) as i64;
 
-        let timestamp_diff = (now - sig_parts.timestamp).abs();
-        if timestamp_diff > 300 {
+        // `abs_diff` cannot overflow on attacker-chosen timestamps such as `i64::MIN`.
+        if now.abs_diff(sig_parts.timestamp) > 300 {
             return Err(crate::error::TidewayError::BadRequest(
                 "Webhook timestamp too old".to_string(),
             ));
@@ -995,6 +995,21 @@ mod tests {
 
         let result = handler.verify_signature(payload.as_bytes(), &signature);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_signature_extreme_timestamp_is_rejected_without_panic() {
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            create_test_webhook_secret(),
+            create_test_plans(),
+        );
+        let payload = br#"{"id":"evt_123","type":"test","data":{"object":{}},"created":1}"#;
+
+        for timestamp in [i64::MIN, i64::MAX, -1] {
+            let signature = format!("t={timestamp},v1=00");
+            assert!(handler.verify_signature(payload, &signature).is_err());
+        }
     }
 
     fn now_timestamp() -> i64 {

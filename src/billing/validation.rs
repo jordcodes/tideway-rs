@@ -276,10 +276,14 @@ fn validate_stripe_price_id(price_id: &str, plan_id: &str) -> Result<()> {
 /// Truncate a string for error messages to prevent log flooding.
 fn truncate_for_error(s: &str) -> String {
     if s.len() <= 50 {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..47])
+        return s.to_string();
     }
+
+    let mut end = 47;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
 }
 
 /// Sanitize a string for error messages to prevent log injection.
@@ -506,6 +510,15 @@ pub mod test {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_truncate_for_error_respects_char_boundaries() {
+        // Byte 47 falls inside the two-byte 'é'.
+        let id = format!("{}\u{e9}{}", "a".repeat(46), "b".repeat(20));
+        assert_eq!(truncate_for_error(&id), format!("{}...", "a".repeat(46)));
+        assert!(validate_billable_id(&"\u{e9}".repeat(200)).is_err());
+        assert!(validate_plan_id(&"\u{e9}".repeat(200)).is_err());
+    }
 
     #[test]
     fn test_validate_billable_id_valid() {
