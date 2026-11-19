@@ -32,9 +32,40 @@ pub fn is_production_like_environment() -> bool {
     .any(|env_value| matches!(env_value.to_lowercase().as_str(), "prod" | "production"))
 }
 
+/// Parse a boolean environment value, keeping `current` when the value is not recognized.
+///
+/// Accepts `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off` (case-insensitive). An
+/// unrecognized value logs a warning instead of silently switching the setting on.
+pub fn parse_env_bool(key: &str, value: &str, current: bool) -> bool {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => true,
+        "false" | "0" | "no" | "off" => false,
+        _ => {
+            tracing::warn!(
+                key,
+                value,
+                "Ignoring unrecognized boolean environment value"
+            );
+            current
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_env_bool() {
+        for value in ["true", "TRUE", " 1 ", "yes", "On"] {
+            assert!(parse_env_bool("KEY", value, false));
+        }
+        for value in ["false", "False", "0", "no", "OFF "] {
+            assert!(!parse_env_bool("KEY", value, true));
+        }
+        assert!(!parse_env_bool("KEY", "garbage", false));
+        assert!(parse_env_bool("KEY", "garbage", true));
+    }
 
     #[test]
     fn test_get_env_with_prefix() {
