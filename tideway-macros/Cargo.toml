@@ -17,11 +17,5 @@ proc-macro2 = "1.0"
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
 quote = "1.0"
 
-# Attribute argument parsing
-darling = "0.20"
-
-# Dynamic crate name resolution
-proc-macro-crate = "3.2"
-
 [dev-dependencies]
 trybuild = "1.0"

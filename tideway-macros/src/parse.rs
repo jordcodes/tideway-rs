@@ -1,8 +1,7 @@
 //! Argument parsing for the `#[api]` macro.
 
-use darling::FromMeta;
 use proc_macro2::Span;
-use syn::{Ident, LitInt, LitStr, Meta, Token, Type, parse::Parse, parse::ParseStream};
+use syn::{Ident, LitInt, LitStr, Token, Type, parse::Parse, parse::ParseStream};
 
 /// HTTP methods supported by the API macro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,58 +60,6 @@ pub struct ResponseDef {
     pub status: u16,
     pub description: String,
     pub body: Option<Type>,
-}
-
-impl FromMeta for ResponseDef {
-    fn from_meta(meta: &Meta) -> darling::Result<Self> {
-        match meta {
-            Meta::List(list) => {
-                let mut status: Option<u16> = None;
-                let mut description: Option<String> = None;
-                let mut body: Option<Type> = None;
-
-                list.parse_nested_meta(|nested| {
-                    let ident = nested
-                        .path
-                        .get_ident()
-                        .ok_or_else(|| nested.error("expected identifier"))?;
-
-                    match ident.to_string().as_str() {
-                        "status" => {
-                            nested.input.parse::<Token![=]>()?;
-                            let lit: LitInt = nested.input.parse()?;
-                            status = Some(lit.base10_parse()?);
-                        }
-                        "description" => {
-                            nested.input.parse::<Token![=]>()?;
-                            let lit: LitStr = nested.input.parse()?;
-                            description = Some(lit.value());
-                        }
-                        "body" => {
-                            nested.input.parse::<Token![=]>()?;
-                            let ty: Type = nested.input.parse()?;
-                            body = Some(ty);
-                        }
-                        other => {
-                            return Err(nested.error(format!("unknown response field '{}'", other)));
-                        }
-                    }
-                    Ok(())
-                })?;
-
-                let status = status.ok_or_else(|| darling::Error::missing_field("status"))?;
-                let description =
-                    description.ok_or_else(|| darling::Error::missing_field("description"))?;
-
-                Ok(ResponseDef {
-                    status,
-                    description,
-                    body,
-                })
-            }
-            _ => Err(darling::Error::unexpected_type("list")),
-        }
-    }
 }
 
 /// Parsed arguments for the `#[api]` macro.
