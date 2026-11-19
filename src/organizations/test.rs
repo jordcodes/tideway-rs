@@ -1194,6 +1194,104 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_update_cannot_change_org_id_or_owner() {
+        let store = InMemoryOrgStore::new();
+        let manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+        let org = manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+
+        let result = manager
+            .update(&org.id, "owner", |mut o| {
+                o.owner_id = "someone-else".to_string();
+                o
+            })
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::InsufficientPermission { .. }
+        ));
+
+        let result = manager
+            .update(&org.id, "owner", |mut o| {
+                o.id = "other-org".to_string();
+                o
+            })
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::InsufficientPermission { .. }
+        ));
+
+        let stored = OrganizationStore::find_by_id(&store, &org.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.owner_id, "owner");
+    }
+
+    #[tokio::test]
+    async fn test_update_membership_cannot_change_user_or_org() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+        let mem_manager = MembershipManager::new(store.clone(), UnlimitedSeats);
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        mem_manager
+            .add_member(&org.id, "member", "owner", |p| {
+                make_membership(p, DefaultOrgRole::Member)
+            })
+            .await
+            .unwrap();
+
+        let result = mem_manager
+            .update_membership(&org.id, "member", "owner", |m| TestMembership {
+                user_id: "intruder".to_string(),
+                role: DefaultOrgRole::Admin,
+                ..m.clone()
+            })
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::InsufficientPermission { .. }
+        ));
+        assert!(
+            store
+                .get_membership(&org.id, "intruder")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn test_add_member_cannot_create_owner() {
         let store = InMemoryOrgStore::new();
         let org_manager = OrganizationManager::new(
