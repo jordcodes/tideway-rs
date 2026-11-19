@@ -711,6 +711,29 @@ async fn locking_an_admin_ends_their_impersonation_sessions() {
 
 {{#if has_organizations}}
 #[tokio::test]
+async fn organizations_report_member_counts_including_empty_orgs() {
+    let app = test_app().await;
+    let staffed = insert_organization(&app.db, &app.admin, "staffed").await;
+    let empty = insert_organization(&app.db, &app.admin, "empty").await;
+    let member = insert_user(&app.db, "member@example.com", false).await;
+    insert_membership(&app.db, &staffed, &app.admin, "owner").await;
+    insert_membership(&app.db, &staffed, &member, "member").await;
+
+    let (status, page) = get(&app, "/admin/organizations").await;
+    assert_eq!(status, StatusCode::OK, "organizations response: {page}");
+    let items = page["items"].as_array().expect("organization items");
+    let count_of = |id: &str| {
+        items
+            .iter()
+            .find(|item| item["id"] == id)
+            .map(|item| item["member_count"].clone())
+            .expect("organization listed")
+    };
+    assert_eq!(count_of(&staffed.id), Value::from(2));
+    assert_eq!(count_of(&empty.id), Value::from(0));
+}
+
+#[tokio::test]
 async fn member_role_updates_only_accept_member_or_admin() {
     let app = test_app().await;
     let owner = insert_user(&app.db, "owner@example.com", false).await;

@@ -11,6 +11,10 @@ use sea_orm::{
 };
 {{#if has_billing_feature}}
 use sea_orm::{FromQueryResult, QuerySelect};
+{{else}}
+{{#if has_organizations}}
+use sea_orm::QuerySelect;
+{{/if}}
 {{/if}}
 use serde::{Deserialize, Serialize};
 {{#if has_billing_feature}}
@@ -637,16 +641,20 @@ async fn list_organizations(
 
     let org_ids: Vec<String> = orgs.iter().map(|o| o.id.clone()).collect();
 
-    let member_counts = organization_member::Entity::find()
+    // One grouped count for the page instead of loading every member row.
+    let count_map: std::collections::HashMap<String, u64> = organization_member::Entity::find()
+        .select_only()
+        .column(organization_member::Column::OrganizationId)
+        .column_as(organization_member::Column::UserId.count(), "member_count")
         .filter(organization_member::Column::OrganizationId.is_in(org_ids.clone()))
+        .group_by(organization_member::Column::OrganizationId)
+        .into_tuple::<(String, i64)>()
         .all(state.db.as_ref())
         .await
-        .map_err(|e| TidewayError::Database(e.to_string()))?;
-
-    let mut count_map: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-    for m in member_counts {
-        *count_map.entry(m.organization_id).or_insert(0) += 1;
-    }
+        .map_err(|e| TidewayError::Database(e.to_string()))?
+        .into_iter()
+        .map(|(organization_id, count)| (organization_id, count.max(0) as u64))
+        .collect();
 
     {{#if has_billing_feature}}
     let mut status_map: HashMap<String, String> = billing_subscription::Entity::find()
@@ -662,7 +670,7 @@ async fn list_organizations(
     let items: Vec<AdminOrgResponse> = orgs
         .into_iter()
         .map(|o| {
-            let member_count = count_map.get(&o.id).copied();
+            let member_count = Some(count_map.get(&o.id).copied().unwrap_or(0));
             AdminOrgResponse {
                 {{#if has_billing_feature}}
                 subscription_status: status_map.remove(&o.id),
