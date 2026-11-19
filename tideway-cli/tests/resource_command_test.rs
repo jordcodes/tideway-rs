@@ -1136,6 +1136,53 @@ async fn main() {
         &repo_path,
         "query = query.limit(limit.unwrap_or(20).clamp(1, 100));",
     );
+    // LIMIT/OFFSET pages are only stable with a deterministic order.
+    assert_file_contains(
+        &repo_path,
+        "let mut query = user::Entity::find().order_by_asc(user::Column::Id);",
+    );
+    assert_file_contains(&repo_path, "QueryOrder");
+}
+
+#[test]
+fn test_resource_command_orders_inline_paginated_db_routes() {
+    let temp_dir = tempfile::tempdir().expect("create temp dir");
+    let project_dir = temp_dir.path().join("my_app");
+    create_resource_project_fixture(
+        &project_dir,
+        r#"tideway = { version = "0.7", features = ["database"] }
+sea-orm = { version = "1.1", features = ["sqlx-postgres", "runtime-tokio-rustls"] }"#,
+    );
+
+    let args = ResourceArgs {
+        name: "user".to_string(),
+        fields: Vec::new(),
+        path: project_dir.to_string_lossy().to_string(),
+        wire: true,
+        with_tests: false,
+        db: true,
+        repo: false,
+        repo_tests: false,
+        service: false,
+        id_type: tideway_cli::cli::ResourceIdType::Int,
+        add_uuid: false,
+        paginate: true,
+        search: false,
+        db_backend: tideway_cli::cli::DbBackend::Auto,
+        profile: tideway_cli::cli::ResourceProfile::Stub,
+    };
+
+    tideway_cli::commands::resource::run(args).expect("run resource command");
+
+    let routes_path = project_dir.join("src/routes/user.rs");
+    assert_file_contains(
+        &routes_path,
+        "query = query.order_by_asc(user::Column::Id);",
+    );
+    assert_file_contains(
+        &routes_path,
+        "use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, QuerySelect, Set};",
+    );
 }
 
 #[test]
@@ -1936,6 +1983,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
         &repo,
         ".filter(project::Column::OrganizationId.eq(organization_id.to_string()))",
     );
+    assert_file_contains(&repo, ".order_by_asc(project::Column::Id);");
     assert_file_not_contains(&repo, "OwnerId");
     let service = project_dir.join("src/services/project.rs");
     assert_file_contains(&service, "model.organization_id == organization_id");
