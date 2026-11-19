@@ -319,6 +319,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
 
         let mut validation = Validation::new(algorithm);
         validation.validate_exp = true;
+        validation.validate_nbf = true;
 
         Ok(Self::with_parts(
             jwks,
@@ -346,6 +347,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
     fn from_secret_unchecked(secret: &[u8]) -> Self {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.validate_exp = true;
+        validation.validate_nbf = true;
 
         Self::with_parts(
             HashMap::new(),
@@ -378,6 +380,7 @@ impl<C: DeserializeOwned + Clone> JwtVerifier<C> {
 
         let mut validation = Validation::new(Algorithm::RS256);
         validation.validate_exp = true;
+        validation.validate_nbf = true;
 
         Ok(Self::with_parts(
             HashMap::new(),
@@ -636,6 +639,27 @@ mod tests {
     fn test_checked_verifier_rejects_short_hs256_secret() {
         assert!(JwtVerifier::<TestClaims>::from_secret_checked(b"too-short").is_err());
         assert!(JwtVerifier::<TestClaims>::from_secret_checked(&[b'x'; 32]).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_token_not_yet_valid_is_rejected() {
+        let secret = [b'x'; 32];
+        let verifier = JwtVerifier::<TestClaims>::from_secret_checked(&secret).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = |nbf: u64| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &serde_json::json!({ "sub": "user123", "exp": now + 3600, "nbf": nbf }),
+                &EncodingKey::from_secret(&secret),
+            )
+            .unwrap()
+        };
+
+        assert!(verifier.verify(&token(now + 3600)).await.is_err());
+        assert!(verifier.verify(&token(now - 10)).await.is_ok());
     }
 
     #[tokio::test]

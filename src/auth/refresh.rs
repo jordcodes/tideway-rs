@@ -110,6 +110,7 @@ where
     /// Create a new token refresh flow.
     pub fn new(issuer: JwtIssuer, store: S, user_loader: L, secret: &[u8]) -> Self {
         let mut validation = Validation::new(issuer.algorithm());
+        validation.validate_nbf = true;
         validation.set_issuer(&[issuer.issuer()]);
         if let Some(aud) = issuer.audience() {
             validation.set_audience(&[aud]);
@@ -132,6 +133,7 @@ where
         public_key_pem: &[u8],
     ) -> Result<Self> {
         let mut validation = Validation::new(Algorithm::RS256);
+        validation.validate_nbf = true;
         validation.set_issuer(&[issuer.issuer()]);
         if let Some(aud) = issuer.audience() {
             validation.set_audience(&[aud]);
@@ -524,6 +526,24 @@ mod tests {
         let result = flow.refresh(&refreshed.refresh_token).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("revoked"));
+    }
+
+    #[test]
+    fn test_refresh_validation_checks_not_before() {
+        let secret = b"test-secret-key-32-bytes-long!!";
+        let issuer = JwtIssuer::new(JwtIssuerConfig::with_secret(
+            String::from_utf8_lossy(secret).to_string(),
+            "test-app",
+        ))
+        .unwrap();
+        let flow = TokenRefreshFlow::new(
+            issuer,
+            InMemoryRefreshTokenStore::new(),
+            TestUserLoader,
+            secret,
+        );
+
+        assert!(flow.validation.validate_nbf);
     }
 
     #[tokio::test]
