@@ -7,6 +7,7 @@ use crate::error::{Result, TidewayError};
 use crate::traits::storage::{FileStorage, PresignOptions, PresignedRequest, StoredObject};
 use async_trait::async_trait;
 use axum::body::Bytes;
+use futures::StreamExt;
 #[cfg(feature = "storage-s3")]
 use object_store::signer::{HeaderName, HeaderValue, Method, SignedUrlOptions, Signer};
 use object_store::{Attribute, Attributes, ObjectStore, ObjectStoreExt, PutOptions};
@@ -158,6 +159,27 @@ impl FileStorage for ObjectStorage {
         let path = parse_key(key)?;
         let result = self.store.get(&path).await.map_err(map_store_error)?;
         result.bytes().await.map_err(map_store_error)
+    }
+
+    async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Bytes> {
+        let too_large = || TidewayError::bad_request(format!("Object exceeds {max_bytes} bytes"));
+        let path = parse_key(key)?;
+        let result = self.store.get(&path).await.map_err(map_store_error)?;
+        if result.meta.size > max_bytes {
+            return Err(too_large());
+        }
+
+        // The object can change after the metadata above was read, so count while streaming.
+        let mut stream = result.into_stream();
+        let mut data = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(map_store_error)?;
+            if (data.len() + chunk.len()) as u64 > max_bytes {
+                return Err(too_large());
+            }
+            data.extend_from_slice(&chunk);
+        }
+        Ok(Bytes::from(data))
     }
 
     async fn head(&self, key: &str) -> Result<Option<StoredObject>> {

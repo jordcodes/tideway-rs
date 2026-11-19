@@ -329,7 +329,8 @@ impl UploadPolicy {
     /// Runs [`Self::confirm`], copies the object under a fresh key in the same prefix with
     /// `content_type` (re-checked against the policy), and deletes the upload key. Record the
     /// returned key: replaying the presigned URL only writes the abandoned upload key. The copy
-    /// reads the whole object, which `max_bytes` bounds.
+    /// reads the whole object with [`FileStorage::get_bounded`], so an object replaced with a
+    /// larger body after the size check is rejected once `max_bytes` is passed.
     pub async fn finalize(
         &self,
         storage: &dyn FileStorage,
@@ -337,7 +338,14 @@ impl UploadPolicy {
         content_type: &str,
     ) -> Result<StoredObject> {
         self.confirm(storage, key).await?;
-        let data = storage.get(key).await?;
+        let data = match storage.get_bounded(key, self.max_bytes).await {
+            Ok(data) => data,
+            Err(error @ TidewayError::BadRequest(_)) => {
+                storage.delete(key).await?;
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         let size = data.len() as u64;
         // Re-check what was read, in case the object changed after confirm's check.
         if let Err(error) = self.validate(content_type, size) {

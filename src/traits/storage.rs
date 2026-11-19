@@ -112,6 +112,22 @@ pub trait FileStorage: Send + Sync {
     /// Read the full object. Returns `TidewayError::NotFound` if it does not exist.
     async fn get(&self, key: &str) -> Result<Bytes>;
 
+    /// Read the full object, failing with `TidewayError::BadRequest` if it exceeds `max_bytes`.
+    ///
+    /// Use this when the object size is untrusted, such as a client upload that may have been
+    /// replaced after its size was checked. The built-in backends stop reading once the limit is
+    /// passed. The default implementation reads the whole object before checking, so custom
+    /// backends should override it.
+    async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Bytes> {
+        let data = self.get(key).await?;
+        if data.len() as u64 > max_bytes {
+            return Err(crate::error::TidewayError::bad_request(format!(
+                "Object exceeds {max_bytes} bytes"
+            )));
+        }
+        Ok(data)
+    }
+
     /// Fetch object metadata, or `None` if it does not exist.
     async fn head(&self, key: &str) -> Result<Option<StoredObject>>;
 

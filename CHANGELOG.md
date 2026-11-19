@@ -9,6 +9,13 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
 
 ## [Unreleased]
 
+### Fixed
+
+- `UploadPolicy::finalize` reads the upload with the new `FileStorage::get_bounded`, so an
+  object replaced with a larger body after `confirm` is rejected once `max_bytes` is passed
+  instead of being read into memory. Custom `FileStorage` backends should override
+  `get_bounded`; the default reads the whole object before checking its size.
+
 ## [tideway-cli 0.9.1] - 2026-10-24
 
 ### Fixed

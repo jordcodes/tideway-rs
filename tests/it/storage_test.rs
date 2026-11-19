@@ -9,8 +9,8 @@ mod storage_tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tideway::storage::{
-        FileStorage, LocalStorage, ObjectStorage, PresignOptions, PresignedRequest, UploadPolicy,
-        object_key,
+        FileStorage, LocalStorage, ObjectStorage, PresignOptions, PresignedRequest, StoredObject,
+        UploadPolicy, object_key,
     };
     use tideway::{AppContext, TidewayError};
     use tower::ServiceExt;
@@ -357,6 +357,97 @@ mod storage_tests {
         let stored = storage.head(&recorded.key).await.unwrap().unwrap();
         assert_eq!(stored.size, 5);
         assert_eq!(storage.get(&recorded.key).await.unwrap(), "small");
+    }
+
+    #[tokio::test]
+    async fn get_bounded_rejects_objects_over_the_limit() {
+        let storage = ObjectStorage::in_memory();
+        storage
+            .put("files/big.bin", Bytes::from(vec![0u8; 64]), None)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            storage.get_bounded("files/big.bin", 8).await.unwrap_err(),
+            TidewayError::BadRequest(_)
+        ));
+        assert_eq!(
+            storage
+                .get_bounded("files/big.bin", 64)
+                .await
+                .unwrap()
+                .len(),
+            64
+        );
+    }
+
+    /// Reports a stale size from `head`, as when an upload is replaced after `confirm` runs.
+    struct StaleHeadStorage(ObjectStorage);
+
+    #[async_trait::async_trait]
+    impl FileStorage for StaleHeadStorage {
+        async fn put(
+            &self,
+            key: &str,
+            data: Bytes,
+            content_type: Option<&str>,
+        ) -> tideway::Result<StoredObject> {
+            self.0.put(key, data, content_type).await
+        }
+
+        async fn get(&self, key: &str) -> tideway::Result<Bytes> {
+            self.0.get(key).await
+        }
+
+        async fn get_bounded(&self, key: &str, max_bytes: u64) -> tideway::Result<Bytes> {
+            self.0.get_bounded(key, max_bytes).await
+        }
+
+        async fn head(&self, key: &str) -> tideway::Result<Option<StoredObject>> {
+            Ok(self
+                .0
+                .head(key)
+                .await?
+                .map(|object| StoredObject { size: 1, ..object }))
+        }
+
+        async fn delete(&self, key: &str) -> tideway::Result<()> {
+            self.0.delete(key).await
+        }
+
+        async fn presign_upload(
+            &self,
+            key: &str,
+            options: PresignOptions,
+        ) -> tideway::Result<PresignedRequest> {
+            self.0.presign_upload(key, options).await
+        }
+
+        async fn presign_download(
+            &self,
+            key: &str,
+            expires_in: Duration,
+        ) -> tideway::Result<PresignedRequest> {
+            self.0.presign_download(key, expires_in).await
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_policy_finalize_rejects_object_replaced_after_confirm() {
+        let storage = StaleHeadStorage(ObjectStorage::in_memory());
+        let policy = UploadPolicy::avatar().max_bytes(8);
+        let upload_key = object_key("avatars", "me.png").unwrap();
+        storage
+            .put(&upload_key, Bytes::from(vec![0u8; 64]), Some("image/png"))
+            .await
+            .unwrap();
+
+        let error = policy
+            .finalize(&storage, &upload_key, "image/png")
+            .await
+            .unwrap_err();
+        assert!(matches!(error, TidewayError::BadRequest(_)));
+        assert!(!storage.exists(&upload_key).await.unwrap());
     }
 
     #[test]
