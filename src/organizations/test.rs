@@ -2181,6 +2181,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_invite_normalizes_email_for_duplicate_check() {
+        let store = InMemoryOrgStore::new();
+        let org_manager = OrganizationManager::new(
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            OrganizationConfig::default(),
+        );
+        let inv_manager = InvitationManager::new(
+            store.clone(),
+            store.clone(),
+            store.clone(),
+            UnlimitedSeats,
+            InvitationConfig::default(),
+        );
+        let org = org_manager
+            .create(
+                "owner",
+                "Test Org",
+                None,
+                "owner@example.com",
+                make_org,
+                |p| make_membership(p, DefaultOrgRole::Owner),
+            )
+            .await
+            .unwrap();
+        let factory = |p: crate::organizations::InvitationCreateParams| TestInvitation {
+            id: p.id,
+            org_id: p.org_id,
+            email: p.email,
+            role: DefaultOrgRole::Member,
+            invited_by: p.invited_by,
+            token: p.token,
+            expires_at: p.expires_at,
+            created_at: p.created_at,
+            accepted: false,
+            revoked: false,
+        };
+
+        let first = inv_manager
+            .invite(&org.id, " Invitee@Example.com ", "owner", factory)
+            .await
+            .unwrap();
+        assert_eq!(first.email, "invitee@example.com");
+
+        let result = inv_manager
+            .invite(&org.id, "INVITEE@example.com", "owner", factory)
+            .await;
+        assert!(matches!(
+            result.unwrap_err(),
+            OrganizationError::InvitationAlreadyExists
+        ));
+    }
+
+    #[tokio::test]
     async fn test_invite_max_pending_reached() {
         let store = InMemoryOrgStore::new();
         let org_manager = OrganizationManager::new(
