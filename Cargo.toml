@@ -127,7 +127,7 @@ rand = { version = "0.8", optional = true }
 dashmap = { version = "6.1", optional = true }
 
 # Email (optional)
-lettre = { version = "0.11.22", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"], optional = true }
+lettre = { version = "0.11.24", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"], optional = true }
 
 # Jobs (optional - chrono already added for database)
 
