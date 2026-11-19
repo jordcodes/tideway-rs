@@ -114,10 +114,15 @@ fn build_security_headers(config: &SecurityConfig) -> HeaderMap {
     }
 
     // Content-Security-Policy
-    if let Some(ref csp) = config.content_security_policy
-        && let Ok(header) = HeaderValue::from_str(csp)
-    {
-        headers.insert("content-security-policy", header);
+    if let Some(ref csp) = config.content_security_policy {
+        match HeaderValue::from_str(csp) {
+            Ok(header) => {
+                headers.insert("content-security-policy", header);
+            }
+            Err(_) => tracing::error!(
+                "Content-Security-Policy is not a valid header value; not sending it"
+            ),
+        }
     }
 
     // Referrer-Policy
@@ -133,10 +138,15 @@ fn build_security_headers(config: &SecurityConfig) -> HeaderMap {
     }
 
     // Permissions-Policy
-    if let Some(ref permissions) = config.permissions_policy
-        && let Ok(header) = HeaderValue::from_str(permissions)
-    {
-        headers.insert("permissions-policy", header);
+    if let Some(ref permissions) = config.permissions_policy {
+        match HeaderValue::from_str(permissions) {
+            Ok(header) => {
+                headers.insert("permissions-policy", header);
+            }
+            Err(_) => {
+                tracing::error!("Permissions-Policy is not a valid header value; not sending it")
+            }
+        }
     }
     headers
 }

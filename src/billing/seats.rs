@@ -178,6 +178,13 @@ impl<S: BillingStore, C: StripeSubscriptionClient> SeatManager<S, C> {
 
         for _ in 0..MAX_RESERVATION_ATTEMPTS {
             let (sub, plan) = self.load_subscription(billable_id).await?;
+            // Canceled, past-due or paused subscriptions can't take a prorated seat change.
+            if !sub.is_active() {
+                return Err(super::error::BillingError::SubscriptionInactive {
+                    billable_id: billable_id.to_string(),
+                }
+                .into());
+            }
             let new_count = change.new_extra_seats(&sub, plan)?;
 
             if new_count == sub.extra_seats {
@@ -560,6 +567,27 @@ mod tests {
         assert_eq!(result.previous_seats, 2);
         assert_eq!(result.new_seats, 5);
         assert_eq!(result.total_seats, 8); // 3 included + 5 extra
+    }
+
+    #[tokio::test]
+    async fn test_seat_changes_require_active_subscription() {
+        let store = InMemoryBillingStore::new();
+        let mut sub = create_test_subscription("org_canceled", "starter", 2);
+        sub.status = SubscriptionStatus::Canceled;
+        store.save_subscription("org_canceled", &sub).await.unwrap();
+        let manager = SeatManager::new(
+            store.clone(),
+            MockStripeSubscriptionClient::new(),
+            create_test_plans(),
+        );
+
+        assert!(manager.add_seats("org_canceled", 1).await.is_err());
+        let stored = store
+            .get_subscription("org_canceled")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.extra_seats, 2);
     }
 
     #[tokio::test]

@@ -483,7 +483,10 @@ impl From<serde_json::Error> for TidewayError {
     fn from(err: serde_json::Error) -> Self {
         // Classify based on error category
         if err.is_data() || err.is_syntax() || err.is_eof() {
-            TidewayError::BadRequest(format!("JSON error: {}", err))
+            // The serde message names internal fields and types, and BadRequest messages are
+            // shown to clients, so keep the detail in the logs.
+            tracing::debug!(error = %err, "Rejected invalid JSON");
+            TidewayError::BadRequest("JSON error: invalid or unexpected JSON".to_string())
         } else {
             // IO errors are internal
             TidewayError::Internal(format!("JSON serialization error: {}", err))
@@ -897,6 +900,9 @@ mod tests {
         let err: TidewayError = json_err.into();
 
         assert!(matches!(err, TidewayError::BadRequest(_)));
+        // Field names and expected types stay out of the client-facing message.
+        assert!(!err.to_string().contains("_value"), "{err}");
+        assert!(!err.to_string().contains("i32"), "{err}");
     }
 
     #[test]

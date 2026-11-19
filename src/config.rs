@@ -402,6 +402,7 @@ impl ConfigBuilder {
         }
 
         self.config.cors.validate()?;
+        self.config.security.validate()?;
 
         Ok(self.config)
     }
@@ -875,5 +876,18 @@ mod tests {
             .allow_credentials(true)
             .build();
         assert!(ConfigBuilder::new().with_cors(cors).build().is_err());
+    }
+
+    #[test]
+    fn test_config_builder_rejects_invalid_security_headers() {
+        let security = SecurityConfig::builder()
+            .content_security_policy(Some("default-src 'self';\nscript-src 'self'".into()))
+            .build();
+        assert!(
+            ConfigBuilder::new()
+                .with_security(security)
+                .build()
+                .is_err()
+        );
     }
 }
