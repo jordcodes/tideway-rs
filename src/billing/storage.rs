@@ -1118,8 +1118,10 @@ impl<S: PlanStore + Send + Sync> PlanStore for CachedPlanStore<S> {
         // Cache miss - fetch from store
         let plan = self.inner.get_plan(plan_id).await?;
 
-        // Update cache
-        if let Ok(mut cache) = self.cache.write() {
+        // Only cache plans that exist, so lookups of arbitrary unknown IDs cannot grow the cache.
+        if plan.is_some()
+            && let Ok(mut cache) = self.cache.write()
+        {
             cache.plans.insert(
                 plan_id.to_string(),
                 CachedPlan {
@@ -1618,6 +1620,19 @@ mod tests {
         cached.invalidate_plan("starter");
         let plan = cached.get_plan("starter").await.unwrap().unwrap();
         assert_eq!(plan.price_cents, 1499);
+    }
+
+    #[tokio::test]
+    async fn test_cached_plan_store_does_not_cache_unknown_plans() {
+        use std::time::Duration;
+        use test::InMemoryBillingStore;
+
+        let cached = CachedPlanStore::new(InMemoryBillingStore::new(), Duration::from_secs(60));
+
+        for id in ["missing_1", "missing_2", "missing_3"] {
+            assert!(cached.get_plan(id).await.unwrap().is_none());
+        }
+        assert_eq!(cached.cache_size(), 0);
     }
 
     #[tokio::test]

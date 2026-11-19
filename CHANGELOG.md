@@ -15,6 +15,10 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   object replaced with a larger body after `confirm` is rejected once `max_bytes` is passed
   instead of being read into memory. Custom `FileStorage` backends should override
   `get_bounded`; the default reads the whole object before checking its size.
+- `CachedPlanStore` no longer caches lookups of unknown plan IDs, which let arbitrary IDs grow
+  the cache without bound.
+- `CachedInvoiceManager` evicts upcoming-invoice entries as well as invoice lists when it is
+  over its entry limit.
 
 ## [tideway-cli 0.9.1] - 2026-10-24
 
