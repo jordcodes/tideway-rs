@@ -24,6 +24,12 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    # Reviewed 2026-11-19, same zip 3 build-dependency. The script reads entries
+    # with `ZipArchive::by_index`; it never calls `extract`, uses no
+    # `ZipStreamReader`, and builds zip without `aes-crypto`.
+    "RUSTSEC-2026-0429",
+    "RUSTSEC-2026-0545",
+    "RUSTSEC-2026-0548",
     # `h2` 0.3 comes only from async-stripe 0.41's hyper 0.14 client, whose
     # only peer is the Stripe API over TLS. No 0.3.x fix exists; remove this
     # with the async-stripe 1.0 upgrade noted above.
@@ -31,4 +37,10 @@ ignore = [
     # `rkyv` is locked only as an optional rust_decimal dependency that no
     # Tideway feature enables (`cargo tree -i rkyv --all-features` is empty).
     "RUSTSEC-2026-0235",
+    # Reviewed 2026-11-19. The bundled SQLite in `libsqlite3-sys` 0.30 can return
+    # uninitialized memory only when opening a database and `-wal` file that a
+    # less trusted party wrote; Tideway apps open their own SQLite files. The fix
+    # needs libsqlite3-sys 0.39, which SQLx 0.8 (and so SeaORM 1.1) cannot use;
+    # remove this with the SQLx 0.9 / SeaORM 2 upgrade.
+    "RUSTSEC-2026-0459",
 ]
