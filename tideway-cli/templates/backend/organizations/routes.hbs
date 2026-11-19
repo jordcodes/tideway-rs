@@ -123,6 +123,20 @@ pub struct UpdateMemberRoleBody {
 
 // Handlers
 
+/// Roles assignable through `update_member_role`. Ownership is tracked by
+/// `organization.owner_id`, so it cannot be granted by changing a member's role.
+fn validate_member_role(role: &str) -> Result<&str> {
+    match role {
+        "member" | "admin" => Ok(role),
+        "owner" => Err(TidewayError::BadRequest(
+            "Ownership transfer is not supported through this route".into(),
+        )),
+        _ => Err(TidewayError::BadRequest(
+            "Member role must be member or admin".into(),
+        )),
+    }
+}
+
 async fn list_organizations(
     Extension(state): Extension<OrganizationState>,
     headers: axum::http::HeaderMap,
@@ -291,19 +305,12 @@ async fn update_member_role(
     )
     .await?;
     actor.require_org_role(&["owner", "admin"])?;
+    // Role changes grant durable access, so impersonation tokens cannot make them.
+    actor.require_not_impersonating()?;
 
     let target_uuid = Uuid::parse_str(&target_user_id)
         .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
-
-    if body.role == "owner"
-        && actor
-            .membership
-            .as_ref()
-            .map(|membership| membership.role.as_str())
-            != Some("owner")
-    {
-        return Err(TidewayError::Forbidden("Only owner can transfer ownership".into()));
-    }
+    let role = validate_member_role(body.role.trim())?.to_string();
 
     let target = organization_member::Entity::find()
         .filter(organization_member::Column::OrganizationId.eq(&org_id))
@@ -318,7 +325,7 @@ async fn update_member_role(
     }
 
     let mut active: organization_member::ActiveModel = target.into();
-    active.role = Set(body.role);
+    active.role = Set(role);
 
     active
         .update(state.db.as_ref())
@@ -340,6 +347,8 @@ async fn remove_member(
         &org_id,
     )
     .await?;
+    // Removing members changes durable access, so impersonation tokens cannot do it.
+    actor.require_not_impersonating()?;
 
     let target_uuid = Uuid::parse_str(&target_user_id)
         .map_err(|_| TidewayError::BadRequest("Invalid user ID".into()))?;
