@@ -94,13 +94,7 @@ impl Amount {
     }
 
     fn decimals(&self) -> u32 {
-        // Stripe's zero-decimal currencies.
-        const ZERO_DECIMAL: &[&str] = &[
-            "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "UGX", "VND",
-            "VUV", "XAF", "XOF", "XPF",
-        ];
-        let currency = self.currency.to_ascii_uppercase();
-        if ZERO_DECIMAL.contains(&currency.as_str()) {
+        if crate::utils::currency::is_zero_decimal_currency(&self.currency) {
             0
         } else {
             2

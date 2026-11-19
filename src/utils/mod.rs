@@ -2,6 +2,8 @@
 //!
 //! Common utilities for environment variable handling and other helpers.
 
+#[cfg(any(feature = "billing", feature = "email"))]
+pub(crate) mod currency;
 pub mod ensure;
 pub mod env;
 
