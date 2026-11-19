@@ -12,7 +12,10 @@ Tideway provides built-in OpenAPI 3.0 documentation support using the `utoipa` c
 
 ## Configuration
 
-OpenAPI support is controlled via environment variables:
+OpenAPI support is controlled via environment variables. Each variable can also be set with a
+`TIDEWAY_` prefix (for example `TIDEWAY_OPENAPI_ENABLED`), which takes precedence over the
+unprefixed name. Booleans accept `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off`;
+unrecognized values are ignored with a warning.
 
 ### Environment Variables
 
@@ -34,7 +37,8 @@ OPENAPI_VISIBILITY=all
 
 ### Custom Paths
 
-You can customize the Swagger UI and spec paths:
+You can customize the Swagger UI and spec paths. Paths must start with `/`; other values are
+ignored with a warning:
 
 ```bash
 # Swagger UI path (default: /swagger-ui)
