@@ -502,6 +502,10 @@ impl JwtIssuer {
         // Calculate remaining TTL from original token
         let remaining = old_claims.standard.exp.saturating_sub(now);
         let new_exp = now + remaining;
+        let generation = old_claims
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| TidewayError::Unauthorized("Invalid refresh token generation".into()))?;
 
         let claims = RefreshTokenClaims {
             standard: StandardClaims {
@@ -515,7 +519,7 @@ impl JwtIssuer {
             },
             token_type: TokenType::Refresh,
             family: old_claims.family.clone(),
-            generation: old_claims.generation + 1,
+            generation,
             session_version: old_claims.session_version,
         };
 
@@ -711,6 +715,26 @@ mod tests {
 
         assert_eq!(decoded_rotated.claims.generation, 1);
         assert_eq!(decoded_rotated.claims.family, decoded.claims.family);
+    }
+
+    #[test]
+    fn test_refresh_token_rotation_rejects_generation_overflow() {
+        let issuer = test_issuer();
+        let pair = issuer.issue(TokenSubject::new("user-123"), false).unwrap();
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&["test-app"]);
+        let mut claims = decode::<RefreshTokenClaims>(
+            &pair.refresh_token,
+            &DecodingKey::from_secret(b"test-secret-key-32-bytes-long!!"),
+            &validation,
+        )
+        .unwrap()
+        .claims;
+        claims.generation = u32::MAX;
+
+        let result = issuer.rotate_refresh_token(&claims);
+
+        assert!(matches!(result, Err(TidewayError::Unauthorized(_))));
     }
 
     #[test]
