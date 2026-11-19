@@ -5949,7 +5949,7 @@ dependencies = [
  "subtle",
  "testcontainers-modules",
  "thiserror 2.0.18",
- "tideway-macros 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "tideway-macros",
  "tokio",
  "totp-rs",
  "tower",
@@ -6014,19 +6014,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "trybuild",
-]
-
-[[package]]
-name = "tideway-macros"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "592f203445bc3f9b3f98258a11455cac2524314a9949cef4ba7aa9c16f79c8d8"
-dependencies = [
- "darling 0.20.11",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
