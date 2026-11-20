@@ -52,6 +52,10 @@ impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
     /// The webhook secret is stored securely and won't be exposed in debug output.
     /// Use [`with_additional_secret`](Self::with_additional_secret) to accept
     /// another secret while rotating.
+    ///
+    /// A blank secret never verifies a webhook: an empty HMAC key is one anyone
+    /// can sign with. Use [`with_secrets`](Self::with_secrets) to reject one when
+    /// the handler is built.
     #[must_use]
     pub fn new(store: S, webhook_secret: impl Into<SecretString>, plans: Plans) -> Self {
         Self {
@@ -66,7 +70,7 @@ impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
     /// Create a webhook handler that accepts signatures from any of the given secrets.
     ///
     /// # Errors
-    /// Returns an error if `webhook_secrets` is empty.
+    /// Returns an error if `webhook_secrets` is empty or any secret is blank.
     pub fn with_secrets<I>(store: S, webhook_secrets: I, plans: Plans) -> Result<Self>
     where
         I: IntoIterator,
@@ -77,6 +81,11 @@ impl<S: BillingStore + Clone> WebhookHandler<S, NoOpBillingEventSink> {
         if webhook_secrets.is_empty() {
             return Err(crate::error::TidewayError::Internal(
                 "At least one Stripe webhook secret is required".to_string(),
+            ));
+        }
+        if webhook_secrets.iter().any(is_blank) {
+            return Err(crate::error::TidewayError::Internal(
+                "Stripe webhook secrets must not be blank".to_string(),
             ));
         }
 
@@ -181,10 +190,23 @@ impl<S: BillingStore + Clone, E: BillingEventSink, C: StripeSubscriptionClient>
             String::from_utf8_lossy(payload)
         );
 
+        // A blank secret is an empty HMAC key that anyone can sign with, so it
+        // never verifies a webhook. Without a usable secret, nothing does.
+        let usable_secrets: Vec<&SecretString> = self
+            .webhook_secrets
+            .iter()
+            .filter(|secret| !is_blank(secret))
+            .collect();
+        if usable_secrets.is_empty() {
+            return Err(crate::error::TidewayError::Internal(
+                "No Stripe webhook secret is configured".to_string(),
+            ));
+        }
+
         // Accept the webhook if any configured secret produced any provided
         // signature (constant-time comparison for each pair).
         let mut matched = false;
-        for secret in &self.webhook_secrets {
+        for secret in usable_secrets {
             let expected_sig =
                 compute_signature(secret.expose_secret(), signed_payload.as_bytes())?;
             let expected_bytes = hex::decode(&expected_sig).map_err(|_| {
@@ -798,6 +820,11 @@ fn parse_signature_header(header: &str) -> Result<SignatureParts> {
     })
 }
 
+/// Whether a webhook secret is empty or only whitespace.
+fn is_blank(secret: &SecretString) -> bool {
+    secret.expose_secret().trim().is_empty()
+}
+
 /// Compute HMAC-SHA256 signature.
 fn compute_signature(secret: &str, payload: &[u8]) -> Result<String> {
     type HmacSha256 = Hmac<Sha256>;
@@ -1098,6 +1125,44 @@ mod tests {
 
         let new = create_test_signature("whsec_new", payload, timestamp);
         assert!(handler.verify_signature(payload, &new).is_ok());
+    }
+
+    #[test]
+    fn test_blank_secret_never_verifies_a_webhook() {
+        // A blank secret is an empty HMAC key, so anyone could make a matching
+        // signature for it.
+        let payload = ROTATION_PAYLOAD.as_bytes();
+        let timestamp = now_timestamp();
+        let forged = create_test_signature("", payload, timestamp);
+        for blank in ["", "   "] {
+            let handler =
+                WebhookHandler::new(InMemoryBillingStore::new(), blank, create_test_plans());
+            assert!(
+                handler.verify_signature(payload, &forged).is_err(),
+                "{blank:?}"
+            );
+        }
+
+        // A blank extra secret doesn't open a way in beside a real one.
+        let handler = WebhookHandler::new(
+            InMemoryBillingStore::new(),
+            "whsec_new",
+            create_test_plans(),
+        )
+        .with_additional_secret("");
+        assert!(handler.verify_signature(payload, &forged).is_err());
+        let real = create_test_signature("whsec_new", payload, timestamp);
+        assert!(handler.verify_signature(payload, &real).is_ok());
+    }
+
+    #[test]
+    fn test_with_secrets_rejects_blank_secret() {
+        let result = WebhookHandler::with_secrets(
+            InMemoryBillingStore::new(),
+            ["whsec_new", " "],
+            create_test_plans(),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

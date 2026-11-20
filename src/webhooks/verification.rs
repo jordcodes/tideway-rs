@@ -198,6 +198,14 @@ fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
 #[async_trait]
 impl WebhookVerifier for HmacSha256Verifier {
     async fn verify_signature(&self, payload: &[u8], signature: &str) -> Result<bool> {
+        // An empty key is one anyone can sign with, so a verifier built from a
+        // blank secret, such as an unset environment variable read as "",
+        // accepts nothing.
+        if self.secret.iter().all(u8::is_ascii_whitespace) {
+            tracing::warn!("Webhook signing secret is blank; rejecting webhook");
+            return Ok(false);
+        }
+
         // Decode the provided signature
         let provided = match self.decode_signature(signature) {
             Some(bytes) => bytes,
@@ -358,6 +366,18 @@ mod tests {
         let result = verifier.verify_signature(payload, &signature).await;
         assert!(result.is_ok());
         assert!(result.unwrap(), "Valid signature should pass verification");
+    }
+
+    #[tokio::test]
+    async fn test_hmac_sha256_verifier_rejects_blank_secret() {
+        // An empty key is one anyone can sign with, so a matching signature
+        // made with it must still fail.
+        let payload = b"test payload";
+        let forged = compute_test_signature(b"", payload);
+        for blank in [Vec::new(), b"  ".to_vec()] {
+            let verifier = HmacSha256Verifier::new(blank);
+            assert!(!verifier.verify_signature(payload, &forged).await.unwrap());
+        }
     }
 
     #[tokio::test]

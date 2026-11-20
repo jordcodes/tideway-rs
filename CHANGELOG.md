@@ -25,6 +25,11 @@ Release owners: copy a short DX gate summary into the release notes and use `doc
   the cache without bound.
 - `CachedInvoiceManager` evicts upcoming-invoice entries as well as invoice lists when it is
   over its entry limit.
+- A blank Stripe webhook secret no longer verifies webhooks. An empty secret is an empty HMAC
+  key, so anyone could sign a matching webhook. `WebhookHandler::verify_signature` ignores blank
+  secrets, including ones added with `with_additional_secret`, and fails when none are left;
+  `WebhookHandler::with_secrets` rejects a blank secret. `HmacSha256Verifier` rejects every
+  signature when its secret is blank.
 
 ## [tideway-cli 0.9.1] - 2026-10-24
 
